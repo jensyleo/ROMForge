@@ -63,6 +63,12 @@ Modificador adicional, independiente del estado anterior: si el DAT mismo declar
 - Cualquier estado excepto Missing: se le agrega `"(bad dump in DAT)"` al texto.
 - Missing: en vez de eso, `"Missing (also a known bad dump in DAT)"` — nunca implica que se encontró algo.
 
+**Caso confirmado explícitamente (04-ago-2026): `.correct` + `isBadDump` → sigue siendo VERDE, texto "Ok (bad dump in DAT)".** No es una contradicción ni un bug — son dos hechos independientes que coexisten:
+- `entry.status == .correct` responde: *"¿tu archivo local coincide exactamente con lo que el DAT declara?"* → Sí.
+- `entry.isBadDump` responde: *"¿el propio DAT admite que su dump de referencia es defectuoso/incompleto?"* → Sí, pero eso es un hecho sobre la REFERENCIA, no sobre tu archivo.
+
+El color siempre refleja la primera pregunta (`tint(for: entry.status)`, nunca `isBadDump`) porque es la única que importa para decidir si hay algo que tú puedas o debas arreglar: si tu archivo ya coincide byte a byte con el dump de referencia — sea ese dump bueno o malo — no existe ninguna acción posible de tu parte. Un archivo "mejor" no puede existir porque, por definición, el DAT no conoce ninguno mejor. El texto entre paréntesis es solo informativo (para que sepas que ese dump en particular es conocido por ser problemático en el hobby MAME en general), nunca una instrucción de "arregla esto".
+
 ### 3b. Estado de disco/CHD (`DiskAuditor` + `CHDMatcher`)
 
 Un CHD solo tiene 3 estados posibles (nunca `.badDump`, nunca `.foundElsewhere` — se verifica por el SHA1 del header, no hay "está en otro lado"):
