@@ -117,6 +117,20 @@ final class LibraryViewModel {
     /// `Task.isCancelled` checks threaded through `DATLoader`/
     /// `FolderScanner`/`FileHasher`/`CollectionHasher` see it.
     private var cancelDetachedWork: (@Sendable () -> Void)?
+    /// Real bug found live by jensyleo (2026-08-04): cancelling
+    /// `runningTask`/`cancelDetachedWork` above showed the cancellation
+    /// warning immediately, but `scan()` kept running all the way to
+    /// completion regardless — `ROMMatcher`'s own slowest phase
+    /// (`computePerGameCandidates`, often multiple minutes on a full MAME
+    /// DAT) dispatches its work onto raw `DispatchQueue.concurrentPerform`
+    /// GCD threads, which are never "inside" any `Task` at all, so
+    /// `Task.isCancelled` there always reads `false` no matter what — see
+    /// `CancellationFlag`'s own doc comment. Set fresh at the start of each
+    /// `scan()` (there's only ever one in flight at a time — `startScan`
+    /// already cancels any previous `runningTask` first) and threaded
+    /// straight into `ROMMatcher.match`; `cancelCurrentOperation()` below
+    /// signals it directly, independent of `Task` cancellation entirely.
+    private var matchCancellationFlag: CancellationFlag?
 
     private var matchReport: MatchReport?
     /// The last DAT successfully parsed, keyed by its file's URL — a real
@@ -299,6 +313,7 @@ final class LibraryViewModel {
         guard isBusy else { return }
         cancelledPhase = (isLoadingDAT || isCountingDATMachines) ? .datLoad : .hashing
         cancelDetachedWork?()
+        matchCancellationFlag?.cancel()
         runningTask?.cancel()
     }
 
@@ -437,6 +452,8 @@ final class LibraryViewModel {
         matchProgress = nil
         folderScanFilesFound = nil
         archiveListingProgress = nil
+        let cancellationFlag = CancellationFlag()
+        matchCancellationFlag = cancellationFlag
         logLines.removeAll()
         defer { isBusy = false }
 
@@ -570,7 +587,7 @@ final class LibraryViewModel {
                 let hashedFiles = try await CollectionHasher.hash(scannedFiles: scannedFiles, cache: cache, algorithms: hashAlgorithms, onProgress: progressHandler, onArchiveListed: archiveListedHandler)
                 try? ScanCache.build(from: hashedFiles).save(to: cacheURL)
                 matchingStartedHandler()
-                let matchReport = try ROMMatcher.match(dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler)
+                let matchReport = try ROMMatcher.match(dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler, cancellationFlag: cancellationFlag)
                 var auditReport = try AuditReporter.generate(from: matchReport)
                 // CHDs never go through `ROMMatcher` at all (a disk isn't a
                 // `DATRom`) — audited separately here, by each CHD's own

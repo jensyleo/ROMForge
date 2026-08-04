@@ -28,18 +28,21 @@ public enum ROMMatcher {
     /// `throws` only ever propagates `CancellationError` — real bug found
     /// live by jensyleo (2026-08-04): pressing Cancel mid-scan showed the
     /// "scan cancelled" warning immediately (`LibraryViewModel.cancelCurrentOperation()`
-    /// sets that eagerly), but the scan itself kept running to completion
-    /// regardless, because nothing in this function — or `AuditReporter`/
-    /// `DiskAuditor` downstream of it — ever actually checked
-    /// `Task.isCancelled`. `FolderScanner`/`CollectionHasher` already did,
-    /// so cancelling during the file-walk/hashing phases worked; cancelling
-    /// during or after matching did not. Checked at entry (skip the whole
-    /// call if cancellation was already requested before this even started)
-    /// and once more between phase 1 and phase 2 below — not inside phase
-    /// 1's own `DispatchQueue.concurrentPerform` workers, since those run
-    /// outside this calling `Task`'s own context, where `Task.isCancelled`
-    /// isn't meaningful to check at all.
-    public static func match(dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil) throws -> MatchReport {
+    /// sets that eagerly), but the scan itself kept running all the way to
+    /// completion regardless, only reporting "cancelled" once the *entire*
+    /// scan had already finished on its own. First attempt (`Task.checkCancellation()`
+    /// at entry and between phase 1/phase 2) missed the actual bottleneck
+    /// entirely: phase 1 (`computePerGameCandidates`, below) is the
+    /// multi-minute part on a large scan, and it runs on
+    /// `DispatchQueue.concurrentPerform`'s raw GCD worker threads — which
+    /// are never "inside" any `Task` at all, so `Task.isCancelled` there
+    /// unconditionally reads `false` no matter what, and checking it would
+    /// have been silently pointless. `cancellationFlag` is the fix: a
+    /// plain, lock-protected flag `LibraryViewModel` sets directly
+    /// (independent of `Task` cancellation entirely) and phase 1's workers
+    /// poll periodically — the only mechanism that can actually interrupt
+    /// GCD-dispatched work like this.
+    public static func match(dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil, cancellationFlag: CancellationFlag? = nil) throws -> MatchReport {
         try Task.checkCancellation()
         let crcIndex = indexOptional(hashedFiles, by: \.hash.crc32)
         let md5Index = indexOptional(hashedFiles, by: \.hash.md5)
@@ -151,9 +154,15 @@ public enum ROMMatcher {
             crcIndex: crcIndex, md5Index: md5Index, sha1Index: sha1Index, sizeIndex: sizeIndex,
             crcIndexStripped: crcIndexStripped, md5IndexStripped: md5IndexStripped, sha1IndexStripped: sha1IndexStripped, sizeIndexStripped: sizeIndexStripped,
             archiveNameIndex: archiveNameIndex, nameIndex: nameIndex, isArchiveOrganized: isArchiveOrganized, allGameNames: allGameNames,
-            strictOwnArchiveOnly: strictOwnArchiveOnly, onProgress: onProgress
+            strictOwnArchiveOnly: strictOwnArchiveOnly, onProgress: onProgress, cancellationFlag: cancellationFlag
         )
 
+        // `computePerGameCandidates`'s own workers bail out early on
+        // `cancellationFlag` (see its doc comment), but they can't `throw`
+        // across `DispatchQueue.concurrentPerform` — this is where that
+        // silent early exit actually turns into the real `CancellationError`
+        // the rest of the app already knows how to handle.
+        if cancellationFlag?.isCancelled == true { throw CancellationError() }
         try Task.checkCancellation()
 
         // Phase 2 (sequential, cheap): claim files against the precomputed
@@ -381,7 +390,8 @@ public enum ROMMatcher {
         crcIndexStripped: [String: [Int]], md5IndexStripped: [String: [Int]], sha1IndexStripped: [String: [Int]], sizeIndexStripped: [Int64: [Int]],
         archiveNameIndex: [String: [Int]], nameIndex: [String: [Int]], isArchiveOrganized: Bool, allGameNames: Set<String>,
         strictOwnArchiveOnly: @escaping @Sendable (DATGame) -> Bool,
-        onProgress: (@Sendable (Int, Int) -> Void)?
+        onProgress: (@Sendable (Int, Int) -> Void)?,
+        cancellationFlag: CancellationFlag?
     ) -> [GameCandidates] {
         @Sendable func candidates(for game: DATGame) -> GameCandidates {
             let ownArchiveIndices = Set(archiveNameIndex[game.name.lowercased()] ?? [])
@@ -441,13 +451,30 @@ public enum ROMMatcher {
             }
         }
 
+        // Checked every 500 games (cheap relative to `candidates(for:)`
+        // itself, frequent enough that a large scan actually stops within a
+        // couple of seconds of Cancel being pressed, rather than running
+        // this whole multi-minute phase to completion regardless — see
+        // `CancellationFlag`'s own doc comment for why `Task.isCancelled`
+        // can't do this job here at all). Bails out of *this worker's own*
+        // remaining slice only — leftover entries in `results` simply stay
+        // at their initial empty value, which is fine, since `match()`
+        // discards the whole result and throws once it sees the flag set.
+        func isCancelled(_ index: Int) -> Bool {
+            guard let cancellationFlag else { return false }
+            return index % 500 == 0 && cancellationFlag.isCancelled
+        }
+
         let workerCount = HashingConcurrency.workerCount(for: games.count)
         guard games.count > 1, workerCount > 1 else {
-            return games.map {
-                let result = candidates(for: $0)
+            var results: [GameCandidates] = []
+            results.reserveCapacity(games.count)
+            for (index, game) in games.enumerated() {
+                if isCancelled(index) { break }
+                results.append(candidates(for: game))
                 reportProgress()
-                return result
             }
+            return results
         }
 
         var results = [GameCandidates](repeating: [], count: games.count)
@@ -467,6 +494,7 @@ public enum ROMMatcher {
                 guard start < games.count else { return }
                 let end = min(start + chunkSize, games.count)
                 for i in start..<end {
+                    if isCancelled(i) { return }
                     box.value[i] = candidates(for: games[i])
                     reportProgress()
                 }

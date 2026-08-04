@@ -87,6 +87,7 @@ public enum DATLoader {
         var bytesRead: Int64 = 0
         onProgress(0, totalSize)
         while true {
+            try Task.checkCancellation()
             let chunk = try handle.read(upToCount: chunkSize) ?? Data()
             if chunk.isEmpty { break }
             result.append(chunk)
@@ -104,12 +105,26 @@ public enum DATLoader {
         onCountingProgress: (@Sendable (Int, Int) -> Void)? = nil,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) throws -> DATFile {
+        // A genuine cancellation must never fall into the "try the next
+        // format" cascade below — real bug found live by jensyleo
+        // (2026-08-04), the same class as `ROMMatcher`/`AuditReporter`
+        // needing this fix downstream: without this explicit re-throw, a
+        // `CancellationError` from `datFile(from:mode:biosMode:)`'s own new
+        // check (deep inside the MAME branch) would be caught by `catch let
+        // mameError` below, misread as "this isn't a MAME DAT after all",
+        // and swallowed into a fallback attempt at `SoftwareListParser` —
+        // hiding the real cancellation behind an unrelated "unrecognized
+        // format" error instead of actually stopping.
         do {
             return try LogiqxDATParser.parse(data: data)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let logiqxError {
             do {
                 let dataset = try MAMEListXMLParser.parse(data: data, onCountingStarted: onCountingStarted, onCountingProgress: onCountingProgress, onProgress: onProgress)
-                return datFile(from: dataset, mode: mergeMode, biosMode: biosMergeMode)
+                return try datFile(from: dataset, mode: mergeMode, biosMode: biosMergeMode)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch let mameError {
                 do {
                     let dataset = try SoftwareListParser.parse(data: data)
@@ -150,45 +165,58 @@ public enum DATLoader {
     /// never has in the first place. Clones are excluded here;
     /// `MAMESetLayoutPlanner.mergedGame` already folds each excluded
     /// clone's roms into its parent's own entry.
-    private static func datFile(from dataset: MAMEDataset, mode: SetMergeMode, biosMode: SetMergeMode) -> DATFile {
-        DATFile(
+    /// `throws` only ever propagates `CancellationError` — real bug found
+    /// live by jensyleo (2026-08-04): pressing Cancel during DAT loading
+    /// showed the "loading cancelled" warning immediately, but loading kept
+    /// running to completion regardless (the *first* instance of this class
+    /// of bug found, before the same fix was applied to `ROMMatcher`/
+    /// `AuditReporter`/`DiskAuditor` downstream — this loop, building a
+    /// `DATGame` layout for every one of a full MAME dataset's ~43,000
+    /// machines via `MAMESetLayoutPlanner`, is often the *actual* long
+    /// stretch during "loading", not the XML parse itself). Checked
+    /// throttled (every 2000 machines) inside the loop — this runs
+    /// synchronously on the calling `Task`'s own thread (no concurrent
+    /// dispatch here), so the check is meaningful everywhere in it.
+    private static func datFile(from dataset: MAMEDataset, mode: SetMergeMode, biosMode: SetMergeMode) throws -> DATFile {
+        var games: [DATGame] = []
+        games.reserveCapacity(dataset.machines.count)
+        for (index, machine) in dataset.machines.enumerated() {
+            if index % 2000 == 0 { try Task.checkCancellation() }
+            // Devices used to be excluded outright here — real bug found by
+            // jensyleo (2026-07-28): a device with a real, physical romset
+            // of its own (e.g. CPS2's `qsound_hle`, whose one rom is
+            // `merge="..."`-inherited from another device, `qsound`) could
+            // then never match anything at all, in any merge mode — its
+            // real `qsound_hle.zip` permanently showed as an unrecognized
+            // surplus file, no matter how correct it was. A device isn't a
+            // "game", but real romset tools (RomVault/ClrMamePro) still
+            // audit a device's own set as its own entry, same as a BIOS —
+            // the existing `deviceRoms`-folding-into-dependents behavior
+            // (`MAMESetLayoutPlanner`) is unaffected either way, this just
+            // *also* lets the device's own archive be matched.
+            guard biosMode != .merged || !machine.isBios else { continue }
+            guard mode != .merged || machine.cloneOf == nil else { continue }
+            guard let layout = try? MAMESetLayoutPlanner.buildGame(for: machine.name, mode: mode, biosMode: biosMode, dataset: dataset) else {
+                continue
+            }
+            games.append(DATGame(
+                name: layout.name,
+                description: layout.description,
+                cloneOf: layout.cloneOf,
+                romOf: layout.romOf,
+                roms: layout.roms,
+                isBios: machine.isBios,
+                disks: machine.disks.map { DATDisk(name: $0.name, sha1: $0.sha1) },
+                hasSamples: machine.hasSamples,
+                year: machine.year.isEmpty ? nil : machine.year,
+                manufacturer: machine.manufacturer.isEmpty ? nil : machine.manufacturer,
+                biosSetNames: machine.biosSets.map(\.name),
+                deviceRefs: machine.deviceRefs
+            ))
+        }
+        return DATFile(
             header: DATHeader(name: "MAME", description: "Parsed from mame -listxml", version: "", author: "MAMEDev"),
-            games: dataset.machines.filter { machine in
-                // Devices used to be excluded outright here — real bug
-                // found by jensyleo (2026-07-28): a device with a real,
-                // physical romset of its own (e.g. CPS2's `qsound_hle`,
-                // whose one rom is `merge="..."`-inherited from another
-                // device, `qsound`) could then never match anything at
-                // all, in any merge mode — its real `qsound_hle.zip`
-                // permanently showed as an unrecognized surplus file, no
-                // matter how correct it was. A device isn't a "game", but
-                // real romset tools (RomVault/ClrMamePro) still audit a
-                // device's own set as its own entry, same as a BIOS — the
-                // existing `deviceRoms`-folding-into-dependents behavior
-                // (`MAMESetLayoutPlanner`) is unaffected either way, this
-                // just *also* lets the device's own archive be matched.
-                guard biosMode != .merged || !machine.isBios else { return false }
-                guard mode != .merged || machine.cloneOf == nil else { return false }
-                return true
-            }.compactMap { machine in
-                guard let layout = try? MAMESetLayoutPlanner.buildGame(for: machine.name, mode: mode, biosMode: biosMode, dataset: dataset) else {
-                    return nil
-                }
-                return DATGame(
-                    name: layout.name,
-                    description: layout.description,
-                    cloneOf: layout.cloneOf,
-                    romOf: layout.romOf,
-                    roms: layout.roms,
-                    isBios: machine.isBios,
-                    disks: machine.disks.map { DATDisk(name: $0.name, sha1: $0.sha1) },
-                    hasSamples: machine.hasSamples,
-                    year: machine.year.isEmpty ? nil : machine.year,
-                    manufacturer: machine.manufacturer.isEmpty ? nil : machine.manufacturer,
-                    biosSetNames: machine.biosSets.map(\.name),
-                    deviceRefs: machine.deviceRefs
-                )
-            },
+            games: games,
             mergeMode: mode,
             // From the raw, unfiltered machine list — see `DATFile.hasClones`'s
             // own doc comment for why this must never be derived from the
