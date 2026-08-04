@@ -23,8 +23,12 @@ public enum AuditReporter {
         try Task.checkCancellation()
         var entries: [AuditEntry] = []
 
-        for (gameIndex, gameResult) in matchReport.games.enumerated() {
-            if gameIndex % 5000 == 0 { try Task.checkCancellation() }
+        for gameResult in matchReport.games {
+            // Checked every game, not throttled — a lock-free `Task`
+            // cancellation read is negligible next to any real per-game
+            // work (see `ROMMatcher.match`'s own doc comment for the real
+            // bug this same reasoning fixed there).
+            try Task.checkCancellation()
             let game = gameResult.game
             let hasCHD = !game.disks.isEmpty
             let hasSamples = game.hasSamples

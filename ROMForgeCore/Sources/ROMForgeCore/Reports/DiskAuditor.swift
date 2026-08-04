@@ -52,8 +52,10 @@ public enum DiskAuditor {
         // *first* game (in DAT order, typically parent-first) that
         // declares it.
         var seenDisks = Set<String>()
-        for (gameIndex, game) in dat.games.enumerated() {
-            if gameIndex % 5000 == 0 { try Task.checkCancellation() }
+        for game in dat.games {
+            // Checked every game, not throttled — see `ROMMatcher.match`'s
+            // own doc comment for why throttling this was a real bug.
+            try Task.checkCancellation()
             guard !game.disks.isEmpty else { continue }
             let chdNames = game.disks.map(\.name).joined(separator: ", ")
             for disk in game.disks {

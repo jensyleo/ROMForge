@@ -177,10 +177,17 @@ public enum ROMMatcher {
         for (gameIndex, (game, romCandidates)) in zip(dat.games, perGameCandidates).enumerated() {
             // Runs on this call's own `Task`, unlike phase 1's
             // `DispatchQueue.concurrentPerform` workers above — safe to
-            // check here, throttled (every 5000 games) so a full MAME DAT's
-            // ~43,000 games don't pay for a cancellation check every single
-            // iteration of an otherwise cheap loop.
-            if gameIndex % 5000 == 0 { try Task.checkCancellation() }
+            // check here. Checked every single game, not throttled: real
+            // bug found live by jensyleo (2026-08-04, still broken after
+            // the previous throttled-every-5000 attempt) — a *single*
+            // pathologically expensive game (a hash-less/size-matched rom
+            // whose candidate list happens to be huge, scanned linearly by
+            // `matches(_:_:)` below) can itself take long enough that
+            // skipping 4999 checks in between made this effectively
+            // uninterruptible mid-game. `Task.checkCancellation()` is a
+            // lock-free read, genuinely negligible next to any real
+            // per-game work — no reason to throttle it here at all.
+            try Task.checkCancellation()
             var romMatches: [RomMatch] = []
             romMatches.reserveCapacity(romCandidates.count)
             // `nodump` roms (real, confirmed live: MAME's own `sf2stt` set
@@ -451,18 +458,22 @@ public enum ROMMatcher {
             }
         }
 
-        // Checked every 500 games (cheap relative to `candidates(for:)`
-        // itself, frequent enough that a large scan actually stops within a
-        // couple of seconds of Cancel being pressed, rather than running
-        // this whole multi-minute phase to completion regardless — see
-        // `CancellationFlag`'s own doc comment for why `Task.isCancelled`
-        // can't do this job here at all). Bails out of *this worker's own*
-        // remaining slice only — leftover entries in `results` simply stay
-        // at their initial empty value, which is fine, since `match()`
-        // discards the whole result and throws once it sees the flag set.
+        // Checked before *every* game, not throttled — real bug found live
+        // by jensyleo (2026-08-04): an earlier version only checked every
+        // 500 games, which still ran to full completion regardless of when
+        // Cancel was pressed. Reading a lock-protected `Bool` is genuinely
+        // negligible next to `candidates(for:)`'s own real work (multiple
+        // dictionary lookups plus, for an archive-organized scan, string
+        // ops per candidate) — there's no actual performance reason to
+        // throttle this at all, only a wrong assumption that it needed to
+        // be cheap like `reportProgress()`'s UI callback throttling above
+        // (a real cross-thread `Task` hop, unlike this). Bails out of
+        // *this worker's own* remaining slice only — leftover entries in
+        // `results` simply stay at their initial empty value, which is
+        // fine, since `match()` discards the whole result and throws once
+        // it sees the flag set.
         func isCancelled(_ index: Int) -> Bool {
-            guard let cancellationFlag else { return false }
-            return index % 500 == 0 && cancellationFlag.isCancelled
+            cancellationFlag?.isCancelled ?? false
         }
 
         let workerCount = HashingConcurrency.workerCount(for: games.count)

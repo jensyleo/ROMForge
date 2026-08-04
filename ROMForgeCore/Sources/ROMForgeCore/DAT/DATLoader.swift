@@ -180,8 +180,10 @@ public enum DATLoader {
     private static func datFile(from dataset: MAMEDataset, mode: SetMergeMode, biosMode: SetMergeMode) throws -> DATFile {
         var games: [DATGame] = []
         games.reserveCapacity(dataset.machines.count)
-        for (index, machine) in dataset.machines.enumerated() {
-            if index % 2000 == 0 { try Task.checkCancellation() }
+        for machine in dataset.machines {
+            // Checked every machine, not throttled — see `ROMMatcher.match`'s
+            // own doc comment for why throttling this was a real bug.
+            try Task.checkCancellation()
             // Devices used to be excluded outright here — real bug found by
             // jensyleo (2026-07-28): a device with a real, physical romset
             // of its own (e.g. CPS2's `qsound_hle`, whose one rom is
