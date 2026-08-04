@@ -70,9 +70,19 @@ public enum AuditReporter {
 
         for surplusFile in matchReport.surplusFiles {
             let hashedFile = surplusFile.file
+            // jensyleo's own correction (2026-08-04): `.surplus` means
+            // "unrecognized" — genuinely no idea what this file is. A file
+            // whose hash matches a real rom *some* DAT game declares
+            // (`requiredByGameDescription` set) is the opposite of that:
+            // fully identified, just filed somewhere that doesn't currently
+            // need it (e.g. a Split-mode clone's zip still holding a rom
+            // its parent's own archive is the one that actually wants).
+            // That's a real, fixable location problem — the same bucket as
+            // a misnamed rom, not "unknown".
+            let status: AuditStatus = surplusFile.requiredByGameDescription != nil ? .incorrect : .surplus
             entries.append(
                 AuditEntry(
-                    status: .surplus, game: nil,
+                    status: status, game: nil,
                     requiredByGameDescription: surplusFile.requiredByGameDescription,
                     name: hashedFile.file.name, path: hashedFile.file.url,
                     actualSize: hashedFile.file.size,

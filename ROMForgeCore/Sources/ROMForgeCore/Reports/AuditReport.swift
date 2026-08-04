@@ -126,12 +126,17 @@ public struct AuditEntry: Equatable, Sendable {
     /// name" — the point is precisely that this *isn't* a naming mistake
     /// to go fix, it's already correctly organized somewhere else.
     public let foundElsewhereArchiveName: String?
-    /// Set only for a `.surplus` entry whose content nonetheless
-    /// hash-matches a real rom the DAT declares for *some* game — just not
-    /// one that claimed it in this scan (`SurplusFile.requiredByGameDescription`,
-    /// see its own doc comment for the real Split-mode case this exists
-    /// for). `nil` for every other status, and for a genuinely unrecognized
-    /// surplus file that matches nothing in the DAT at all.
+    /// Set for a rediscovered-surplus file — no game claimed it in this
+    /// scan, but its content still hash-matches a real rom *some* DAT game
+    /// declares (`SurplusFile.requiredByGameDescription`, see its own doc
+    /// comment for the real Split-mode case this exists for). This is what
+    /// makes `AuditReporter` classify such a file `.incorrect` (a real,
+    /// identified, fixable location problem) rather than `.surplus`
+    /// (jensyleo's own correction, 2026-08-04: "surplus" must mean
+    /// genuinely unrecognized, not "known but currently misplaced"). `nil`
+    /// for a genuinely unrecognized surplus file that matches nothing in
+    /// the DAT at all, and for every rom/disk entry that has a real
+    /// expected `game` of its own.
     public let requiredByGameDescription: String?
     public let name: String
     public let path: URL?

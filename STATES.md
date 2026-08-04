@@ -79,14 +79,21 @@ Un `.chd` en disco que no corresponde a NINGÚN disco declarado por el DAT actua
 
 **Caso real (04-ago-2026):** bajo Split, un clon (ej. `sf2acc`) declara SOLO sus roms únicas — las que comparte con su padre (`merge=` en el DAT) quedan excluidas de su lista propia, porque Split espera que vivan únicamente en el archivo del padre. Pero el `.zip` real del usuario a menudo SÍ contiene ese contenido compartido también (un dump válido y correcto) — y como el escaneo por archivo nunca busca dentro de `sf2acc.zip` las roms de `sf2ce` (el padre), ese archivo queda sin reclamar por nadie y se reportaba como "Unrecognized" genérico, indistinguible de basura real.
 
-**Fix:** antes de declarar un archivo sobrante como surplus, se compara su hash contra TODAS las roms del DAT (de cualquier juego, sin filtrar por modo de merge). Si coincide con algo real:
+**Fix (corregido dos veces el mismo día — versión final):** antes de declarar un archivo sobrante como surplus, se compara su hash contra TODAS las roms del DAT (de cualquier juego, sin filtrar por modo de merge). Si coincide con algo real, **se reclasifica de verdad como `.incorrect`**, no se queda en `.surplus` con un simple cambio de color — corrección del propio usuario (04-ago-2026): "surplus" debe significar *desconocido*, y este caso deja de serlo en cuanto se identifica.
 
-| Situación | `AuditStatus` | Color de la fila (panel derecho) | Texto |
+| Situación | `AuditStatus` | Color | Texto (fila individual) |
 |---|---|---|---|
 | Hash no coincide con NADA del DAT | `.surplus` | ⚪️ Gris | "Unrecognized" |
-| Hash coincide con una rom de OTRO juego real | `.surplus` | 🟡 Amarillo (excepción, 04-ago-2026) | "Not needed here (required by `<juego>`)" |
+| Hash coincide con una rom de OTRO juego real | `.incorrect` | 🟡 Amarillo (nativo, sin parche) | "Not needed here (required by `<juego>`)" |
 
-**Sigue siendo `.surplus` — no es un estado nuevo.** Cambia el mensaje ("no sé qué es esto" → "sé exactamente qué es esto, y sé por qué no lo necesito aquí") y, a pedido explícito, también el color de esta fila específica en el panel de detalle (amarillo en vez de gris, para que destaque visualmente como "recognized, just misplaced" en vez de leerse igual que basura real) — el ícono de la fila de juego (columna izquierda) no cambia, sigue reflejando el estado agregado normal. Implementado en `ROMMatcher.match`'s `romsByHash`/`requiredByGameDescription` (dato) + `LibraryDetailView`'s `tint(for: AuditEntry)` (color, override puntual sobre `tint(for: AuditStatus)`). Nunca usado para *reclamar* un archivo (no reabre el problema de "robo entre juegos" — es puramente informativo).
+El mensaje a nivel del JUEGO (columna izquierda) también distingue este caso — dentro de `.incorrect`, en orden de prioridad:
+1. El archivo completo está mal nombrado → "Bad file name"
+2. Alguna ROM propia del juego está mal nombrada o encontrada en otro lado → "Rom need fix"
+3. Todo lo propio del juego está bien; el único problema es un archivo sobrante ya identificado → **"Extra file, not needed here"**
+
+**Consistencia entre vistas:** este archivo llega "plegado" a la fila de su juego por coincidencia de nombre de archivo (no por el campo `game`, que sigue siendo `nil` para estas entradas) — tanto en la vista "Database" (`computeGameAggregateStatusByName`) como en vista de carpeta (`gameNodes`) como en los conteos del encabezado (`computeScopedStatusCounts`). Los tres pliegan la misma manera exacta, para que nunca puedan discrepar entre sí sobre el estado de un juego.
+
+Implementado en `ROMMatcher.match`'s `romsByHash`/`requiredByGameDescription` (identificación) + `AuditReporter.generate` (reclasificación a `.incorrect`) + los tres puntos de plegado en `LibraryDetailView`. Nunca usado para *reclamar* un archivo (no reabre el problema de "robo entre juegos" — sigue siendo puramente informativo).
 
 ---
 

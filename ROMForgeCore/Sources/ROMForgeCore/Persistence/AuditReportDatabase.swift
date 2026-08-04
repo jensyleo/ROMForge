@@ -33,7 +33,7 @@ public enum AuditReportDatabaseError: Error, Equatable, CustomStringConvertible 
 /// (matching SQLite's own recommended usage for infrequent, non-contended
 /// access) rather than held open for the object's lifetime.
 public final class AuditReportDatabase {
-    private static let currentSchemaVersion: Int32 = 6
+    private static let currentSchemaVersion: Int32 = 7
 
     private let path: String
 
@@ -399,6 +399,17 @@ public final class AuditReportDatabase {
         // TABLE and the round-trip test up front this time, at the same
         // moment the field itself was introduced.
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN required_by_game_description TEXT;")
+        // Schema v7 (2026-08-04, same day): no new column at all — this
+        // bump exists purely to trigger the wipe below. jensyleo's own
+        // correction, made right after v6 shipped: a "not needed here"
+        // surplus file (`requiredByGameDescription != nil`) must read
+        // `.incorrect`, not `.surplus` — "surplus" means genuinely
+        // unrecognized, and this content is fully identified. Every row
+        // `saveReport` wrote under v6 still has the old (wrong-by-current-
+        // rules) `.surplus` status for such a file; only a fresh rescan
+        // re-derives it correctly, so the stale rows have to go the same
+        // way the v5 rows did below — the unconditional wipe there already
+        // covers this bump too, nothing further to add here.
         // Also discard every stored verdict when arriving at v5 (not just add
         // the column): the same 2026-08-04 round of fixes changed what
         // `ROMMatcher` itself concludes — a clone the user doesn't own no

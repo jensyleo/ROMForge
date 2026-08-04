@@ -122,16 +122,30 @@ private struct GameNode: Identifiable {
         case .missing: return "Incomplete (rom missing)"
         case .badDump: return "Bad (hash mismatch)"
         case .incorrect:
-            // Distinguishes two different kinds of "misnamed", which a
-            // rename-fix would handle completely differently:
+            // Three different reasons a game reads "Incorrect" overall,
+            // checked worst/most-actionable first:
             // - the **archive itself** has the wrong name (its contents,
             //   once matched by hash, are a real known game) — "Bad file
             //   name", fixed by renaming the archive to `expectedFileName`;
             // - the archive's own name is already correct, but one or more
-            //   roms **inside** it are misnamed — "Rom need fix", fixed by
-            //   renaming entries within the archive instead.
+            //   of this game's OWN roms are misnamed/found-elsewhere
+            //   (`requiredByGameDescription == nil` distinguishes these
+            //   from the case just below) — "Rom need fix", fixed by
+            //   renaming/moving entries within the archive instead;
+            // - every one of this game's own roms is genuinely fine, and
+            //   the only `.incorrect` entry present is a *surplus* file
+            //   folded into this row that turned out to be fully
+            //   identified, just belonging to a different game
+            //   (`requiredByGameDescription != nil` — jensyleo's own
+            //   correction, 2026-08-04: this used to stay `.surplus`/
+            //   "Extra file in archive" below; reclassified because
+            //   "surplus" must mean genuinely unknown, and this file
+            //   isn't) — "Extra file, not needed here", fixed by moving it
+            //   to the archive that actually wants it.
             let archiveMisnamed = actualFileName != nil && expectedFileName != nil && actualFileName != expectedFileName
-            return archiveMisnamed ? "Bad file name" : "Rom need fix"
+            if archiveMisnamed { return "Bad file name" }
+            let hasOwnRomProblem = entries.contains { $0.status == .incorrect && $0.requiredByGameDescription == nil }
+            return hasOwnRomProblem ? "Rom need fix" : "Extra file, not needed here"
         case .correct, .surplus:
             // A surplus entry can end up here (not in its own "Unknown
             // game" bucket) when it's an extra file inside an archive that
@@ -1414,7 +1428,7 @@ struct LibraryDetailView: View {
                 .foregroundStyle(.secondary)
             Table(selectedRomRows, selection: $selectedRomID, columnCustomization: $romColumnCustomization) {
                 TableColumn("") { row in
-                    romCell(Image(systemName: symbolName(for: row.entry.status)).foregroundStyle(tint(for: row.entry)), entry: row.entry)
+                    romCell(Image(systemName: symbolName(for: row.entry.status)).foregroundStyle(tint(for: row.entry.status)), status: row.entry.status)
                 }
                 .width(20)
                 .customizationID("status")
@@ -1426,22 +1440,22 @@ struct LibraryDetailView: View {
                     // reads as broken, so it gets an explicit placeholder
                     // instead. The expected name still lives in "Rom name".
                     if let fileName = row.entry.path?.lastPathComponent {
-                        romCell(Text(fileName), entry: row.entry)
+                        romCell(Text(fileName), status: row.entry.status)
                     } else {
-                        romCell(Text("— not found —").foregroundStyle(.secondary), entry: row.entry)
+                        romCell(Text("— not found —").foregroundStyle(.secondary), status: row.entry.status)
                     }
                 }
                 .customizationID("fileName")
                 TableColumn("Rom name") { row in
-                    romCell(Text(row.entry.name), entry: row.entry)
+                    romCell(Text(row.entry.name), status: row.entry.status)
                 }
                 .customizationID("romName")
                 TableColumn("Info") { row in
-                    romCell(Text(infoText(for: row.entry)), entry: row.entry)
+                    romCell(Text(infoText(for: row.entry)), status: row.entry.status)
                 }
                 .customizationID("info")
                 TableColumn("Size") { row in
-                    romCell(Text(sizeText(for: row.entry)), entry: row.entry)
+                    romCell(Text(sizeText(for: row.entry)), status: row.entry.status)
                 }
                 .customizationID("size")
                 // Used to be one combined "Crc/SHA-1" column that only ever
@@ -1452,11 +1466,11 @@ struct LibraryDetailView: View {
                 // Settings. Split into two real columns, matching the
                 // existing MD5 column's own pattern exactly.
                 TableColumn("CRC") { row in
-                    romCell(Text(row.entry.actualCRC ?? row.entry.expectedCRC ?? ""), entry: row.entry)
+                    romCell(Text(row.entry.actualCRC ?? row.entry.expectedCRC ?? ""), status: row.entry.status)
                 }
                 .customizationID("crc")
                 TableColumn("SHA-1") { row in
-                    romCell(Text(row.entry.actualSHA1 ?? row.entry.expectedSHA1 ?? ""), entry: row.entry)
+                    romCell(Text(row.entry.actualSHA1 ?? row.entry.expectedSHA1 ?? ""), status: row.entry.status)
                 }
                 .customizationID("sha1")
                 // `Table`'s column builder tops out at 10 columns per
@@ -1466,22 +1480,22 @@ struct LibraryDetailView: View {
                 // into their own group to fit.
                 Group {
                     TableColumn("Folder") { (row: RomRow) in
-                        romCell(Text(row.entry.path?.deletingLastPathComponent().lastPathComponent ?? ""), entry: row.entry)
+                        romCell(Text(row.entry.path?.deletingLastPathComponent().lastPathComponent ?? ""), status: row.entry.status)
                     }
                     .customizationID("folder")
                     .defaultVisibility(.hidden)
                     TableColumn("MD5") { (row: RomRow) in
-                        romCell(Text(row.entry.actualMD5 ?? row.entry.expectedMD5 ?? ""), entry: row.entry)
+                        romCell(Text(row.entry.actualMD5 ?? row.entry.expectedMD5 ?? ""), status: row.entry.status)
                     }
                     .customizationID("md5")
                     .defaultVisibility(.hidden)
                     TableColumn("Dump status") { (row: RomRow) in
-                        romCell(Text(dumpStatusText(for: row.entry)), entry: row.entry)
+                        romCell(Text(dumpStatusText(for: row.entry)), status: row.entry.status)
                     }
                     .customizationID("dumpStatus")
                     .defaultVisibility(.hidden)
                     TableColumn("Merge name") { (row: RomRow) in
-                        romCell(Text(row.entry.mergeName ?? ""), entry: row.entry)
+                        romCell(Text(row.entry.mergeName ?? ""), status: row.entry.status)
                     }
                     .customizationID("mergeName")
                     .defaultVisibility(.hidden)
@@ -1494,27 +1508,11 @@ struct LibraryDetailView: View {
     /// Wraps a cell in the row's status tint (a lighter background than the
     /// status icon color), RomCenter-style — green/yellow/red/gray rows at a
     /// glance instead of only the leading icon.
-    private func romCell(_ content: some View, entry: AuditEntry) -> some View {
+    private func romCell(_ content: some View, status: AuditStatus) -> some View {
         content
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
-            .background(tint(for: entry).opacity(0.18))
-    }
-
-    /// `tint(for: AuditStatus)`'s own per-entry override — jensyleo's own
-    /// request (2026-08-04): a "Not needed here" surplus file (see
-    /// `AuditEntry.requiredByGameDescription`'s own doc comment — genuinely
-    /// recognized content, just not needed by *this* archive under the
-    /// current merge mode) reads as yellow/"Incorrect" here instead of
-    /// gray/"Unrecognized", even though `entry.status` itself stays
-    /// `.surplus` — a plain hash-matches-nothing surplus file keeps the
-    /// original gray. Message-only change stays `.surplus` (see
-    /// `infoText(for:)`'s own doc comment); this is purely the color
-    /// following that same distinction, without inventing a real new
-    /// `AuditStatus` case.
-    private func tint(for entry: AuditEntry) -> Color {
-        if entry.status == .surplus, entry.requiredByGameDescription != nil { return tint(for: .incorrect) }
-        return tint(for: entry.status)
+            .background(tint(for: status).opacity(0.18))
     }
 
     private func infoText(for entry: AuditEntry) -> String {
@@ -1536,13 +1534,33 @@ struct LibraryDetailView: View {
         // exact wording here needs a real headered dump from one of those
         // systems to confirm it reads right in practice.
         case .correct: base = entry.matchedViaHeaderStrip ? "Ok (header removed to match)" : "Ok"
-        // `foundElsewhereArchiveName` set means this isn't really a naming
-        // mistake to go fix — the content is genuinely present, just
-        // somewhere else in the scan (another game's archive, a loose
-        // file, a different path) — jensyleo's own request (2026-08-04):
-        // reported as its own distinct, reassuring message rather than
-        // "Bad name", which implied a problem the user needs to act on.
-        case .incorrect: base = entry.foundElsewhereArchiveName.map { "Available in another game (\($0))" } ?? "Bad name"
+        // Three distinct reasons an entry reads `.incorrect`, checked in
+        // order from most to least specific:
+        // - `requiredByGameDescription` set: a *surplus* file (no expected
+        //   rom of its own — `game: nil`, see this field's own doc comment)
+        //   whose content is nonetheless fully identified as belonging to
+        //   a different game's own archive (e.g. a Split-mode clone's zip
+        //   still holding a rom its parent's archive actually wants).
+        //   jensyleo's own correction (2026-08-04): this used to stay
+        //   `.surplus`/"Unrecognized", which is wrong — "surplus" must mean
+        //   genuinely unknown, and this is the opposite: fully known,
+        //   just currently misplaced. The reverse relationship from
+        //   `foundElsewhereArchiveName` below ("no game *here* needs it,
+        //   someone else does" vs. "*this* game needs it, found
+        //   elsewhere") — worth its own message rather than reusing either.
+        // - `foundElsewhereArchiveName` set: this rom *is* expected by its
+        //   own game, and isn't really a naming mistake to go fix — the
+        //   content is genuinely present, just somewhere else in the scan
+        //   — jensyleo's own request (2026-08-04): its own distinct,
+        //   reassuring message rather than "Bad name", which implied a
+        //   problem the user needs to act on.
+        // - Neither: a genuine naming mismatch, "Bad name".
+        case .incorrect:
+            if let requiredBy = entry.requiredByGameDescription {
+                base = "Not needed here (required by \(requiredBy))"
+            } else {
+                base = entry.foundElsewhereArchiveName.map { "Available in another game (\($0))" } ?? "Bad name"
+            }
         // jensyleo's own definition (2026-08-04): a file genuinely sits in
         // this rom's own expected slot, but its CRC32/MD5/SHA doesn't
         // match — distinct from `.isBadDump` below (the DAT's own
@@ -1550,25 +1568,7 @@ struct LibraryDetailView: View {
         // ROMForge's own finding about the *local* file.
         case .badDump: base = "Bad (hash mismatch)"
         case .missing: base = "Missing"
-        // `.surplus` entries are always constructed with `game: nil` by
-        // `AuditReporter` (no real DAT game backs this exact row) — but the
-        // content itself can still be genuinely known.
-        // `requiredByGameDescription` (set only when the file's hash
-        // matches a rom *some* DAT game declares — jensyleo's own real
-        // case, 2026-08-04: a Split-mode clone's zip still physically
-        // holding a rom the DAT expects only in its parent's own archive)
-        // distinguishes that from actual junk that matches nothing in the
-        // DAT at all. Both stay gray/`.surplus` — this is a message
-        // refinement, not a new severity — but "Not needed here" is a very
-        // different, much less alarming fact than a bare "Unrecognized" for
-        // a file that's completely fine, just filed somewhere Split mode
-        // doesn't currently ask for it. Kept as its own case rather than
-        // reusing `.incorrect`'s "Available in another game" wording (from
-        // `.foundElsewhere`) — that one means "*this game* needs this rom,
-        // found elsewhere"; this means "no game here needs it, someone
-        // *else* does" — the reverse relationship, worth its own message.
-        case .surplus:
-            base = entry.requiredByGameDescription.map { "Not needed here (required by \($0))" } ?? "Unrecognized"
+        case .surplus: base = "Unrecognized"
         }
         if entry.isBadDump {
             // For every other status, a file DID get matched/found, so "(bad
@@ -1740,9 +1740,25 @@ struct LibraryDetailView: View {
     /// 4x per render (once per status button) was real, avoidable work.
     private nonisolated static func computeScopedStatusCounts(scopedEntries: [AuditEntry]) -> [AuditStatus: Int] {
         var entriesByGame: [String: [AuditEntry]] = [:]
+        var surplusByArchive: [String: [AuditEntry]] = [:]
         for entry in scopedEntries {
-            guard let game = entry.game else { continue }
-            entriesByGame[game, default: []].append(entry)
+            if let game = entry.game {
+                entriesByGame[game, default: []].append(entry)
+            } else {
+                let archiveName = entry.path?.lastPathComponent ?? entry.name
+                surplusByArchive[archiveName, default: []].append(entry)
+            }
+        }
+        // Same fold as `gameNodes(from:)`/`computeGameAggregateStatusByName()`
+        // — see either's own doc comment. Without it, a game whose only
+        // problem is a folded-in "Not needed here" file (now `.incorrect`,
+        // see `AuditEntry.requiredByGameDescription`) would count as
+        // "Correct" here while its own row reads yellow in the tree right
+        // next to this button.
+        for (archiveName, surplus) in surplusByArchive {
+            let matchingGame = (archiveName as NSString).deletingPathExtension
+            guard entriesByGame[matchingGame] != nil else { continue }
+            entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
         }
         var counts: [AuditStatus: Int] = [:]
         for entries in entriesByGame.values {
@@ -2342,9 +2358,35 @@ struct LibraryDetailView: View {
     private func computeGameAggregateStatusByName() -> [String: AuditStatus] {
         guard let entries = viewModel.auditReport?.entries else { return [:] }
         var byGame: [String: [AuditEntry]] = [:]
+        var surplusByArchive: [String: [AuditEntry]] = [:]
         for entry in entries {
-            guard let game = entry.game else { continue }
-            byGame[game, default: []].append(entry)
+            if let game = entry.game {
+                byGame[game, default: []].append(entry)
+            } else {
+                let archiveName = entry.path?.lastPathComponent ?? entry.name
+                surplusByArchive[archiveName, default: []].append(entry)
+            }
+        }
+        // Same fold `gameNodes(from:)` applies before building each row's
+        // own entries (see its own doc comment on why a surplus file
+        // inside a known game's archive belongs to that game, not a
+        // separate "Unknown game") — done here too, not just there, so a
+        // folded-in surplus file's status (e.g. a Split-mode clone's zip
+        // still holding a rom that's really the parent's — see
+        // `AuditEntry.requiredByGameDescription`) affects this game's
+        // aggregate identically whether the user is looking at "Database"
+        // (which reads straight from this dictionary) or a "Rom files"
+        // folder (which re-derives the same fold locally in `gameNodes`).
+        // Real bug found live by jensyleo (2026-08-04): without this,
+        // reclassifying that exact file from `.surplus` to `.incorrect`
+        // would have flipped a game's badge yellow in a folder view while
+        // leaving it green in "Database" for the identical underlying
+        // fact — the same class of view-disagreement chased all day
+        // already, just for a different field.
+        for (archiveName, surplus) in surplusByArchive {
+            let matchingGame = (archiveName as NSString).deletingPathExtension
+            guard byGame[matchingGame] != nil else { continue }
+            byGame[matchingGame, default: []].append(contentsOf: surplus)
         }
         return byGame.mapValues(Self.romOnlyGameCategory(for:))
     }

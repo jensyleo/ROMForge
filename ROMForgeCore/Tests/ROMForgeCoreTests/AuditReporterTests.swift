@@ -17,6 +17,27 @@ struct AuditReporterTests {
         )
     }
 
+    @Test("a surplus file with a requiredByGameDescription is reclassified .incorrect, not .surplus")
+    func surplusWithKnownOwnerIsIncorrectNotSurplus() {
+        // jensyleo's own correction (2026-08-04): "surplus" must mean
+        // genuinely unrecognized — a leftover file whose content is fully
+        // identified (it hash-matches a real rom some other DAT game
+        // declares, e.g. a Split-mode clone's zip still holding a rom its
+        // parent's archive actually wants) is the opposite of unknown, so
+        // it belongs in the same bucket as a misnamed rom, not "Unknown".
+        let recognized = SurplusFile(file: hashedFile(name: "s92_01.bin", size: 1), requiredByGameDescription: "Street Fighter II': Champion Edition")
+        let genuinelyUnknown = SurplusFile(file: hashedFile(name: "random.txt", size: 2))
+        let report = AuditReporter.generate(from: MatchReport(games: [], surplusFiles: [recognized, genuinelyUnknown]))
+
+        let recognizedEntry = report.entries.first { $0.name == "s92_01.bin" }
+        let unknownEntry = report.entries.first { $0.name == "random.txt" }
+        #expect(recognizedEntry?.status == .incorrect)
+        #expect(recognizedEntry?.requiredByGameDescription == "Street Fighter II': Champion Edition")
+        #expect(unknownEntry?.status == .surplus)
+        #expect(report.incorrect == 1)
+        #expect(report.surplus == 1)
+    }
+
     @Test("counts one entry per status and includes surplus files")
     func countsEachStatus() {
         let correctRom = DATRom(name: "correct.bin", size: 1, crc: nil, md5: nil, sha1: nil)
