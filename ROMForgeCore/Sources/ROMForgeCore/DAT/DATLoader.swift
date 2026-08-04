@@ -224,7 +224,11 @@ public enum DATLoader {
             // own doc comment for why this must never be derived from the
             // `games` list built just above (which, under `.merged`, has
             // every clone excluded from it by design).
-            hasClones: dataset.machines.contains { $0.cloneOf != nil }
+            hasClones: dataset.machines.contains { $0.cloneOf != nil },
+            // Same reasoning, for `ROMMatcher`'s own `isInClaimedArchive`
+            // check this time — see `DATFile.allMachineNames`'s own doc
+            // comment for the real cross-game "steal" bug this fixes.
+            allMachineNames: Set(dataset.machines.map { $0.name.lowercased() })
         )
     }
 

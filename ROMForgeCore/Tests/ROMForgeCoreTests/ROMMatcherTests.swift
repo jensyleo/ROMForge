@@ -422,4 +422,54 @@ struct ROMMatcherTests {
         let result = report.games.first { $0.game.name == "Correct Game" }!
         #expect(result.matches[0].status == .correct(ownArchiveFile))
     }
+
+    @Test("under Merged mode, an unrelated game never steals a rom from a clone's own (still-unrenamed) archive, even though Merged's own game list excludes that clone's name")
+    func mergedModeNeverStealsFromAClonesOwnUnrenamedArchive() throws {
+        // Real bug found live by jensyleo (2026-08-04): under `.merged`,
+        // `DATLoader`'s own game-list filter excludes every clone from
+        // `dat.games` entirely (folded into its parent's own entry — see
+        // `DATFile.hasClones`'s own doc comment). `ROMMatcher` used to
+        // derive `isInClaimedArchive`'s "which archive names are claimed"
+        // set directly from that same filtered `dat.games` — so a clone's
+        // own physical archive (e.g. `sf2acca.zip`, still sitting on disk
+        // unrenamed, exactly as most real collections keep it) read as
+        // *unclaimed*, purely because Merged mode's own list no longer
+        // mentions its name. A totally unrelated game's blank-socket
+        // placeholder rom (a common pattern across many unrelated bootleg
+        // boards: an unpopulated EPROM socket, byte-identical by sheer
+        // coincidence, not a real relationship) then matched via the
+        // renamed-unclaimed-archive fallback against whatever physically
+        // sits inside that clone's own archive — a nonsensical link
+        // between two completely unconnected games.
+        //
+        // `allMachineNames` (unlike `games`) still includes "sf2acca" here,
+        // exactly like `DATLoader` populates it from the *raw*,
+        // pre-layout-planning machine list — this is what keeps its own
+        // archive correctly "claimed" no matter which mode `games` itself
+        // was built under.
+        let parent = DATGame(
+            name: "sf2ce", description: "Street Fighter II': Champion Edition", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "own.bin", size: 500, crc: "12121212", md5: nil, sha1: "6666666666666666666666666666666666666666")]
+        )
+        let unrelated = DATGame(
+            name: "topcard", description: "Express Card / Top Card", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "missing.rom", size: 100, crc: "ffffffff", md5: nil, sha1: "7777777777777777777777777777777777777777")]
+        )
+        // "sf2acca" (the real clone) is deliberately absent from `games`
+        // here — reproducing exactly what Merged mode's own filter does —
+        // but present in `allMachineNames`, matching how `DATLoader`
+        // actually populates it.
+        let mergedDAT = DATFile(
+            header: dat.header, games: [parent, unrelated], mergeMode: .merged,
+            allMachineNames: ["sf2ce", "sf2acca", "topcard"]
+        )
+        // The clone's own real archive, still unrenamed, containing a file
+        // that just happens to share "missing.rom"'s exact blank-socket
+        // byte pattern — coincidence, not a real relationship.
+        let cloneArchiveFile = zipEntryHashedFile(archiveName: "sf2acca", entryName: "blank.bin", size: 100, crc: "ffffffff", sha1: "7777777777777777777777777777777777777777")
+        let report = try ROMMatcher.match(dat: mergedDAT, hashedFiles: [cloneArchiveFile])
+
+        let result = report.games.first { $0.game.name == "topcard" }!
+        #expect(result.matches[0].status == .missing)
+    }
 }

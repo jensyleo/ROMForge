@@ -53,8 +53,24 @@ private struct GameNode: Identifiable {
     /// entry with a local `path` names it. `nil` when nothing at all was
     /// found (every rom missing), matching ClrMamePro/RomCenter's own
     /// scanner view, which leaves this blank rather than guessing.
+    ///
+    /// Real bug found live by jensyleo (2026-08-04, Merged mode): an
+    /// entry's `path` doesn't always mean "this is *my* archive" — a
+    /// `.foundElsewhere` rom's `path` is where its content was *borrowed*
+    /// from (see `foundElsewhereArchiveName`'s own doc comment), and a
+    /// folded-in surplus entry that turned out to belong to another game
+    /// (`requiredByGameDescription`) points at *that* game's archive, not
+    /// this one's. Taking the first `path != nil` entry unconditionally
+    /// picked up one of those borrowed paths whenever a game's every real
+    /// rom was genuinely missing — several completely unrelated bootleg/
+    /// gambling machines (e.g. "Express Card / Top Card", sharing nothing
+    /// with Street Fighter beyond an identical blank/padding rom) all
+    /// showed a misleading "File Name" of `sf2acc.zip`/`sf2accp2.zip`,
+    /// implying they physically live in an archive they've never touched.
+    /// Both borrowed-path cases are excluded — only a path this game
+    /// genuinely, verifiably owns counts.
     var actualFileName: String? {
-        entries.first(where: { $0.path != nil })?.path?.lastPathComponent
+        entries.first { $0.path != nil && $0.foundElsewhereArchiveName == nil && $0.requiredByGameDescription == nil }?.path?.lastPathComponent
     }
 
     /// The DAT's own human-readable name (its `<description>`, e.g.

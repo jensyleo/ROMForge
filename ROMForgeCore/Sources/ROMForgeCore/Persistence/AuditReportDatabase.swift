@@ -33,7 +33,7 @@ public enum AuditReportDatabaseError: Error, Equatable, CustomStringConvertible 
 /// (matching SQLite's own recommended usage for infrequent, non-contended
 /// access) rather than held open for the object's lifetime.
 public final class AuditReportDatabase {
-    private static let currentSchemaVersion: Int32 = 7
+    private static let currentSchemaVersion: Int32 = 8
 
     private let path: String
 
@@ -410,6 +410,19 @@ public final class AuditReportDatabase {
         // re-derives it correctly, so the stale rows have to go the same
         // way the v5 rows did below — the unconditional wipe there already
         // covers this bump too, nothing further to add here.
+        // Schema v8 (2026-08-04, same day again): another no-new-column
+        // bump, same reason as v7 — `ROMMatcher`'s own `isInClaimedArchive`
+        // check used to derive "which archive names are claimed" from the
+        // Merged-mode-*filtered* `dat.games` instead of the DAT's raw
+        // machine list (`DATFile.allMachineNames`, added this same round —
+        // see its own doc comment), so a clone's own still-unrenamed
+        // archive (e.g. `sf2acca.zip`) read as unclaimed under Merged
+        // mode, letting a completely unrelated bootleg game's coincidental
+        // blank-socket placeholder rom match against it. Rows saved before
+        // this fix carry that same wrong link (and the resulting
+        // misleading "File Name" the UI derived from it) — only a fresh
+        // rescan re-derives them correctly.
+        //
         // Also discard every stored verdict when arriving at v5 (not just add
         // the column): the same 2026-08-04 round of fixes changed what
         // `ROMMatcher` itself concludes — a clone the user doesn't own no

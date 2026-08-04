@@ -93,7 +93,16 @@ public enum ROMMatcher {
         // Restricting fallback to unclaimed archives only detects that
         // ("Bad file name") without reopening the door to false steals
         // between two archives that both happen to be real game names.
-        let allGameNames = Set(dat.games.map { $0.name.lowercased() })
+        //
+        // Read from `dat.allMachineNames` (the *raw*, pre-layout-planning
+        // machine list), not derived from `dat.games` here — real bug
+        // found live by jensyleo (2026-08-04, Merged mode): see
+        // `DATFile.allMachineNames`'s own doc comment for the exact
+        // cross-game "steal" this caused (a clone's own still-unrenamed
+        // archive, e.g. `sf2acca.zip`, read as *unclaimed* purely because
+        // Merged mode's own `dat.games` excludes every clone by design —
+        // reopening the door this check exists to keep shut).
+        let allGameNames = dat.allMachineNames
         // Un-merged means every game's own archive must be fully
         // self-contained, full stop — jensyleo's own definition
         // (2026-07-28): a game must never "need" a rom that actually lives

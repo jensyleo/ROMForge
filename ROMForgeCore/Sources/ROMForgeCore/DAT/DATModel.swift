@@ -172,11 +172,36 @@ public struct DATFile: Equatable, Sendable, Codable {
     /// mode-dependent filtering, so it's correct no matter which mode the
     /// resulting `DATFile` itself was built under.
     public let hasClones: Bool
+    /// Every machine name in the *original*, pre-layout-planning dataset
+    /// (lowercased), independent of `mergeMode` — same pattern, and same
+    /// real reason, as `hasClones` right above. Real bug found live by
+    /// jensyleo (2026-08-04, Merged mode): `ROMMatcher`'s own
+    /// `isInClaimedArchive` check (guards its renamed-unclaimed-archive
+    /// fallback from stealing content between two archives that both
+    /// happen to be real game names) used to derive its "which archive
+    /// names are claimed" set from `DATFile.games.map(\.name)` directly —
+    /// but under `.merged`, that list has every *clone* excluded entirely
+    /// (folded into its parent's own entry). A clone's own physical
+    /// archive (e.g. `sf2acca.zip`, still sitting on disk unrenamed) then
+    /// read as *unclaimed* purely because Merged mode's own list no longer
+    /// mentions its name — reopening the exact cross-game "steal" problem
+    /// that check exists to prevent: a completely unrelated bootleg/
+    /// gambling machine's blank-socket placeholder rom ("missing.rom",
+    /// byte-identical across dozens of unrelated boards by sheer
+    /// coincidence — an unpopulated EPROM socket) matched against whatever
+    /// physically occupies that same byte pattern inside `sf2acca.zip`,
+    /// reporting a nonsensical relationship between two totally
+    /// unconnected games. Defaults to empty for a Logiqx/software-list
+    /// `DATFile` (no merge-mode clone-exclusion concept exists there at
+    /// all — every caller of this initializer for those formats already
+    /// passes the *same* set as `games`' own names, so nothing is lost).
+    public let allMachineNames: Set<String>
 
-    public init(header: DATHeader, games: [DATGame], mergeMode: SetMergeMode? = nil, hasClones: Bool = false) {
+    public init(header: DATHeader, games: [DATGame], mergeMode: SetMergeMode? = nil, hasClones: Bool = false, allMachineNames: Set<String>? = nil) {
         self.header = header
         self.games = games
         self.mergeMode = mergeMode
         self.hasClones = hasClones
+        self.allMachineNames = allMachineNames ?? Set(games.map { $0.name.lowercased() })
     }
 }
