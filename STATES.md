@@ -133,6 +133,21 @@ Vale la pena documentar este caso con detalle porque expone, en un solo ejemplo 
 
 **Error propio corregido en vivo:** en un primer análisis afirmé que `qsound.zip` no existía en la colección del usuario en absoluto — basado en solo haber mirado la carpeta `CPS1`. jensyleo señaló correctamente que sí existía, y en efecto estaba en `CPS2`. Esto es la prueba práctica de por qué `requiredByGameDescription` debe buscarse contra **todo el escaneo combinado** (todas las carpetas del sistema), nunca contra una sola carpeta aislada — exactamente el diseño ya implementado (§3c), solo confirmado aquí con un caso real de gran escala (25+ copias redundantes de un mismo archivo).
 
+### 3e. "Unknown game" (gris) vs. archivo sobrante ya identificado (amarillo) — caso Merged
+
+**Pregunta real de jensyleo (04-ago-2026):** bajo Merged, un clon (ej. `sf2acca.zip`) queda **excluido por completo** de `dat.games` (se pliega en su padre) — así que su archivo físico, aunque el matcher identifica correctamente todo su contenido (ver §3c/3d), no tiene ningún juego real al que plegarse en la lista izquierda. Antes de esta corrección, esto SIEMPRE se mostraba como "Unknown game" gris — aunque el panel derecho, fila por fila, ya mostrara cada rom en amarillo "Not needed here". Gris y amarillo contradiciéndose para el mismo contenido exacto.
+
+**Regla decidida:** "Unknown game" (gris) debe significar honestamente *"no tengo ninguna idea de qué es esto"*. Si **todas** las entradas de un archivo sobrante tienen `requiredByGameDescription` (es decir, el matcher identificó a qué juego real le pertenece cada una), el bucket completo se reclasifica:
+
+| Situación | Color | Texto |
+|---|---|---|
+| Al menos una entrada genuinamente irreconocible | ⚪️ Gris, `.surplus` | "Unknown game" |
+| **Todas** las entradas identificadas (`requiredByGameDescription` en todas) | 🟡 Amarillo, `.incorrect` | "Extra archive, not needed here (required by `<juego>`)" |
+
+Controlado por el toggle correspondiente a su color real: un bucket reclasificado amarillo responde al toggle "Incorrect", no al toggle separado "Unknown" — y el conteo "Unknown: N" del encabezado ya no lo cuenta (contradiría su propio color).
+
+**Límite conocido, aceptado por ahora:** este bucket reclasificado NO se suma al conteo "Incorrect: N" del encabezado (esa cuenta se construye por juego real vía `dat.games`, y este archivo no tiene ninguno bajo Merged) — solo cambia lo que ves en la fila y en el toggle de visibilidad. Documentado aquí para no olvidarlo si se decide cerrarlo por completo más adelante.
+
 ---
 
 ## 4. Nivel 3 — Estado agregado del juego (fila de la lista izquierda)

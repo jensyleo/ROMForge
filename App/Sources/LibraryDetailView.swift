@@ -108,7 +108,18 @@ private struct GameNode: Identifiable {
     ///   entries within the archive instead.
     var infoText: String {
         guard let aggregateStatus else { return "Not scanned yet" }
-        guard !isSurplusBucket else { return "Unknown game" }
+        guard !isSurplusBucket else {
+            // jensyleo's own question (2026-08-04, Merged mode): see
+            // `gameNodes(from:)`'s own `isFullyIdentified` doc comment —
+            // an archive with no `dat.games` entry of its own (a clone
+            // folded into its parent) but whose entire content is
+            // nonetheless fully identified elsewhere reads as its own
+            // distinct message, not the genuinely-unknown default.
+            guard aggregateStatus == .incorrect, let requiredBy = entries.first?.requiredByGameDescription else {
+                return "Unknown game"
+            }
+            return "Extra archive, not needed here (required by \(requiredBy))"
+        }
         // Real bug found live by jensyleo (2026-08-04): this used to
         // re-derive its own answer from raw `entries` independently of
         // `aggregateStatus` — e.g. unconditionally checking
@@ -1816,7 +1827,13 @@ struct LibraryDetailView: View {
     /// count backing that very toggle's label would read 0 the moment the
     /// toggle is off, which is exactly backwards.
     private nonisolated static func computeUnknownArchivesCount(baseNodes: [GameNode]) -> Int {
-        baseNodes.filter(\.isSurplusBucket).count
+        // Excludes a surplus bucket `gameNodes(from:)` reclassified yellow
+        // (`.incorrect`, "Extra archive, not needed here…") — jensyleo's
+        // own question (2026-08-04): counting a *fully identified* archive
+        // under "Unknown" would contradict its own yellow color the moment
+        // it's shown; genuinely unrecognized content (`.surplus`) is the
+        // only thing this count is meant to mean.
+        baseNodes.filter { $0.isSurplusBucket && $0.aggregateStatus == .surplus }.count
     }
 
     /// Groups entries by game and buckets game-less (surplus) entries into
@@ -2018,12 +2035,28 @@ struct LibraryDetailView: View {
             return nodes
         }
         for archiveName in surplusOrder {
+            let bucketEntries = surplusByArchive[archiveName] ?? []
+            // jensyleo's own question (2026-08-04, Merged mode): a clone
+            // excluded from `dat.games` entirely (folded into its parent —
+            // e.g. `sf2acca.zip`, a real archive `allMachineNames` now
+            // correctly protects from cross-game theft, but which still
+            // has no `dat.games` entry of its own to fold this bucket
+            // into) reads as gray "Unknown game" even when every single
+            // one of its own entries is fully identified as belonging to
+            // a real game elsewhere (`requiredByGameDescription` — see its
+            // own doc comment). Gray/"Unknown" should mean genuinely no
+            // idea what this is; this archive's content is the opposite
+            // of that, so it reads yellow/`.incorrect` instead, same as
+            // the individual per-file rows already do — never both a
+            // gray game-level row and yellow file-level rows for the
+            // identical, fully-known content.
+            let isFullyIdentified = !bucketEntries.isEmpty && bucketEntries.allSatisfy { $0.requiredByGameDescription != nil }
             roots.append(
                 GameNode(
                     id: "surplus-\(archiveName)",
                     name: archiveName,
-                    entries: surplusByArchive[archiveName] ?? [],
-                    aggregateStatus: .surplus,
+                    entries: bucketEntries,
+                    aggregateStatus: isFullyIdentified ? .incorrect : .surplus,
                     isSurplusBucket: true
                 )
             )
@@ -2147,7 +2180,17 @@ struct LibraryDetailView: View {
                 isFolderScoped: false
             )
             .filter { node in
-                    if node.isSurplusBucket { return showUnknownArchives }
+                    // A surplus bucket `gameNodes(from:)` reclassified
+                    // yellow (`.incorrect`, fully identified elsewhere —
+                    // see its own `isFullyIdentified` doc comment) is
+                    // controlled by that color's own "Incorrect" toggle,
+                    // same as every other yellow row — jensyleo's own
+                    // question (2026-08-04): only a *genuinely*
+                    // unrecognized bucket (`.surplus`) belongs to the
+                    // separate "Unknown" toggle at all.
+                    if node.isSurplusBucket {
+                        return node.aggregateStatus == .surplus ? showUnknownArchives : activeStatusFilters.contains(node.aggregateStatus ?? .surplus)
+                    }
                     guard let category = gameAggregateStatusByName[node.name] ?? node.aggregateStatus else { return true }
                     return activeStatusFilters.contains(category)
                 }
@@ -2355,7 +2398,15 @@ struct LibraryDetailView: View {
             // of the four real categories at all — it always shows,
             // independent of any toggle (see `computeScopedStatusCounts()`'s
             // own doc comment for why it isn't counted under "Bad" either).
-            if node.isSurplusBucket { return showUnknownArchives }
+            // A surplus bucket `gameNodes(from:)` reclassified yellow
+            // instead (`.incorrect`, fully identified elsewhere — see its
+            // own `isFullyIdentified` doc comment) is controlled by that
+            // color's own "Incorrect" toggle — jensyleo's own question
+            // (2026-08-04): only a genuinely unrecognized bucket belongs
+            // to the separate "Unknown" toggle at all.
+            if node.isSurplusBucket {
+                return node.aggregateStatus == .surplus ? showUnknownArchives : activeStatusFilters.contains(node.aggregateStatus ?? .surplus)
+            }
             guard let category = gameAggregateStatusByName[node.name] ?? node.aggregateStatus else { return true }
             return activeStatusFilters.contains(category)
         }
