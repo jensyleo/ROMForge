@@ -98,14 +98,13 @@ private struct GameNode: Identifiable {
         // `aggregateStatus` — e.g. unconditionally checking
         // `entries.contains { $0.status == .missing }` for "Incomplete".
         // `aggregateStatus` is the authoritative, scope-aware status (in a
-        // "Rom files" folder, it deliberately excludes `.missing` roms
-        // that live outside this folder — see `gameNodes(from:)`'s own
-        // `categoryRespectingFolderScope(_:)`), so re-deriving separately
-        // here could disagree with the very icon/color sitting right next
-        // to this text: a game showing a green "Ok" checkmark (correctly
-        // ignoring an elsewhere-missing CHD/rom in folder view) still said
-        // "Incomplete…" right beside it. Switching on `aggregateStatus`
-        // directly keeps the icon and this text in permanent agreement.
+        // "Rom files" folder it's computed from that folder's own entries —
+        // see `gameNodes(from:)`'s own `trueStatus`), so re-deriving
+        // separately here could disagree with the very icon/color sitting
+        // right next to this text — a game showing a green "Ok" checkmark
+        // while the text beside it read "Incomplete…". Switching on
+        // `aggregateStatus` directly keeps the icon and this text in
+        // permanent agreement.
         //
         // A disk row's own entries are already disk-only (`isDiskRow`,
         // never mixed with this game's roms) — a plain status readout is
@@ -663,7 +662,7 @@ struct LibraryDetailView: View {
                     gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
                 )
                 let nodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters)
-                let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, isFolderScoped: folder != nil)
+                let counts = Self.computeScopedStatusCounts(scopedEntries: scoped)
                 let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
                 await MainActor.run {
                     // Guards against out-of-order completion, not just
@@ -1718,7 +1717,7 @@ struct LibraryDetailView: View {
     /// independent passes a separate `scopedStatusCount(_:)` per button
     /// used to do — on a ~188k-entry collection, redoing that scan/group
     /// 4x per render (once per status button) was real, avoidable work.
-    private nonisolated static func computeScopedStatusCounts(scopedEntries: [AuditEntry], isFolderScoped: Bool) -> [AuditStatus: Int] {
+    private nonisolated static func computeScopedStatusCounts(scopedEntries: [AuditEntry]) -> [AuditStatus: Int] {
         var entriesByGame: [String: [AuditEntry]] = [:]
         for entry in scopedEntries {
             guard let game = entry.game else { continue }
@@ -1726,20 +1725,16 @@ struct LibraryDetailView: View {
         }
         var counts: [AuditStatus: Int] = [:]
         for entries in entriesByGame.values {
-            // Same "Missing" rule as `gameNodes(from:)`'s own
-            // `categoryRespectingFolderScope(_:)` — jensyleo's own
-            // definition (2026-08-04): the "Missing" count/toggle itself
-            // must only ever reflect the "Database" view, never a "Rom
-            // files" folder, so these two counts (the button, and the
-            // category actually applied to each row) can never disagree.
-            let categoryEntries: [AuditEntry]
-            if isFolderScoped {
-                let nonMissing = entries.filter { $0.status != .missing }
-                categoryEntries = nonMissing.isEmpty ? entries : nonMissing
-            } else {
-                categoryEntries = entries
-            }
-            counts[romOnlyGameCategory(for: categoryEntries), default: 0] += 1
+            // No folder-scope special case: "Missing" counts the same way in
+            // a "Rom files" folder as in "Database" — jensyleo's own
+            // correction (2026-08-04), reversing his earlier "Missing is
+            // Database-only" rule after it turned out to be the wrong call.
+            // `scoped(_:)` has already narrowed `scopedEntries` to games that
+            // genuinely own at least one real file *in this folder*, so a
+            // `.missing` rom reaching here always belongs to a set this
+            // folder really is part of — an incomplete set the user can
+            // actually act on, which is exactly when it should read red.
+            counts[romOnlyGameCategory(for: entries), default: 0] += 1
         }
         // A genuinely unrecognized archive ("Unknown game") isn't counted
         // under "Bad" (`.badDump`) at all — "Bad" means *known* games with
@@ -1867,23 +1862,6 @@ struct LibraryDetailView: View {
         }
         surplusOrder.removeAll { surplusByArchive[$0] == nil }
 
-        // jensyleo's own definition (2026-08-04): "Missing" as a game-level
-        // category/color must only ever appear in the "Database" view — a
-        // "Rom files" folder is about auditing what's physically *in this
-        // folder*, and a rom (or CHD) this game is missing everywhere (or
-        // just outside this folder) isn't this folder's own problem to
-        // report red for; that's a "do I own the whole set" question the
-        // Database view already answers. Folder-scoped, `.missing` entries
-        // are excluded before computing the category at all — a game
-        // 3-of-5 present in this folder shows whatever its 3 *actually
-        // here* roms warrant (Bad/Incorrect/Correct), never red — the
-        // individual missing rom rows still list in the detail pane on the
-        // right, so the user can still see exactly what's absent.
-        func categoryRespectingFolderScope(_ entries: [AuditEntry]) -> AuditStatus {
-            guard isFolderScoped else { return gameCategory(for: entries) }
-            let nonMissing = entries.filter { $0.status != .missing }
-            return gameCategory(for: nonMissing.isEmpty ? entries : nonMissing)
-        }
 
         var roots = gameOrder.flatMap { name -> [GameNode] in
             let entries = entriesByGame[name] ?? []
@@ -1897,7 +1875,7 @@ struct LibraryDetailView: View {
             // deliberately rom-only now) since the whole point here is to
             // reproduce how it used to look, mixed status and all.
             if combineRomAndCHD {
-                return [GameNode(id: "game-\(name)", name: name, entries: entries, aggregateStatus: categoryRespectingFolderScope(entries))]
+                return [GameNode(id: "game-\(name)", name: name, entries: entries, aggregateStatus: gameCategory(for: entries))]
             }
 
             // Split into up to two independent rows — jensyleo's own
@@ -1909,7 +1887,7 @@ struct LibraryDetailView: View {
             // missing (or vice versa). Most games have only roms (no
             // `isDisk` entries at all) and still get exactly one row, same
             // as before.
-            let diskStatus = diskEntries.isEmpty ? nil : categoryRespectingFolderScope(diskEntries)
+            let diskStatus = diskEntries.isEmpty ? nil : gameCategory(for: diskEntries)
 
             var nodes: [GameNode] = []
             // Real bug found live by jensyleo (2026-08-04): a missing rom
@@ -1946,23 +1924,22 @@ struct LibraryDetailView: View {
                 // tree side; reused here so the tree and this table can never
                 // disagree again — it's already rom-only, matching `romEntries`.
                 //
-                // EXCEPT in a "Rom files" folder — jensyleo's own definition
-                // (2026-08-04): "Missing" as a game-level category/color must
-                // only ever appear in the "Database" view. A folder view is
-                // about auditing what's physically *in this folder* — a rom
-                // this same game is missing everywhere (or even just outside
-                // this folder) isn't this folder's problem to report red for;
-                // that's a "do I own the whole set" question the Database
-                // view already answers. So folder-scoped, `gameAggregateStatusByName`
-                // (the DAT-wide truth) is deliberately NOT consulted, and
-                // `.missing` entries are excluded before computing the
-                // category at all — a game 3-of-5 present in this folder
-                // shows whatever its 3 *actually here* roms warrant (Bad/
-                // Incorrect/Correct), never red, even though the individual
-                // missing rom rows still list in the detail pane on the
-                // right so the user can still see exactly what's absent.
+                // In a "Rom files" folder the aggregate comes from this
+                // folder's own `romEntries` instead of `gameAggregateStatusByName`
+                // (the DAT-wide truth) — NOT to suppress "Missing" (jensyleo
+                // corrected that rule on 2026-08-04: Missing must show red in
+                // a folder view too, whenever it genuinely applies), but
+                // because a system can have several "Rom files" folders and
+                // `scoped(_:)` has already dropped the roms this game keeps in
+                // a *different* one. Consulting the DAT-wide aggregate here
+                // would paint a game red in folder A purely because part of
+                // its set legitimately lives in folder B. What survives
+                // scoping is exactly the right input: roms genuinely here,
+                // plus roms genuinely missing everywhere — so an incomplete
+                // set this folder really is part of does read red, and a set
+                // merely split across folders doesn't.
                 let trueStatus = isFolderScoped
-                    ? categoryRespectingFolderScope(romEntries)
+                    ? gameCategory(for: romEntries)
                     : gameAggregateStatusByName[name] ?? gameCategory(for: romEntries)
                 nodes.append(GameNode(id: "game-\(name)", name: name, entries: romEntries, aggregateStatus: trueStatus))
             }
@@ -2060,7 +2037,7 @@ struct LibraryDetailView: View {
             gamesInFolder: cachedGamesInFolder, gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD
         )
         cachedGameNodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: gameAggregateStatusByName, showUnknownArchives: showUnknownArchives, activeStatusFilters: activeStatusFilters)
-        cachedScopedStatusCounts = Self.computeScopedStatusCounts(scopedEntries: scopedEntries, isFolderScoped: selectedRomFolder != nil)
+        cachedScopedStatusCounts = Self.computeScopedStatusCounts(scopedEntries: scopedEntries)
         cachedUnknownArchivesCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
     }
 
