@@ -103,6 +103,30 @@ Implementado en `ROMMatcher.match`'s `romsByHash`/`requiredByGameDescription` (i
 
 **Corregido:** la comprobación de existencia ahora usa el catálogo real del DAT (`gamesByName`, derivado de `viewModel.preloadedGames` — todos los juegos que el DAT declara, sin importar si el escaneo produjo alguna entrada suya) en los tres lugares, en vez del resultado del escaneo. Además, cada `GameNode` ahora recibe `sourceGame` (el `DATGame` real) como respaldo para su título — así un juego sin ninguna entrada propia con `gameDescription` (como este caso) sigue mostrando su descripción real ("QSound (HLE)") en vez de su nombre interno crudo ("qsound_hle").
 
+### 3d. Caso de estudio completo: `qsound` / `qsound_hle` (chip de sonido compartido entre decenas de juegos)
+
+Vale la pena documentar este caso con detalle porque expone, en un solo ejemplo real, exactamente para qué existe todo lo de §3c — y porque el propio jensyleo detectó en vivo una afirmación incorrecta mía sobre él (04-ago-2026), que quedó corregida abajo.
+
+**Los hechos reales de la colección** (mame0288.DAT + carpetas `CAPCOM/CPS1` y `CAPCOM/CPS2`):
+
+- `qsound` es la máquina "padre" — el chip de sonido QSound de Capcom en sí, declarado en el DAT con su propia rom `dl-1425.bin` (sin `merge=`, es la copia "original" de referencia).
+- `qsound_hle` es una máquina de DISPOSITIVO separada (`isdevice="yes"`, `romof="qsound"`) — la emulación HLE del mismo chip. Declara la MISMA rom, pero con `merge="dl-1425.bin"`: MAME dice explícitamente "esta es la misma rom que la del padre, no la dupliques".
+- Docenas de juegos reales de CPS1 y CPS2 (`1941`, `dino`, `punisher`, `wof`, `19xx`, `avsp`, `xmvsf`, `mvsc`, `ssf2`, `sfa`, etc. — cualquier juego que use el chip QSound) tienen, cada uno, su **propia copia física** de `dl-1425.bin` dentro de su propio `.zip` — así es como se distribuyen los romsets "todo incluido"/Un-merged que la gente descarga.
+- **Solo `qsound.zip`** (ubicado en la carpeta `CPS2`, no en `CPS1`) existe como archivo dedicado exclusivamente a la máquina `qsound`.
+
+**Verificado byte a byte:** el `dl-1425.bin` dentro de `qsound_hle.zip` (CPS1) y el de `qsound.zip` (CPS2) son idénticos (mismo MD5, `108b113a...`) — es literalmente el mismo archivo, repetido en más de 25 sitios distintos de la colección.
+
+**Bajo Split, escaneando CPS1 + CPS2 juntos** (como estarían configuradas para un mismo sistema):
+
+| Archivo | `dl-1425.bin` reporta |
+|---|---|
+| `qsound.zip` (CPS2) | 🟢 `.correct` — aquí SÍ es su hogar declarado |
+| `qsound_hle.zip` (CPS1) | 🟡 "Not needed here (required by QSound)" |
+| `wof.zip`, `dino.zip`, `punisher.zip` (CPS1) | 🟡 "Not needed here (required by QSound)" |
+| `19xx.zip`, `avsp.zip`, `xmvsf.zip`, `mvsc.zip`, `ssf2.zip`, `sfa.zip`... (CPS2, 20+ más) | 🟡 "Not needed here (required by QSound)" |
+
+**Error propio corregido en vivo:** en un primer análisis afirmé que `qsound.zip` no existía en la colección del usuario en absoluto — basado en solo haber mirado la carpeta `CPS1`. jensyleo señaló correctamente que sí existía, y en efecto estaba en `CPS2`. Esto es la prueba práctica de por qué `requiredByGameDescription` debe buscarse contra **todo el escaneo combinado** (todas las carpetas del sistema), nunca contra una sola carpeta aislada — exactamente el diseño ya implementado (§3c), solo confirmado aquí con un caso real de gran escala (25+ copias redundantes de un mismo archivo).
+
 ---
 
 ## 4. Nivel 3 — Estado agregado del juego (fila de la lista izquierda)
