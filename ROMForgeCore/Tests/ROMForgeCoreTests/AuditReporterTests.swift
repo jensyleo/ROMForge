@@ -18,7 +18,7 @@ struct AuditReporterTests {
     }
 
     @Test("a surplus file with a requiredByGameDescription is reclassified .incorrect, not .surplus")
-    func surplusWithKnownOwnerIsIncorrectNotSurplus() {
+    func surplusWithKnownOwnerIsIncorrectNotSurplus() throws {
         // jensyleo's own correction (2026-08-04): "surplus" must mean
         // genuinely unrecognized — a leftover file whose content is fully
         // identified (it hash-matches a real rom some other DAT game
@@ -27,7 +27,7 @@ struct AuditReporterTests {
         // it belongs in the same bucket as a misnamed rom, not "Unknown".
         let recognized = SurplusFile(file: hashedFile(name: "s92_01.bin", size: 1), requiredByGameDescription: "Street Fighter II': Champion Edition")
         let genuinelyUnknown = SurplusFile(file: hashedFile(name: "random.txt", size: 2))
-        let report = AuditReporter.generate(from: MatchReport(games: [], surplusFiles: [recognized, genuinelyUnknown]))
+        let report = try AuditReporter.generate(from: MatchReport(games: [], surplusFiles: [recognized, genuinelyUnknown]))
 
         let recognizedEntry = report.entries.first { $0.name == "s92_01.bin" }
         let unknownEntry = report.entries.first { $0.name == "random.txt" }
@@ -39,7 +39,7 @@ struct AuditReporterTests {
     }
 
     @Test("counts one entry per status and includes surplus files")
-    func countsEachStatus() {
+    func countsEachStatus() throws {
         let correctRom = DATRom(name: "correct.bin", size: 1, crc: nil, md5: nil, sha1: nil)
         let incorrectRom = DATRom(name: "expected.bin", size: 2, crc: nil, md5: nil, sha1: nil)
         let missingRom = DATRom(name: "missing.bin", size: 3, crc: nil, md5: nil, sha1: nil)
@@ -56,7 +56,7 @@ struct AuditReporterTests {
             surplusFiles: [SurplusFile(file: hashedFile(name: "extra.bin", size: 99))]
         )
 
-        let report = AuditReporter.generate(from: matchReport)
+        let report = try AuditReporter.generate(from: matchReport)
 
         #expect(report.correct == 1)
         #expect(report.incorrect == 1)
@@ -88,7 +88,7 @@ struct AuditReporterTests {
             surplusFiles: [SurplusFile(file: surplus)]
         )
 
-        let report = AuditReporter.generate(from: matchReport)
+        let report = try AuditReporter.generate(from: matchReport)
 
         let correctEntry = try #require(report.entries.first { $0.status == .correct })
         #expect(correctEntry.expectedCRC == "deadbeef")
@@ -113,7 +113,7 @@ struct AuditReporterTests {
             surplusFiles: []
         )
 
-        let report = AuditReporter.generate(from: matchReport)
+        let report = try AuditReporter.generate(from: matchReport)
         let entry = try #require(report.entries.first)
         #expect(entry.cloneOf == "Parent Game")
     }
@@ -134,7 +134,7 @@ struct AuditReporterTests {
             surplusFiles: [SurplusFile(file: hashedFile(name: "extra.bin", size: 1))]
         )
 
-        let report = AuditReporter.generate(from: matchReport)
+        let report = try AuditReporter.generate(from: matchReport)
 
         let goodEntry = try #require(report.entries.first { $0.name == "good.bin" })
         #expect(goodEntry.hasCHD == true)
@@ -150,8 +150,8 @@ struct AuditReporterTests {
     }
 
     @Test("an empty match report yields an all-zero audit")
-    func emptyReportYieldsZeroCounts() {
-        let report = AuditReporter.generate(from: MatchReport(games: [], surplusFiles: []))
+    func emptyReportYieldsZeroCounts() throws {
+        let report = try AuditReporter.generate(from: MatchReport(games: [], surplusFiles: []))
 
         #expect(report.entries.isEmpty)
         #expect(report.correct == 0)

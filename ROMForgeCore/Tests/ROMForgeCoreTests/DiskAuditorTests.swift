@@ -21,7 +21,7 @@ struct DiskAuditorTests {
     /// four different Street Fighter III 3rd Strike clones, in the real
     /// case that surfaced this.
     @Test("multiple clones declaring the identical disk (same name+sha1) produce only one audit entry")
-    func dedupesIdenticalDiskAcrossClones() {
+    func dedupesIdenticalDiskAcrossClones() throws {
         let sharedDisk = DATDisk(name: "cap-sf3-3", sha1: "1111111111111111111111111111111111111111")
         let dat = DATFile(
             header: header(),
@@ -32,14 +32,14 @@ struct DiskAuditorTests {
             ]
         )
 
-        let entries = DiskAuditor.audit(dat: dat, chdFiles: [])
+        let entries = try DiskAuditor.audit(dat: dat, chdFiles: [])
         #expect(entries.count == 1)
         #expect(entries[0].game == "sfiii")
         #expect(entries[0].status == .missing)
     }
 
     @Test("clones that declare genuinely different disks (different sha1) each get their own entry")
-    func doesNotDedupeGenuinelyDifferentDisks() {
+    func doesNotDedupeGenuinelyDifferentDisks() throws {
         let dat = DATFile(
             header: header(),
             games: [
@@ -54,18 +54,18 @@ struct DiskAuditorTests {
             ]
         )
 
-        let entries = DiskAuditor.audit(dat: dat, chdFiles: [])
+        let entries = try DiskAuditor.audit(dat: dat, chdFiles: [])
         #expect(entries.count == 2)
         #expect(Set(entries.map(\.name)) == ["cap-33s-1", "cap-33s-2"])
     }
 
     @Test("every disk entry is marked isDisk")
-    func marksEveryEntryAsDisk() {
+    func marksEveryEntryAsDisk() throws {
         let dat = DATFile(
             header: header(),
             games: [DATGame(name: "g", description: "G", cloneOf: nil, romOf: nil, roms: [], disks: [DATDisk(name: "g", sha1: nil)])]
         )
-        let entries = DiskAuditor.audit(dat: dat, chdFiles: [])
+        let entries = try DiskAuditor.audit(dat: dat, chdFiles: [])
         #expect(entries.allSatisfy { $0.isDisk })
     }
 }

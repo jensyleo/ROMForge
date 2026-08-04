@@ -27,7 +27,16 @@ public enum DiskAuditor {
     ///   `FileHasher`/`CollectionHasher`, since a CHD's own hash has no
     ///   relationship to a `DATRom`'s CRC/MD5/SHA1 and matching it there
     ///   would only ever produce a false "surplus" result.
-    public static func audit(dat: DATFile, chdFiles: [URL]) -> [AuditEntry] {
+    /// `throws` only ever propagates `CancellationError` — same fix as
+    /// `ROMMatcher.match`/`AuditReporter.generate`'s own doc comments:
+    /// nothing in this scan-pipeline stage ever checked `Task.isCancelled`
+    /// before, so cancelling mid-scan showed the warning but kept running
+    /// regardless. Checked at entry and throttled inside the loop over
+    /// `dat.games` — this function runs synchronously on the calling
+    /// `Task`'s own thread (no concurrent dispatch here), so the check is
+    /// meaningful everywhere in this loop.
+    public static func audit(dat: DATFile, chdFiles: [URL]) throws -> [AuditEntry] {
+        try Task.checkCancellation()
         var entries: [AuditEntry] = []
         // Several clones of the same game often share one physical disk
         // unmodified (MAME's own `romof`/`cloneof` hierarchy — a region or
@@ -43,7 +52,8 @@ public enum DiskAuditor {
         // *first* game (in DAT order, typically parent-first) that
         // declares it.
         var seenDisks = Set<String>()
-        for game in dat.games {
+        for (gameIndex, game) in dat.games.enumerated() {
+            if gameIndex % 5000 == 0 { try Task.checkCancellation() }
             guard !game.disks.isEmpty else { continue }
             let chdNames = game.disks.map(\.name).joined(separator: ", ")
             for disk in game.disks {

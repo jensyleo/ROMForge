@@ -57,33 +57,33 @@ struct ROMMatcherTests {
     )
 
     @Test("marks a rom correct when name, size and hash all match")
-    func marksCorrectWhenEverythingMatches() {
+    func marksCorrectWhenEverythingMatches() throws {
         let local = hashedFile(name: "correct.bin", size: 100, crc: "aaaaaaaa", sha1: "1111111111111111111111111111111111111111")
-        let report = ROMMatcher.match(dat: dat, hashedFiles: [local])
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [local])
 
         let result = report.games.first { $0.game.name == "Correct Game" }!
         #expect(result.matches[0].status == .correct(local))
     }
 
     @Test("marks a rom misnamed when hash matches but filename differs")
-    func marksMisnamedWhenOnlyNameDiffers() {
+    func marksMisnamedWhenOnlyNameDiffers() throws {
         let local = hashedFile(name: "wrong-name.bin", size: 200, crc: "bbbbbbbb", sha1: "2222222222222222222222222222222222222222")
-        let report = ROMMatcher.match(dat: dat, hashedFiles: [local])
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [local])
 
         let result = report.games.first { $0.game.name == "Misnamed Game" }!
         #expect(result.matches[0].status == .misnamed(local))
     }
 
     @Test("marks a rom missing when no local file matches")
-    func marksMissingWhenNoFileMatches() {
-        let report = ROMMatcher.match(dat: dat, hashedFiles: [])
+    func marksMissingWhenNoFileMatches() throws {
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [])
 
         let result = report.games.first { $0.game.name == "Missing Game" }!
         #expect(result.matches[0].status == .missing)
     }
 
     @Test("does not match on filename alone when hash differs — reports a genuine hash mismatch (Bad), not correct or plain missing")
-    func doesNotMatchOnNameAloneWhenHashDiffers() {
+    func doesNotMatchOnNameAloneWhenHashDiffers() throws {
         // Same name and size as the expected ROM, but a different hash —
         // must not be treated as correct. jensyleo's own definition
         // (2026-08-04): a file genuinely sitting in this rom's own slot
@@ -91,7 +91,7 @@ struct ROMMatcherTests {
         // distinct from `.missing` (nothing there at all). Left unconsumed
         // (same as `.foundElsewhere`), so it still shows up as surplus too.
         let local = hashedFile(name: "correct.bin", size: 100, crc: "ffffffff", sha1: "9999999999999999999999999999999999999999")
-        let report = ROMMatcher.match(dat: dat, hashedFiles: [local])
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [local])
 
         let result = report.games.first { $0.game.name == "Correct Game" }!
         #expect(result.matches[0].status == .hashMismatch(local))
@@ -99,7 +99,7 @@ struct ROMMatcherTests {
     }
 
     @Test("a hash the DAT declares but the scan didn't compute (HashAlgorithms skipped it) doesn't reject an otherwise-correct match")
-    func uncomputedHashDoesNotRejectAMatch() {
+    func uncomputedHashDoesNotRejectAMatch() throws {
         // The DAT declares both crc and sha1 for "Correct Game", but this
         // scan only computed crc32 (as if `HashAlgorithms` excluded sha1
         // for speed) — matching must still succeed on the hash that *was*
@@ -109,22 +109,22 @@ struct ROMMatcherTests {
             file: ScannedFile(url: URL(fileURLWithPath: "/tmp/correct.bin"), name: "correct.bin", size: 100),
             hash: FileHash(crc32: "aaaaaaaa", md5: nil, sha1: nil)
         )
-        let report = ROMMatcher.match(dat: dat, hashedFiles: [local])
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [local])
 
         let result = report.games.first { $0.game.name == "Correct Game" }!
         #expect(result.matches[0].status == .correct(local))
     }
 
     @Test("leaves unmatched local files as surplus")
-    func leavesUnmatchedFilesAsSurplus() {
+    func leavesUnmatchedFilesAsSurplus() throws {
         let extra = hashedFile(name: "extra.bin", size: 999, crc: "deadbeef", sha1: "0000000000000000000000000000000000000000")
-        let report = ROMMatcher.match(dat: dat, hashedFiles: [extra])
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [extra])
 
         #expect(report.surplusFiles == [SurplusFile(file: extra)])
     }
 
     @Test("matches a headered local file against a headerless DAT entry via its header-stripped identity")
-    func matchesViaHeaderStrippedIdentity() {
+    func matchesViaHeaderStrippedIdentity() throws {
         // The DAT declares the headerless (No-Intro-style) hash/size, but
         // the local file is a raw iNES-headered dump — same game data, 16
         // extra header bytes. Only the strip-and-rehash path can find this.
@@ -142,14 +142,14 @@ struct ROMMatcherTests {
             headerStripped: HeaderStrippedHash(rule: .iNES, size: 29, hash: strippedHash)
         )
 
-        let report = ROMMatcher.match(dat: headerlessDat, hashedFiles: [local])
+        let report = try ROMMatcher.match(dat: headerlessDat, hashedFiles: [local])
         let result = report.games.first { $0.game.name == "NES Game" }!
         #expect(result.matches[0].status == .correct(local, viaHeaderStrip: true))
         #expect(report.surplusFiles.isEmpty)
     }
 
     @Test("does not double-match the same local file to two different roms")
-    func doesNotDoubleMatchTheSameFile() {
+    func doesNotDoubleMatchTheSameFile() throws {
         let sharedDat = DATFile(
             header: dat.header,
             games: [
@@ -158,7 +158,7 @@ struct ROMMatcherTests {
             ]
         )
         let local = hashedFile(name: "shared.bin", size: 50, crc: "12345678", sha1: "4444444444444444444444444444444444444444")
-        let report = ROMMatcher.match(dat: sharedDat, hashedFiles: [local])
+        let report = try ROMMatcher.match(dat: sharedDat, hashedFiles: [local])
 
         let statuses = report.games.map(\.matches[0].status)
         #expect(statuses.filter { $0 == .correct(local) }.count == 1)
@@ -171,7 +171,7 @@ struct ROMMatcherTests {
     }
 
     @Test("in an archive-organized scan, a game whose own archive is missing does not STEAL (claim) a file from another real game's own-named archive")
-    func doesNotStealFromAnotherGamesOwnArchive() {
+    func doesNotStealFromAnotherGamesOwnArchive() throws {
         // Both games declare the exact same rom (mirrors real MAME DATs,
         // where several unrelated machines independently declare a shared
         // hardware ROM as their own, unmerged, rom) — only "B"'s archive is
@@ -199,7 +199,7 @@ struct ROMMatcherTests {
             ]
         )
         let onlyBsArchive = zipEntryHashedFile(archiveName: "B", entryName: "shared.bin", size: 50, crc: "12345678", sha1: "4444444444444444444444444444444444444444")
-        let report = ROMMatcher.match(dat: sharedDat, hashedFiles: [onlyBsArchive])
+        let report = try ROMMatcher.match(dat: sharedDat, hashedFiles: [onlyBsArchive])
 
         let resultA = report.games.first { $0.game.name == "A" }!
         let resultB = report.games.first { $0.game.name == "B" }!
@@ -208,7 +208,7 @@ struct ROMMatcherTests {
     }
 
     @Test("a clone the user doesn't own at all reports missing, not a layout problem, even though its parent-shared roms sit in the parent's own archive")
-    func unownedCloneReportsMissingRatherThanFoundElsewhere() {
+    func unownedCloneReportsMissingRatherThanFoundElsewhere() throws {
         // The real shape jensyleo hit live (2026-08-04): MAME's `1943`
         // family. The parent's archive is fully present; the clone's own
         // archive is absent entirely, and its genuinely unique roms exist
@@ -232,7 +232,7 @@ struct ROMMatcherTests {
         )
         let cloneFamilyDAT = DATFile(header: dat.header, games: [parent, unownedClone], mergeMode: .nonMerged)
         let onlyParentsArchive = zipEntryHashedFile(archiveName: "1943", entryName: "shared.bin", size: 700, crc: "77777777", sha1: "7777777777777777777777777777777777777777")
-        let report = ROMMatcher.match(dat: cloneFamilyDAT, hashedFiles: [onlyParentsArchive])
+        let report = try ROMMatcher.match(dat: cloneFamilyDAT, hashedFiles: [onlyParentsArchive])
 
         let parentResult = report.games.first { $0.game.name == "1943" }!
         let cloneResult = report.games.first { $0.game.name == "1943j" }!
@@ -247,7 +247,7 @@ struct ROMMatcherTests {
     // fixture is exactly a loose file (`url == name`).
 
     @Test("foundElsewhere never fires on a bare size coincidence — only a real declared hash may satisfy it")
-    func foundElsewhereNeverFiresOnSizeAloneAcrossGames() {
+    func foundElsewhereNeverFiresOnSizeAloneAcrossGames() throws {
         // Real bug found live by jensyleo (2026-08-04): a whole "OTHER"
         // system folder (590 games, almost none physically owned) showed
         // *every single game* resolving to the one archive that actually
@@ -271,14 +271,14 @@ struct ROMMatcherTests {
         )
         let sizeCoincidenceDAT = DATFile(header: dat.header, games: [unownedGame, presentGame])
         let presentFile = zipEntryHashedFile(archiveName: "PresentGame", entryName: "present.bin", size: 65536, crc: "bbbbbbbb", sha1: "6666666666666666666666666666666666666666")
-        let report = ROMMatcher.match(dat: sizeCoincidenceDAT, hashedFiles: [presentFile])
+        let report = try ROMMatcher.match(dat: sizeCoincidenceDAT, hashedFiles: [presentFile])
 
         let resultA = report.games.first { $0.game.name == "A" }!
         #expect(resultA.matches[0].status == .missing)
     }
 
     @Test("a surplus file inside a clone's own archive that hash-matches a rom belonging to a different game (e.g. its Split-mode parent) is tagged, not left as a plain unrecognized surplus")
-    func surplusFileTaggedWhenItMatchesAnotherGamesRom() {
+    func surplusFileTaggedWhenItMatchesAnotherGamesRom() throws {
         // Real case found live by jensyleo (2026-08-04): under Split, a
         // clone's own expected rom list excludes every rom it shares with
         // its parent (`mergeName != nil`, stripped upstream by
@@ -306,7 +306,7 @@ struct ROMMatcherTests {
         // (pre-layout-planning) machine's own declared name for it, exactly
         // matching the parent's hash — the real leftover this test covers.
         let sharedButUnclaimed = zipEntryHashedFile(archiveName: "sf2acc", entryName: "s92_01.bin", size: 100, crc: "12345678", sha1: "1111111111111111111111111111111111111111")
-        let report = ROMMatcher.match(dat: splitDAT, hashedFiles: [ownRom, sharedButUnclaimed])
+        let report = try ROMMatcher.match(dat: splitDAT, hashedFiles: [ownRom, sharedButUnclaimed])
 
         #expect(report.surplusFiles.count == 1)
         let surplus = report.surplusFiles.first
@@ -315,7 +315,7 @@ struct ROMMatcherTests {
     }
 
     @Test("a duplicate of an already-claimed rom, inside its own game's own archive, is never tagged as required by that same game")
-    func duplicateWithinOwnArchiveIsNotTaggedAsRequiredByItself() {
+    func duplicateWithinOwnArchiveIsNotTaggedAsRequiredByItself() throws {
         // Real bug found live by jensyleo (2026-08-04): `qsound_hle.zip`
         // physically contains "dl-1425.bin" *twice* — one copy correctly
         // claims the game's own expected rom, the second is a genuine
@@ -333,28 +333,28 @@ struct ROMMatcherTests {
         let dupDAT = DATFile(header: dat.header, games: [qsound])
         let claimedCopy = zipEntryHashedFile(archiveName: "qsound_hle", entryName: "dl-1425.bin", size: 10, crc: "99999999", sha1: "3333333333333333333333333333333333333333")
         let duplicateCopy = zipEntryHashedFile(archiveName: "qsound_hle", entryName: "dl-1425.bin", size: 10, crc: "99999999", sha1: "3333333333333333333333333333333333333333")
-        let report = ROMMatcher.match(dat: dupDAT, hashedFiles: [claimedCopy, duplicateCopy])
+        let report = try ROMMatcher.match(dat: dupDAT, hashedFiles: [claimedCopy, duplicateCopy])
 
         #expect(report.surplusFiles.count == 1)
         #expect(report.surplusFiles.first?.requiredByGameDescription == nil)
     }
 
     @Test("in an archive-organized scan, a whole archive renamed by the user is still found via an unclaimed (non-DAT-name) archive")
-    func findsRomInsideARenamedArchive() {
+    func findsRomInsideARenamedArchive() throws {
         // The archive itself ("renamed-by-user.zip") doesn't match any DAT
         // game's own name, so it's not "claimed" by any other game — a
         // real game whose own archive is absent can still resolve its rom
         // from here (the common real case: the user renamed the whole
         // archive, but its contents/entry name are untouched).
         let renamedArchive = zipEntryHashedFile(archiveName: "renamed-by-user", entryName: "expected-name.bin", size: 200, crc: "bbbbbbbb", sha1: "2222222222222222222222222222222222222222")
-        let report = ROMMatcher.match(dat: dat, hashedFiles: [renamedArchive])
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [renamedArchive])
 
         let result = report.games.first { $0.game.name == "Misnamed Game" }!
         #expect(result.matches[0].status == .correct(renamedArchive))
     }
 
     @Test("under Un-merged mode, a game with no clone/parent relationship at all still uses the renamed-archive fallback")
-    func nonMergedStandaloneGameStillBorrowsFromRenamedArchive() {
+    func nonMergedStandaloneGameStillBorrowsFromRenamedArchive() throws {
         // Real bug found live by jensyleo (2026-08-03): this test used to
         // assert the opposite (`.missing`) — Un-merged's self-containment
         // rule ("a game must never need a rom that actually lives in a
@@ -373,14 +373,14 @@ struct ROMMatcherTests {
         // `ROMMatcher.swift`'s own `strictOwnArchiveOnly` doc comment.
         let nonMergedDAT = DATFile(header: dat.header, games: dat.games, mergeMode: .nonMerged)
         let renamedArchive = zipEntryHashedFile(archiveName: "renamed-by-user", entryName: "expected-name.bin", size: 200, crc: "bbbbbbbb", sha1: "2222222222222222222222222222222222222222")
-        let report = ROMMatcher.match(dat: nonMergedDAT, hashedFiles: [renamedArchive])
+        let report = try ROMMatcher.match(dat: nonMergedDAT, hashedFiles: [renamedArchive])
 
         let result = report.games.first { $0.game.name == "Misnamed Game" }!
         #expect(result.matches[0].status == .correct(renamedArchive))
     }
 
     @Test("under Un-merged mode, a game that IS part of a real clone/parent family still never CLAIMS a rom from a renamed archive")
-    func nonMergedCloneFamilyStillNeverBorrowsFromAnotherArchive() {
+    func nonMergedCloneFamilyStillNeverBorrowsFromAnotherArchive() throws {
         // The other half of the fix above: the strictness itself is still
         // real and still applies — just correctly scoped to games that
         // actually have a clone/parent relationship, rather than to every
@@ -395,7 +395,7 @@ struct ROMMatcherTests {
         )
         let nonMergedDAT = DATFile(header: dat.header, games: dat.games + [parent, clone], mergeMode: .nonMerged)
         let renamedArchive = zipEntryHashedFile(archiveName: "renamed-by-user", entryName: "clone-own.bin", size: 500, crc: "eeeeeeee", sha1: "5555555555555555555555555555555555555555")
-        let report = ROMMatcher.match(dat: nonMergedDAT, hashedFiles: [renamedArchive])
+        let report = try ROMMatcher.match(dat: nonMergedDAT, hashedFiles: [renamedArchive])
 
         let result = report.games.first { $0.game.name == "Clone Game" }!
         // Real bug found live by jensyleo (2026-08-04): reporting this the
@@ -414,10 +414,10 @@ struct ROMMatcherTests {
     }
 
     @Test("under Un-merged mode, a game still matches a rom that's genuinely inside its own archive")
-    func nonMergedStillMatchesOwnArchive() {
+    func nonMergedStillMatchesOwnArchive() throws {
         let nonMergedDAT = DATFile(header: dat.header, games: dat.games, mergeMode: .nonMerged)
         let ownArchiveFile = zipEntryHashedFile(archiveName: "Correct Game", entryName: "correct.bin", size: 100, crc: "aaaaaaaa", sha1: "1111111111111111111111111111111111111111")
-        let report = ROMMatcher.match(dat: nonMergedDAT, hashedFiles: [ownArchiveFile])
+        let report = try ROMMatcher.match(dat: nonMergedDAT, hashedFiles: [ownArchiveFile])
 
         let result = report.games.first { $0.game.name == "Correct Game" }!
         #expect(result.matches[0].status == .correct(ownArchiveFile))

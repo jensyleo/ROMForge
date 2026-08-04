@@ -24,7 +24,23 @@ public enum ROMMatcher {
     /// takes; the previous state (a bare, indeterminate spinner for the
     /// whole "Comparing against the database…" step) read as a possible
     /// stall no matter how long it actually took.
-    public static func match(dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil) -> MatchReport {
+    ///
+    /// `throws` only ever propagates `CancellationError` — real bug found
+    /// live by jensyleo (2026-08-04): pressing Cancel mid-scan showed the
+    /// "scan cancelled" warning immediately (`LibraryViewModel.cancelCurrentOperation()`
+    /// sets that eagerly), but the scan itself kept running to completion
+    /// regardless, because nothing in this function — or `AuditReporter`/
+    /// `DiskAuditor` downstream of it — ever actually checked
+    /// `Task.isCancelled`. `FolderScanner`/`CollectionHasher` already did,
+    /// so cancelling during the file-walk/hashing phases worked; cancelling
+    /// during or after matching did not. Checked at entry (skip the whole
+    /// call if cancellation was already requested before this even started)
+    /// and once more between phase 1 and phase 2 below — not inside phase
+    /// 1's own `DispatchQueue.concurrentPerform` workers, since those run
+    /// outside this calling `Task`'s own context, where `Task.isCancelled`
+    /// isn't meaningful to check at all.
+    public static func match(dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil) throws -> MatchReport {
+        try Task.checkCancellation()
         let crcIndex = indexOptional(hashedFiles, by: \.hash.crc32)
         let md5Index = indexOptional(hashedFiles, by: \.hash.md5)
         let sha1Index = indexOptional(hashedFiles, by: \.hash.sha1)
@@ -138,6 +154,8 @@ public enum ROMMatcher {
             strictOwnArchiveOnly: strictOwnArchiveOnly, onProgress: onProgress
         )
 
+        try Task.checkCancellation()
+
         // Phase 2 (sequential, cheap): claim files against the precomputed
         // candidates, in the DAT's own game order — same first-come
         // priority `consumed` always relied on, just against candidate
@@ -147,7 +165,13 @@ public enum ROMMatcher {
         var consumed = [Bool](repeating: false, count: hashedFiles.count)
         var gameResults: [GameMatchResult] = []
         gameResults.reserveCapacity(dat.games.count)
-        for (game, romCandidates) in zip(dat.games, perGameCandidates) {
+        for (gameIndex, (game, romCandidates)) in zip(dat.games, perGameCandidates).enumerated() {
+            // Runs on this call's own `Task`, unlike phase 1's
+            // `DispatchQueue.concurrentPerform` workers above — safe to
+            // check here, throttled (every 5000 games) so a full MAME DAT's
+            // ~43,000 games don't pay for a cancellation check every single
+            // iteration of an otherwise cheap loop.
+            if gameIndex % 5000 == 0 { try Task.checkCancellation() }
             var romMatches: [RomMatch] = []
             romMatches.reserveCapacity(romCandidates.count)
             // `nodump` roms (real, confirmed live: MAME's own `sf2stt` set

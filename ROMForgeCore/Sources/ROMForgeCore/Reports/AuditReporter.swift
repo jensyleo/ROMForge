@@ -10,10 +10,21 @@ import Foundation
 /// hash match), incorrect (hash matches, name doesn't), missing (no local
 /// file matches), surplus (local file matches no expected ROM).
 public enum AuditReporter {
-    public static func generate(from matchReport: MatchReport) -> AuditReport {
+    /// `throws` only ever propagates `CancellationError` — same fix, and
+    /// same reason, as `ROMMatcher.match`'s own doc comment: cancelling a
+    /// scan mid-flight showed the cancellation warning immediately but kept
+    /// running regardless, because nothing downstream of the matcher ever
+    /// actually checked `Task.isCancelled` either. Checked at entry and
+    /// throttled inside the loop over `matchReport.games` (every 5000, a
+    /// full MAME DAT's ~43,000 games) — this whole function runs
+    /// synchronously on the calling `Task`'s own thread, so `Task.isCancelled`
+    /// is meaningful everywhere here, unlike `ROMMatcher`'s parallel phase 1.
+    public static func generate(from matchReport: MatchReport) throws -> AuditReport {
+        try Task.checkCancellation()
         var entries: [AuditEntry] = []
 
-        for gameResult in matchReport.games {
+        for (gameIndex, gameResult) in matchReport.games.enumerated() {
+            if gameIndex % 5000 == 0 { try Task.checkCancellation() }
             let game = gameResult.game
             let hasCHD = !game.disks.isEmpty
             let hasSamples = game.hasSamples
@@ -110,7 +121,8 @@ public enum AuditReporter {
     /// separate step (not part of `generate(from:)` itself) since disk
     /// auditing has its own independent inputs (`DATFile` + the scanned
     /// `.chd` file list) rather than a `MatchReport`.
-    public static func merging(diskEntries: [AuditEntry], into report: AuditReport) -> AuditReport {
+    public static func merging(diskEntries: [AuditEntry], into report: AuditReport) throws -> AuditReport {
+        try Task.checkCancellation()
         var correct = report.correct, incorrect = report.incorrect, badDump = report.badDump, missing = report.missing, surplus = report.surplus
         for entry in diskEntries {
             switch entry.status {

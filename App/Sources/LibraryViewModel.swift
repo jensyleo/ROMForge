@@ -570,8 +570,8 @@ final class LibraryViewModel {
                 let hashedFiles = try await CollectionHasher.hash(scannedFiles: scannedFiles, cache: cache, algorithms: hashAlgorithms, onProgress: progressHandler, onArchiveListed: archiveListedHandler)
                 try? ScanCache.build(from: hashedFiles).save(to: cacheURL)
                 matchingStartedHandler()
-                let matchReport = ROMMatcher.match(dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler)
-                var auditReport = AuditReporter.generate(from: matchReport)
+                let matchReport = try ROMMatcher.match(dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler)
+                var auditReport = try AuditReporter.generate(from: matchReport)
                 // CHDs never go through `ROMMatcher` at all (a disk isn't a
                 // `DATRom`) — audited separately here, by each CHD's own
                 // header SHA1 (`DiskAuditor`/`CHDMatcher`), then folded into
@@ -599,8 +599,8 @@ final class LibraryViewModel {
                 // `Self.merge` in that case, nothing to reconcile.
                 let shouldAuditDisks = !chdFiles.isEmpty || (!isScopedScan && dat.games.contains(where: { !$0.disks.isEmpty }))
                 if shouldAuditDisks {
-                    let diskEntries = DiskAuditor.audit(dat: dat, chdFiles: chdFiles)
-                    auditReport = AuditReporter.merging(diskEntries: diskEntries, into: auditReport)
+                    let diskEntries = try DiskAuditor.audit(dat: dat, chdFiles: chdFiles)
+                    auditReport = try AuditReporter.merging(diskEntries: diskEntries, into: auditReport)
                 }
                 return (dat.header, matchReport, auditReport, dat, shouldAuditDisks)
             }
