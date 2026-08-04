@@ -676,7 +676,7 @@ struct LibraryDetailView: View {
                     gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
                 )
                 let nodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters)
-                let counts = Self.computeScopedStatusCounts(scopedEntries: scoped)
+                let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
                 let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
                 await MainActor.run {
                     // Guards against out-of-order completion, not just
@@ -1738,7 +1738,7 @@ struct LibraryDetailView: View {
     /// independent passes a separate `scopedStatusCount(_:)` per button
     /// used to do — on a ~188k-entry collection, redoing that scan/group
     /// 4x per render (once per status button) was real, avoidable work.
-    private nonisolated static func computeScopedStatusCounts(scopedEntries: [AuditEntry]) -> [AuditStatus: Int] {
+    private nonisolated static func computeScopedStatusCounts(scopedEntries: [AuditEntry], gamesByName: [String: DATGame]) -> [AuditStatus: Int] {
         var entriesByGame: [String: [AuditEntry]] = [:]
         var surplusByArchive: [String: [AuditEntry]] = [:]
         for entry in scopedEntries {
@@ -1750,14 +1750,19 @@ struct LibraryDetailView: View {
             }
         }
         // Same fold as `gameNodes(from:)`/`computeGameAggregateStatusByName()`
-        // — see either's own doc comment. Without it, a game whose only
-        // problem is a folded-in "Not needed here" file (now `.incorrect`,
-        // see `AuditEntry.requiredByGameDescription`) would count as
-        // "Correct" here while its own row reads yellow in the tree right
-        // next to this button.
+        // — see either's own doc comment, including why this is checked
+        // against the DAT's own real catalog (`gamesByName`) rather than
+        // "does `entriesByGame` already have this key" (a real game with
+        // zero expected roms under the current merge mode, e.g. `qsound_hle`
+        // under Split, never gets a key from real entries at all). Without
+        // this fold, a game whose only problem is a folded-in "Not needed
+        // here" file (now `.incorrect`, see
+        // `AuditEntry.requiredByGameDescription`) would count as "Correct"
+        // here while its own row reads yellow in the tree right next to
+        // this button.
         for (archiveName, surplus) in surplusByArchive {
             let matchingGame = (archiveName as NSString).deletingPathExtension
-            guard entriesByGame[matchingGame] != nil else { continue }
+            guard gamesByName[matchingGame] != nil else { continue }
             entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
         }
         var counts: [AuditStatus: Int] = [:]
@@ -1837,7 +1842,7 @@ struct LibraryDetailView: View {
     /// below) can reuse the exact same game/surplus-archive grouping for an
     /// arbitrary category — not just whichever one happens to be currently
     /// selected — without duplicating this logic a second time.
-    private nonisolated static func gameNodes(from entries: [AuditEntry], gameAggregateStatusByName: [String: AuditStatus], combineRomAndCHD: Bool, isFolderScoped: Bool) -> [GameNode] {
+    private nonisolated static func gameNodes(from entries: [AuditEntry], gamesByName: [String: DATGame], gameAggregateStatusByName: [String: AuditStatus], combineRomAndCHD: Bool, isFolderScoped: Bool) -> [GameNode] {
         var entriesByGame: [String: [AuditEntry]] = [:]
         var gameOrder: [String] = []
         var surplusEntries: [AuditEntry] = []
@@ -1885,14 +1890,26 @@ struct LibraryDetailView: View {
         // same toggle-filtered `entries` param) has no entry for a
         // perfectly well-matched game at all, so a stray extra file inside
         // its otherwise-fine archive wrongly showed as a separate "Unknown
-        // game" instead of folding into that game's own row. Checked
-        // against `gameAggregateStatusByName`'s keys instead — the same
-        // toggle-independent, always-fresh source already built for the
-        // exact same reason (see its own doc comment) — so this decision
-        // is always correct regardless of which statuses are visible.
+        // game" instead of folding into that game's own row.
+        //
+        // Checked against `gamesByName` (the loaded DAT's own real game
+        // catalog), not `gameAggregateStatusByName`'s keys — real bug found
+        // live by jensyleo (2026-08-04, `qsound_hle` under Split): a real
+        // DAT game whose entire expected rom list is empty under the
+        // current merge mode (its only rom is `merge=`-tagged, stripped
+        // entirely — see `AuditEntry.requiredByGameDescription`'s own
+        // Split-mode case) never produces a single `entry.game != nil` row,
+        // so it never gets a key in `gameAggregateStatusByName` either
+        // (that dict is built purely from scan results). A stray/misplaced
+        // file physically inside `qsound_hle.zip` then failed this
+        // existence check and became its own "Unknown game" bucket — wrong,
+        // since "QSound (HLE)" is a perfectly real, known machine, just one
+        // with nothing of its own to expect right now. `gamesByName` is the
+        // DAT's own catalog, independent of any scan result at all, so a
+        // real game with zero expected roms is still recognized as real.
         for archiveName in surplusOrder {
             let matchingGame = (archiveName as NSString).deletingPathExtension
-            guard gameAggregateStatusByName[matchingGame] != nil else { continue }
+            guard gamesByName[matchingGame] != nil else { continue }
             if entriesByGame[matchingGame] == nil { gameOrder.append(matchingGame) }
             entriesByGame[matchingGame, default: []].append(contentsOf: surplusByArchive[archiveName] ?? [])
             surplusByArchive.removeValue(forKey: archiveName)
@@ -1912,7 +1929,7 @@ struct LibraryDetailView: View {
             // deliberately rom-only now) since the whole point here is to
             // reproduce how it used to look, mixed status and all.
             if combineRomAndCHD {
-                return [GameNode(id: "game-\(name)", name: name, entries: entries, aggregateStatus: gameCategory(for: entries))]
+                return [GameNode(id: "game-\(name)", name: name, entries: entries, aggregateStatus: gameCategory(for: entries), sourceGame: gamesByName[name])]
             }
 
             // Split into up to two independent rows — jensyleo's own
@@ -1977,10 +1994,10 @@ struct LibraryDetailView: View {
                 let trueStatus = isFolderScoped
                     ? gameCategory(for: romEntries)
                     : gameAggregateStatusByName[name] ?? gameCategory(for: romEntries)
-                nodes.append(GameNode(id: "game-\(name)", name: name, entries: romEntries, aggregateStatus: trueStatus))
+                nodes.append(GameNode(id: "game-\(name)", name: name, entries: romEntries, aggregateStatus: trueStatus, sourceGame: gamesByName[name]))
             }
             if let diskStatus {
-                nodes.append(GameNode(id: "game-\(name)-chd", name: name, entries: diskEntries, aggregateStatus: diskStatus, isDiskRow: true))
+                nodes.append(GameNode(id: "game-\(name)-chd", name: name, entries: diskEntries, aggregateStatus: diskStatus, isDiskRow: true, sourceGame: gamesByName[name]))
             }
             return nodes
         }
@@ -2073,7 +2090,7 @@ struct LibraryDetailView: View {
             gamesInFolder: cachedGamesInFolder, gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD
         )
         cachedGameNodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: gameAggregateStatusByName, showUnknownArchives: showUnknownArchives, activeStatusFilters: activeStatusFilters)
-        cachedScopedStatusCounts = Self.computeScopedStatusCounts(scopedEntries: scopedEntries)
+        cachedScopedStatusCounts = Self.computeScopedStatusCounts(scopedEntries: scopedEntries, gamesByName: Self.gamesByName(viewModel.preloadedGames))
         cachedUnknownArchivesCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
     }
 
@@ -2106,6 +2123,7 @@ struct LibraryDetailView: View {
             // of the four means.
             nodes = Self.gameNodes(
                 from: Self.categoryFiltered(viewModel.auditReport?.entries ?? [], matching: filter),
+                gamesByName: Self.gamesByName(viewModel.preloadedGames),
                 gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD,
                 // This is the "Database" sidebar tree specifically — always
                 // the database-wide view, regardless of whatever "Rom
@@ -2283,9 +2301,26 @@ struct LibraryDetailView: View {
         }
         return gameNodes(
             from: scoped(auditEntries, databaseFilter: selectedDatabaseFilter, romFolder: selectedRomFolder, gamesInFolder: gamesInFolder),
+            gamesByName: gamesByName(preloadedGames),
             gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD,
             isFolderScoped: selectedRomFolder != nil
         )
+    }
+
+    /// The loaded DAT's own real game catalog, by lowercased name — see
+    /// `gameNodes(from:)`'s own doc comment for why this (not anything
+    /// derived from scan *results*) is the right source for "does a real
+    /// game exist with this name at all". First-wins on a name collision,
+    /// which a real DAT should never have (machine names are its own
+    /// primary key) — a plain loop rather than `Dictionary(uniqueKeysWithValues:)`
+    /// only so a malformed DAT can never crash this instead of just picking
+    /// one arbitrarily.
+    private nonisolated static func gamesByName(_ games: [DATGame]) -> [String: DATGame] {
+        var result: [String: DATGame] = [:]
+        for game in games where result[game.name.lowercased()] == nil {
+            result[game.name.lowercased()] = game
+        }
+        return result
     }
 
     /// Applies the `showUnknownArchives`/`activeStatusFilters` toggles to
@@ -2383,9 +2418,20 @@ struct LibraryDetailView: View {
         // leaving it green in "Database" for the identical underlying
         // fact — the same class of view-disagreement chased all day
         // already, just for a different field.
+        // Checked against the DAT's own real catalog (`gamesByName`), not
+        // just "does `byGame` already have this key" — real bug found live
+        // by jensyleo (2026-08-04, `qsound_hle` under Split): a real game
+        // whose entire expected rom list is empty under the current merge
+        // mode (its only rom `merge=`-tagged away entirely) never gets a
+        // `byGame` key from real entries at all, so a stray file inside its
+        // own archive failed this check too and never got folded in here
+        // either — see `gameNodes(from:)`'s own doc comment for the fuller
+        // story (this must fold identically to there, or "Database" and a
+        // "Rom files" folder view disagree on this exact game).
+        let gamesByName = Self.gamesByName(viewModel.preloadedGames)
         for (archiveName, surplus) in surplusByArchive {
             let matchingGame = (archiveName as NSString).deletingPathExtension
-            guard byGame[matchingGame] != nil else { continue }
+            guard gamesByName[matchingGame] != nil else { continue }
             byGame[matchingGame, default: []].append(contentsOf: surplus)
         }
         return byGame.mapValues(Self.romOnlyGameCategory(for:))
