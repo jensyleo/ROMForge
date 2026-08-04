@@ -95,7 +95,7 @@ struct ROMMatcherTests {
 
         let result = report.games.first { $0.game.name == "Correct Game" }!
         #expect(result.matches[0].status == .hashMismatch(local))
-        #expect(report.surplusFiles == [local])
+        #expect(report.surplusFiles == [SurplusFile(file: local)])
     }
 
     @Test("a hash the DAT declares but the scan didn't compute (HashAlgorithms skipped it) doesn't reject an otherwise-correct match")
@@ -120,7 +120,7 @@ struct ROMMatcherTests {
         let extra = hashedFile(name: "extra.bin", size: 999, crc: "deadbeef", sha1: "0000000000000000000000000000000000000000")
         let report = ROMMatcher.match(dat: dat, hashedFiles: [extra])
 
-        #expect(report.surplusFiles == [extra])
+        #expect(report.surplusFiles == [SurplusFile(file: extra)])
     }
 
     @Test("matches a headered local file against a headerless DAT entry via its header-stripped identity")
@@ -275,6 +275,43 @@ struct ROMMatcherTests {
 
         let resultA = report.games.first { $0.game.name == "A" }!
         #expect(resultA.matches[0].status == .missing)
+    }
+
+    @Test("a surplus file inside a clone's own archive that hash-matches a rom belonging to a different game (e.g. its Split-mode parent) is tagged, not left as a plain unrecognized surplus")
+    func surplusFileTaggedWhenItMatchesAnotherGamesRom() {
+        // Real case found live by jensyleo (2026-08-04): under Split, a
+        // clone's own expected rom list excludes every rom it shares with
+        // its parent (`mergeName != nil`, stripped upstream by
+        // `MAMESetLayoutPlanner` before `ROMMatcher` ever sees it — not
+        // reproduced here, since this test operates on already-planned
+        // `dat.games`, exactly like the real pipeline hands them over). A
+        // real `sf2acc.zip` still physically contains that shared graphics
+        // rom too (a genuine, correct dump) — with nothing in Split's own
+        // per-archive scoping ever looking inside `sf2acc.zip` for
+        // `sf2ce`'s own roms, it went completely unclaimed and read as
+        // bare "Unrecognized", indistinguishable from actual junk.
+        let parent = DATGame(
+            name: "sf2ce", description: "Street Fighter II': Champion Edition", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "s92-1m.3a", size: 100, crc: "12345678", md5: nil, sha1: "1111111111111111111111111111111111111111")]
+        )
+        // "sf2acc" (the clone) declares none of the parent's shared roms at
+        // all under Split — only its own unique one.
+        let clone = DATGame(
+            name: "sf2acc", description: "Street Fighter II': Champion Edition (Accelerator Board)", cloneOf: "sf2ce", romOf: "sf2ce",
+            roms: [DATRom(name: "sf2ca_23-c.bin", size: 50, crc: "eeeeeeee", md5: nil, sha1: "5555555555555555555555555555555555555555")]
+        )
+        let splitDAT = DATFile(header: dat.header, games: [parent, clone], mergeMode: .split)
+        let ownRom = zipEntryHashedFile(archiveName: "sf2acc", entryName: "sf2ca_23-c.bin", size: 50, crc: "eeeeeeee", sha1: "5555555555555555555555555555555555555555")
+        // Physically present inside sf2acc.zip too, named after the raw
+        // (pre-layout-planning) machine's own declared name for it, exactly
+        // matching the parent's hash — the real leftover this test covers.
+        let sharedButUnclaimed = zipEntryHashedFile(archiveName: "sf2acc", entryName: "s92_01.bin", size: 100, crc: "12345678", sha1: "1111111111111111111111111111111111111111")
+        let report = ROMMatcher.match(dat: splitDAT, hashedFiles: [ownRom, sharedButUnclaimed])
+
+        #expect(report.surplusFiles.count == 1)
+        let surplus = report.surplusFiles.first
+        #expect(surplus?.file == sharedButUnclaimed)
+        #expect(surplus?.requiredByGameDescription == "Street Fighter II': Champion Edition")
     }
 
     @Test("in an archive-organized scan, a whole archive renamed by the user is still found via an unclaimed (non-DAT-name) archive")

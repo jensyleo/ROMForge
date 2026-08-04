@@ -1535,19 +1535,24 @@ struct LibraryDetailView: View {
         case .badDump: base = "Bad (hash mismatch)"
         case .missing: base = "Missing"
         // `.surplus` entries are always constructed with `game: nil` by
-        // `AuditReporter` — there's no "known family rom, just not needed
-        // in this merge mode" case in this codebase today, every `.surplus`
-        // entry's content genuinely matches nothing in the DAT. "Not needed
-        // here" wrongly implied the opposite (a real, known rom excess for
-        // this specific archive) — jensyleo's own report (2026-07-30): a
-        // stray file folded into a known game's own row list (e.g. an extra
-        // file physically inside `gng.zip`, via `gameNodes(from:)`'s
-        // archive-name matching) still showed this misleading text, gray
-        // color and all. The gray/`questionmark.circle.fill` styling was
-        // already correct (`tint(for:)`/`symbolName(for:)` — gray denotes
-        // "unrecognized" consistently with the "Unknown" filter elsewhere),
-        // only the label was wrong.
-        case .surplus: base = "Unrecognized"
+        // `AuditReporter` (no real DAT game backs this exact row) — but the
+        // content itself can still be genuinely known.
+        // `requiredByGameDescription` (set only when the file's hash
+        // matches a rom *some* DAT game declares — jensyleo's own real
+        // case, 2026-08-04: a Split-mode clone's zip still physically
+        // holding a rom the DAT expects only in its parent's own archive)
+        // distinguishes that from actual junk that matches nothing in the
+        // DAT at all. Both stay gray/`.surplus` — this is a message
+        // refinement, not a new severity — but "Not needed here" is a very
+        // different, much less alarming fact than a bare "Unrecognized" for
+        // a file that's completely fine, just filed somewhere Split mode
+        // doesn't currently ask for it. Kept as its own case rather than
+        // reusing `.incorrect`'s "Available in another game" wording (from
+        // `.foundElsewhere`) — that one means "*this game* needs this rom,
+        // found elsewhere"; this means "no game here needs it, someone
+        // *else* does" — the reverse relationship, worth its own message.
+        case .surplus:
+            base = entry.requiredByGameDescription.map { "Not needed here (required by \($0))" } ?? "Unrecognized"
         }
         if entry.isBadDump {
             // For every other status, a file DID get matched/found, so "(bad

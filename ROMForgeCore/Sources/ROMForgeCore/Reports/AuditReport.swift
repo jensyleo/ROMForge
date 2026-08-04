@@ -126,6 +126,13 @@ public struct AuditEntry: Equatable, Sendable {
     /// name" — the point is precisely that this *isn't* a naming mistake
     /// to go fix, it's already correctly organized somewhere else.
     public let foundElsewhereArchiveName: String?
+    /// Set only for a `.surplus` entry whose content nonetheless
+    /// hash-matches a real rom the DAT declares for *some* game — just not
+    /// one that claimed it in this scan (`SurplusFile.requiredByGameDescription`,
+    /// see its own doc comment for the real Split-mode case this exists
+    /// for). `nil` for every other status, and for a genuinely unrecognized
+    /// surplus file that matches nothing in the DAT at all.
+    public let requiredByGameDescription: String?
     public let name: String
     public let path: URL?
     public let expectedSize: Int64?
@@ -156,6 +163,7 @@ public struct AuditEntry: Equatable, Sendable {
         matchedViaHeaderStrip: Bool = false,
         isDisk: Bool = false,
         foundElsewhereArchiveName: String? = nil,
+        requiredByGameDescription: String? = nil,
         name: String,
         path: URL?,
         expectedSize: Int64? = nil,
@@ -185,6 +193,7 @@ public struct AuditEntry: Equatable, Sendable {
         self.matchedViaHeaderStrip = matchedViaHeaderStrip
         self.isDisk = isDisk
         self.foundElsewhereArchiveName = foundElsewhereArchiveName
+        self.requiredByGameDescription = requiredByGameDescription
         self.name = name
         self.path = path
         self.expectedSize = expectedSize

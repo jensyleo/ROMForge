@@ -157,6 +157,28 @@ struct AuditReportDatabaseTests {
         #expect(reloadedOwned.foundElsewhereArchiveName == nil)
     }
 
+    /// Same class of bug once more, one schema version later (v6,
+    /// 2026-08-04), for `AuditEntry.requiredByGameDescription` — added the
+    /// `ALTER TABLE` and this test in the same commit as the field itself
+    /// this time, rather than discovering the gap only after a relaunch
+    /// silently lost it (as happened twice already, for `isDisk` and
+    /// `foundElsewhereArchiveName`).
+    @Test("a surplus entry's requiredByGameDescription survives a save/load round trip")
+    func requiredByGameDescriptionSurvivesRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let recognizedSurplus = AuditEntry(status: .surplus, game: nil, requiredByGameDescription: "Street Fighter II': Champion Edition", name: "s92_01.bin", path: nil)
+        let junkSurplus = AuditEntry(status: .surplus, game: nil, name: "random.txt", path: nil)
+        let report = AuditReport(entries: [recognizedSurplus, junkSurplus], correct: 0, incorrect: 0, missing: 0, surplus: 2)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedRecognized = try #require(loaded.entries.first { $0.name == "s92_01.bin" })
+        let reloadedJunk = try #require(loaded.entries.first { $0.name == "random.txt" })
+        #expect(reloadedRecognized.requiredByGameDescription == "Street Fighter II': Champion Edition")
+        #expect(reloadedJunk.requiredByGameDescription == nil)
+    }
+
     @Test("re-opening the same database file preserves previously saved data")
     func persistsAcrossReopens() throws {
         let path = tempDBPath()

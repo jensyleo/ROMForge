@@ -290,7 +290,30 @@ public enum ROMMatcher {
             gameResults.append(GameMatchResult(game: game, matches: romMatches))
         }
 
-        let surplusFiles = hashedFiles.indices.filter { !consumed[$0] }.map { hashedFiles[$0] }
+        // Real case found live by jensyleo (2026-08-04): under Split, a
+        // clone's own expected rom list deliberately excludes every rom it
+        // shares with its parent (`mergeName != nil` — see
+        // `MAMESetLayoutPlanner`'s own doc comment; Split expects those to
+        // live *only* in the parent's own archive). A user's actual
+        // `sf2acc.zip`, however, often still physically contains that
+        // shared content too (it's a real, valid rom — just not one Split
+        // currently asks *this* archive for) — with nothing in Split's own
+        // per-archive scoping ever looking inside `sf2acc.zip` for `sf2ce`'s
+        // roms (archives are scoped strictly by name), it was reported as
+        // plain gray "Unrecognized" — indistinguishable from genuine random
+        // junk, when it's actually known, correct content the DAT declares
+        // for a *different* game/mode. `romsByHash` below is the DAT's own
+        // full rom list (every game, unfiltered by which are still
+        // unconsumed) indexed by whichever hash each rom declares, purely
+        // for this one classification — never consulted anywhere a file
+        // could actually be *claimed*, so it can't reopen the cross-game
+        // "steal" problem the rest of this file guards against.
+        let romsByHash = indexRomsByHash(dat.games)
+        let surplusFiles = hashedFiles.indices.filter { !consumed[$0] }.map { index -> SurplusFile in
+            let file = hashedFiles[index]
+            let requiredBy = requiredByGameDescription(for: file, romsByHash: romsByHash)
+            return SurplusFile(file: file, requiredByGameDescription: requiredBy)
+        }
         return MatchReport(games: gameResults, surplusFiles: surplusFiles)
     }
 
@@ -504,6 +527,39 @@ public enum ROMMatcher {
         guard file.url.lastPathComponent != file.name else { return false }
         let archiveName = file.url.deletingPathExtension().lastPathComponent.lowercased()
         return allGameNames.contains(archiveName)
+    }
+
+    /// Every rom the DAT declares, across every game, keyed by whichever
+    /// hash(es) it declares — deliberately unfiltered by merge mode/status,
+    /// so a rom Split excluded from some clone's own expected list (because
+    /// it's inherited from the parent) is still found here under whichever
+    /// game *does* still declare it plainly. First-game-wins on a
+    /// collision (several unrelated machines, or a whole clone family,
+    /// legitimately sharing one hardware rom) — good enough for a
+    /// "this content is recognized, here's *a* place it's needed" message;
+    /// not meant to enumerate every game that could use it.
+    private static func indexRomsByHash(_ games: [DATGame]) -> [String: DATGame] {
+        var result: [String: DATGame] = [:]
+        for game in games {
+            for rom in game.roms {
+                for key in [rom.crc, rom.md5, rom.sha1].compactMap({ $0 }) {
+                    if result[key] == nil { result[key] = game }
+                }
+            }
+        }
+        return result
+    }
+
+    /// The DAT game that actually declares this leftover file's content, if
+    /// any — see `indexRomsByHash`'s own doc comment and this file's own
+    /// `surplusFiles` computation for why an unclaimed file can still be
+    /// genuinely recognized content, just not one anything currently asks
+    /// *this* archive for.
+    private static func requiredByGameDescription(for file: HashedFile, romsByHash: [String: DATGame]) -> String? {
+        for key in [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap({ $0 }) {
+            if let game = romsByHash[key] { return game.description }
+        }
+        return nil
     }
 
     private static func uniqued(_ indices: [Int]) -> [Int] {

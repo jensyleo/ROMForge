@@ -75,6 +75,19 @@ Un CHD solo tiene 3 estados posibles (nunca `.badDump`, nunca `.foundElsewhere` 
 
 Un `.chd` en disco que no corresponde a NINGÚN disco declarado por el DAT actualmente no aparece en ningún lado (ni como disco, ni como surplus) — gap conocido, no corregido todavía.
 
+### 3c. Surplus reconocido vs. surplus genuino (`requiredByGameDescription`)
+
+**Caso real (04-ago-2026):** bajo Split, un clon (ej. `sf2acc`) declara SOLO sus roms únicas — las que comparte con su padre (`merge=` en el DAT) quedan excluidas de su lista propia, porque Split espera que vivan únicamente en el archivo del padre. Pero el `.zip` real del usuario a menudo SÍ contiene ese contenido compartido también (un dump válido y correcto) — y como el escaneo por archivo nunca busca dentro de `sf2acc.zip` las roms de `sf2ce` (el padre), ese archivo queda sin reclamar por nadie y se reportaba como "Unrecognized" genérico, indistinguible de basura real.
+
+**Fix:** antes de declarar un archivo sobrante como surplus, se compara su hash contra TODAS las roms del DAT (de cualquier juego, sin filtrar por modo de merge). Si coincide con algo real:
+
+| Situación | `AuditStatus` | Texto |
+|---|---|---|
+| Hash no coincide con NADA del DAT | `.surplus` (gris) | "Unrecognized" |
+| Hash coincide con una rom de OTRO juego real | `.surplus` (gris, sin cambio de color) | "Not needed here (required by `<juego>`)" |
+
+**Sigue siendo `.surplus`, mismo color gris — no es un estado nuevo.** Solo cambia el mensaje: de "no sé qué es esto" a "sé exactamente qué es esto, y sé por qué no lo necesito aquí". Implementado en `ROMMatcher.match`'s `romsByHash`/`requiredByGameDescription`, nunca usado para *reclamar* un archivo (no reabre el problema de "robo entre juegos" — es puramente informativo).
+
 ---
 
 ## 4. Nivel 3 — Estado agregado del juego (fila de la lista izquierda)

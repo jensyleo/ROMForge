@@ -66,14 +66,31 @@ public struct GameMatchResult: Equatable, Sendable {
     }
 }
 
+/// A local file that matched no expected ROM this scan claimed it for.
+public struct SurplusFile: Equatable, Sendable {
+    public let file: HashedFile
+    /// Set when the file's content is nonetheless genuinely recognized —
+    /// it hash-matches a rom *some* DAT game declares, just not one that
+    /// claimed it here (e.g. a clone's own archive still physically
+    /// holding a rom Split-mode expects only in the parent's archive; see
+    /// `ROMMatcher.match`'s own `romsByHash`). `nil` for a file that
+    /// matches nothing in the DAT at all — genuinely unrecognized junk.
+    public let requiredByGameDescription: String?
+
+    public init(file: HashedFile, requiredByGameDescription: String? = nil) {
+        self.file = file
+        self.requiredByGameDescription = requiredByGameDescription
+    }
+}
+
 /// The full result of matching a `DATFile` against a set of hashed local
 /// files: per-game results, plus any local files left over that matched no
 /// expected ROM at all (candidates for the "surplus" report).
 public struct MatchReport: Equatable, Sendable {
     public let games: [GameMatchResult]
-    public let surplusFiles: [HashedFile]
+    public let surplusFiles: [SurplusFile]
 
-    public init(games: [GameMatchResult], surplusFiles: [HashedFile]) {
+    public init(games: [GameMatchResult], surplusFiles: [SurplusFile]) {
         self.games = games
         self.surplusFiles = surplusFiles
     }

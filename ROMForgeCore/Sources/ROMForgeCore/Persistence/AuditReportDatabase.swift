@@ -33,7 +33,7 @@ public enum AuditReportDatabaseError: Error, Equatable, CustomStringConvertible 
 /// (matching SQLite's own recommended usage for infrequent, non-contended
 /// access) rather than held open for the object's lifetime.
 public final class AuditReportDatabase {
-    private static let currentSchemaVersion: Int32 = 5
+    private static let currentSchemaVersion: Int32 = 6
 
     private let path: String
 
@@ -73,7 +73,7 @@ public final class AuditReportDatabase {
                     .int(entry.isBios ? 1 : 0), .int(entry.hasCHD ? 1 : 0), .int(entry.hasSamples ? 1 : 0), .int(entry.isBadDump ? 1 : 0),
                     .textOrNull(entry.romDumpStatus?.rawValue), .textOrNull(entry.mergeName), .textOrNull(entry.chdNames),
                     .textOrNull(entry.gameYear), .textOrNull(entry.gameManufacturer), .textOrNull(entry.requiredBiosNames), .textOrNull(entry.deviceRefNames),
-                    .int(entry.isDisk ? 1 : 0), .textOrNull(entry.foundElsewhereArchiveName),
+                    .int(entry.isDisk ? 1 : 0), .textOrNull(entry.foundElsewhereArchiveName), .textOrNull(entry.requiredByGameDescription),
                     .text(entry.name), .textOrNull(entry.path?.path),
                     .int64OrNull(entry.expectedSize), .int64OrNull(entry.actualSize),
                     .textOrNull(entry.expectedCRC), .textOrNull(entry.expectedMD5), .textOrNull(entry.expectedSHA1),
@@ -86,10 +86,10 @@ public final class AuditReportDatabase {
                 INSERT INTO audit_entries (
                     system_id, status, game, game_description, clone_of, is_bios, has_chd, has_samples, is_bad_dump,
                     rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
-                    is_disk, found_elsewhere_archive_name,
+                    is_disk, found_elsewhere_archive_name, required_by_game_description,
                     name, path, expected_size, actual_size,
                     expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 rowValues
             )
@@ -118,7 +118,7 @@ public final class AuditReportDatabase {
             """
             SELECT status, game, game_description, clone_of, is_bios, has_chd, has_samples, is_bad_dump,
                    rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
-                   is_disk, found_elsewhere_archive_name,
+                   is_disk, found_elsewhere_archive_name, required_by_game_description,
                    name, path, expected_size, actual_size,
                    expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1
             FROM audit_entries WHERE system_id = ?;
@@ -147,16 +147,17 @@ public final class AuditReportDatabase {
                     deviceRefNames: Self.columnText(statement, 14),
                     isDisk: sqlite3_column_int(statement, 15) != 0,
                     foundElsewhereArchiveName: Self.columnText(statement, 16),
-                    name: Self.columnText(statement, 17) ?? "",
-                    path: Self.columnText(statement, 18).map(URL.init(fileURLWithPath:)),
-                    expectedSize: Self.columnInt64(statement, 19),
-                    actualSize: Self.columnInt64(statement, 20),
-                    expectedCRC: Self.columnText(statement, 21),
-                    expectedMD5: Self.columnText(statement, 22),
-                    expectedSHA1: Self.columnText(statement, 23),
-                    actualCRC: Self.columnText(statement, 24),
-                    actualMD5: Self.columnText(statement, 25),
-                    actualSHA1: Self.columnText(statement, 26)
+                    requiredByGameDescription: Self.columnText(statement, 17),
+                    name: Self.columnText(statement, 18) ?? "",
+                    path: Self.columnText(statement, 19).map(URL.init(fileURLWithPath:)),
+                    expectedSize: Self.columnInt64(statement, 20),
+                    actualSize: Self.columnInt64(statement, 21),
+                    expectedCRC: Self.columnText(statement, 22),
+                    expectedMD5: Self.columnText(statement, 23),
+                    expectedSHA1: Self.columnText(statement, 24),
+                    actualCRC: Self.columnText(statement, 25),
+                    actualMD5: Self.columnText(statement, 26),
+                    actualSHA1: Self.columnText(statement, 27)
                 )
             )
         }
@@ -332,6 +333,7 @@ public final class AuditReportDatabase {
                 device_ref_names TEXT,
                 is_disk INTEGER NOT NULL DEFAULT 0,
                 found_elsewhere_archive_name TEXT,
+                required_by_game_description TEXT,
                 name TEXT NOT NULL,
                 path TEXT,
                 expected_size INTEGER,
@@ -385,6 +387,18 @@ public final class AuditReportDatabase {
         // regressed, because a fresh scan behaved correctly and only the
         // reloaded-from-disk path didn't.
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN found_elsewhere_archive_name TEXT;")
+        // Schema v6 (2026-08-04): same class of bug once more, for
+        // `AuditEntry.requiredByGameDescription` — the field a surplus
+        // entry uses to say "this leftover file's content is actually
+        // required by <game>'s own archive" (e.g. a Split-mode clone's zip
+        // still holding a rom the DAT declares only for its parent) instead
+        // of a bare, indistinguishable "Unrecognized". Unpersisted, this
+        // would go back to reading generically gray after any app relaunch
+        // even though a fresh scan reports it correctly — exactly the
+        // isDisk/foundElsewhereArchiveName pattern above; adding the ALTER
+        // TABLE and the round-trip test up front this time, at the same
+        // moment the field itself was introduced.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN required_by_game_description TEXT;")
         // Also discard every stored verdict when arriving at v5 (not just add
         // the column): the same 2026-08-04 round of fixes changed what
         // `ROMMatcher` itself concludes — a clone the user doesn't own no

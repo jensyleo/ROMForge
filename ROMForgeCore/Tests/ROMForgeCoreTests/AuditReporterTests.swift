@@ -32,7 +32,7 @@ struct AuditReporterTests {
                     RomMatch(rom: missingRom, status: .missing),
                 ]),
             ],
-            surplusFiles: [hashedFile(name: "extra.bin", size: 99)]
+            surplusFiles: [SurplusFile(file: hashedFile(name: "extra.bin", size: 99))]
         )
 
         let report = AuditReporter.generate(from: matchReport)
@@ -64,7 +64,7 @@ struct AuditReporterTests {
                     matches: [RomMatch(rom: missingRom, status: .missing)]
                 ),
             ],
-            surplusFiles: [surplus]
+            surplusFiles: [SurplusFile(file: surplus)]
         )
 
         let report = AuditReporter.generate(from: matchReport)
@@ -110,7 +110,7 @@ struct AuditReporterTests {
                 RomMatch(rom: goodRom, status: .missing),
                 RomMatch(rom: badRom, status: .missing),
             ])],
-            surplusFiles: [hashedFile(name: "extra.bin", size: 1)]
+            surplusFiles: [SurplusFile(file: hashedFile(name: "extra.bin", size: 1))]
         )
 
         let report = AuditReporter.generate(from: matchReport)

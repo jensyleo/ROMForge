@@ -69,11 +69,14 @@ public enum AuditReporter {
         }
 
         for surplusFile in matchReport.surplusFiles {
+            let hashedFile = surplusFile.file
             entries.append(
                 AuditEntry(
-                    status: .surplus, game: nil, name: surplusFile.file.name, path: surplusFile.file.url,
-                    actualSize: surplusFile.file.size,
-                    actualCRC: surplusFile.hash.crc32, actualMD5: surplusFile.hash.md5, actualSHA1: surplusFile.hash.sha1
+                    status: .surplus, game: nil,
+                    requiredByGameDescription: surplusFile.requiredByGameDescription,
+                    name: hashedFile.file.name, path: hashedFile.file.url,
+                    actualSize: hashedFile.file.size,
+                    actualCRC: hashedFile.hash.crc32, actualMD5: hashedFile.hash.md5, actualSHA1: hashedFile.hash.sha1
                 )
             )
         }
