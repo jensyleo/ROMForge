@@ -1912,16 +1912,23 @@ struct LibraryDetailView: View {
             let diskStatus = diskEntries.isEmpty ? nil : categoryRespectingFolderScope(diskEntries)
 
             var nodes: [GameNode] = []
-            // A missing rom row is skipped entirely when this same game
-            // has a CHD that isn't itself also fully missing — jensyleo's
-            // own follow-up request (2026-07-30): "está el CHD, pero si no
-            // está la ROM, no importa, no debe aparecer ese rojo". Only
-            // applies to a genuinely `.missing` rom (nothing at all found)
-            // — an `.incorrect`/misnamed rom still shows, since that's a
-            // real, fixable problem worth surfacing regardless of the CHD.
-            let romIsMissing = romEntries.allSatisfy { $0.status == .missing }
-            let skipMissingRom = romIsMissing && diskStatus != nil && diskStatus != .missing
-            if !romEntries.isEmpty, !skipMissingRom {
+            // Real bug found live by jensyleo (2026-08-04): a missing rom
+            // row used to be skipped entirely whenever this same game had a
+            // CHD that wasn't itself also fully missing (jensyleo's own
+            // earlier request, 2026-07-30: "está el CHD, pero si no está la
+            // ROM, no importa, no debe aparecer ese rojo") — but a clone
+            // like `sfiii3jr1` (its own disk genuinely `Correct`, its own
+            // rom genuinely, permanently absent from the whole collection)
+            // then showed as a single green "Ok" row with no trace of the
+            // missing rom anywhere in the list at all, silently hiding a
+            // real, fixable incompleteness rather than just staying quiet
+            // about a merely-inapplicable one. No new state, no "Bad" —
+            // the rom row now always shows (when this game has any roms at
+            // all) using the exact same `.missing`/red this game would get
+            // in any other context; the disk row stays independent and
+            // unaffected, so a fully correct CHD still reports "Ok" on its
+            // own row exactly as before.
+            if !romEntries.isEmpty {
                 // The row's own badge always reflects the game's *true*
                 // status — real bug found live by jensyleo (2026-07-28): with
                 // the "Missing" status toggle off, `entries` here has already
