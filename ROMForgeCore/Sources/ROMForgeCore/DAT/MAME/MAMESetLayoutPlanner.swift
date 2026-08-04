@@ -211,7 +211,25 @@ public enum MAMESetLayoutPlanner {
         // Merged (Bios merge mode held constant) injected a clone-less
         // NEOGEO game's BIOS-variant redeclarations into its own expected
         // rom list — something only Bios merge mode should ever affect.
+        //
+        // A real `-listxml` dump can also redeclare the exact same rom
+        // (same name, same hash) twice under one machine's own `<rom>`
+        // list — confirmed live (2026-08-04): `neogeo` itself lists
+        // `sm1.sm1` once for region `audiobios` and again for region
+        // `audiocpu`, byte-identical both times. `splitGame` already
+        // guards against this (see its own comment, also citing this
+        // exact `neogeo`/`sm1.sm1` case); `mergedGame` never did, so two
+        // requirements existed for one physical file — one could never
+        // resolve to "correct" even with a perfect dump, surfacing as a
+        // spurious yellow "Rom need fix" on `neogeo` under Merged mode
+        // while every visibly-listed rom showed green. Skipping an exact
+        // repeat of an already-added name closes that gap the same way
+        // `splitGame` does.
         for rom in target.roms where rom.mergeName == nil {
+            if let existing = romsByName[rom.name],
+               existing.crc == rom.crc, existing.md5 == rom.md5, existing.sha1 == rom.sha1, existing.size == rom.size {
+                continue
+            }
             romsByName[rom.name] = rom
             roms.append(rom)
         }

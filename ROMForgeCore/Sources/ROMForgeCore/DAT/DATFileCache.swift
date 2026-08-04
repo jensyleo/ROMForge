@@ -37,7 +37,7 @@ public struct DATFileCache: Sendable, Codable, Equatable {
     /// time such logic changes, forces every existing cache entry to miss
     /// exactly once after an update like that, rather than silently
     /// serving stale results indefinitely.
-    private static let currentFormatVersion = 2
+    private static let currentFormatVersion = 3
     // v2 (2026-08-04, same day): `DATLoader.datFile`'s new `mergedDisks`
     // (Merged mode now unions a clone's own distinct CHD into the
     // surviving parent entry, not just its roms — see its own doc
@@ -49,6 +49,11 @@ public struct DATFileCache: Sendable, Codable, Equatable {
     // parse) — but a cache written *after* that field existed and
     // *before* this disks fix decodes just fine, silently keeping the
     // old, wrong disk list otherwise.
+    // v3 (2026-08-04, same day): `MAMESetLayoutPlanner.mergedGame` now
+    // dedups an exact-duplicate rom declaration within one machine's own
+    // `<rom>` list (see `AuditReportDatabase.currentSchemaVersion`'s v10
+    // note for the real `neogeo`/`sm1.sm1` case this fixes) — changes
+    // what `roms` a cached `DATFile` built under `.merged` contains.
     public let sourceSize: Int64
     public let sourceModificationDate: Date
     public let mergeMode: SetMergeMode

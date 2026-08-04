@@ -33,7 +33,13 @@ public enum AuditReportDatabaseError: Error, Equatable, CustomStringConvertible 
 /// (matching SQLite's own recommended usage for infrequent, non-contended
 /// access) rather than held open for the object's lifetime.
 public final class AuditReportDatabase {
-    private static let currentSchemaVersion: Int32 = 9
+    // v10 (2026-08-04, same day): `MAMESetLayoutPlanner.mergedGame` now
+    // dedups an exact-duplicate rom declaration (same name/hash) within a
+    // machine's own `<rom>` list — see its own doc comment (`neogeo`'s
+    // `sm1.sm1`, declared twice for two regions, wrongly demanded twice
+    // under Merged mode). Changes what a Merged-mode scan concludes for
+    // any DAT with this pattern, for scans cached before this fix.
+    private static let currentSchemaVersion: Int32 = 10
 
     private let path: String
 

@@ -148,6 +148,18 @@ Controlado por el toggle correspondiente a su color real: un bucket reclasificad
 
 **Límite cerrado (04-ago-2026, mismo día):** este bucket reclasificado ahora SÍ se suma al conteo "Incorrect: N" del encabezado. `computeScopedStatusCounts` aplica el mismo criterio `isFullyIdentified` a cualquier archivo sobrante que no logre plegarse en un juego real de `dat.games` (el caso Merged) — si todas sus entradas están identificadas, cuenta como un archivo más bajo `.incorrect`, exactamente igual que la fila que ves en la lista. Encabezado, fila y toggle ya están sincronizados para este caso.
 
+### 3f. Un clon puede tener su propio CHD distinto al de su padre — Merged debe esperar ambos
+
+**Encontrado revisando el código de Merged a fondo (04-ago-2026), no reportado en vivo por el usuario.** `MAMESetLayoutPlanner.mergedGame` ya unía las roms únicas de toda la familia (padre + clones) en la entrada que sobrevive bajo Merged — pero nadie hacía lo mismo con los **discos**. `DATLoader.datFile` tomaba el campo `disks` directamente de la máquina padre, ignorando los discos propios de sus clones.
+
+**Verificado contra el DAT real (mame0288):** **313 clones declaran un CHD con un SHA1 genuinamente distinto al de su padre** (una revisión/región de disco diferente) — no es un caso raro. Bajo Merged, como el clon queda excluido por completo de `dat.games`, ese CHD propio nunca era esperado por nadie: aunque el usuario tuviera el archivo `.chd` correcto, se reportaba como "Unrecognized" (sobrante genuino), sin ninguna manera de reconocerlo.
+
+**Corregido:** nueva función `DATLoader.mergedDisks(for:mode:dataset:)` — bajo Merged, une los discos propios del juego que sobrevive con los de **todos sus clones directos** (deduplicado por nombre+SHA1, ya que 91 de esos 313 casos SÍ comparten el disco idéntico con el padre). Split/Un-merged no necesitan este cambio — ahí cada clon sigue teniendo su propia entrada en `dat.games`, con su propio disco ya capturado directamente.
+
+**Se descartó una segunda sospecha relacionada:** ¿existen cadenas "clon de un clon" (3 niveles) que romperían la búsqueda de `clones(ofParent:)` (que solo mira hijos directos)? Verificado: **cero casos** en el DAT real — la convención de MAME siempre apunta `cloneof` directo a la raíz verdadera, nunca a un clon intermedio. No era un bug real.
+
+Verificado en vivo: `area51`/`area51t` — bajo Merged, la entrada fusionada "area51" ahora espera ambos discos correctamente.
+
 ---
 
 ## 4. Nivel 3 — Estado agregado del juego (fila de la lista izquierda)
@@ -237,6 +249,18 @@ Un solo rom missing pinta TODO el juego rojo (para esa fila — rom o disco, seg
   EXCEPCIÓN: rom 100% missing + CHD del mismo juego != missing
              → la fila de ROM no se muestra. Solo se ve el CHD (🟢).
 ```
+
+---
+
+### 4e. Bug real: declaración duplicada de un mismo rom dentro de una máquina (`mergedGame`, corregido 04-ago-2026)
+
+Un `-listxml` real puede declarar el MISMO rom físico (mismo name/crc/sha1/size) dos veces dentro de una sola `<machine>`, bajo distintos `region=`. Caso confirmado en vivo: `neogeo` declara `sm1.sm1` una vez con `region="audiobios"` y otra con `region="audiocpu"`, byte-idénticas — no es un DAT malformado, es así en el dump real.
+
+`splitGame()` ya deduplicaba esto (comentario propio citando este mismo caso), pero `mergedGame()` — la función que se usa bajo `mergeMode = .merged`, el modo real del usuario — no lo hacía. Resultado: dos requisitos lógicos para un solo archivo físico. Uno resolvía `.correct` (reclamaba el archivo), el otro no tenía nada que reclamar, caía al fallback `foundElsewhere` sin restricción, y encontraba el mismo archivo ya reclamado — reportando `.incorrect` con `foundElsewhere` apuntando a su PROPIO archivo (`neogeo.zip`). Esto pintaba el juego "Rom need fix" (amarillo) en la lista aunque cada fila visible del rom mostrara verde "Ok" — porque ninguna fila individual estaba mal, la entrada fantasma duplicada sí.
+
+**No era un problema de mensaje, era un bug real de conteo de requisitos.** Corregido agregando a `mergedGame()` la misma guarda de "salto si ya se agregó un rom idéntico (name+crc+md5+sha1+size)" que `splitGame()` ya tenía. Verificado en vivo contra el DAT y carpeta NEOGEO reales del usuario: antes 35 entradas para `neogeo` (una `.incorrect` fantasma), después 34 entradas, todas `.correct`.
+
+Cache-busting aplicado (regla de la sesión): `DATFileCache.currentFormatVersion` 2→3, `AuditReportDatabase.currentSchemaVersion` 9→10.
 
 ---
 
