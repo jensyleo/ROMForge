@@ -1787,12 +1787,27 @@ struct LibraryDetailView: View {
         // `AuditEntry.requiredByGameDescription`) would count as "Correct"
         // here while its own row reads yellow in the tree right next to
         // this button.
+        // Any archive left over below (no `gamesByName` entry to fold
+        // into — e.g. a clone excluded from `dat.games` entirely under
+        // Merged, see `DATFile.allMachineNames`'s own doc comment) that's
+        // still fully identified (`requiredByGameDescription` on every one
+        // of its own entries — the exact same `isFullyIdentified` check
+        // `gameNodes(from:)` uses to color its row yellow instead of gray)
+        // gets counted here too, as one archive under `.incorrect` —
+        // closing the gap jensyleo asked about (2026-08-04): a row reading
+        // yellow "Extra archive, not needed here" that this header's own
+        // "Incorrect: N" never reflected.
+        var orphanedFullyIdentifiedCount = 0
         for (archiveName, surplus) in surplusByArchive {
             let matchingGame = (archiveName as NSString).deletingPathExtension
-            guard gamesByName[matchingGame] != nil else { continue }
-            entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
+            if gamesByName[matchingGame] != nil {
+                entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
+            } else if !surplus.isEmpty, surplus.allSatisfy({ $0.requiredByGameDescription != nil }) {
+                orphanedFullyIdentifiedCount += 1
+            }
         }
         var counts: [AuditStatus: Int] = [:]
+        counts[.incorrect] = orphanedFullyIdentifiedCount
         for entries in entriesByGame.values {
             // No folder-scope special case: "Missing" counts the same way in
             // a "Rom files" folder as in "Database" — jensyleo's own

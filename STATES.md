@@ -146,7 +146,7 @@ Vale la pena documentar este caso con detalle porque expone, en un solo ejemplo 
 
 Controlado por el toggle correspondiente a su color real: un bucket reclasificado amarillo responde al toggle "Incorrect", no al toggle separado "Unknown" — y el conteo "Unknown: N" del encabezado ya no lo cuenta (contradiría su propio color).
 
-**Límite conocido, aceptado por ahora:** este bucket reclasificado NO se suma al conteo "Incorrect: N" del encabezado (esa cuenta se construye por juego real vía `dat.games`, y este archivo no tiene ninguno bajo Merged) — solo cambia lo que ves en la fila y en el toggle de visibilidad. Documentado aquí para no olvidarlo si se decide cerrarlo por completo más adelante.
+**Límite cerrado (04-ago-2026, mismo día):** este bucket reclasificado ahora SÍ se suma al conteo "Incorrect: N" del encabezado. `computeScopedStatusCounts` aplica el mismo criterio `isFullyIdentified` a cualquier archivo sobrante que no logre plegarse en un juego real de `dat.games` (el caso Merged) — si todas sus entradas están identificadas, cuenta como un archivo más bajo `.incorrect`, exactamente igual que la fila que ves en la lista. Encabezado, fila y toggle ya están sincronizados para este caso.
 
 ---
 
