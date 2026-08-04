@@ -37,7 +37,18 @@ public struct DATFileCache: Sendable, Codable, Equatable {
     /// time such logic changes, forces every existing cache entry to miss
     /// exactly once after an update like that, rather than silently
     /// serving stale results indefinitely.
-    private static let currentFormatVersion = 1
+    private static let currentFormatVersion = 2
+    // v2 (2026-08-04, same day): `DATLoader.datFile`'s new `mergedDisks`
+    // (Merged mode now unions a clone's own distinct CHD into the
+    // surviving parent entry, not just its roms — see its own doc
+    // comment for the real bug this fixes) changes what `disks` a cached
+    // `DATFile` built under `.merged` should actually contain, for the
+    // exact same source bytes. `allMachineNames` (added the same day)
+    // already self-heals any cache from *before* it existed (a missing
+    // required field fails to decode, `try?` falls back to a fresh
+    // parse) — but a cache written *after* that field existed and
+    // *before* this disks fix decodes just fine, silently keeping the
+    // old, wrong disk list otherwise.
     public let sourceSize: Int64
     public let sourceModificationDate: Date
     public let mergeMode: SetMergeMode

@@ -33,7 +33,7 @@ public enum AuditReportDatabaseError: Error, Equatable, CustomStringConvertible 
 /// (matching SQLite's own recommended usage for infrequent, non-contended
 /// access) rather than held open for the object's lifetime.
 public final class AuditReportDatabase {
-    private static let currentSchemaVersion: Int32 = 8
+    private static let currentSchemaVersion: Int32 = 9
 
     private let path: String
 
@@ -422,6 +422,16 @@ public final class AuditReportDatabase {
         // this fix carry that same wrong link (and the resulting
         // misleading "File Name" the UI derived from it) — only a fresh
         // rescan re-derives them correctly.
+        //
+        // Schema v9 (2026-08-04, same day yet again): another no-new-column
+        // bump — `DATLoader.datFile`'s new `mergedDisks` now unions a
+        // clone's own distinct CHD into the surviving parent entry under
+        // Merged mode (see its own doc comment; confirmed against a real
+        // MAME dump: 313 clones declare a genuinely different disk from
+        // their parent's). A disk-audit row saved before this fix reflects
+        // the old, incomplete disk list — a clone's real CHD that used to
+        // read as plain unrecognized surplus. Only a fresh rescan re-derives
+        // it correctly.
         //
         // Also discard every stored verdict when arriving at v5 (not just add
         // the column): the same 2026-08-04 round of fixes changed what

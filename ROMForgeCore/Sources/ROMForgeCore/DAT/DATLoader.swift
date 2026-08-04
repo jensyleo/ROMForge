@@ -177,6 +177,36 @@ public enum DATLoader {
     /// throttled (every 2000 machines) inside the loop — this runs
     /// synchronously on the calling `Task`'s own thread (no concurrent
     /// dispatch here), so the check is meaningful everywhere in it.
+    /// A game's expected CHDs under the current Rom merge mode — real bug
+    /// found live by jensyleo (2026-08-04, testing Merged mode): under
+    /// `.merged`, every clone is excluded from `dat.games` entirely
+    /// (`MAMESetLayoutPlanner.mergedGame` already unions a clone family's
+    /// *roms* into the surviving parent entry — see its own doc comment —
+    /// but nothing did the same for *disks*, which this function reads
+    /// straight from `machine.disks` alone). Confirmed against a real MAME
+    /// 0.288 dump: 313 clones declare a CHD with a genuinely different
+    /// sha1 from their own parent's (a different disc revision/region —
+    /// not a rare edge case), so under Merged that clone's own real CHD
+    /// was never expected by *any* surviving `DATGame` at all — a user's
+    /// real `.chd` file for that revision permanently read as plain
+    /// unrecognized surplus, no matter how correct it was, the exact same
+    /// class of bug the 2026-07-28 device-exclusion fix already fixed
+    /// once for roms. Split/Non-merged need no equivalent fix here: every
+    /// clone still gets its own `DATGame` entry there (this function's own
+    /// `for machine in dataset.machines` loop reaches it directly), so its
+    /// own `machine.disks` is already captured correctly on its own.
+    private static func mergedDisks(for machine: MAMEMachine, mode: SetMergeMode, dataset: MAMEDataset) -> [DATDisk] {
+        guard mode == .merged else {
+            return machine.disks.map { DATDisk(name: $0.name, sha1: $0.sha1) }
+        }
+        var seen = Set<String>()
+        var disks: [DATDisk] = []
+        for disk in machine.disks + dataset.clones(ofParent: machine.name).flatMap(\.disks) where seen.insert("\(disk.name)::\(disk.sha1 ?? "")").inserted {
+            disks.append(DATDisk(name: disk.name, sha1: disk.sha1))
+        }
+        return disks
+    }
+
     private static func datFile(from dataset: MAMEDataset, mode: SetMergeMode, biosMode: SetMergeMode) throws -> DATFile {
         var games: [DATGame] = []
         games.reserveCapacity(dataset.machines.count)
@@ -208,7 +238,7 @@ public enum DATLoader {
                 romOf: layout.romOf,
                 roms: layout.roms,
                 isBios: machine.isBios,
-                disks: machine.disks.map { DATDisk(name: $0.name, sha1: $0.sha1) },
+                disks: mergedDisks(for: machine, mode: mode, dataset: dataset),
                 hasSamples: machine.hasSamples,
                 year: machine.year.isEmpty ? nil : machine.year,
                 manufacturer: machine.manufacturer.isEmpty ? nil : machine.manufacturer,

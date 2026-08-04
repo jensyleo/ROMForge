@@ -208,6 +208,47 @@ struct DATLoaderTests {
         #expect(nonMerged.hasClones)
     }
 
+    @Test("merged mode unions a clone's own distinct CHD into the surviving parent entry, not just its roms")
+    func mergedModeUnionsCloneDisksIntoParent() throws {
+        // Real bug found live by jensyleo (2026-08-04, testing Merged
+        // mode): confirmed against a real MAME 0.288 dump — 313 clones
+        // declare a CHD with a genuinely different sha1 from their own
+        // parent's (a different disc revision/region, not a rare edge
+        // case). `MAMESetLayoutPlanner.mergedGame` already unions a clone
+        // family's *roms* into the surviving parent entry, but nothing did
+        // the same for *disks* — `DATLoader.datFile` read `disks` straight
+        // from the parent machine's own `<disk>` declarations alone, so a
+        // clone's distinct CHD was never expected by any surviving
+        // `DATGame` at all under Merged.
+        let xml = """
+        <mame build="0.278">
+            <machine name="parent">
+                <description>Parent Game</description>
+                <rom name="prog.bin" size="1024" crc="11111111"/>
+                <disk name="parent-disc" sha1="1111111111111111111111111111111111111111"/>
+            </machine>
+            <machine name="clone" cloneof="parent" romof="parent">
+                <description>Parent Game (alt revision)</description>
+                <rom name="prog.bin" size="1024" crc="11111111" merge="prog.bin"/>
+                <disk name="clone-disc" sha1="2222222222222222222222222222222222222222"/>
+            </machine>
+        </mame>
+        """
+        let merged = try DATLoader.load(data: Data(xml.utf8), mergeMode: .merged)
+        let parent = try #require(merged.games.first { $0.name == "parent" })
+        #expect(Set(parent.disks.map(\.name)) == ["parent-disc", "clone-disc"], "the clone's own distinct disk must still be expected somewhere under Merged, since the clone itself has no archive of its own to expect it in")
+
+        // Split/Non-merged need no equivalent fix: the clone still gets
+        // its own separate `DATGame` entry there, carrying its own disk
+        // directly — confirming this fix is Merged-specific, not a
+        // change to how disks work generally.
+        let split = try DATLoader.load(data: Data(xml.utf8), mergeMode: .split)
+        let splitParent = try #require(split.games.first { $0.name == "parent" })
+        let splitClone = try #require(split.games.first { $0.name == "clone" })
+        #expect(splitParent.disks.map(\.name) == ["parent-disc"])
+        #expect(splitClone.disks.map(\.name) == ["clone-disc"])
+    }
+
     @Test("biosMergeMode is a fully independent axis from mergeMode — Split/Merged/Non-Merged, confirmed against a real reference tool")
     func biosMergeModeIsIndependentOfRomMergeMode() throws {
         let xml = """
