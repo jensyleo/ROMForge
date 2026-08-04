@@ -81,12 +81,12 @@ Un `.chd` en disco que no corresponde a NINGÚN disco declarado por el DAT actua
 
 **Fix:** antes de declarar un archivo sobrante como surplus, se compara su hash contra TODAS las roms del DAT (de cualquier juego, sin filtrar por modo de merge). Si coincide con algo real:
 
-| Situación | `AuditStatus` | Texto |
-|---|---|---|
-| Hash no coincide con NADA del DAT | `.surplus` (gris) | "Unrecognized" |
-| Hash coincide con una rom de OTRO juego real | `.surplus` (gris, sin cambio de color) | "Not needed here (required by `<juego>`)" |
+| Situación | `AuditStatus` | Color de la fila (panel derecho) | Texto |
+|---|---|---|---|
+| Hash no coincide con NADA del DAT | `.surplus` | ⚪️ Gris | "Unrecognized" |
+| Hash coincide con una rom de OTRO juego real | `.surplus` | 🟡 Amarillo (excepción, 04-ago-2026) | "Not needed here (required by `<juego>`)" |
 
-**Sigue siendo `.surplus`, mismo color gris — no es un estado nuevo.** Solo cambia el mensaje: de "no sé qué es esto" a "sé exactamente qué es esto, y sé por qué no lo necesito aquí". Implementado en `ROMMatcher.match`'s `romsByHash`/`requiredByGameDescription`, nunca usado para *reclamar* un archivo (no reabre el problema de "robo entre juegos" — es puramente informativo).
+**Sigue siendo `.surplus` — no es un estado nuevo.** Cambia el mensaje ("no sé qué es esto" → "sé exactamente qué es esto, y sé por qué no lo necesito aquí") y, a pedido explícito, también el color de esta fila específica en el panel de detalle (amarillo en vez de gris, para que destaque visualmente como "recognized, just misplaced" en vez de leerse igual que basura real) — el ícono de la fila de juego (columna izquierda) no cambia, sigue reflejando el estado agregado normal. Implementado en `ROMMatcher.match`'s `romsByHash`/`requiredByGameDescription` (dato) + `LibraryDetailView`'s `tint(for: AuditEntry)` (color, override puntual sobre `tint(for: AuditStatus)`). Nunca usado para *reclamar* un archivo (no reabre el problema de "robo entre juegos" — es puramente informativo).
 
 ---
 

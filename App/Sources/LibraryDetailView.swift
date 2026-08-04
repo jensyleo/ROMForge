@@ -1414,7 +1414,7 @@ struct LibraryDetailView: View {
                 .foregroundStyle(.secondary)
             Table(selectedRomRows, selection: $selectedRomID, columnCustomization: $romColumnCustomization) {
                 TableColumn("") { row in
-                    romCell(Image(systemName: symbolName(for: row.entry.status)).foregroundStyle(tint(for: row.entry.status)), status: row.entry.status)
+                    romCell(Image(systemName: symbolName(for: row.entry.status)).foregroundStyle(tint(for: row.entry)), entry: row.entry)
                 }
                 .width(20)
                 .customizationID("status")
@@ -1426,22 +1426,22 @@ struct LibraryDetailView: View {
                     // reads as broken, so it gets an explicit placeholder
                     // instead. The expected name still lives in "Rom name".
                     if let fileName = row.entry.path?.lastPathComponent {
-                        romCell(Text(fileName), status: row.entry.status)
+                        romCell(Text(fileName), entry: row.entry)
                     } else {
-                        romCell(Text("— not found —").foregroundStyle(.secondary), status: row.entry.status)
+                        romCell(Text("— not found —").foregroundStyle(.secondary), entry: row.entry)
                     }
                 }
                 .customizationID("fileName")
                 TableColumn("Rom name") { row in
-                    romCell(Text(row.entry.name), status: row.entry.status)
+                    romCell(Text(row.entry.name), entry: row.entry)
                 }
                 .customizationID("romName")
                 TableColumn("Info") { row in
-                    romCell(Text(infoText(for: row.entry)), status: row.entry.status)
+                    romCell(Text(infoText(for: row.entry)), entry: row.entry)
                 }
                 .customizationID("info")
                 TableColumn("Size") { row in
-                    romCell(Text(sizeText(for: row.entry)), status: row.entry.status)
+                    romCell(Text(sizeText(for: row.entry)), entry: row.entry)
                 }
                 .customizationID("size")
                 // Used to be one combined "Crc/SHA-1" column that only ever
@@ -1452,11 +1452,11 @@ struct LibraryDetailView: View {
                 // Settings. Split into two real columns, matching the
                 // existing MD5 column's own pattern exactly.
                 TableColumn("CRC") { row in
-                    romCell(Text(row.entry.actualCRC ?? row.entry.expectedCRC ?? ""), status: row.entry.status)
+                    romCell(Text(row.entry.actualCRC ?? row.entry.expectedCRC ?? ""), entry: row.entry)
                 }
                 .customizationID("crc")
                 TableColumn("SHA-1") { row in
-                    romCell(Text(row.entry.actualSHA1 ?? row.entry.expectedSHA1 ?? ""), status: row.entry.status)
+                    romCell(Text(row.entry.actualSHA1 ?? row.entry.expectedSHA1 ?? ""), entry: row.entry)
                 }
                 .customizationID("sha1")
                 // `Table`'s column builder tops out at 10 columns per
@@ -1466,22 +1466,22 @@ struct LibraryDetailView: View {
                 // into their own group to fit.
                 Group {
                     TableColumn("Folder") { (row: RomRow) in
-                        romCell(Text(row.entry.path?.deletingLastPathComponent().lastPathComponent ?? ""), status: row.entry.status)
+                        romCell(Text(row.entry.path?.deletingLastPathComponent().lastPathComponent ?? ""), entry: row.entry)
                     }
                     .customizationID("folder")
                     .defaultVisibility(.hidden)
                     TableColumn("MD5") { (row: RomRow) in
-                        romCell(Text(row.entry.actualMD5 ?? row.entry.expectedMD5 ?? ""), status: row.entry.status)
+                        romCell(Text(row.entry.actualMD5 ?? row.entry.expectedMD5 ?? ""), entry: row.entry)
                     }
                     .customizationID("md5")
                     .defaultVisibility(.hidden)
                     TableColumn("Dump status") { (row: RomRow) in
-                        romCell(Text(dumpStatusText(for: row.entry)), status: row.entry.status)
+                        romCell(Text(dumpStatusText(for: row.entry)), entry: row.entry)
                     }
                     .customizationID("dumpStatus")
                     .defaultVisibility(.hidden)
                     TableColumn("Merge name") { (row: RomRow) in
-                        romCell(Text(row.entry.mergeName ?? ""), status: row.entry.status)
+                        romCell(Text(row.entry.mergeName ?? ""), entry: row.entry)
                     }
                     .customizationID("mergeName")
                     .defaultVisibility(.hidden)
@@ -1494,11 +1494,27 @@ struct LibraryDetailView: View {
     /// Wraps a cell in the row's status tint (a lighter background than the
     /// status icon color), RomCenter-style — green/yellow/red/gray rows at a
     /// glance instead of only the leading icon.
-    private func romCell(_ content: some View, status: AuditStatus) -> some View {
+    private func romCell(_ content: some View, entry: AuditEntry) -> some View {
         content
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
-            .background(tint(for: status).opacity(0.18))
+            .background(tint(for: entry).opacity(0.18))
+    }
+
+    /// `tint(for: AuditStatus)`'s own per-entry override — jensyleo's own
+    /// request (2026-08-04): a "Not needed here" surplus file (see
+    /// `AuditEntry.requiredByGameDescription`'s own doc comment — genuinely
+    /// recognized content, just not needed by *this* archive under the
+    /// current merge mode) reads as yellow/"Incorrect" here instead of
+    /// gray/"Unrecognized", even though `entry.status` itself stays
+    /// `.surplus` — a plain hash-matches-nothing surplus file keeps the
+    /// original gray. Message-only change stays `.surplus` (see
+    /// `infoText(for:)`'s own doc comment); this is purely the color
+    /// following that same distinction, without inventing a real new
+    /// `AuditStatus` case.
+    private func tint(for entry: AuditEntry) -> Color {
+        if entry.status == .surplus, entry.requiredByGameDescription != nil { return tint(for: .incorrect) }
+        return tint(for: entry.status)
     }
 
     private func infoText(for entry: AuditEntry) -> String {
