@@ -255,12 +255,21 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
                 )
             )
             machinesSeen += 1
+            // Cancellation checked every machine, not throttled — real bug
+            // found live by jensyleo (2026-08-04): the same class of issue
+            // fixed throughout `ROMMatcher`/`AuditReporter`/`DiskAuditor`/
+            // `DATLoader` — a lock-free `Task.isCancelled` read is
+            // negligible next to parsing even one machine's own XML
+            // element, so throttling this ever skipped real cancellation
+            // opportunities for no actual performance benefit. `onProgress`
+            // (a real UI callback) stays throttled to every 100 — that one
+            // *does* have a genuine reason to stay cheap.
+            if Task.isCancelled {
+                wasCancelled = true
+                parser.abortParsing()
+                return
+            }
             if machinesSeen % 100 == 0 {
-                if Task.isCancelled {
-                    wasCancelled = true
-                    parser.abortParsing()
-                    return
-                }
                 onProgress?(machinesSeen)
             }
         default:
