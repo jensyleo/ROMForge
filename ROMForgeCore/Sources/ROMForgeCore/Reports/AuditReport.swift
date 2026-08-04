@@ -1,0 +1,262 @@
+// ROMForge — a native ROM collection manager for macOS.
+// Copyright (C) 2026 Jensy Leonardo Martínez Cruz
+//
+// This program is free software under the GNU General Public License v3.0
+// or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
+
+import Foundation
+
+/// The five states a `Matcher` result collapses into for reporting.
+/// jensyleo's own definitions (2026-08-04):
+/// - `correct`: right name, right hash.
+/// - `incorrect`: right content (hash matches), but the wrong name and/or
+///   found somewhere other than where it's expected — a naming/location
+///   problem, not a content one.
+/// - `badDump`: a file sits exactly where this rom is expected, but its
+///   CRC32/MD5/SHA doesn't match — a genuine content problem ("Bad").
+/// - `missing`: nothing matching this rom exists anywhere the app can see.
+/// - `surplus`: a local file that matches no expected rom in the DAT at
+///   all ("Unknown").
+public enum AuditStatus: String, Equatable, Sendable, CaseIterable {
+    case correct
+    case incorrect
+    case badDump
+    case missing
+    case surplus
+}
+
+/// One row of an audit report: an expected ROM's outcome, or a leftover local
+/// file that matched no expected ROM. `expected*` comes from the DAT (absent
+/// for surplus files, which the DAT says nothing about); `actual*` comes from
+/// hashing the local file (absent for missing ROMs, which have no local file).
+public struct AuditEntry: Equatable, Sendable {
+    public let status: AuditStatus
+    public let game: String?
+    /// The DAT's own human-readable name for `game` (its `<description>`,
+    /// e.g. "Street Fighter II: The World Warrior (World 910522)") — quite
+    /// different from `game` itself, which is the short internal machine
+    /// code the archive is named after (e.g. "sf2"). Nil for surplus files,
+    /// which have no DAT game backing them.
+    public let gameDescription: String?
+    /// The parent game's name, if `game` is a clone (from the DAT's
+    /// `cloneof`/`romof`) — lets a UI group clone sets under their parent,
+    /// RomCenter-style. Nil for parent games and for surplus files.
+    public let cloneOf: String?
+    /// True when `game` is a MAME BIOS set — lets a UI offer a "Bios files"
+    /// filter, RomCenter-style. Always false for surplus files.
+    public let isBios: Bool
+    /// True when `game` declares a CHD disk in the DAT — presence-only, not
+    /// verification: ROMForge doesn't check whether a matching `.chd` file
+    /// actually exists or hash-verify it yet (`CHDHeaderReader`/`CHDMatcher`
+    /// exist in Core but aren't wired into the scan pipeline). Always false
+    /// for surplus files.
+    public let hasCHD: Bool
+    /// True when `game` declares samples (`<sample>`) in the DAT —
+    /// presence-only, same caveat as `hasCHD`. Always false for surplus
+    /// files.
+    public let hasSamples: Bool
+    /// True when this specific rom's DAT entry is flagged `baddump` or
+    /// `nodump` — a claim about the reference dump itself, independent of
+    /// what's (or isn't) found locally. Always false for surplus files,
+    /// which have no DAT entry to flag.
+    public let isBadDump: Bool
+    /// The DAT's own dump-quality claim for this specific rom (`good`,
+    /// `baddump`, or `nodump`) — `isBadDump` above collapses the latter two
+    /// into one boolean for filtering; this keeps the actual distinction
+    /// for display. `nil` for surplus files, which have no DAT rom entry to
+    /// carry a status at all.
+    public let romDumpStatus: RomDumpStatus?
+    /// The `merge="..."` attribute from the DAT (MAME `-listxml`): names
+    /// the rom in this machine's parent/BIOS archive that this one is
+    /// identical to, i.e. "don't expect this file here, it's already in
+    /// the parent's archive". `nil` when the DAT declares none (Logiqx has
+    /// no such concept; also nil for surplus files).
+    public let mergeName: String?
+    /// Comma-joined names of the CHD disk(s) `game` declares, when any —
+    /// `hasCHD` above is presence-only; this is the actual disk name(s) a
+    /// user would need to go find. `nil` when `game` declares none.
+    public let chdNames: String?
+    /// `game`'s release year, when the DAT declares one (MAME
+    /// `-listxml`'s `<year>`) — `nil` for formats/entries that don't.
+    public let gameYear: String?
+    /// `game`'s manufacturer/developer, when the DAT declares one (MAME
+    /// `-listxml`'s `<manufacturer>`) — `nil` for formats/entries that
+    /// don't.
+    public let gameManufacturer: String?
+    /// Comma-joined names of BIOS ROM variants `game` itself declares
+    /// (MAME `-listxml`'s `<biosset>`) — e.g. several selectable
+    /// region/revision BIOSes on one PCB. `nil` when `game` declares none.
+    public let requiredBiosNames: String?
+    /// Comma-joined names of internal "device" sub-machines `game`
+    /// references (MAME `-listxml`'s `<device_ref>`) — a dependency list,
+    /// not real games themselves. `nil` when `game` declares none.
+    public let deviceRefNames: String?
+    /// True when this rom's local file only matched once a detected copier
+    /// header (iNES/Lynx/copier512 — see `HeaderSkipRule`) was stripped from
+    /// it, rather than matching the DAT's declared hash byte-for-byte as-is.
+    /// The file on disk still has that header; it's just not part of what
+    /// the DAT's own hash describes. Always `false` for `.missing`/`.surplus`
+    /// entries, which never went through a header-strip comparison at all.
+    /// Added 2026-07-30, jensyleo's own request after reviewing every
+    /// `infoText(for:)` case in `LibraryDetailView.swift` — **not yet
+    /// verified live**: none of NES/Atari Lynx/SNES/Game Boy/PC Engine/
+    /// Master System/Genesis were available to test this session. Re-check
+    /// the actual "Ok, header removed" UI text next time a real headered
+    /// dump from one of those systems gets scanned.
+    public let matchedViaHeaderStrip: Bool
+    /// True only for a `DiskAuditor`-produced row (a CHD, not a rom).
+    /// jensyleo's own report (2026-07-30): a game's CHD showing up
+    /// correct was still dragged down to an overall "Bad" status by a rom
+    /// the user has no interest in owning, because per-game status
+    /// aggregation (`gameCategory(for:)` in `LibraryDetailView.swift`)
+    /// folded rom and disk entries for the same game into one worst-of-all
+    /// verdict. This flag lets that aggregation exclude disk entries from
+    /// a game's headline rom-completeness status — the disk's own row
+    /// still shows its own real, independent status, it just no longer
+    /// contaminates the rom verdict (and vice versa).
+    public let isDisk: Bool
+    /// Set only for a rom the matcher found genuinely present somewhere
+    /// else in the scan — another game's archive, a loose file, a
+    /// different path — rather than truly absent (`RomMatchStatus
+    /// .foundElsewhere`, see its own doc comment). `nil` for every other
+    /// status. Carries the containing archive/file's own name so the UI
+    /// can say exactly where it was found ("Available in another game:
+    /// neogeo.zip"), jensyleo's own request (2026-08-04) for this to read
+    /// as its own distinct, reassuring message rather than a generic "Bad
+    /// name" — the point is precisely that this *isn't* a naming mistake
+    /// to go fix, it's already correctly organized somewhere else.
+    public let foundElsewhereArchiveName: String?
+    public let name: String
+    public let path: URL?
+    public let expectedSize: Int64?
+    public let actualSize: Int64?
+    public let expectedCRC: String?
+    public let expectedMD5: String?
+    public let expectedSHA1: String?
+    public let actualCRC: String?
+    public let actualMD5: String?
+    public let actualSHA1: String?
+
+    public init(
+        status: AuditStatus,
+        game: String?,
+        gameDescription: String? = nil,
+        cloneOf: String? = nil,
+        isBios: Bool = false,
+        hasCHD: Bool = false,
+        hasSamples: Bool = false,
+        isBadDump: Bool = false,
+        romDumpStatus: RomDumpStatus? = nil,
+        mergeName: String? = nil,
+        chdNames: String? = nil,
+        gameYear: String? = nil,
+        gameManufacturer: String? = nil,
+        requiredBiosNames: String? = nil,
+        deviceRefNames: String? = nil,
+        matchedViaHeaderStrip: Bool = false,
+        isDisk: Bool = false,
+        foundElsewhereArchiveName: String? = nil,
+        name: String,
+        path: URL?,
+        expectedSize: Int64? = nil,
+        actualSize: Int64? = nil,
+        expectedCRC: String? = nil,
+        expectedMD5: String? = nil,
+        expectedSHA1: String? = nil,
+        actualCRC: String? = nil,
+        actualMD5: String? = nil,
+        actualSHA1: String? = nil
+    ) {
+        self.status = status
+        self.game = game
+        self.gameDescription = gameDescription
+        self.cloneOf = cloneOf
+        self.isBios = isBios
+        self.hasCHD = hasCHD
+        self.hasSamples = hasSamples
+        self.isBadDump = isBadDump
+        self.romDumpStatus = romDumpStatus
+        self.mergeName = mergeName
+        self.chdNames = chdNames
+        self.gameYear = gameYear
+        self.gameManufacturer = gameManufacturer
+        self.requiredBiosNames = requiredBiosNames
+        self.deviceRefNames = deviceRefNames
+        self.matchedViaHeaderStrip = matchedViaHeaderStrip
+        self.isDisk = isDisk
+        self.foundElsewhereArchiveName = foundElsewhereArchiveName
+        self.name = name
+        self.path = path
+        self.expectedSize = expectedSize
+        self.actualSize = actualSize
+        self.expectedCRC = expectedCRC
+        self.expectedMD5 = expectedMD5
+        self.expectedSHA1 = expectedSHA1
+        self.actualCRC = actualCRC
+        self.actualMD5 = actualMD5
+        self.actualSHA1 = actualSHA1
+    }
+}
+
+/// A flat, exportable audit of a collection against a DAT, with precomputed
+/// counts for the four statuses.
+public struct AuditReport: Equatable, Sendable {
+    public let entries: [AuditEntry]
+    public let correct: Int
+    public let incorrect: Int
+    public let badDump: Int
+    public let missing: Int
+    public let surplus: Int
+
+    public init(entries: [AuditEntry], correct: Int, incorrect: Int, badDump: Int = 0, missing: Int, surplus: Int) {
+        self.entries = entries
+        self.correct = correct
+        self.incorrect = incorrect
+        self.badDump = badDump
+        self.missing = missing
+        self.surplus = surplus
+    }
+
+    /// The single worst status across the whole report — the same
+    /// missing > incorrect > correct/surplus severity order used to color a
+    /// game node in the UI's tree, rolled all the way up to one badge for
+    /// the entire system. `nil` for an empty report (nothing scanned yet).
+    ///
+    /// Computed from rom entries only (`!isDisk`), falling back to disk
+    /// entries only if the report has no roms at all — jensyleo's own call
+    /// (2026-07-30, see ROADMAP.md "CHD/ROM independence"): a game's CHD
+    /// status must never affect its rom status or vice versa, and that
+    /// applies at every rollup level, not just the per-game one. Before
+    /// this, a single missing CHD disk anywhere in a large MAME DAT (the
+    /// overwhelmingly common case — nobody has every arcade CD/hard-disk
+    /// image) permanently pinned this whole-system badge to "Bad" even
+    /// when every rom the user actually cares about was perfectly correct.
+    public var worstStatus: AuditStatus? {
+        let romEntries = entries.filter { !$0.isDisk }
+        return AuditStatus.worst(among: (romEntries.isEmpty ? entries : romEntries).map(\.status))
+    }
+}
+
+extension AuditStatus {
+    /// Severity order used to propagate a "worst status" up from a set of
+    /// entries to their containing game/system — jensyleo's own confirmed
+    /// priority (2026-08-04): `.missing` > `.badDump` > `.incorrect` >
+    /// `.correct`/`.surplus`, matching how a DAT-based audit tool should
+    /// surface the thing that actually needs attention.
+    public static func worst(among statuses: some Sequence<AuditStatus>) -> AuditStatus? {
+        var sawBadDump = false
+        var sawIncorrect = false
+        var sawOther = false
+        for status in statuses {
+            switch status {
+            case .missing: return .missing
+            case .badDump: sawBadDump = true
+            case .incorrect: sawIncorrect = true
+            case .correct, .surplus: sawOther = true
+            }
+        }
+        if sawBadDump { return .badDump }
+        if sawIncorrect { return .incorrect }
+        return sawOther ? .correct : nil
+    }
+}
