@@ -95,6 +95,10 @@ El mensaje a nivel del JUEGO (columna izquierda) también distingue este caso �
 
 Implementado en `ROMMatcher.match`'s `romsByHash`/`requiredByGameDescription` (identificación) + `AuditReporter.generate` (reclasificación a `.incorrect`) + los tres puntos de plegado en `LibraryDetailView`. Nunca usado para *reclamar* un archivo (no reabre el problema de "robo entre juegos" — sigue siendo puramente informativo).
 
+**Nunca "required by" el propio juego (04-ago-2026):** si un archivo aparece DUPLICADO dentro del archivo de su propio juego (dos copias físicas del mismo rom, una reclamada y otra sobrante), `requiredByGameDescription` nunca debe decir que ese archivo es necesario "por" su propio juego — no tiene sentido ("necesitado aquí" cuando literalmente está aquí). Se verifica contra las roms propias del juego contenedor (por nombre de archivo) antes de consultar el índice global; solo se reporta cuando el dueño real es OTRO juego distinto.
+
+**Bug de caché entre escaneos con este mismo campo (04-ago-2026):** un juego cuya huella completa en el escaneo fresco es puramente `surplus` (`game: nil` — ej. `qsound_hle` bajo Split, donde su única rom está `merge=`-etiquetada y se excluye por completo de su propia lista esperada) nunca se reconocía como "tocado" por `Self.merge()` en `LibraryViewModel.swift`, porque esa detección solo miraba entradas con `game != nil`. Resultado: una fila vieja y ya incorrecta (`.correct`, de un escaneo anterior bajo OTRO modo donde esa rom sí se reclamaba) se conservaba sin reconciliar, apareciendo DUPLICADA junto a la fila fresca y correcta ("Not needed here") — dos filas contradictorias para el mismo rom. Corregido: cualquier archivo con ruta real dentro del alcance del escaneo (reconocido o no) marca como "tocado" al juego que su propio nombre de archivo implica, sin importar si el matcher terminó atribuyéndoselo a `game: nil` o no. **Requiere volver a escanear la carpeta afectada** — los datos ya guardados de un escaneo anterior no se corrigen solos, solo un escaneo nuevo aplica la lógica corregida.
+
 ---
 
 ## 4. Nivel 3 — Estado agregado del juego (fila de la lista izquierda)

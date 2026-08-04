@@ -309,9 +309,13 @@ public enum ROMMatcher {
         // could actually be *claimed*, so it can't reopen the cross-game
         // "steal" problem the rest of this file guards against.
         let romsByHash = indexRomsByHash(dat.games)
+        var gamesByName: [String: DATGame] = [:]
+        for game in dat.games where gamesByName[game.name.lowercased()] == nil {
+            gamesByName[game.name.lowercased()] = game
+        }
         let surplusFiles = hashedFiles.indices.filter { !consumed[$0] }.map { index -> SurplusFile in
             let file = hashedFiles[index]
-            let requiredBy = requiredByGameDescription(for: file, romsByHash: romsByHash)
+            let requiredBy = requiredByGameDescription(for: file, gamesByName: gamesByName, romsByHash: romsByHash)
             return SurplusFile(file: file, requiredByGameDescription: requiredBy)
         }
         return MatchReport(games: gameResults, surplusFiles: surplusFiles)
@@ -555,8 +559,33 @@ public enum ROMMatcher {
     /// `surplusFiles` computation for why an unclaimed file can still be
     /// genuinely recognized content, just not one anything currently asks
     /// *this* archive for.
-    private static func requiredByGameDescription(for file: HashedFile, romsByHash: [String: DATGame]) -> String? {
-        for key in [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap({ $0 }) {
+    ///
+    /// Real bug found live by jensyleo (2026-08-04): a genuine *duplicate*
+    /// inside a game's own archive (e.g. `qsound_hle.zip` physically
+    /// containing `dl-1425.bin` twice — one copy legitimately claimed, the
+    /// second left over) also hash-matches this same rom in `romsByHash` —
+    /// reporting "Not needed here (required by QSound (HLE))" for a file
+    /// sitting right there inside QSound (HLE)'s own archive, "required
+    /// by" QSound (HLE) itself, makes no sense: it's needed *here*, it's
+    /// just a second copy nothing else claims. Checked directly against
+    /// the file's own containing archive's own game (`gamesByName`, looked
+    /// up by name rather than trusting `indexRomsByHash`'s first-match-wins
+    /// choice — a rom several unrelated games legitimately share, like this
+    /// QSound chip audio ROM, could easily have that pick a *different*
+    /// game than this exact archive's own, which wouldn't catch the
+    /// duplicate at all) — only a rom this file's own game does *not*
+    /// itself also declare is ever worth reporting as belonging elsewhere.
+    private static func requiredByGameDescription(for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame]) -> String? {
+        let fileHashes = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
+        let isArchiveEntry = file.file.url.lastPathComponent != file.file.name
+        if isArchiveEntry {
+            let ownArchiveGameName = file.file.url.deletingPathExtension().lastPathComponent.lowercased()
+            if let ownGame = gamesByName[ownArchiveGameName] {
+                let ownHashes = Set(ownGame.roms.flatMap { [$0.crc, $0.md5, $0.sha1].compactMap { $0 } })
+                if fileHashes.contains(where: ownHashes.contains) { return nil }
+            }
+        }
+        for key in fileHashes {
             if let game = romsByHash[key] { return game.description }
         }
         return nil

@@ -737,6 +737,29 @@ final class LibraryViewModel {
                   scopedPaths.contains(where: { path.path.hasPrefix($0) }) else { continue }
             touchedGameNames.insert(game.lowercased())
         }
+        // Real bug found live by jensyleo (2026-08-04): a game whose entire
+        // fresh footprint is surplus-derived (`entry.game == nil` — e.g.
+        // `qsound_hle` under Split, where its only rom is merge-tagged and
+        // stripped from its own expected list entirely, so nothing with
+        // `game == "qsound_hle"` can ever exist in a Split-mode scan) never
+        // satisfied the loop above at all, since that loop only ever looks
+        // at entries that already have a real `game`. Untouched by this
+        // definition, `qsound_hle`'s *stale* `previous` row (e.g. a
+        // genuine `.correct` claim from an earlier scan under a merge mode
+        // where its own rom wasn't stripped) got carried forward wholesale
+        // instead of being superseded — alongside the fresh scan's own
+        // surplus entry for the exact same physical file (always appended
+        // unconditionally below), producing two contradictory rows for the
+        // same rom slot: a stale green "Ok" next to a fresh yellow "Not
+        // needed here". Any real, physically-scanned file inside scope —
+        // rom-matched or not — did genuinely get looked at during this
+        // scan, so whatever game its own archive's name implies must count
+        // as touched too, regardless of whether the matcher ended up
+        // attributing it to that name.
+        for entry in fresh.entries {
+            guard entry.game == nil, let path = entry.path, scopedPaths.contains(where: { path.path.hasPrefix($0) }) else { continue }
+            touchedGameNames.insert(path.deletingPathExtension().lastPathComponent.lowercased())
+        }
         // A single-FILE scope (e.g. "Rescan This File") also names its own
         // touched game directly by filename — needed for the edge case
         // where *every* one of that file's roms came back missing/

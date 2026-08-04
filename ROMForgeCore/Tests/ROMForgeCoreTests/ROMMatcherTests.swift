@@ -314,6 +314,31 @@ struct ROMMatcherTests {
         #expect(surplus?.requiredByGameDescription == "Street Fighter II': Champion Edition")
     }
 
+    @Test("a duplicate of an already-claimed rom, inside its own game's own archive, is never tagged as required by that same game")
+    func duplicateWithinOwnArchiveIsNotTaggedAsRequiredByItself() {
+        // Real bug found live by jensyleo (2026-08-04): `qsound_hle.zip`
+        // physically contains "dl-1425.bin" *twice* — one copy correctly
+        // claims the game's own expected rom, the second is a genuine
+        // leftover duplicate. It still hash-matches the exact same rom in
+        // the DAT's own rom-by-hash index — but the game that declares
+        // that rom is "QSound (HLE)" itself, the very archive this
+        // duplicate sits inside, so tagging it "Not needed here (required
+        // by QSound (HLE))" is nonsensical: it *is* needed here, there's
+        // just already a copy. Must report a plain, genuinely-unrecognized
+        // `.missing` `requiredByGameDescription` (`nil`) instead.
+        let qsound = DATGame(
+            name: "qsound_hle", description: "QSound (HLE)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "dl-1425.bin", size: 10, crc: "99999999", md5: nil, sha1: "3333333333333333333333333333333333333333")]
+        )
+        let dupDAT = DATFile(header: dat.header, games: [qsound])
+        let claimedCopy = zipEntryHashedFile(archiveName: "qsound_hle", entryName: "dl-1425.bin", size: 10, crc: "99999999", sha1: "3333333333333333333333333333333333333333")
+        let duplicateCopy = zipEntryHashedFile(archiveName: "qsound_hle", entryName: "dl-1425.bin", size: 10, crc: "99999999", sha1: "3333333333333333333333333333333333333333")
+        let report = ROMMatcher.match(dat: dupDAT, hashedFiles: [claimedCopy, duplicateCopy])
+
+        #expect(report.surplusFiles.count == 1)
+        #expect(report.surplusFiles.first?.requiredByGameDescription == nil)
+    }
+
     @Test("in an archive-organized scan, a whole archive renamed by the user is still found via an unclaimed (non-DAT-name) archive")
     func findsRomInsideARenamedArchive() {
         // The archive itself ("renamed-by-user.zip") doesn't match any DAT
