@@ -413,6 +413,43 @@ struct ROMMatcherTests {
         #expect(result.matches[0].status == .correct(renamedArchive))
     }
 
+    @Test("a game needing 2+ roms never claims a single stray shared rom out of an unclaimed archive that isn't actually its own")
+    func neverClaimsASingleStrayRomFromAnUnrelatedRenamedArchive() throws {
+        // Real bug found live by jensyleo (2026-08-05): duplicating an
+        // archive under a new name (e.g. copying `blazstar.zip` to
+        // "blazstar copy.zip") made every completely unrelated game whose
+        // *any single rom* happened to hash-match *any single file* inside
+        // that copy legitimately claim it through the renamed-archive
+        // fallback above — even though that archive's own content is
+        // overwhelmingly explained by a *different* game. Dozens of
+        // still-missing games all showed the duplicated archive's name as
+        // their own File Name after claiming just one shared/padding rom.
+        let multiRomGame = DATGame(
+            name: "Two Rom Game", description: "Two Rom Game", cloneOf: nil, romOf: nil,
+            roms: [
+                DATRom(name: "shared-padding.bin", size: 900, crc: "f0f0f0f0", md5: nil, sha1: "9090909090909090909090909090909090909090"),
+                DATRom(name: "its-own-unique.bin", size: 300, crc: "cccccccc", md5: nil, sha1: "3333333333333333333333333333333333333333"),
+            ]
+        )
+        let dupDAT = DATFile(header: dat.header, games: dat.games + [multiRomGame], mergeMode: dat.mergeMode)
+        // "renamed-by-user.zip" contains only the one rom shared by
+        // coincidence with "Two Rom Game" — none of that game's other
+        // (unique) roms are actually present in it.
+        let sharedPaddingInUnrelatedArchive = zipEntryHashedFile(archiveName: "renamed-by-user", entryName: "shared-padding.bin", size: 900, crc: "f0f0f0f0", sha1: "9090909090909090909090909090909090909090")
+        let report = try ROMMatcher.match(dat: dupDAT, hashedFiles: [sharedPaddingInUnrelatedArchive])
+
+        let result = report.games.first { $0.game.name == "Two Rom Game" }!
+        // Not claimed/consumed — but still correctly reported as
+        // `.foundElsewhere` (the content genuinely exists on disk, just not
+        // in an archive this game may claim as its own), not a silent
+        // `.missing` that would hide where it actually is.
+        if case .foundElsewhere(let file) = result.matches[0].status {
+            #expect(file == sharedPaddingInUnrelatedArchive)
+        } else {
+            Issue.record("expected .foundElsewhere, got \(result.matches[0].status)")
+        }
+    }
+
     @Test("under Un-merged mode, a game that IS part of a real clone/parent family still never CLAIMS a rom from a renamed archive")
     func nonMergedCloneFamilyStillNeverBorrowsFromAnotherArchive() throws {
         // The other half of the fix above: the strictness itself is still

@@ -486,7 +486,7 @@ public enum ROMMatcher {
             // consulted (`familyNameMatchIndex` below only matters for a
             // `nodump` rom's claim logic).
             let familyArchiveIndices = Set(game.mergedFamilyMachineNames.flatMap { archiveNameIndex[$0] ?? [] })
-            return game.roms.map { rom in
+            let perRom = game.roms.map { rom -> (rom: DATRom, candidates: [Int], hashVerifiedCandidates: [Int], nameMatchIndex: Int?, familyNameMatchIndex: Int?) in
                 let candidates = candidateIndices(
                     for: rom,
                     crcIndex: crcIndex, md5Index: md5Index, sha1Index: sha1Index, sizeIndex: sizeIndex,
@@ -511,6 +511,45 @@ public enum ROMMatcher {
                     guard isArchiveOrganized, !familyArchiveIndices.isEmpty else { return nil }
                     return nameMatches.first { familyArchiveIndices.contains($0) }
                 }()
+                return (rom, candidates, hashVerifiedCandidates, nameMatchIndex, familyNameMatchIndex)
+            }
+
+            // Real bug found live by jensyleo (2026-08-05): duplicating an
+            // archive under a new name (e.g. copying `blazstar.zip` to
+            // "blazstar copy.zip") made every completely unrelated game
+            // whose *any single rom* happened to hash-match *any single
+            // file* inside that copy (shared/filler/padding content, common
+            // across totally unrelated machines) legitimately claim it
+            // through the "renamed-whole-archive" fallback below — meant
+            // for the case where a user renamed one game's *entire*
+            // archive, not for cherry-picking one stray rom out of an
+            // archive that in fact belongs to a different game. Dozens of
+            // still-missing games all showed "blazstar copy.zip" as their
+            // own File Name after claiming just that one padding rom.
+            //
+            // Fixed here, once per game rather than per rom: tally, across
+            // every rom's raw (unscoped) candidates, how many distinct roms
+            // of *this* game each unclaimed archive could explain. An
+            // archive only counts as "genuinely renamed to belong to this
+            // game" if it explains at least two of its roms — a real
+            // renamed archive matches most/all of a game's roms; an
+            // accidental shared-content collision matches at most one —
+            // unless the game declares only one rom in total, the only case
+            // where that bar can never be honestly cleared.
+            var unclaimedArchiveRomCounts: [URL: Int] = [:]
+            if isArchiveOrganized, !gameIsStrict {
+                for (_, candidates, _, _, _) in perRom {
+                    let unclaimedArchiveURLs = Set(candidates.compactMap { index -> URL? in
+                        guard !ownArchiveIndices.contains(index), !isInClaimedArchive(index, hashedFiles: hashedFiles, allGameNames: allGameNames) else { return nil }
+                        return hashedFiles[index].file.url
+                    })
+                    for url in unclaimedArchiveURLs { unclaimedArchiveRomCounts[url, default: 0] += 1 }
+                }
+            }
+            let trustedUnclaimedArchiveThreshold = game.roms.count == 1 ? 1 : 2
+            let trustedUnclaimedArchives = Set(unclaimedArchiveRomCounts.filter { $0.value >= trustedUnclaimedArchiveThreshold }.keys)
+
+            return perRom.map { rom, candidates, hashVerifiedCandidates, nameMatchIndex, familyNameMatchIndex in
                 let scopedCandidates: [Int]
                 if !isArchiveOrganized {
                     scopedCandidates = candidates
@@ -523,7 +562,9 @@ public enum ROMMatcher {
                 } else {
                     let inOwnArchive = candidates.filter { ownArchiveIndices.contains($0) }
                     let inUnclaimedArchive = candidates.filter { index in
-                        !ownArchiveIndices.contains(index) && !isInClaimedArchive(index, hashedFiles: hashedFiles, allGameNames: allGameNames)
+                        !ownArchiveIndices.contains(index)
+                            && !isInClaimedArchive(index, hashedFiles: hashedFiles, allGameNames: allGameNames)
+                            && trustedUnclaimedArchives.contains(hashedFiles[index].file.url)
                     }
                     scopedCandidates = inOwnArchive + inUnclaimedArchive
                 }
