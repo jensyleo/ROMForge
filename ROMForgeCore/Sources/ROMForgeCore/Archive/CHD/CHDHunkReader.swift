@@ -119,6 +119,7 @@ public final class CHDHunkReader {
     }
     private static let tagZlib = fourCC("zlib")
     private static let tagLZMA = fourCC("lzma")
+    private static let tagHuffman = fourCC("huff")
     private static let tagCDZlib = fourCC("cdzl")
     private static let tagCDLZMA = fourCC("cdlz")
     private static let tagCDFlac = fourCC("cdfl")
@@ -138,6 +139,8 @@ public final class CHDHunkReader {
             return try CHDZlibDecompressor.decompress(raw, decompressedSize: Int(header.hunkBytes))
         case tagLZMA:
             return try CHDLZMADecompressor.decompress(raw, decompressedSize: Int(header.hunkBytes))
+        case tagHuffman:
+            return try CHDHuffmanDecompressor.decompress(raw, decompressedSize: Int(header.hunkBytes))
         case tagCDZlib:
             return try CHDCDCompositeDecompressor.decompress(raw, decompressedSize: Int(header.hunkBytes), base: .zlib)
         case tagCDLZMA:

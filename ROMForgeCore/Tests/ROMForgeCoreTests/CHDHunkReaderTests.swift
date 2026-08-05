@@ -157,6 +157,127 @@ struct CHDHunkReaderTests {
         #expect(try reader.readHunk(2) == hunk0Plain) // SELF -> hunk 0
     }
 
+    /// `COMPRESSION_PARENT` was implemented but had zero test coverage at
+    /// all (not even synthetic) — real gap found live by jensyleo
+    /// (2026-08-05, "el punto 3" of a research follow-up), confirmed by an
+    /// investigation agent: the only existing PARENT-adjacent test was
+    /// `CHDV5MapReaderTests`' own hand-built PARENT-type map fixture, which
+    /// only exercises the *map-decoding* pointer arithmetic, never a real
+    /// child-reads-from-parent hunk flow through `CHDHunkReader` itself.
+    /// This builds two complete, byte-accurate synthetic CHD v5 files (a
+    /// "parent" with one real `NONE` hunk, and a "child" whose only hunk is
+    /// `COMPRESSION_PARENT`, `unitBytes == hunkBytes` on both so the parent
+    /// hunk index resolves to exactly hunk 0) and confirms the child's own
+    /// `CHDHunkReader`, given the parent's reader via `parent:`, correctly
+    /// returns the parent's hunk content — the one flow no test exercised
+    /// before this.
+    @Test("COMPRESSION_PARENT resolves against a real parent CHDHunkReader end to end")
+    func readsParentHunkThroughRealParentReader() throws {
+        let parentPlainTemplate = "PARENT-HUNK-CONTENT-LIVES-HERE-"
+        let hunkBytes = UInt32(64)
+        var parentPlain = [UInt8](parentPlainTemplate.utf8)
+        while parentPlain.count < Int(hunkBytes) { parentPlain.append(0x2a) }
+        parentPlain = Array(parentPlain.prefix(Int(hunkBytes)))
+
+        // --- Parent file: 1 hunk, COMPRESSION_NONE ---
+        var parentPacker = BitPacker()
+        appendUniformTreeImport(&parentPacker)
+        parentPacker.append(4, bits: 4) // hunk0: COMPRESSION_NONE
+        parentPacker.append(0x0000, bits: 16) // hunk0 NONE: 16-bit crc
+        let parentCompressedMap = parentPacker.result
+
+        let parentDataStart: UInt64 = 124 + 16 + UInt64(parentCompressedMap.count)
+        let parentEntries = try CHDV5MapReader.decode(
+            compressed: parentCompressedMap, hunkCount: 1, hunkBytes: hunkBytes, unitBytes: hunkBytes,
+            firstOffset: parentDataStart, lengthBits: 32, selfBits: 8, parentBits: 0
+        )
+        let parentMapCRC = CHDCRC16.compute(rawMapBytesForAssembly(parentEntries))
+
+        var parentFile = [UInt8]()
+        parentFile.append(contentsOf: [UInt8]("MComprHD".utf8))
+        parentFile.append(contentsOf: bigEndian(124, count: 4))
+        parentFile.append(contentsOf: bigEndian(5, count: 4))
+        parentFile.append(contentsOf: [UInt8]("none".utf8))
+        parentFile.append(contentsOf: [UInt8](repeating: 0, count: 12))
+        parentFile.append(contentsOf: bigEndian(UInt64(hunkBytes), count: 8)) // logicalbytes (1 hunk)
+        parentFile.append(contentsOf: bigEndian(124, count: 8)) // mapoffset
+        parentFile.append(contentsOf: bigEndian(0, count: 8)) // metaoffset
+        parentFile.append(contentsOf: bigEndian(UInt64(hunkBytes), count: 4)) // hunkbytes
+        parentFile.append(contentsOf: bigEndian(UInt64(hunkBytes), count: 4)) // unitbytes == hunkbytes
+        parentFile.append(contentsOf: [UInt8](repeating: 0, count: 20)) // rawsha1
+        parentFile.append(contentsOf: [UInt8](repeating: 0, count: 20)) // sha1
+        parentFile.append(contentsOf: [UInt8](repeating: 0, count: 20)) // parentsha1 (none)
+        #expect(parentFile.count == 124)
+        parentFile.append(contentsOf: bigEndian(UInt64(parentCompressedMap.count), count: 4))
+        parentFile.append(contentsOf: bigEndian(parentDataStart, count: 6))
+        parentFile.append(contentsOf: bigEndian(UInt64(parentMapCRC), count: 2))
+        parentFile.append(32) // lengthbits (unused, no tagged-slot hunks)
+        parentFile.append(8) // selfbits (unused)
+        parentFile.append(0) // parentbits (unused, this file has no PARENT hunks itself)
+        parentFile.append(0)
+        parentFile.append(contentsOf: parentCompressedMap)
+        #expect(UInt64(parentFile.count) == parentDataStart)
+        parentFile.append(contentsOf: parentPlain)
+
+        let parentURL = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic-parent-\(UUID().uuidString).chd")
+        try Data(parentFile).write(to: parentURL)
+        defer { try? FileManager.default.removeItem(at: parentURL) }
+        let parentReader = try CHDHunkReader(contentsOf: parentURL)
+        #expect(try parentReader.readHunk(0) == parentPlain) // sanity: parent reads back correctly on its own
+
+        // --- Child file: 1 hunk, COMPRESSION_PARENT -> parent hunk 0 ---
+        let parentBits = 8
+        var childPacker = BitPacker()
+        appendUniformTreeImport(&childPacker)
+        childPacker.append(6, bits: 4) // hunk0: COMPRESSION_PARENT (raw type 6, not a pseudo-fallthrough)
+        childPacker.append(0, bits: parentBits) // offset value 0 -> parent hunk index 0 (unitBytes == parent.hunkBytes)
+        let childCompressedMap = childPacker.result
+
+        let childDataStart: UInt64 = 124 + 16 + UInt64(childCompressedMap.count)
+        let childEntries = try CHDV5MapReader.decode(
+            compressed: childCompressedMap, hunkCount: 1, hunkBytes: hunkBytes, unitBytes: hunkBytes,
+            firstOffset: childDataStart, lengthBits: 32, selfBits: 8, parentBits: parentBits
+        )
+        let childMapCRC = CHDCRC16.compute(rawMapBytesForAssembly(childEntries))
+
+        var childFile = [UInt8]()
+        childFile.append(contentsOf: [UInt8]("MComprHD".utf8))
+        childFile.append(contentsOf: bigEndian(124, count: 4))
+        childFile.append(contentsOf: bigEndian(5, count: 4))
+        childFile.append(contentsOf: [UInt8]("none".utf8))
+        childFile.append(contentsOf: [UInt8](repeating: 0, count: 12))
+        childFile.append(contentsOf: bigEndian(UInt64(hunkBytes), count: 8)) // logicalbytes (1 hunk)
+        childFile.append(contentsOf: bigEndian(124, count: 8)) // mapoffset
+        childFile.append(contentsOf: bigEndian(0, count: 8)) // metaoffset
+        childFile.append(contentsOf: bigEndian(UInt64(hunkBytes), count: 4)) // hunkbytes
+        childFile.append(contentsOf: bigEndian(UInt64(hunkBytes), count: 4)) // unitbytes == hunkbytes
+        childFile.append(contentsOf: [UInt8](repeating: 0, count: 20)) // rawsha1
+        childFile.append(contentsOf: [UInt8](repeating: 0, count: 20)) // sha1
+        // parentsha1: a non-zero placeholder — real chdman would put the
+        // real parent's own sha1 here, but `CHDHunkReader` never cross-checks
+        // this field against the `parent:` reader it's handed, so any
+        // non-zero value exercises the same code path.
+        childFile.append(contentsOf: [UInt8](repeating: 0xab, count: 20))
+        #expect(childFile.count == 124)
+        childFile.append(contentsOf: bigEndian(UInt64(childCompressedMap.count), count: 4))
+        childFile.append(contentsOf: bigEndian(childDataStart, count: 6))
+        childFile.append(contentsOf: bigEndian(UInt64(childMapCRC), count: 2))
+        childFile.append(32) // lengthbits
+        childFile.append(8) // selfbits
+        childFile.append(UInt8(parentBits))
+        childFile.append(0)
+        childFile.append(contentsOf: childCompressedMap)
+        #expect(UInt64(childFile.count) == childDataStart)
+        // No data-section bytes of its own — the PARENT hunk has nothing to store.
+
+        let childURL = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic-child-\(UUID().uuidString).chd")
+        try Data(childFile).write(to: childURL)
+        defer { try? FileManager.default.removeItem(at: childURL) }
+
+        let childReader = try CHDHunkReader(contentsOf: childURL, parent: parentReader)
+        #expect(try childReader.readHunk(0) == parentPlain)
+    }
+
     private func rawMapBytesForAssembly(_ entries: [CHDMapEntry]) -> [UInt8] {
         var bytes = [UInt8]()
         for entry in entries {

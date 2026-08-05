@@ -525,16 +525,18 @@ doing what we're doing."
    sets whole-second precision, produced a false "cache didn't work"
    result — worth remembering: APFS mtimes carry sub-second precision, and
    `touch -t` alone isn't a faithful way to "preserve" one for a test.)
-6. [~] **CHD hunk decode** — as complete as this environment genuinely
-   allows; marked "in progress" (not done) because several codecs remain
-   permanently blocked here (see below), not because more effort would
-   close them. Ported directly from MAME's own source rather than wrapping
-   `libchdr` (no Homebrew `libchdr` formula exists, and libchdr's own
-   dependencies — zlib available via libSystem, but liblzma/zstd only via
-   Homebrew's `xz`/`zstd`, and FLAC not installed at all in this
-   environment — would have made a C-target wrapper itself fragile across
-   machines; porting the algorithm directly has no such runtime dependency
-   risk).
+6. [~] **CHD hunk decode** — updated 2026-08-05 after re-auditing actual
+   code state against this section's own (partly stale) claims. Zlib,
+   LZMA, both CD-composite variants (`cdzl`/`cdlz`), and now the plain
+   (non-CD) `huff` codec are all real, working, and actually wired into
+   `CHDHunkReader`'s own dispatch (`decompressTaggedSlot`, below) — not
+   "not attempted" as an earlier draft of this section said. Only
+   `flac`/`cdfl` remain genuinely unimplemented. Ported directly from
+   MAME's own source rather
+   than wrapping `libchdr` (no Homebrew `libchdr` formula exists at all —
+   confirmed again 2026-08-05, `brew search` finds nothing named `libchdr`;
+   porting the algorithm directly has no C-library runtime dependency risk
+   across machines).
 
    **What's real and tested — the full chain, tied together and exercised
    end to end**:
@@ -565,17 +567,52 @@ doing what we're doing."
      dependency). Tested against a real, independently-generated raw-deflate
      buffer (Python's `zlib.compressobj(9, zlib.DEFLATED, -15)`), not a
      round-trip against our own compressor.
+   - `CHDLZMADecompressor` (added 2026-07-30) — MAME's specific
+     `LZMA_FILTER_LZMA1EXT` raw-stream framing (no end marker, `dictSize`/
+     `lc`=3/`lp`=0/`pb`=2 recomputed exactly like MAME's own encoder), via
+     the `CLZMA` SPM system-library target wrapping Homebrew's `xz`
+     (liblzma isn't system-provided on macOS — a real, documented external
+     dependency, unlike zlib). Tested against a payload independently
+     encoded via liblzma's own raw encode API inside the test itself, plus
+     the decompressor's own doc comment records empirical confirmation
+     against a real CHD hunk on the day it was written.
+   - `CHDCDCompositeDecompressor` (added 2026-07-30) — MAME's CD-composite
+     framing (`cdzl`/`cdlz`): de-interleaves 2352-byte sectors into
+     2048-byte data + ECC/subcode, decompresses the data portion with
+     whichever base codec the tag names (`.zlib`/`.lzma`), then
+     reconstructs each sector's ECC via `CDSectorECC`. This is the codec
+     MAME actually uses in real CPS3 CD-based CHDs — confirmed against a
+     real CHD's hunks reporting only `cdlz`/`cdzl`, never plain `lzma`/`zlib`
+     or `cdfl`.
+   - `CHDHuffmanTreeDecoder`/`CHDHuffmanDecompressor` (added 2026-08-05) —
+     the plain (non-CD) `huff` hunk-body codec, `huffman_8bit_decoder` =
+     `huffman_decoder<256, 16>` in MAME's own terms. `CHDHuffmanTreeDecoder`
+     generalizes the map decoder's engine to arbitrary `numCodes`/`maxBits`
+     and adds `import_tree_huffman` (a nested `huffman_decoder<24, 6>`
+     decodes the main tree's own code lengths — genuinely different framing
+     from the map's `import_tree_rle`), ported verbatim from MAME's real
+     `huffman_context_base::import_tree_huffman` source. Verified against a
+     hand-built bitstream tracing that exact wire format bit-by-bit, not a
+     round-trip against our own encoder.
    - `CHDHeader` gained `mapOffset` (previously unread, needed to actually
      locate the map instead of only verifying the file's declared
      identity).
    - `CHDHunkReader` (new) — the tie-together piece: opens a real CHD v5
      file, reads its map via `CHDHeaderReader` + `CHDV5MapReader` (with
      `mapcrc` verification), and decompresses individual hunks on demand
-     for `COMPRESSION_NONE` (raw copy), `COMPRESSION_TYPE_0`/zlib (via
-     `CHDZlibDecompressor`), and `COMPRESSION_SELF` (recursive lookup,
-     cached). `COMPRESSION_PARENT` is implemented and resolves against
-     another `CHDHunkReader` passed in as `parent:`, but is untested
-     against a real parent/diff-CHD pair (see below).
+     for `COMPRESSION_NONE` (raw copy), `COMPRESSION_SELF` (recursive
+     lookup, cached), and `COMPRESSION_PARENT` (resolves against another
+     `CHDHunkReader` passed in as `parent:` — see its own test below for
+     current coverage). For a "tagged slot" compression type
+     (`COMPRESSION_TYPE_0`-`3`), `decompressTaggedSlot` resolves the CHD's
+     own per-slot codec FourCC (`header.compressorTags`, since two
+     different CHDs can use the same slot number for different codecs) and
+     dispatches to `CHDZlibDecompressor` (`zlib`), `CHDLZMADecompressor`
+     (`lzma`), or `CHDCDCompositeDecompressor` (`cdzl`/`cdlz`) accordingly
+     — all four tags are real, wired, and tested (see each decompressor's
+     own section below). Only `flac`/`cdfl` remain unsupported
+     (`CHDHunkReaderError.unsupportedCodec`, explicit and reported, never
+     silently wrong).
    - **End-to-end test**: since no real CHD file exists here to test
      against, hand-assembled a complete, byte-accurate synthetic CHD v5
      file — real 124-byte header, real 16-byte map header, a real
@@ -591,31 +628,54 @@ doing what we're doing."
      it doesn't break the app target — it builds clean.
 
    **What remains — genuinely environment-blocked, not merely deferred**:
-   - **No real, legally-obtainable CHD file exists in this environment** to
-     validate any of the above against (same restriction as sourcing
-     ROMs — no Homebrew `libchdr`/`chdman` formula, MAME itself isn't
-     installed, and Claude cannot legally source copyrighted disc images).
-     Every test above is either a hand-built-but-algorithm-traced fixture
-     or an independently-generated-but-synthetic one. **This should be
-     validated against a real CHD before being trusted for anything beyond
-     further development.**
-   - **LZMA hunk bodies** — needs MAME's specific raw-stream framing, not
-     just any liblzma call; liblzma is only available via Homebrew's `xz`
-     here, not system-provided, so even attempting it would add a
-     non-portable dependency this project has otherwise avoided.
-   - **MAME's own Huffman codec for hunk bodies** — a distinct, larger
-     instantiation from the map decoder (likely `huffman_decoder<256,
-     ...>` or similar); not ported.
-   - **FLAC hunk bodies** — no FLAC library installed in this environment
-     and none vendored; would require adding a real dependency this
-     project has deliberately avoided elsewhere.
-   - **CD-composite codecs** (sector/subcode de-interleaving on top of any
-     of the above) — not attempted.
-   - **`COMPRESSION_PARENT` is implemented but untested** — no real
-     parent/diff-CHD pair exists here to build a genuine multi-file test
-     against; only the pointer-resolution logic itself is exercised (via
-     the map-reader's own hand-built PARENT-type fixture), not a full
-     child-reads-from-parent flow.
+   - **Corrected 2026-08-05** — this bullet used to claim no real CHD file
+     was ever available to validate against; that stopped being true once
+     the user's own real MAME collection became reachable in-session
+     (`CHDLZMADecompressor.swift`'s own doc comment records empirically
+     debugging the `LZMA1EXT` framing choice against a real CHD hunk on
+     2026-07-30, and `CHDCDCompositeDecompressor`'s notes it confirmed
+     `cdlz`/`cdzl` are the only tags a real CPS3 CHD's hunks actually use).
+     The automated test suite itself still only exercises hand-built/
+     independently-generated *synthetic* fixtures, not a full real CHD end
+     to end — that specific gap is real, just narrower than originally
+     stated; no `libchdr`/`chdman` Homebrew formula exists either way, so
+     ROMForge's own port remains the only path regardless.
+   - **MAME's own Huffman codec for hunk bodies (`huff` tag) — closed
+     2026-08-05.** `CHDHuffmanTreeDecoder` generalizes the map decoder's own
+     engine (numCodes/maxBits as parameters instead of the map's hardcoded
+     16/8) and adds `import_tree_huffman` — a genuinely different tree
+     format from the map's `import_tree_rle`: a nested `huffman_decoder<24,
+     6>` first decodes the *lengths* of the real, 256-symbol main tree
+     (`huffman_8bit_decoder` = `huffman_decoder<256, 16>`), traced verbatim
+     from MAME's real `huffman_context_base::import_tree_huffman`/
+     `huffman_8bit_decoder::decode()` source. `CHDHuffmanDecompressor`
+     wires it into `CHDHunkReader`'s tagged-slot dispatch. Verified against
+     a real bitstream hand-built bit-by-bit per the exact wire format
+     (`CHDHuffmanDecompressorTests`, a uniform 256-symbol/8-bit-code tree —
+     not generated by running the decoder backwards).
+   - **FLAC hunk bodies** (`flac`/`cdfl` tags) — genuinely unimplemented,
+     but *not* environment-blocked the way this bullet previously claimed:
+     `flac` (1.5.0) is actually installed via Homebrew on this machine, and
+     the `CFLAC` SPM system-library target is already declared in
+     `Package.swift` (built but unused so far). What's actually blocking
+     `cdfl` specifically is that MAME's own CD-FLAC framing
+     (`chd_cd_flac_decompressor`) isn't a standard container libFLAC's
+     public API reads directly — real work, not a missing dependency. None
+     of a real CPS3 CHD's hunks used this slot in practice (only
+     `cdlz`/`cdzl` did), so it's lower real-world priority even once built.
+   - LZMA hunk bodies and CD-composite codecs (`cdzl`/`cdlz`) — see their
+     own descriptions above; this line intentionally left as a marker that
+     they're no longer "what remains" as of 2026-08-05, not removed
+     outright, so a diff against an older version of this file shows
+     exactly what changed.
+   - **`COMPRESSION_PARENT` test coverage — closed 2026-08-05**:
+     `CHDHunkReaderTests.readsParentHunkThroughRealParentReader()` builds
+     two complete synthetic CHD v5 files (a parent with a real `NONE` hunk,
+     a child whose only hunk is `COMPRESSION_PARENT`) and confirms the
+     child's `CHDHunkReader`, given the parent's own reader via `parent:`,
+     resolves and returns the parent's hunk content end to end — the one
+     flow nothing exercised before (only the map-decoder's own pointer
+     arithmetic was covered, never a real child-reads-from-parent read).
    - **Not wired into `CHDMatcher`/the scan pipeline** — `CHDMatcher` itself
      (header-SHA1-only comparison) WAS wired in on 2026-07-30, and is what
      every real CHD audit in the app actually uses today; this note is
