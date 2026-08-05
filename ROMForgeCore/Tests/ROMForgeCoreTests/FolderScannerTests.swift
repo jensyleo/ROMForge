@@ -122,22 +122,44 @@ struct FolderScannerTests {
         #expect(files.map(\.name) == ["cap-33s-1.chd"])
     }
 
-    @Test("throws ScannerError.folderTooDeep rather than scanning past one level of subfolder — jensyleo's own request (2026-08-05) so pointing this at something far too broad (a whole drive, a home folder) never silently tries to enumerate everything underneath it")
-    func throwsWhenNestingExceedsOneLevel() throws {
+    @Test("skips (rather than throwing on) a subfolder nested past one level, reporting it via onSkippedTooDeep, while still scanning everything else normally — jensyleo's own correction (2026-08-05) after trying the throw-and-refuse-everything behavior live: one too-deep subtree shouldn't make an otherwise-scannable folder completely unusable")
+    func skipsTooDeepSubfolderInsteadOfThrowing() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         // Mirrors the real case that surfaced this: a system folder with an
         // extra subfolder (e.g. "BATOCERA") sitting ABOVE the per-game
         // folder, one level deeper than the convention this project's own
-        // testing has always used.
+        // testing has always used — alongside a perfectly normal, real
+        // game folder at the allowed depth.
         let tooDeep = root.appendingPathComponent("BATOCERA").appendingPathComponent("sfiii3")
         try FileManager.default.createDirectory(at: tooDeep, withIntermediateDirectories: true)
+        let normalGameFolder = root.appendingPathComponent("sfiii2")
+        try FileManager.default.createDirectory(at: normalGameFolder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         try Data("chd-content".utf8).write(to: tooDeep.appendingPathComponent("cap-33s-1.chd"))
+        try Data("rom-content".utf8).write(to: normalGameFolder.appendingPathComponent("cap-3ga000.chd"))
 
-        #expect(throws: ScannerError.self) {
-            try FolderScanner.scan(folder: root)
+        final class Skipped: @unchecked Sendable {
+            private let lock = NSLock()
+            private var urls: [URL] = []
+            func append(_ url: URL) {
+                lock.lock()
+                defer { lock.unlock() }
+                urls.append(url)
+            }
+            var all: [URL] {
+                lock.lock()
+                defer { lock.unlock() }
+                return urls
+            }
         }
+        let skipped = Skipped()
+        let files = try FolderScanner.scan(folder: root, onSkippedTooDeep: { skipped.append($0) })
+
+        // The too-deep file never gets enumerated at all; the normal one does.
+        #expect(files.map(\.name) == ["cap-3ga000.chd"])
+        #expect(skipped.all.count == 1)
+        #expect(skipped.all.first?.lastPathComponent == "sfiii3")
     }
 
     @Test("scan(paths:) mixes whole folders and individual files in one pass — jensyleo's own request (2026-07-28) to scan just one archive without rescanning its entire containing folder")

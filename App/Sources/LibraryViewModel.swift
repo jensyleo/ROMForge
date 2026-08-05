@@ -505,6 +505,14 @@ final class LibraryViewModel {
             let folderProgressHandler: @Sendable (Int) -> Void = { [weak self] count in
                 Task { @MainActor in self?.folderScanFilesFound = count }
             }
+            // jensyleo's own request (2026-08-05): a subfolder nested past
+            // `FolderScanner.maxSubfolderDepth` is skipped, not fatal to the
+            // whole scan — logged so it's still visible (rather than
+            // silently never-mentioned) that ROMForge never looked inside
+            // it at all.
+            let skippedTooDeepHandler: @Sendable (URL) -> Void = { [weak self] url in
+                Task { @MainActor in self?.log("Skipped (nested too deep, not scanned): \(url.path)") }
+            }
             let archiveListedHandler: @Sendable (Int, Int) -> Void = { [weak self] read, total in
                 Task { @MainActor in self?.archiveListingProgress = (read, total) }
             }
@@ -575,7 +583,7 @@ final class LibraryViewModel {
                 // directly, e.g. from a game's own right-click menu) mixed
                 // in alongside whole folders — `FolderScanner.scan(paths:)`
                 // handles either per-entry.
-                let scannedFiles = try FolderScanner.scan(paths: targetFolders, onFileFound: folderProgressHandler)
+                let scannedFiles = try FolderScanner.scan(paths: targetFolders, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler)
                 walkLogHandler(scannedFiles.count, Date().timeIntervalSince(walkStart))
                 // A file whose size/mtime match a previous scan's cache
                 // entry is served from there instead of rehashed — a real
