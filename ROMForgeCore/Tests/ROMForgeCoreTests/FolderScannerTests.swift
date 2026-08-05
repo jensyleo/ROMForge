@@ -109,6 +109,37 @@ struct FolderScannerTests {
         }
     }
 
+    @Test("allows exactly one level of subfolder — the real <system>/<game>/<file> convention")
+    func allowsOneLevelOfSubfolder() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let gameFolder = root.appendingPathComponent("sfiii3")
+        try FileManager.default.createDirectory(at: gameFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data("chd-content".utf8).write(to: gameFolder.appendingPathComponent("cap-33s-1.chd"))
+
+        let files = try FolderScanner.scan(folder: root)
+        #expect(files.map(\.name) == ["cap-33s-1.chd"])
+    }
+
+    @Test("throws ScannerError.folderTooDeep rather than scanning past one level of subfolder — jensyleo's own request (2026-08-05) so pointing this at something far too broad (a whole drive, a home folder) never silently tries to enumerate everything underneath it")
+    func throwsWhenNestingExceedsOneLevel() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        // Mirrors the real case that surfaced this: a system folder with an
+        // extra subfolder (e.g. "BATOCERA") sitting ABOVE the per-game
+        // folder, one level deeper than the convention this project's own
+        // testing has always used.
+        let tooDeep = root.appendingPathComponent("BATOCERA").appendingPathComponent("sfiii3")
+        try FileManager.default.createDirectory(at: tooDeep, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data("chd-content".utf8).write(to: tooDeep.appendingPathComponent("cap-33s-1.chd"))
+
+        #expect(throws: ScannerError.self) {
+            try FolderScanner.scan(folder: root)
+        }
+    }
+
     @Test("scan(paths:) mixes whole folders and individual files in one pass — jensyleo's own request (2026-07-28) to scan just one archive without rescanning its entire containing folder")
     func scanPathsMixesFoldersAndIndividualFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -9,6 +9,19 @@ import Foundation
 /// Recursively walks a folder and lists its loose (uncompressed) files.
 /// Archive scanning (ZIP/7z/CHD) is handled by dedicated scanners added later.
 public enum FolderScanner {
+    /// How many levels of subfolder ROMForge will descend into below the
+    /// folder a system actually configures — jensyleo's own request
+    /// (2026-08-05): pointing this at something far too broad (a whole
+    /// drive, `~`) must never silently try to enumerate everything
+    /// underneath it. `1` covers every real convention already in use in
+    /// this project's own testing (`<system>/<game>/<file>` — one game
+    /// subfolder per archive/CHD) without covering "the entire disk". A
+    /// folder nesting deeper than this (e.g. an extra `BATOCERA`-style
+    /// subfolder above the game level) throws `ScannerError.folderTooDeep`
+    /// rather than partially scanning it — flattening/removing the offending
+    /// subfolder is the fix, not raising this number for one exception.
+    public static let maxSubfolderDepth = 1
+
     /// - Parameter onFileFound: reports the running count of regular files
     ///   found so far, throttled to roughly every 200 files (plus always a
     ///   final call) — directory enumeration doesn't know its total ahead of
@@ -27,20 +40,34 @@ public enum FolderScanner {
 
         guard let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
             return []
         }
 
+        // Counted in path components below `url` itself — a direct child
+        // (loose file OR game subfolder) is depth 0; that subfolder's own
+        // contents are depth 1. `maxSubfolderDepth` (1) means "one level of
+        // subfolder is fine" (the common `<game>/<file>` convention), not
+        // "one level total" — checked against every yielded item (including
+        // directories themselves), not just regular files, so a too-deep
+        // subfolder is caught the moment it's discovered rather than after
+        // needlessly enumerating everything inside it.
+        let rootComponentCount = url.standardizedFileURL.pathComponents.count
+
         var files: [ScannedFile] = []
-        for case let fileURL as URL in enumerator {
-            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+        for case let itemURL as URL in enumerator {
+            let depth = itemURL.standardizedFileURL.pathComponents.count - rootComponentCount - 1
+            if depth > maxSubfolderDepth {
+                throw ScannerError.folderTooDeep(root: url, foundAt: itemURL, maxDepth: maxSubfolderDepth)
+            }
+            let values = try itemURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
             guard values.isRegularFile == true else { continue }
             files.append(
                 ScannedFile(
-                    url: fileURL,
-                    name: fileURL.lastPathComponent,
+                    url: itemURL,
+                    name: itemURL.lastPathComponent,
                     size: Int64(values.fileSize ?? 0),
                     modificationDate: values.contentModificationDate ?? Date(timeIntervalSince1970: 0)
                 )

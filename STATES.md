@@ -375,7 +375,19 @@ Es el valor por defecto de la app (`MAMEMergeModeSettings.defaultMergeMode`, `Ge
 
 ---
 
-## 8. Qué falta documentar (pendiente, no bloqueante)
+## 8. Profundidad de carpetas que ROMForge escanea
+
+**Regla explícita (definida 05-ago-2026, decisión del usuario tras evaluar alternativas):** `FolderScanner` solo desciende **1 nivel de subcarpeta** por debajo de la carpeta que configuras para un sistema — la convención `<sistema>/<juego>/<archivo>` (un archivo suelto en la raíz, o dentro de exactamente una subcarpeta de juego). Si encuentra algo más profundo, **no escanea nada de esa carpeta** — lanza `ScannerError.folderTooDeep` con la ruta relativa exacta de lo que encontró, en vez de escanear parcialmente o silenciosamente ignorar el exceso.
+
+**Por qué:** sin límite, apuntar la app a una carpeta demasiado amplia (la raíz del disco, la carpeta de usuario) intentaría enumerar recursivamente TODO lo que hay debajo — sin sentido y potencialmente muy lento. Se evaluaron 3 alternativas (límite más alto tipo 5-6 niveles; límite estricto de 1 nivel; sin límite de niveles pero con tope de cantidad de archivos) — el usuario eligió el límite estricto de 1 nivel, aceptando reorganizar cualquier carpeta real que no cumpla (ej. aplanar una subcarpeta extra tipo `BATOCERA`).
+
+**Caso real que motivó esto:** la carpeta CPS3 real del usuario tiene una subcarpeta `BATOCERA` que duplica varios juegos un nivel más profundo de lo permitido (`CPS3/BATOCERA/sfiii3/cap-33s-1.chd` = 2 niveles, viola el límite de 1). Esa carpeta necesita reorganizarse (aplanar o eliminar `BATOCERA`) antes de poder escanearse — de hecho, esa misma duplicación física es la causa raíz del bug de CHD duplicado corregido en §4e5: una vez aplanada la carpeta, no habrá dos copias físicas del mismo CHD y ese caso deja de aparecer en absoluto.
+
+**No confundir con:** múltiples carpetas de ROMs configuradas para un mismo sistema (ej. una carpeta para NEOGEO y otra separada para sus updates) — eso ya está soportado desde antes y no tiene relación con este límite; el límite aplica a la profundidad DENTRO de cada carpeta configurada, no a cuántas carpetas configures.
+
+---
+
+## 9. Qué falta documentar (pendiente, no bloqueante)
 
 - El bug de visualización en CPS3 mencionado el 04-ago-2026 (pendiente de investigar).
 - Esta tabla es la base para la fase de manipulación de archivos (rebuild/fix) — cuando esa fase empiece, cada acción posible (renombrar, mover, reconstruir zip, etc.) debe mapearse explícitamente a uno de los estados de arriba, no inventarse ad-hoc.
