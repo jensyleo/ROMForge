@@ -69,8 +69,35 @@ private struct GameNode: Identifiable {
     /// implying they physically live in an archive they've never touched.
     /// Both borrowed-path cases are excluded — only a path this game
     /// genuinely, verifiably owns counts.
+    ///
+    /// A third borrowed-path case found live by jensyleo (2026-08-05):
+    /// duplicating an archive under a new name (e.g. `blazstar copy.zip`)
+    /// makes `ROMMatcher.isInClaimedArchive` treat it as an "unclaimed/
+    /// renamed" archive (its base name matches no DAT game), so any of its
+    /// roms that happen to hash-match a *different*, completely unrelated
+    /// game gets legitimately claimed by that game via the same
+    /// rename-tolerant fallback that lets `archiveMisnamed` (below) detect
+    /// a genuinely renamed archive — no `foundElsewhereArchiveName`, no
+    /// `requiredByGameDescription`, so the two checks above don't catch it.
+    /// Dozens of unrelated missing games (Abacus, AN1x, Win Streak, …) all
+    /// showed "blazstar copy.zip" as their File Name, each having grabbed
+    /// just one stray shared/filler rom out of it.
+    ///
+    /// A real renamed archive belongs to one game almost entirely (most or
+    /// all of its expected roms show up under that one path); a stray leak
+    /// like this contributes only a token one or two. Fixed by requiring
+    /// the most-represented candidate path to cover at least half of this
+    /// game's own rom entries before trusting it — high enough to keep
+    /// `archiveMisnamed` working for a truly renamed archive, low enough to
+    /// tolerate a real archive missing a few of its own roms.
     var actualFileName: String? {
-        entries.first { $0.path != nil && $0.foundElsewhereArchiveName == nil && $0.requiredByGameDescription == nil }?.path?.lastPathComponent
+        let owned = entries.filter { $0.path != nil && $0.foundElsewhereArchiveName == nil && $0.requiredByGameDescription == nil }
+        guard !owned.isEmpty else { return nil }
+        var countsByPath: [URL: Int] = [:]
+        for entry in owned { countsByPath[entry.path!, default: 0] += 1 }
+        guard let (bestPath, bestCount) = countsByPath.max(by: { $0.value < $1.value }) else { return nil }
+        guard bestCount * 2 >= entries.count else { return nil }
+        return bestPath.lastPathComponent
     }
 
     /// The DAT's own human-readable name (its `<description>`, e.g.
