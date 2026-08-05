@@ -37,7 +37,15 @@ public struct DATFileCache: Sendable, Codable, Equatable {
     /// time such logic changes, forces every existing cache entry to miss
     /// exactly once after an update like that, rather than silently
     /// serving stale results indefinitely.
-    private static let currentFormatVersion = 3
+    private static let currentFormatVersion = 4
+    // v4 (2026-08-04, same day): `MAMESetLayoutPlanner.mergedGame` now
+    // records `DATGame.mergedFamilyMachineNames` (parent + every clone
+    // folded into it), a new field a cached `DATFile` built before this
+    // change would decode as an empty array — silently breaking the new
+    // nodump-by-name-across-the-family matching logic (see
+    // `AuditReportDatabase.currentSchemaVersion`'s own v11 note for the real
+    // `gryzor`/`007766.20d.bin` case this fixes) for every game with any
+    // clone at all, until the DAT file itself happened to change.
     // v2 (2026-08-04, same day): `DATLoader.datFile`'s new `mergedDisks`
     // (Merged mode now unions a clone's own distinct CHD into the
     // surviving parent entry, not just its roms — see its own doc

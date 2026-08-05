@@ -44,6 +44,24 @@ public enum RomMatchStatus: Equatable, Sendable {
     case hashMismatch(HashedFile)
     /// No local file matches by size and hash, anywhere in the scan.
     case missing
+    /// This rom is declared `status="nodump"` in the DAT — real hardware
+    /// (commonly a PAL/GAL) that has never been successfully dumped by
+    /// anyone, so the DAT itself has no CRC/MD5/SHA1 to check against, only
+    /// a placeholder size. A local file sitting in this rom's own expected
+    /// slot (matched by name, within this game's own scope) can never be
+    /// "correct" — there's nothing to verify it against — but it's also not
+    /// "unrecognized junk": the DAT explicitly documents this exact
+    /// name/slot for this exact machine. Real case found live by jensyleo
+    /// (2026-08-04): `neogeo.cpp`'s `gryzor` clone declares
+    /// `007766.20d.bin` (`region="pals"`) this way; the real dumped file
+    /// present in `gryzor.zip` was falling through every hash-keyed lookup
+    /// (nodump has no hash to index by) straight into the generic surplus
+    /// bucket, reported as plain gray "Unrecognized" — indistinguishable
+    /// from genuine junk, when RomCenter/ClrMamePro both recognize this
+    /// exact by-name-only case and label it accordingly. Claims the file
+    /// (unlike `.foundElsewhere`/`.hashMismatch`) since a same-named file in
+    /// a nodump rom's own slot has nowhere else it could belong.
+    case nodump(HashedFile)
 }
 
 public struct RomMatch: Equatable, Sendable {
@@ -76,10 +94,18 @@ public struct SurplusFile: Equatable, Sendable {
     /// `ROMMatcher.match`'s own `romsByHash`). `nil` for a file that
     /// matches nothing in the DAT at all — genuinely unrecognized junk.
     public let requiredByGameDescription: String?
+    /// True when no game claimed this file and its content matches no known
+    /// hash (`requiredByGameDescription` is `nil`), but its own entry NAME
+    /// matches some DAT rom declared `nodump` — a rom with no hash to
+    /// verify by design, so a leftover/duplicate copy of it can only ever be
+    /// recognized by name. See `ROMMatcher.match`'s own `nodumpRomNames` doc
+    /// comment for the real duplicate-placeholder case this exists for.
+    public let matchesNodumpRomName: Bool
 
-    public init(file: HashedFile, requiredByGameDescription: String? = nil) {
+    public init(file: HashedFile, requiredByGameDescription: String? = nil, matchesNodumpRomName: Bool = false) {
         self.file = file
         self.requiredByGameDescription = requiredByGameDescription
+        self.matchesNodumpRomName = matchesNodumpRomName
     }
 }
 

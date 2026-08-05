@@ -79,6 +79,14 @@ public enum AuditReporter {
                     entries.append(makeEntry(.badDump, hashedFile.file.url, hashedFile, false, nil))
                 case .missing:
                     entries.append(makeEntry(.missing, nil, nil, false, nil))
+                case .nodump(let hashedFile):
+                    // A file genuinely sits in this nodump rom's own
+                    // expected slot, but the DAT itself has no hash to
+                    // verify it against — neither "correct" (nothing to
+                    // confirm) nor "surplus" (the DAT explicitly documents
+                    // this exact name/slot). See `AuditStatus.unverifiable`'s
+                    // own doc comment.
+                    entries.append(makeEntry(.unverifiable, hashedFile.file.url, hashedFile, false, nil))
                 }
             }
         }
@@ -94,7 +102,22 @@ public enum AuditReporter {
             // its parent's own archive is the one that actually wants).
             // That's a real, fixable location problem — the same bucket as
             // a misnamed rom, not "unknown".
-            let status: AuditStatus = surplusFile.requiredByGameDescription != nil ? .incorrect : .surplus
+            // A file matching neither a real hash nor a known name still
+            // gets one more, narrower chance: its own entry name matching a
+            // DAT-declared `nodump` rom (`matchesNodumpRomName`, see
+            // `SurplusFile`'s own doc comment) — a rom with no hash at all,
+            // so a leftover/duplicate copy of it can never be recognized any
+            // other way. Distinct from `.incorrect` (that's a real,
+            // fixable location problem; this is just an extra, unverifiable
+            // copy of something already accounted for elsewhere).
+            let status: AuditStatus
+            if surplusFile.requiredByGameDescription != nil {
+                status = .incorrect
+            } else if surplusFile.matchesNodumpRomName {
+                status = .unverifiable
+            } else {
+                status = .surplus
+            }
             entries.append(
                 AuditEntry(
                     status: status, game: nil,
@@ -106,7 +129,7 @@ public enum AuditReporter {
             )
         }
 
-        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0
         for entry in entries {
             switch entry.status {
             case .correct: correct += 1
@@ -114,10 +137,11 @@ public enum AuditReporter {
             case .badDump: badDump += 1
             case .missing: missing += 1
             case .surplus: surplus += 1
+            case .unverifiable: unverifiable += 1
             }
         }
 
-        return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus)
+        return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
     }
 
     /// Folds `DiskAuditor.audit(...)`'s own entries into an existing ROM
@@ -127,7 +151,7 @@ public enum AuditReporter {
     /// `.chd` file list) rather than a `MatchReport`.
     public static func merging(diskEntries: [AuditEntry], into report: AuditReport) throws -> AuditReport {
         try Task.checkCancellation()
-        var correct = report.correct, incorrect = report.incorrect, badDump = report.badDump, missing = report.missing, surplus = report.surplus
+        var correct = report.correct, incorrect = report.incorrect, badDump = report.badDump, missing = report.missing, surplus = report.surplus, unverifiable = report.unverifiable
         for entry in diskEntries {
             switch entry.status {
             case .correct: correct += 1
@@ -135,8 +159,9 @@ public enum AuditReporter {
             case .badDump: badDump += 1
             case .missing: missing += 1
             case .surplus: surplus += 1
+            case .unverifiable: unverifiable += 1
             }
         }
-        return AuditReport(entries: report.entries + diskEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus)
+        return AuditReport(entries: report.entries + diskEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
     }
 }

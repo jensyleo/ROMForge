@@ -91,6 +91,7 @@ Un `.chd` en disco que no corresponde a NINGÚN disco declarado por el DAT actua
 |---|---|---|---|
 | Hash no coincide con NADA del DAT | `.surplus` | ⚪️ Gris | "Unrecognized" |
 | Hash coincide con una rom de OTRO juego real | `.incorrect` | 🟡 Amarillo (nativo, sin parche) | "Not needed here (required by `<juego>`)" |
+| Sin hash (rom no lo tiene), pero el NOMBRE coincide con un rom `nodump` del DAT | `.unverifiable` | ⚪️ Gris (ícono distinto) | "Nodump (unverifiable)" — ver §4e2 |
 
 El mensaje a nivel del JUEGO (columna izquierda) también distingue este caso — dentro de `.incorrect`, en orden de prioridad:
 1. El archivo completo está mal nombrado → "Bad file name"
@@ -244,13 +245,28 @@ Un solo rom missing pinta TODO el juego rojo (para esa fila — rom o disco, seg
   .badDump    →  🟠 Bad (hash mismatch)         →  🟠 Bad
   .incorrect  →  🟡 Bad name / Rom need fix     →  🟡 Incorrect
   .correct    →  🟢 Ok / Extra file in archive  →  🟢 Correct
-  .surplus    →  ⚪️ Unrecognized (no es un juego real)
+  .surplus       →  ⚪️ Unrecognized (no es un juego real)
+  .unverifiable  →  ⚪️ Nodump (unverifiable) — rom nodump, ver §4e2
 
   EXCEPCIÓN: rom 100% missing + CHD del mismo juego != missing
              → la fila de ROM no se muestra. Solo se ve el CHD (🟢).
 ```
 
 ---
+
+### 4e2. Nuevo estado: `.unverifiable` — roms `nodump` (agregado 04-ago-2026)
+
+**Caso real:** `Neo-Geo MV-6F` no aplicaba aquí, pero un caso paralelo sí: `Gryzor` (`gryzor.zip`, clon de `Contra`) mostraba "Unknown game" (gris) en la lista pese a que casi todas sus filas eran amarillas "Not needed here" — salvo una, `007766.20d.bin`, gris "Unrecognized" puro.
+
+**Causa raíz:** ese rom está declarado `status="nodump"` en el DAT — un PAL nunca dumpeado, sin CRC/MD5/SHA1, solo un placeholder `size="1"`. `contra` (el padre) y TODOS sus clones (incluido `gryzor`) redeclaran el mismo nombre de forma idéntica — no hay ninguna marca en el rom que diga "esto viene de tal clon". El usuario tenía DOS copias físicas del mismo placeholder de 1 byte (una en `contra.zip`, que satisface el único requisito deduplicado; otra en `gryzor.zip`, sobrante). Como `nodump` no tiene hash, el mecanismo existente de "reconocer contenido sobrante por hash" (`romsByHash`) nunca podía reconocer esa copia — cae a "Unrecognized" puro, indistinguible de basura real.
+
+**Corregido con dos mecanismos complementarios:**
+1. `DATGame.mergedFamilyMachineNames` (padre + todos los clones plegados bajo Merged) — permite que `ROMMatcher` reclame por NOMBRE un rom `nodump` sin reclamar, buscando en cualquier archivo de la familia, no solo el archivo propio del juego (cubre el caso "el archivo real solo existe en el clon, nunca en el padre").
+2. `SurplusFile.matchesNodumpRomName` — un archivo sobrante sin ningún hash conocido, pero cuyo NOMBRE coincide con algún rom `nodump` del DAT, se reclasifica de `.surplus` a `.unverifiable` en vez de quedar "Unrecognized" (cubre el caso real encontrado: copia duplicada del mismo placeholder).
+
+**Nuevo `AuditStatus.unverifiable`:** gris (mismo color que `.surplus`), ícono distinto (`questionmark.circle` sin relleno), nunca eleva severidad (tratado como `.surplus` en `AuditStatus.worst(among:)`). Mensaje de fila: "Nodump (unverifiable)". Un bucket "Unknown game" cuyas entradas están TODAS explicadas (ya sea `requiredByGameDescription` o `.unverifiable`) ahora se reclasifica a "Extra archive, not needed here" (amarillo), igual que el caso ya existente de archivos 100% identificados por hash.
+
+Verificado en vivo contra el DAT y carpeta reales (`CAPCOM/OTHER`): `007766.20d.bin` en `gryzor.zip` pasó de `surplus` a `unverifiable`. `DATFileCache.currentFormatVersion` (v4) y `AuditReportDatabase.currentSchemaVersion` (v11) subidos.
 
 ### 4e. Bug real: declaración duplicada de un mismo rom dentro de una máquina (`mergedGame`, corregido 04-ago-2026)
 

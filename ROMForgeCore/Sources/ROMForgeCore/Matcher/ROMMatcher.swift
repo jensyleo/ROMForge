@@ -245,11 +245,37 @@ public enum ROMMatcher {
                     // hash-verifiable rom in this game has already had
                     // first pick above, an unclaimed `nodump` rom isn't a
                     // real problem to surface as "missing" (there's
-                    // nothing the user could even do about it) — it's
-                    // simply omitted from the report entirely, the same
-                    // way MAME/ClrMamePro/RomCenter don't count it against
-                    // set completeness. Left `nil`/not-unresolved, so the
-                    // final assembly below skips it.
+                    // nothing the user could even do about it).
+                    //
+                    // Real case found live by jensyleo (2026-08-04):
+                    // `gryzor`'s own `007766.20d.bin` — a nodump PAL with no
+                    // hash and only a placeholder `size="1"`, so it can
+                    // never satisfy `matches()` above even when the real
+                    // dumped file is sitting right there in `gryzor.zip`.
+                    // Before reporting nothing at all, check whether a file
+                    // with this rom's exact name exists anywhere in this
+                    // game's merged family of archives (`familyNameMatchIndex`
+                    // — this game's own archive plus every clone folded into
+                    // it under Merged, see `DATGame.mergedFamilyMachineNames`'s
+                    // own doc comment) — if so, it has nowhere else it could
+                    // possibly belong, so claim it as `.nodump` rather than
+                    // leaving it to fall through every hash-keyed surplus
+                    // lookup and read as plain "Unrecognized" (indistinguishable
+                    // from genuine junk). Real case found live by jensyleo
+                    // (2026-08-04): `contra` and every one of its clones
+                    // (including `gryzor`) all redeclare the same undumped
+                    // PAL `007766.20d.bin` identically — MAME's own
+                    // convention for a chip nobody's dumped on any board
+                    // revision — so the rom itself carries no marker
+                    // pointing at any one clone, yet the user's real file for
+                    // it sits in `gryzor.zip`, not `contra.zip`. If no such
+                    // file exists anywhere in the family, there's still
+                    // nothing to report — same as before.
+                    if let familyIndex = candidate.familyNameMatchIndex, !consumed[familyIndex] {
+                        consumed[familyIndex] = true
+                        resolvedStatuses[index] = .nodump(hashedFiles[familyIndex])
+                        claimedAnyFile = true
+                    }
                     continue
                 } else {
                     isUnresolved[index] = true
@@ -362,10 +388,27 @@ public enum ROMMatcher {
         for game in dat.games where gamesByName[game.name.lowercased()] == nil {
             gamesByName[game.name.lowercased()] = game
         }
+        // Every distinct name any DAT rom declares `nodump` — a `nodump` rom
+        // has no hash at all, so `romsByHash` above can never recognize a
+        // leftover copy of one; this is the name-only equivalent, purely for
+        // this one classification (never consulted anywhere a file could
+        // actually be *claimed* — same guarantee `romsByHash` already gives).
+        // Real case found live by jensyleo (2026-08-04): `contra` (and its
+        // whole merged clone family, including `gryzor`) all redeclare the
+        // same undumped PAL, `007766.20d.bin`, and the user's actual
+        // collection has TWO physical copies of that 1-byte placeholder —
+        // one in `contra.zip` (which alone satisfies the one deduped
+        // requirement) and one in `gryzor.zip`, left over with nothing to
+        // claim it. That leftover copy is still known, documented content
+        // (the DAT explicitly names this exact nodump slot), just
+        // unverifiable and no longer needed here — reporting it as plain
+        // gray "Unrecognized" would be indistinguishable from genuine junk.
+        let nodumpRomNames = Set(dat.games.lazy.flatMap(\.roms).filter { $0.status == .nodump }.map { $0.name.lowercased() })
         let surplusFiles = hashedFiles.indices.filter { !consumed[$0] }.map { index -> SurplusFile in
             let file = hashedFiles[index]
             let requiredBy = requiredByGameDescription(for: file, gamesByName: gamesByName, romsByHash: romsByHash)
-            return SurplusFile(file: file, requiredByGameDescription: requiredBy)
+            let matchesNodumpName = requiredBy == nil && nodumpRomNames.contains(file.file.name.lowercased())
+            return SurplusFile(file: file, requiredByGameDescription: requiredBy, matchesNodumpRomName: matchesNodumpName)
         }
         return MatchReport(games: gameResults, surplusFiles: surplusFiles)
     }
@@ -383,8 +426,16 @@ public enum ROMMatcher {
     /// `nameMatchIndex` is a file within this game's own scope (own
     /// archive, or itself if loose) whose *entry name* matches this rom's
     /// declared name, regardless of hash — the only way to detect
-    /// `.hashMismatch` ("Bad").
-    private typealias GameCandidates = [(rom: DATRom, scopedCandidates: [Int], hashVerifiedCandidates: [Int], nameMatchIndex: Int?)]
+    /// `.hashMismatch` ("Bad"). `familyNameMatchIndex` is the same by-name
+    /// lookup, scoped to every archive in `game.mergedFamilyMachineNames`
+    /// (this game's own name plus every clone folded into it under Merged —
+    /// see that field's own doc comment) rather than just this game's own
+    /// archive. Consulted only for an unclaimed `nodump` rom (see
+    /// `ROMMatcher.match`'s own nodump-claim logic): such a rom is often
+    /// redeclared identically by every member of a merged family, with no
+    /// per-rom marker at all pointing at which clone's archive the user's
+    /// real dumped file happens to sit in.
+    private typealias GameCandidates = [(rom: DATRom, scopedCandidates: [Int], hashVerifiedCandidates: [Int], nameMatchIndex: Int?, familyNameMatchIndex: Int?)]
 
     /// Computes `GameCandidates` for every game, split across
     /// `HashingConcurrency.workerCount(for:)` worker threads via
@@ -412,6 +463,12 @@ public enum ROMMatcher {
         @Sendable func candidates(for game: DATGame) -> GameCandidates {
             let ownArchiveIndices = Set(archiveNameIndex[game.name.lowercased()] ?? [])
             let gameIsStrict = strictOwnArchiveOnly(game)
+            // Every archive belonging to this merged family (already
+            // lowercased — see `DATGame.mergedFamilyMachineNames`'s own doc
+            // comment) — empty for Split/Non-merged, where it's simply never
+            // consulted (`familyNameMatchIndex` below only matters for a
+            // `nodump` rom's claim logic).
+            let familyArchiveIndices = Set(game.mergedFamilyMachineNames.flatMap { archiveNameIndex[$0] ?? [] })
             return game.roms.map { rom in
                 let candidates = candidateIndices(
                     for: rom,
@@ -433,6 +490,10 @@ public enum ROMMatcher {
                 let nameMatchIndex: Int? = isArchiveOrganized
                     ? nameMatches.first { ownArchiveIndices.contains($0) }
                     : nameMatches.first
+                let familyNameMatchIndex: Int? = {
+                    guard isArchiveOrganized, !familyArchiveIndices.isEmpty else { return nil }
+                    return nameMatches.first { familyArchiveIndices.contains($0) }
+                }()
                 let scopedCandidates: [Int]
                 if !isArchiveOrganized {
                     scopedCandidates = candidates
@@ -449,7 +510,7 @@ public enum ROMMatcher {
                     }
                     scopedCandidates = inOwnArchive + inUnclaimedArchive
                 }
-                return (rom, scopedCandidates, hashVerifiedCandidates, nameMatchIndex)
+                return (rom, scopedCandidates, hashVerifiedCandidates, nameMatchIndex, familyNameMatchIndex)
             }
         }
 

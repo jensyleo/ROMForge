@@ -17,12 +17,19 @@ import Foundation
 /// - `missing`: nothing matching this rom exists anywhere the app can see.
 /// - `surplus`: a local file that matches no expected rom in the DAT at
 ///   all ("Unknown").
+/// - `unverifiable`: a local file sits in a rom's own expected slot, but the
+///   rom itself is DAT-declared `nodump` — nothing to check its content
+///   against, so it can never be `correct`, but the DAT explicitly documents
+///   this exact name/slot, so it isn't `surplus` either. Added 2026-08-04,
+///   real case found live (`gryzor`'s nodump `007766.20d.bin` PAL) — see
+///   `RomMatchStatus.nodump`'s own doc comment.
 public enum AuditStatus: String, Equatable, Sendable, CaseIterable {
     case correct
     case incorrect
     case badDump
     case missing
     case surplus
+    case unverifiable
 }
 
 /// One row of an audit report: an expected ROM's outcome, or a leftover local
@@ -221,14 +228,16 @@ public struct AuditReport: Equatable, Sendable {
     public let badDump: Int
     public let missing: Int
     public let surplus: Int
+    public let unverifiable: Int
 
-    public init(entries: [AuditEntry], correct: Int, incorrect: Int, badDump: Int = 0, missing: Int, surplus: Int) {
+    public init(entries: [AuditEntry], correct: Int, incorrect: Int, badDump: Int = 0, missing: Int, surplus: Int, unverifiable: Int = 0) {
         self.entries = entries
         self.correct = correct
         self.incorrect = incorrect
         self.badDump = badDump
         self.missing = missing
         self.surplus = surplus
+        self.unverifiable = unverifiable
     }
 
     /// The single worst status across the whole report — the same
@@ -266,7 +275,7 @@ extension AuditStatus {
             case .missing: return .missing
             case .badDump: sawBadDump = true
             case .incorrect: sawIncorrect = true
-            case .correct, .surplus: sawOther = true
+            case .correct, .surplus, .unverifiable: sawOther = true
             }
         }
         if sawBadDump { return .badDump }

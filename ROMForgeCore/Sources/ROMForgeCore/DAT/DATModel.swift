@@ -105,6 +105,25 @@ public struct DATGame: Equatable, Sendable, Codable {
     /// entirely), just a dependency list. Empty for formats with no such
     /// concept.
     public let deviceRefs: [String]
+    /// Under Merged Rom mode only: every raw machine name (this game's own,
+    /// plus every clone) whose own archive `MAMESetLayoutPlanner.mergedGame`
+    /// drew roms from — lowercased. Empty for Split/Non-merged (every clone
+    /// already gets its own separate `DATGame` there, so there's no
+    /// cross-archive ambiguity to resolve) and for Logiqx/software-list DATs.
+    ///
+    /// Exists for exactly one purpose: locating a `nodump` rom's real file by
+    /// name (see `ROMMatcher`'s own nodump-claim logic) when the file
+    /// physically sits in one of the *clone's* own, still-unrenamed archives
+    /// rather than the merged parent's. Real case found live by jensyleo
+    /// (2026-08-04): `contra` (and every one of its clones, including
+    /// `gryzor`) all independently redeclare the exact same undumped PAL,
+    /// `007766.20d.bin` — MAME's own convention for a chip nobody has
+    /// successfully dumped on *any* revision of the board — so this rom
+    /// ends up in `contra`'s merged list as plainly "its own", with no
+    /// per-rom marker at all pointing at any particular clone. The user's
+    /// real dumped file for it, however, happens to sit in `gryzor.zip`, not
+    /// `contra.zip` — a plain own-archive name search would never find it.
+    public let mergedFamilyMachineNames: [String]
 
     public init(
         name: String,
@@ -117,6 +136,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         hasSamples: Bool = false,
         year: String? = nil,
         manufacturer: String? = nil,
+        mergedFamilyMachineNames: [String] = [],
         biosSetNames: [String] = [],
         deviceRefs: [String] = []
     ) {
@@ -132,6 +152,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         self.manufacturer = manufacturer
         self.biosSetNames = biosSetNames
         self.deviceRefs = deviceRefs
+        self.mergedFamilyMachineNames = mergedFamilyMachineNames
     }
 }
 

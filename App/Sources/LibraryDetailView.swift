@@ -143,6 +143,11 @@ private struct GameNode: Identifiable {
             case .incorrect: return "Incorrect"
             case .badDump: return "Bad"
             case .correct, .surplus: return "Correct"
+            // `DiskAuditor`'s own `CHDMatcher`-backed status never actually
+            // produces `.unverifiable` (that's a rom-only concept, see
+            // `RomMatchStatus.nodump`) — kept only so this switch stays
+            // exhaustive over the shared `AuditStatus` type.
+            case .unverifiable: return "Correct"
             }
         }
         switch aggregateStatus {
@@ -181,6 +186,8 @@ private struct GameNode: Identifiable {
             // that the archive has more in it than the DAT expects.
             if entries.contains(where: { $0.status == .surplus }) { return "Extra file in archive" }
             return "Ok"
+        case .unverifiable:
+            return "Ok (contains a nodump rom)"
         }
     }
 
@@ -1596,6 +1603,13 @@ struct LibraryDetailView: View {
         case .badDump: base = "Bad (hash mismatch)"
         case .missing: base = "Missing"
         case .surplus: base = "Unrecognized"
+        // A file genuinely sits in this rom's own expected slot, but the
+        // DAT itself declares this rom `nodump` — no CRC/MD5/SHA1 exists to
+        // confirm it against, by design (see `RomMatchStatus.nodump`'s own
+        // doc comment). Distinct from `.correct` (nothing here was actually
+        // verified) and from `.surplus` (the DAT explicitly documents this
+        // exact name/slot for this exact machine, so it isn't unrecognized).
+        case .unverifiable: base = "Nodump (unverifiable)"
         }
         if entry.isBadDump {
             // For every other status, a file DID get matched/found, so "(bad
@@ -1802,7 +1816,7 @@ struct LibraryDetailView: View {
             let matchingGame = (archiveName as NSString).deletingPathExtension
             if gamesByName[matchingGame] != nil {
                 entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
-            } else if !surplus.isEmpty, surplus.allSatisfy({ $0.requiredByGameDescription != nil }) {
+            } else if !surplus.isEmpty, surplus.allSatisfy({ $0.requiredByGameDescription != nil || $0.status == .unverifiable }) {
                 orphanedFullyIdentifiedCount += 1
             }
         }
@@ -2065,7 +2079,14 @@ struct LibraryDetailView: View {
             // the individual per-file rows already do — never both a
             // gray game-level row and yellow file-level rows for the
             // identical, fully-known content.
-            let isFullyIdentified = !bucketEntries.isEmpty && bucketEntries.allSatisfy { $0.requiredByGameDescription != nil }
+            // `.unverifiable` counts as identified too, alongside a real
+            // `requiredByGameDescription` — real case found live by jensyleo
+            // (2026-08-04): `gryzor.zip` under Merged has every one of its
+            // roms accounted for either way (most "not needed here", one a
+            // recognized nodump placeholder duplicate — see
+            // `SurplusFile.matchesNodumpRomName`'s own doc comment), with
+            // nothing genuinely unknown left in it at all.
+            let isFullyIdentified = !bucketEntries.isEmpty && bucketEntries.allSatisfy { $0.requiredByGameDescription != nil || $0.status == .unverifiable }
             roots.append(
                 GameNode(
                     id: "surplus-\(archiveName)",
@@ -2705,6 +2726,10 @@ struct LibraryDetailView: View {
         case .badDump: return "exclamationmark.octagon.fill"
         case .missing: return "xmark.circle.fill"
         case .surplus: return "questionmark.circle.fill"
+        // A distinct icon from `.surplus`'s plain "?" — this content IS
+        // known/documented (a DAT-declared `nodump` rom's name), just
+        // unverifiable, not genuinely unidentified.
+        case .unverifiable: return "questionmark.circle"
         }
     }
 
@@ -2714,7 +2739,7 @@ struct LibraryDetailView: View {
         case .incorrect: return .yellow
         case .badDump: return .orange
         case .missing: return .red
-        case .surplus: return .gray
+        case .surplus, .unverifiable: return .gray
         }
     }
 }

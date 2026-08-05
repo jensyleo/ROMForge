@@ -39,7 +39,16 @@ public final class AuditReportDatabase {
     // `sm1.sm1`, declared twice for two regions, wrongly demanded twice
     // under Merged mode). Changes what a Merged-mode scan concludes for
     // any DAT with this pattern, for scans cached before this fix.
-    private static let currentSchemaVersion: Int32 = 10
+    // v11 (2026-08-04, same day): new `AuditStatus.unverifiable` — a local
+    // file sitting in (or left over near) a DAT-declared `nodump` rom's own
+    // slot, which can never be hash-verified by design. Real case found live
+    // by jensyleo: `gryzor.zip`'s own `007766.20d.bin` (an undumped PAL
+    // `contra`'s whole merged clone family redeclares identically) used to
+    // read as plain "Unrecognized" — indistinguishable from genuine junk —
+    // for any scan cached before this fix; the `status` column is a
+    // free-form TEXT, so no schema/column change is needed, only the wipe
+    // this version bump already triggers.
+    private static let currentSchemaVersion: Int32 = 11
 
     private let path: String
 

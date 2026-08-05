@@ -264,7 +264,7 @@ final class LibraryViewModel {
             return !path.path.hasPrefix(folderPath)
         }
         guard prunedEntries.count != previous.entries.count else { return }
-        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0
         for entry in prunedEntries {
             switch entry.status {
             case .correct: correct += 1
@@ -272,9 +272,10 @@ final class LibraryViewModel {
             case .badDump: badDump += 1
             case .missing: missing += 1
             case .surplus: surplus += 1
+            case .unverifiable: unverifiable += 1
             }
         }
-        let pruned = AuditReport(entries: prunedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus)
+        let pruned = AuditReport(entries: prunedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
         auditReport = pruned
         do {
             try AuditDatabaseLocation.open().saveReport(
@@ -707,7 +708,7 @@ final class LibraryViewModel {
         // of five separate full-array `.filter { }.count` passes — the
         // same redundant-rescan cost `computeScopedStatusCounts` was
         // already fixed for, here too.
-        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0
         func append(_ entry: AuditEntry) {
             merged.append(entry)
             switch entry.status {
@@ -716,6 +717,7 @@ final class LibraryViewModel {
             case .badDump: badDump += 1
             case .missing: missing += 1
             case .surplus: surplus += 1
+            case .unverifiable: unverifiable += 1
             }
         }
 
@@ -818,7 +820,7 @@ final class LibraryViewModel {
             }
         }
 
-        return AuditReport(entries: merged, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus)
+        return AuditReport(entries: merged, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
     }
 
 

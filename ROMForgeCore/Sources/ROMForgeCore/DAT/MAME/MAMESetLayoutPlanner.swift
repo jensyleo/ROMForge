@@ -42,7 +42,7 @@ public enum MAMESetLayoutPlanner {
             base = try mergedGame(for: machineName, dataset: dataset)
         }
         let roms = try foldBiosRoms(into: base.roms, machineName: machineName, biosMode: biosMode, dataset: dataset)
-        return DATGame(name: base.name, description: base.description, cloneOf: base.cloneOf, romOf: base.romOf, roms: roms)
+        return DATGame(name: base.name, description: base.description, cloneOf: base.cloneOf, romOf: base.romOf, roms: roms, mergedFamilyMachineNames: base.mergedFamilyMachineNames)
     }
 
     /// A rom with `merge="..."` (MAME `-listxml`) is identical to one
@@ -255,7 +255,15 @@ public enum MAMESetLayoutPlanner {
                 }
             }
         }
-        return game(from: target, roms: roms)
+        // Every raw machine name this merged entry drew roms from — see
+        // `DATGame.mergedFamilyMachineNames`'s own doc comment for why this
+        // exists (a `nodump` rom, real case: `007766.20d.bin`, redeclared
+        // identically by `contra` and every one of its clones including
+        // `gryzor`, can only ever be located by name, and the user's real
+        // dumped file for it isn't guaranteed to sit in the *parent's* own
+        // archive at all).
+        let familyMachineNames = ([target.name] + clones.map(\.name)).map { $0.lowercased() }
+        return game(from: target, roms: roms, mergedFamilyMachineNames: familyMachineNames)
     }
 
     /// Folds a machine's BIOS roms into `roms`, per `biosMode` — entirely
@@ -288,7 +296,7 @@ public enum MAMESetLayoutPlanner {
         return result
     }
 
-    private static func game(from machine: MAMEMachine, roms: [DATRom]) -> DATGame {
-        DATGame(name: machine.name, description: machine.description, cloneOf: machine.cloneOf, romOf: machine.romOf, roms: roms)
+    private static func game(from machine: MAMEMachine, roms: [DATRom], mergedFamilyMachineNames: [String] = []) -> DATGame {
+        DATGame(name: machine.name, description: machine.description, cloneOf: machine.cloneOf, romOf: machine.romOf, roms: roms, mergedFamilyMachineNames: mergedFamilyMachineNames)
     }
 }

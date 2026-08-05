@@ -39,12 +39,15 @@ public enum RebuildPlanner {
                 switch romMatch.status {
                 case .correct(let file, _), .misnamed(let file, _):
                     hashedFile = file
-                case .missing, .foundElsewhere, .hashMismatch:
+                case .missing, .foundElsewhere, .hashMismatch, .nodump:
                     // `.foundElsewhere`'s file genuinely belongs to another
                     // game's own archive (see its own doc comment) —
                     // rebuilding from it here would duplicate/steal a file
                     // that isn't really this game's own, so it's skipped
-                    // exactly like a truly missing rom.
+                    // exactly like a truly missing rom. `.nodump`'s file has
+                    // no DAT hash to verify it against at all — rebuilding
+                    // from it would silently package unverifiable content as
+                    // if it were confirmed-correct, so it's skipped too.
                     hashedFile = nil
                 }
                 guard let hashedFile else { continue }
@@ -66,12 +69,15 @@ public enum RebuildPlanner {
                 switch romMatch.status {
                 case .correct(let file, _), .misnamed(let file, _):
                     hashedFile = file
-                case .missing, .foundElsewhere, .hashMismatch:
+                case .missing, .foundElsewhere, .hashMismatch, .nodump:
                     // `.foundElsewhere`'s file genuinely belongs to another
                     // game's own archive (see its own doc comment) —
                     // rebuilding from it here would duplicate/steal a file
                     // that isn't really this game's own, so it's skipped
-                    // exactly like a truly missing rom.
+                    // exactly like a truly missing rom. `.nodump`'s file has
+                    // no DAT hash to verify it against at all — rebuilding
+                    // from it would silently package unverifiable content as
+                    // if it were confirmed-correct, so it's skipped too.
                     hashedFile = nil
                 }
                 guard let hashedFile else { return nil }

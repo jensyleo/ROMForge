@@ -242,6 +242,7 @@ public enum DATLoader {
                 hasSamples: machine.hasSamples,
                 year: machine.year.isEmpty ? nil : machine.year,
                 manufacturer: machine.manufacturer.isEmpty ? nil : machine.manufacturer,
+                mergedFamilyMachineNames: layout.mergedFamilyMachineNames,
                 biosSetNames: machine.biosSets.map(\.name),
                 deviceRefs: machine.deviceRefs
             ))

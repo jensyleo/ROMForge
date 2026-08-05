@@ -114,6 +114,7 @@ struct ContentView: View {
         case .badDump: return .orange
         case .missing: return .red
         case .surplus: return .gray
+        case .unverifiable: return .gray
         }
     }
 }
