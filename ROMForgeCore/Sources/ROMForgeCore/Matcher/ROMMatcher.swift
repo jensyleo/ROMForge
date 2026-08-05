@@ -181,6 +181,20 @@ public enum ROMMatcher {
         // pass is only array indexing and enum comparisons, not string
         // work, so it stays fast even at MAME's full scale.
         var consumed = [Bool](repeating: false, count: hashedFiles.count)
+        // Every archive URL a game's own roms actually got claimed from —
+        // real bug found live by jensyleo (2026-08-05): `requiredByGameDescription`
+        // below used to decide "is this surplus file secretly this game's
+        // OWN archive, just an internal duplicate" purely by comparing
+        // archive *names* (`sf2acc.zip`'s own name vs. the game named
+        // `sf2acc`), which breaks the moment two genuinely different
+        // physical archives share the same base name at different
+        // paths — e.g. a duplicate `sfiii2.zip` placed in a different
+        // subfolder than the real one. Recording the actual claimed URL(s)
+        // per game here lets that check compare real paths instead of
+        // names, so a same-named-but-different-path duplicate is correctly
+        // recognized as a real duplicate (`.incorrect`/"Not needed here"),
+        // not silently swallowed as if it were the game's own archive.
+        var claimedArchiveURLsByGame: [String: Set<URL>] = [:]
         var gameResults: [GameMatchResult] = []
         gameResults.reserveCapacity(dat.games.count)
         for (gameIndex, (game, romCandidates)) in zip(dat.games, perGameCandidates).enumerated() {
@@ -232,6 +246,9 @@ public enum ROMMatcher {
                 if let matchIndex = candidate.scopedCandidates.first(where: { !consumed[$0] && matches(hashedFiles[$0], rom) }) {
                     consumed[matchIndex] = true
                     let hashedFile = hashedFiles[matchIndex]
+                    if hashedFile.file.url.lastPathComponent != hashedFile.file.name {
+                        claimedArchiveURLsByGame[game.name.lowercased(), default: []].insert(hashedFile.file.url)
+                    }
                     let viaHeaderStrip = matchKind(hashedFile, rom) == .stripped
                     resolvedStatuses[index] = hashedFile.file.name == rom.name
                         ? .correct(hashedFile, viaHeaderStrip: viaHeaderStrip)
@@ -406,7 +423,7 @@ public enum ROMMatcher {
         let nodumpRomNames = Set(dat.games.lazy.flatMap(\.roms).filter { $0.status == .nodump }.map { $0.name.lowercased() })
         let surplusFiles = hashedFiles.indices.filter { !consumed[$0] }.map { index -> SurplusFile in
             let file = hashedFiles[index]
-            let requiredBy = requiredByGameDescription(for: file, gamesByName: gamesByName, romsByHash: romsByHash)
+            let requiredBy = requiredByGameDescription(for: file, gamesByName: gamesByName, romsByHash: romsByHash, claimedArchiveURLsByGame: claimedArchiveURLsByGame)
             let matchesNodumpName = requiredBy == nil && nodumpRomNames.contains(file.file.name.lowercased())
             return SurplusFile(file: file, requiredByGameDescription: requiredBy, matchesNodumpRomName: matchesNodumpName)
         }
@@ -708,12 +725,39 @@ public enum ROMMatcher {
     /// game than this exact archive's own, which wouldn't catch the
     /// duplicate at all) — only a rom this file's own game does *not*
     /// itself also declare is ever worth reporting as belonging elsewhere.
-    private static func requiredByGameDescription(for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame]) -> String? {
+    ///
+    /// Second real bug found live by jensyleo (2026-08-05, same class):
+    /// the "own archive" check above used to be purely *name*-based
+    /// (`ownArchiveGameName`, derived only from the file's path) — correct
+    /// for the `qsound_hle.zip` case (one archive, a real duplicate rom
+    /// inside it), but wrong once two genuinely different physical
+    /// archives can share the same base name at different paths (now
+    /// possible after `FolderScanner`'s own depth limit permits a
+    /// same-named archive to sit in more than one scanned subfolder — real
+    /// case: a duplicate `sfiii2.zip` placed inside a `BATOCERA` subfolder,
+    /// distinct from the real `sfiii2.zip` ROMMatcher already claimed
+    /// elsewhere). `claimedArchiveURLsByGame` fixes this by comparing the
+    /// exact claimed *path*, not just the name — a same-named-but-different-
+    /// path duplicate is no longer silently swallowed as if it were the
+    /// game's own archive; it correctly reports "Not needed here (required
+    /// by …)" instead.
+    private static func requiredByGameDescription(for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame], claimedArchiveURLsByGame: [String: Set<URL>]) -> String? {
         let fileHashes = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
         let isArchiveEntry = file.file.url.lastPathComponent != file.file.name
         if isArchiveEntry {
             let ownArchiveGameName = file.file.url.deletingPathExtension().lastPathComponent.lowercased()
-            if let ownGame = gamesByName[ownArchiveGameName] {
+            // Both conditions matter, not just one: `claimedArchiveURLsByGame`
+            // alone (checked first, cheaply) rules out the wrong-*path*
+            // case (2026-08-05's `sfiii2.zip` bug — a different physical
+            // archive that merely shares this one's base name). `ownHashes`
+            // (the original 2026-08-04 check) still rules out the
+            // wrong-*content* case: `sf2acc.zip` genuinely IS the claimed
+            // archive for the clone "sf2acc", but a rom sitting in it that
+            // hash-matches its Split-mode *parent* `sf2ce` instead of
+            // anything `sf2acc` itself declares must still be attributed to
+            // `sf2ce`, not silently swallowed just because the archive
+            // itself happens to be "sf2acc"'s own.
+            if let ownGame = gamesByName[ownArchiveGameName], claimedArchiveURLsByGame[ownArchiveGameName]?.contains(file.file.url) == true {
                 let ownHashes = Set(ownGame.roms.flatMap { [$0.crc, $0.md5, $0.sha1].compactMap { $0 } })
                 if fileHashes.contains(where: ownHashes.contains) { return nil }
             }

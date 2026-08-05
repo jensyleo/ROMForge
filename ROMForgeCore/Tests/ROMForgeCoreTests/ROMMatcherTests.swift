@@ -339,6 +339,40 @@ struct ROMMatcherTests {
         #expect(report.surplusFiles.first?.requiredByGameDescription == nil)
     }
 
+    @Test("a duplicate archive with the SAME base name in a DIFFERENT folder is tagged as required by that game, not silently swallowed as if it were the game's own archive")
+    func duplicateArchiveAtDifferentPathIsStillTagged() throws {
+        // Real bug found live by jensyleo (2026-08-05), right after
+        // `FolderScanner`'s new depth limit made it possible for a
+        // same-named archive to legitimately exist at two different
+        // scanned paths (a real second ROM folder, or — before the
+        // too-deep-skip fix — a subfolder like "BATOCERA"): the "own
+        // archive" check used to compare archive *names* only
+        // (`sfiii2.zip`'s own base name vs. the game named "sfiii2"), so a
+        // second, genuinely different physical `sfiii2.zip` at another
+        // path got silently treated as if it WERE the game's own claimed
+        // archive — reporting nil instead of "Not needed here (required by
+        // sfiii2)".
+        let game = DATGame(
+            name: "sfiii2", description: "Street Fighter III 2nd Impact", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "sfiii2_usa.29f400.u2", size: 60, crc: "77777777", md5: nil, sha1: "6666666666666666666666666666666666666666")]
+        )
+        let singleGameDAT = DATFile(header: dat.header, games: [game])
+        let realCopy = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/PathA/sfiii2.zip"), name: "sfiii2_usa.29f400.u2", size: 60),
+            hash: FileHash(crc32: "77777777", md5: "00000000000000000000000000000000", sha1: "6666666666666666666666666666666666666666")
+        )
+        let duplicateAtDifferentPath = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/PathB/sfiii2.zip"), name: "sfiii2_usa.29f400.u2", size: 60),
+            hash: FileHash(crc32: "77777777", md5: "00000000000000000000000000000000", sha1: "6666666666666666666666666666666666666666")
+        )
+        let report = try ROMMatcher.match(dat: singleGameDAT, hashedFiles: [realCopy, duplicateAtDifferentPath])
+
+        #expect(report.games.first?.matches.first?.status == .correct(realCopy))
+        #expect(report.surplusFiles.count == 1)
+        #expect(report.surplusFiles.first?.file == duplicateAtDifferentPath)
+        #expect(report.surplusFiles.first?.requiredByGameDescription == "Street Fighter III 2nd Impact")
+    }
+
     @Test("in an archive-organized scan, a whole archive renamed by the user is still found via an unclaimed (non-DAT-name) archive")
     func findsRomInsideARenamedArchive() throws {
         // The archive itself ("renamed-by-user.zip") doesn't match any DAT

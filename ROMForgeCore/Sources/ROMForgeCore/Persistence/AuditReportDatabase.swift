@@ -75,7 +75,15 @@ public final class AuditReportDatabase {
     // reclassifies it `.incorrect`/"Not needed here (required by …)", the
     // same distinction `ROMMatcher`'s own `romsByHash` already draws for
     // duplicate rom files.
-    private static let currentSchemaVersion: Int32 = 15
+    // v16 (2026-08-05, same day): `ROMMatcher`'s own `requiredByGameDescription`
+    // now correctly tags a duplicate ROM archive that shares its base name
+    // with a real game's own archive but sits at a DIFFERENT physical path
+    // (e.g. a real second ROM folder, or a subfolder like `BATOCERA`) —
+    // before this, it was silently swallowed as if it WERE that game's own
+    // archive (name-only comparison), reading as plain "Correct" instead of
+    // "Not needed here (required by …)". Real case: a duplicate `sfiii2.zip`
+    // the user placed in a second location.
+    private static let currentSchemaVersion: Int32 = 16
 
     private let path: String
 

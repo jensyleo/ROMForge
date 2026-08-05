@@ -276,6 +276,18 @@ Al implementar el fix de "CHD huérfano ya no desaparece" (§4e3/TODO.md, mismo 
 
 Verificado en vivo contra la carpeta CPS3 real del usuario: 4 CHDs duplicados (`cap-sf3-3.chd`, `cap-3ga000.chd`, `cap-33s-1.chd`, `cap-33s-2.chd`, presentes en ambas carpetas) pasaron de mostrar un "Unknown game" fantasma a "Not needed here (required by ...)"; el único huérfano genuino (`cap-33s-22.chd`, solo en BATOCERA) siguió correctamente en `.surplus`. `AuditReportDatabase.currentSchemaVersion` subido a v15.
 
+### 4e6. Duplicado de ROM en carpetas distintas — corregido para roms, no solo CHDs (agregado 05-ago-2026)
+
+Tras el fix de CHD duplicado (§4e5), el usuario probó agregar un ARCHIVO ROM duplicado (`sfiii2.zip`, mismo nombre base que el real, en una carpeta física distinta) y encontró que — a diferencia del CHD — el zip duplicado no se marcaba como "Not needed here", sino que simplemente desaparecía de la vista de "sobrantes" (aunque tampoco se mostraba como "Correct" — el rom individual dentro del zip aparecía como surplus genuino, sin identificar).
+
+**Causa raíz:** `ROMMatcher.requiredByGameDescription` decidía "¿este archivo sobrante es en realidad el propio archivo del juego (solo un duplicado interno, no reportar nada)?" comparando ÚNICAMENTE por NOMBRE del archivo (`sfiii2.zip` → juego "sfiii2"), sin verificar si es la MISMA ruta física que realmente reclamó ese juego. Como el límite de profundidad (§8) ahora permite que el mismo nombre de archivo exista en más de una carpeta escaneada, dos `sfiii2.zip` físicamente distintos (uno real, uno duplicado en otra carpeta) coincidían por nombre — y el duplicado se descartaba en silencio como si fuera "el mismo archivo, solo con una copia extra adentro" (el caso que esta lógica originalmente protegía, ej. `qsound_hle.zip` con `dl-1425.bin` duplicado DENTRO del mismo zip).
+
+**Corregido:** ahora se exige AMBAS condiciones para descartar la atribución: (1) el archivo cuyo nombre coincide con el juego es EXACTAMENTE la misma ruta física que ya reclamó algún rom de ese juego (`claimedArchiveURLsByGame`, nuevo índice), Y (2) el hash del archivo sobrante coincide con algo que ese MISMO juego declara como propio (chequeo original, preservado — sin esto se rompía el caso real de un rom de clon que en realidad pertenece a su padre bajo Split, ej. `sf2acc.zip` conteniendo un rom de `sf2ce`).
+
+**Importante — funciona entre CUALQUIER carpeta de ROM configurada, no solo dentro de una:** `ROMMatcher.match` procesa TODOS los archivos de TODAS las carpetas configuradas para un sistema en una sola pasada (`hashedFiles` ya viene combinado desde `FolderScanner.scan(paths:)`), así que este fix detecta duplicados sin importar en cuál de las carpetas de ROM configuradas para el sistema esté cada copia — verificado explícitamente con dos carpetas independientes (no anidadas entre sí).
+
+Verificado en vivo contra el caso real del usuario y con un test permanente nuevo. `AuditReportDatabase.currentSchemaVersion` subido a v16.
+
 ### 4e4. `optional="yes"` — MAME puede correr sin este archivo (agregado 05-ago-2026)
 
 Segunda ronda de investigación (esta vez pedida explícitamente vía web), tras revisar el DTD que MAME incrusta al inicio de su propio `-listxml` (la referencia más autorizada posible — generada por MAME mismo, no un wiki de terceros). El DTD confirma un atributo real no considerado: `<!ATTLIST rom optional (yes|no) "no">` y el mismo para `<disk>`.
