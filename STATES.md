@@ -6,6 +6,19 @@ No documenta el código en sí (eso vive en los doc-comments de cada archivo); d
 
 ---
 
+## 0. Fuentes externas — cómo MAME gestiona sus propios ROMs
+
+ROMForge no inventa reglas propias sobre qué es un rom "correcto", "nodump" u "opcional" — todo eso viene directo del formato que MAME mismo define. Estas son las fuentes consultadas y en qué orden de confiabilidad, de mayor a menor:
+
+1. **El DTD embebido en el propio `-listxml`** (las primeras ~100 líneas de cualquier DAT real de MAME, dentro de `<!DOCTYPE mame [...]>`). Es la fuente más confiable posible: lo genera MAME mismo, en la misma versión exacta que produjo el DAT que estás usando. Aquí es donde se confirmaron los atributos `status="nodump"/"baddump"`, `merge="..."`, y `optional="yes"` en `<rom>`/`<disk>` — no en ningún wiki de terceros. Para verlo tú mismo: `head -120 tu_archivo.DAT` y busca `<!ELEMENT` / `<!ATTLIST`.
+2. **El código fuente de auditoría de MAME**, [`src/frontend/mame/audit.cpp`](https://github.com/mamedev/mame/blob/master/src/frontend/mame/audit.cpp) — cómo MAME mismo decide si un romset "pasa" para poder ejecutarse (enums `audit_status`/`audit_substatus`, manejo de `ROM_ISOPTIONAL`/`FLAG_NO_DUMP`, lógica de samples). **Nota importante de diseño:** MAME optimiza esto para una sola pregunta binaria ("¿puedo correr este juego?"); ROMForge, al ser un gestor/auditor de colección, deliberadamente NO copia esa lógica de colapso a un solo booleano — muestra el estado real de CADA archivo individual (fila por fila), incluso cuando MAME internamente lo consideraría irrelevante para arrancar el juego. Es una divergencia intencional, no un descuido.
+3. **Documentación de línea de comandos de MAME** — [docs.mamedev.org/commandline](https://docs.mamedev.org/commandline/commandline-all.html) — `-listxml`, `-verifyroms`, `-verifysamples`, `-listsamples`.
+4. **wiki.romvault.com** (`mame_listxml` y páginas relacionadas) — útil como contexto de cómo otra herramienta real (RomVault) consume el mismo formato, aunque no es una referencia normativa del formato en sí.
+
+**Regla de la sesión (04/05-ago-2026):** cualquier caso especial nuevo se verifica primero contra el DAT real del usuario (`mame0288.DAT`) con `grep`/`awk`/`python3` — nunca se asume que un atributo existe o se usa con cierta frecuencia sin contarlo en el archivo real. Cuando el DAT real no tiene un caso de prueba disponible (ej. el usuario no posee la colección de Astron Belt), se verifica con un archivo sintético (vacío, solo el nombre correcto) contra el DAT real — la lógica de nombre/hash no requiere contenido real para probarse.
+
+---
+
 ## 1. Los tres niveles de estado
 
 Hay tres niveles distintos, cada uno con su propio vocabulario. No mezclarlos:
@@ -310,7 +323,50 @@ Cache-busting aplicado (regla de la sesión): `DATFileCache.currentFormatVersion
 
 ---
 
-## 7. Qué falta documentar (pendiente, no bloqueante)
+## 7. Rom merge mode / Bios merge mode: qué significan, cómo los maneja ROMForge, y cuál usar
+
+Dos ejes **completamente independientes** (confirmado contra el Settings dialog real de un frontend de referencia de MAME — ninguno de los dos implica ni condiciona al otro), cada uno con las mismas tres opciones (Merged / Split / Un-merged), aplicados a TODO el sistema MAME por igual (no configurable por juego).
+
+### 8a. Rom merge mode — qué le hace físicamente a los archivos
+
+| Modo | Cómo se organiza el archivo físico |
+|---|---|
+| **Split** | El archivo de un clon contiene SOLO lo que le es único; todo lo que comparte con su padre (marcado `merge="..."` en el DAT) se espera únicamente en el archivo del padre. |
+| **Merged** | UN SOLO archivo (el del padre) contiene los roms del padre **y** todos los roms únicos de cada uno de sus clones. Los clones no tienen archivo propio. |
+| **Un-merged** | Cada máquina (padre y cada clon) tiene su PROPIO archivo, completo y autocontenido — incluye tanto lo que comparte con el padre como lo que le es único. Ningún archivo depende de otro. |
+
+`MAMESetLayoutPlanner.swift` (`splitGame`/`mergedGame`/`nonMergedGame`) es donde se implementa cada uno — ver los doc-comments de cada función para el detalle exacto, incluyendo los casos especiales ya corregidos (roms `merge=` duplicados dentro de una misma máquina, familia completa de discos/roms bajo Merged, etc. — secciones 3 y 4e arriba).
+
+### 8b. Recomendación de ROMForge: **Un-merged**
+
+Es el valor por defecto de la app (`MAMEMergeModeSettings.defaultMergeMode`, `GeneralSettingsView.swift`) y el que se recomienda explícitamente en el selector de Configuración. Razones:
+
+1. **Es el modo con menos falsos "missing".** Bajo Split o Merged, un juego puede depender de que EXISTA el archivo de otra máquina (el padre, o viceversa) — si esa otra máquina falta o está mal organizada, el juego que sí tienes se reporta incompleto sin serlo realmente. Un-merged elimina esa dependencia entre archivos por completo: cada archivo se audita 100% por sí mismo.
+2. **Es el modo más tolerante a colecciones parciales o desordenadas** — el caso real más común (nadie tiene el romset completo de MAME). Con Split/Merged, tener SOLO los clones que te interesan (sin el padre) casi garantiza reportes "incomplete"/"Bad" para roms que en realidad SÍ tienes, solo que el DAT los espera en el archivo equivocado bajo ese modo.
+3. **Es el más simple de razonar:** "un archivo, un juego, completo por sí mismo" — sin necesidad de entender la relación padre/clon del DAT para saber si tu colección está bien organizada.
+4. **Contrapartida real, no oculta:** usa más espacio en disco (contenido compartido duplicado en cada archivo). Para el usuario de ROMForge (auditoría/gestión de colección, no arcades físicos con espacio limitado), esto es normalmente aceptable.
+
+**Cuándo Merged puede sorprender (advertencia ya visible en la app):** con Merged, el archivo del padre DEBE contener también el contenido único de cada uno de sus clones — si solo tienes el padre y ninguno de sus clones, el padre se reporta incompleto, aunque tú nunca hayas querido esos clones. Split no tiene este problema (cada clon es independiente en cuanto a lo que le es propio), pero SÍ requiere que el archivo del padre esté presente para lo compartido.
+
+**Bios merge mode** sigue la misma tabla pero aplicada específicamente a los roms de la BIOS (ej. `neogeo.zip`) en vez de a la relación padre/clon — Split (BIOS en archivo separado) es la convención más común en colecciones reales y es el default de ROMForge para este eje específico.
+
+### 8c. Resumen de casos especiales de MAME ya modelados por ROMForge
+
+| Concepto MAME (atributo real del DAT) | Qué significa | Cómo lo maneja ROMForge | Sección |
+|---|---|---|---|
+| `merge="..."` en `<rom>`/`<disk>` | Este archivo es idéntico a uno en el padre/BIOS — no lo esperes aquí bajo Split | Filtrado por `mergeName`/layout planner según el modo activo | 8a |
+| `status="nodump"` en `<rom>` | Chip real nunca dumpeado — sin hash, solo un placeholder | `.unverifiable` si existe un archivo con el nombre correcto (en el archivo propio o en cualquier archivo de la familia merged); si no existe ninguno, se omite del reporte (MAME no lo necesita para correr) | §4e2 |
+| `status="nodump"` en `<disk>` | Igual, pero para CHDs | `.unverifiable` si existe un `.chd` con el nombre correcto; si no, `.missing` (a diferencia del rom, un CHD SÍ suele ser necesario para correr el juego) | §4e3 |
+| `status="baddump"` | Dump conocido pero incorrecto (según el propio MAME) | `isBadDump`/`romDumpStatus`, mostrado como sufijo informativo, independiente del hallazgo local | §3d (`AuditEntry.isBadDump`) |
+| `optional="yes"` en `<rom>`/`<disk>` | MAME puede correr la máquina sin este archivo, aunque sea real y verificable | "Missing (optional)" en vez de "Missing"; no fuerza el badge del juego a rojo | §4e4 |
+| Rom duplicado exacto dentro de la misma máquina (mismo name+hash, dos regiones) | Ej. `neogeo`'s `sm1.sm1` (region `audiobios` y `audiocpu`) | Deduplicado antes de generar los requisitos — una sola entrada, no dos | §4e |
+| `isdevice="yes"` con roms reales | Un "device" interno de MAME que también tiene su propio romset auditable (ej. `qsound_hle`) | Auditado como su propia entrada, no excluido solo por ser device | investigado 05-ago-2026, ya corregido antes |
+| `<softwarelist>` dentro de `<machine>` | Qué softwarelist(s) de cartucho soporta el driver | Metadata pura, sin hashes — no se parsea (no afecta auditoría de archivos) | investigado 05-ago-2026 |
+| `<sample>`/`sampleof` | Archivos de audio opcionales (`.wav`) | Solo presencia (`hasSamples: Bool`) — no se auditan archivos de sample individuales | Ya documentado en `AuditReport.swift` |
+
+---
+
+## 8. Qué falta documentar (pendiente, no bloqueante)
 
 - El bug de visualización en CPS3 mencionado el 04-ago-2026 (pendiente de investigar).
 - Comportamiento de un `.chd` en disco que no corresponde a ningún disco del DAT (actualmente invisible, ni disco ni surplus).

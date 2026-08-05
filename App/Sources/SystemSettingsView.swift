@@ -199,11 +199,30 @@ private struct MAMEMergeSettingsForm: View {
                     Picker("", selection: mergeMode) {
                         Text("Merged (All ROM in parent)").tag(SetMergeMode.merged)
                         Text("Split (Only specific ROM in clone set)").tag(SetMergeMode.split)
-                        Text("Un-merged (All ROM in parent and clones)").tag(SetMergeMode.nonMerged)
+                        Text("Un-merged (All ROM in parent and clones) — Recommended").tag(SetMergeMode.nonMerged)
                     }
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
                     .padding(.top, 4)
+                    // jensyleo's own request (2026-08-05): make ROMForge's
+                    // own recommendation visible in the UI itself, not just
+                    // in code comments/`MAMEMergeModeSettings.defaultMergeMode`'s
+                    // own doc comment (which is already `.nonMerged` for
+                    // exactly this reason). Shown whenever a mode OTHER than
+                    // the recommended one is selected — an always-on nudge
+                    // back toward it, distinct from the `.merged`-specific
+                    // caution below (which explains a concrete pitfall of
+                    // that one choice; this explains why Un-merged is the
+                    // better default in general).
+                    if mergeMode.wrappedValue != .nonMerged {
+                        Label {
+                            Text("Un-merged is recommended: every game's archive is fully self-contained, so nothing can show as \"incomplete\" just because a parent's or clone's own separate archive happens to be missing or misplaced. The trade-off is disk space (shared content is duplicated across archives) — usually a fine trade for auditing/managing a collection rather than running it on space-limited original hardware.")
+                                .font(.caption)
+                        } icon: {
+                            Image(systemName: "star.fill").foregroundStyle(.blue)
+                        }
+                        .padding(.top, 4)
+                    }
                     // Jensyleo's own request (2026-08-04): real confusion
                     // happened live over exactly this — a game showing
                     // "incomplete"/"Bad" under Merged, mistaken for a bug,
