@@ -64,7 +64,18 @@ public final class AuditReportDatabase {
     // collection matches zero `<disk>` entries in the real DAT. A scan
     // cached before this fix simply never emitted a row for such a file at
     // all — the wipe below is what actually surfaces it on next scan.
-    private static let currentSchemaVersion: Int32 = 14
+    // v15 (2026-08-05, same day): the v14 orphan-CHD fix above had a real
+    // bug jensyleo caught live — a duplicate physical `.chd` (the same
+    // known disk content sitting in two places, e.g. his own CPS3 folder's
+    // `BATOCERA` subtree mirroring several real CHDs) read as plain gray
+    // "Unknown game", indistinguishable from a genuinely unrecognized file,
+    // because v14 only tracked "claimed or not" with no by-hash recognition
+    // step. `DiskAuditor.audit` now checks an unclaimed CHD's own header
+    // sha1 against every disk sha1 any game declares — a real match
+    // reclassifies it `.incorrect`/"Not needed here (required by …)", the
+    // same distinction `ROMMatcher`'s own `romsByHash` already draws for
+    // duplicate rom files.
+    private static let currentSchemaVersion: Int32 = 15
 
     private let path: String
 

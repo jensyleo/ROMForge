@@ -4,6 +4,18 @@ import SwiftUI
 struct ContentView: View {
     @Bindable var store: SystemLibraryStore
     @State private var isShowingAddSheet = false
+    // jensyleo's own request (2026-08-05): the app should detect its own
+    // native (Homebrew) dependencies proactively and tell the user exactly
+    // how to install whatever's missing, rather than fail unpredictably
+    // later. Checked once per launch here (`ContentView`'s own body, per
+    // `ROMForgeApp`'s doc comment on where one-time startup logic belongs)
+    // — real bug this closes: `CHDLZMADecompressor` used to `link "lzma"`
+    // unconditionally (see `HomebrewDylibLoader`'s own doc comment), making
+    // liblzma's exact presence a hard requirement just to *launch* the app
+    // at all, with no message of any kind if it was missing. Loading it
+    // lazily instead means a missing dependency no longer crashes launch —
+    // this check is what turns "silently degraded" into "clearly explained".
+    @State private var missingDependencies: [HomebrewLibraryDependency] = []
 
     var body: some View {
         NavigationSplitView {
@@ -77,6 +89,39 @@ struct ContentView: View {
                 )
             }
         }
+        .onAppear {
+            missingDependencies = HomebrewLibraryDependency.all.filter { !HomebrewDylibLoader.isAvailable($0) }
+        }
+        .alert(
+            "Missing dependency",
+            isPresented: Binding(
+                get: { !missingDependencies.isEmpty },
+                set: { if !$0 { missingDependencies = [] } }
+            ),
+            presenting: missingDependencies.first
+        ) { _ in
+            Button("OK") { missingDependencies = [] }
+        } message: { dependency in
+            Text(dependencyAlertMessage(for: dependency))
+        }
+    }
+
+    /// Step-by-step, copy-pasteable Homebrew instructions — jensyleo's own
+    /// request: not just "something is missing," but exactly what to run
+    /// and what to do afterward. Only one dependency is checked today
+    /// (`xz`/liblzma, for CHD's LZMA codec) — see `HomebrewLibraryDependency.all`'s
+    /// own doc comment for why libFLAC isn't listed yet.
+    private func dependencyAlertMessage(for dependency: HomebrewLibraryDependency) -> String {
+        """
+        ROMForge couldn't find "\(dependency.formula)", needed for \(dependency.neededFor). \
+        This only affects that specific feature — everything else in the app works normally.
+
+        To install it:
+        1. Open Terminal.
+        2. Run: brew install \(dependency.formula)
+           (if Homebrew itself isn't installed, see brew.sh first)
+        3. Quit and reopen ROMForge.
+        """
     }
 
     /// Non-categorized systems are grouped under a trailing "Uncategorized"

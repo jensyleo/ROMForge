@@ -40,7 +40,23 @@ struct CHDLZMADecompressorTests {
     /// decode-echoing-itself round trip. Matches the format
     /// `CHDLZMADecompressor`'s own doc comment says MAME's encoder
     /// produces: raw LZMA1, no end-of-payload marker, `lc=3`/`lp=0`/`pb=2`.
+    /// `lzma_raw_buffer_encode` — resolved via `dlopen`/`dlsym`
+    /// (`HomebrewDylibLoader`), same as `CHDLZMADecompressor` itself, now
+    /// that `CLZMA`'s modulemap no longer `link`s liblzma unconditionally
+    /// (see its own doc comment). This is test-only code producing an
+    /// independent reference fixture, but it still needs the real symbol
+    /// at runtime, exactly like production code does.
+    private typealias LzmaRawBufferEncodeFn = @convention(c) (
+        UnsafeMutablePointer<lzma_filter>?, UnsafeRawPointer?,
+        UnsafePointer<UInt8>?, Int,
+        UnsafeMutablePointer<UInt8>?, UnsafeMutablePointer<Int>?, Int
+    ) -> lzma_ret
+
     private static func encodeReferenceRawLZMA1(_ data: Data) throws -> Data {
+        let rawBufferEncode = try HomebrewDylibLoader.loadSymbol(
+            HomebrewLibraryDependency.all.first { $0.formula == "xz" }!,
+            symbol: "lzma_raw_buffer_encode", as: LzmaRawBufferEncodeFn.self
+        )
         var options = lzma_options_lzma()
         options.dict_size = 1 << 20
         options.lc = 3
@@ -67,7 +83,7 @@ struct CHDLZMADecompressorTests {
             ]
             result = [UInt8](data).withUnsafeBufferPointer { inBuf in
                 output.withUnsafeMutableBufferPointer { outBuf in
-                    lzma_raw_buffer_encode(
+                    rawBufferEncode(
                         &filters, nil,
                         inBuf.baseAddress, inBuf.count,
                         outBuf.baseAddress, &outPos, outBuf.count

@@ -687,6 +687,27 @@ doing what we're doing."
      extraction/rebuild), which is a product decision beyond this step's
      scope — and, per this file's own CHD research above, arguably
      unnecessary: RomCenter itself never verifies past the header either.
+   - **Real bug found live and fixed 2026-08-05: liblzma was a hard launch
+     dependency for the whole app, with no detection or message at all.**
+     `CLZMA`'s modulemap used to `link "lzma"` unconditionally — `otool -L`
+     on the built app confirmed an absolute, unconditional `LC_LOAD_DYLIB`
+     on `/opt/homebrew/opt/xz/lib/liblzma.5.dylib`, regardless of whether
+     any CHD file was ever scanned. Missing that one exact file (no
+     Homebrew, a different prefix, an Intel Mac with Homebrew at
+     `/usr/local`, `xz` simply never installed) crashed the *entire app* at
+     launch with a dyld error, before any ROMForge code could report
+     anything. Fixed by removing the `link` directive and resolving the one
+     real function `CHDLZMADecompressor` calls
+     (`lzma_raw_buffer_decode`/`lzma_raw_buffer_encode` in its own test)
+     via `dlopen`/`dlsym` at runtime instead (`HomebrewDylibLoader`,
+     `HomebrewLibraryDependency`) — the app now always launches, and
+     `ContentView` checks proactively on appear, showing a clear alert with
+     exact `brew install xz` instructions if it's missing, instead of
+     either crashing or failing silently mid-scan. Verified live both ways
+     (temporarily pointing the dependency at a nonexistent dylib name to
+     confirm the alert renders correctly, then restoring the real one and
+     confirming no alert and `otool -L` shows no more liblzma reference at
+     all).
 7. [x] **TorrentZip writer** — `TorrentZipWriter` (Core), producing archives
    that conform to the real TorrentZip standard (spec fetched and read from
    wiki.romvault.com/doku.php?id=torrentzip, itself a mirror of the

@@ -120,21 +120,50 @@ public enum DiskAuditor {
                 }
             }
         }
-        // Any `.chd` no disk above ever claimed — genuinely unrecognized,
-        // the CHD-side equivalent of a surplus rom file (`ROMMatcher.match`'s
-        // own `surplusFiles`). `game: nil` (same convention as a rom
-        // surplus entry) routes it through the exact same "Unknown game"
-        // bucket the App layer already builds generically from any entry
-        // with no `game` — no App-layer change needed for this to stop
-        // being invisible.
+        // Every sha1 the DAT declares for ANY disk of ANY game, first-game-wins
+        // on a collision — the disk-side equivalent of `ROMMatcher.match`'s
+        // own `romsByHash`/`requiredByGameDescription`. Real case found live
+        // by jensyleo (2026-08-05): his actual CPS3 folder has a second,
+        // separate `BATOCERA` subtree mirroring several of the same CHDs
+        // (`cap-sf3-3.chd`/`cap-3ga000.chd`/`cap-33s-1.chd`/`cap-33s-2.chd`
+        // physically exist in BOTH places) — `seenDisks` above only ever
+        // creates one audit row per unique *declared* disk, and
+        // `CHDMatcher.match` only ever claims one matching physical copy of
+        // it, so the second, genuinely-duplicate copy was left unclaimed.
+        // Without this lookup, that known, correctly-dumped duplicate read
+        // as plain gray "Unknown game" — indistinguishable from
+        // `cap-33s-22.chd` (his one genuinely unrecognized CHD, matching no
+        // `<disk>` in the DAT at all) — exactly the same false-unknown
+        // problem `romsByHash` already solves for duplicate rom files.
+        var diskSHA1ToGameDescription: [String: String] = [:]
+        for game in dat.games {
+            for disk in game.disks {
+                guard let sha1 = disk.sha1 else { continue }
+                if diskSHA1ToGameDescription[sha1] == nil {
+                    diskSHA1ToGameDescription[sha1] = game.description
+                }
+            }
+        }
+
+        // Any `.chd` no disk above ever claimed. Two different reasons that
+        // can happen, told apart the same way a surplus rom file already
+        // is: genuinely unrecognized content (`.surplus`, gray "Unknown
+        // game") vs. a real, known disk's content that's simply a leftover
+        // duplicate copy somewhere else (`.incorrect` with
+        // `requiredByGameDescription` set — the exact same field/status the
+        // App layer already renders as "Not needed here (required by …)"
+        // for a duplicate rom, no App-layer change needed here either).
         for url in chdFiles where !consumedCHDs.contains(url) {
             try Task.checkCancellation()
             let header = try? CHDHeaderReader.read(contentsOf: url)
+            let sha1 = header?.sha1
+            let requiredBy = sha1.flatMap { diskSHA1ToGameDescription[$0] }
             entries.append(AuditEntry(
-                status: .surplus, game: nil,
-                isDisk: true, name: url.lastPathComponent, path: url,
+                status: requiredBy != nil ? .incorrect : .surplus, game: nil,
+                isDisk: true, requiredByGameDescription: requiredBy,
+                name: url.lastPathComponent, path: url,
                 actualSize: header.map { Int64($0.logicalBytes) },
-                actualSHA1: header?.sha1
+                actualSHA1: sha1
             ))
         }
         return entries

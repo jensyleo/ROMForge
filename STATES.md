@@ -268,6 +268,14 @@ Un solo rom missing pinta TODO el juego rojo (para esa fila — rom o disco, seg
 
 ---
 
+### 4e5. CHD huérfano vs. CHD duplicado — distinguidos correctamente (agregado 05-ago-2026)
+
+Al implementar el fix de "CHD huérfano ya no desaparece" (§4e3/TODO.md, mismo día), el usuario detectó en vivo un bug real: cualquier `.chd` que existiera en DOS carpetas físicas distintas (su propia colección real: `CAPCOM/CPS3/` y `CAPCOM/CPS3/BATOCERA/` — varios CHDs mirroreados en ambas) mostraba una fila duplicada gris "Unknown game" junto a la fila verde correcta del mismo archivo — el fix inicial solo distinguía "reclamado" vs. "no reclamado", sin reconocer que un `.chd` no reclamado podía seguir siendo contenido CONOCIDO (una segunda copia física de un disco que el DAT sí declara, solo que la primera copia ya lo satisface).
+
+**Corregido:** igual patrón que `romsByHash`/`requiredByGameDescription` ya usa para roms duplicados. `DiskAuditor.audit` ahora construye un índice de TODOS los sha1 de disco que declara el DAT (de cualquier juego), y cuando un `.chd` sobrante no fue reclamado por nadie, compara su propio sha1 de header contra ese índice: si coincide, se reclasifica `.incorrect` con `requiredByGameDescription` (renderiza como "Not needed here (required by X)", el mismo texto y lógica de plegado que ya existe para roms — sin ningún cambio en la capa de la app); si no coincide con nada, sigue siendo `.surplus` genuino ("Unknown game").
+
+Verificado en vivo contra la carpeta CPS3 real del usuario: 4 CHDs duplicados (`cap-sf3-3.chd`, `cap-3ga000.chd`, `cap-33s-1.chd`, `cap-33s-2.chd`, presentes en ambas carpetas) pasaron de mostrar un "Unknown game" fantasma a "Not needed here (required by ...)"; el único huérfano genuino (`cap-33s-22.chd`, solo en BATOCERA) siguió correctamente en `.surplus`. `AuditReportDatabase.currentSchemaVersion` subido a v15.
+
 ### 4e4. `optional="yes"` — MAME puede correr sin este archivo (agregado 05-ago-2026)
 
 Segunda ronda de investigación (esta vez pedida explícitamente vía web), tras revisar el DTD que MAME incrusta al inicio de su propio `-listxml` (la referencia más autorizada posible — generada por MAME mismo, no un wiki de terceros). El DTD confirma un atributo real no considerado: `<!ATTLIST rom optional (yes|no) "no">` y el mismo para `<disk>`.

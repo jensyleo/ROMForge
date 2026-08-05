@@ -9,7 +9,27 @@ import CLZMA
 public enum CHDLZMAError: Error, Equatable {
     case decompressionFailed(Int32)
     case sizeMismatch(expected: Int, actual: Int)
+    /// liblzma itself couldn't be found on this Mac at all — see
+    /// `HomebrewDylibLoader`'s own doc comment for why this is now a
+    /// catchable error instead of the app failing to launch. `dependency`
+    /// carries the exact `brew install` formula name for a caller to
+    /// surface to the user.
+    case libraryNotAvailable(HomebrewLibraryDependency)
 }
+
+/// The one real liblzma function this codec calls, resolved via `dlopen`/
+/// `dlsym` (`HomebrewDylibLoader`) instead of a hard link dependency.
+/// `lzma_options_lzma()`/`lzma_filter`/`lzma_ret` etc. below are C *type*
+/// declarations ClangImporter bridges straight from the header — those
+/// cost nothing at link time on their own and need no runtime resolution;
+/// only an actual exported C function needs this.
+private typealias LzmaRawBufferDecodeFn = @convention(c) (
+    UnsafeMutablePointer<lzma_filter>?, UnsafeRawPointer?,
+    UnsafePointer<UInt8>?, UnsafeMutablePointer<Int>?, Int,
+    UnsafeMutablePointer<UInt8>?, UnsafeMutablePointer<Int>?, Int
+) -> lzma_ret
+
+private let lzmaDependency = HomebrewLibraryDependency.all.first { $0.formula == "xz" }!
 
 /// Decompresses a CHD hunk (or the base/data portion of a "cdlz" CD hunk)
 /// compressed with MAME's LZMA codec (`CHD_CODEC_LZMA`/`CHD_CODEC_CD_LZMA`)
@@ -41,6 +61,13 @@ public enum CHDLZMAError: Error, Equatable {
 /// entirely via `ext_flags = 0`.
 public enum CHDLZMADecompressor {
     public static func decompress(_ compressed: [UInt8], decompressedSize: Int, dictSizeOverride: UInt32? = nil) throws -> [UInt8] {
+        let rawBufferDecode: LzmaRawBufferDecodeFn
+        do {
+            rawBufferDecode = try HomebrewDylibLoader.loadSymbol(lzmaDependency, symbol: "lzma_raw_buffer_decode", as: LzmaRawBufferDecodeFn.self)
+        } catch is HomebrewDylibLoader.LibraryNotAvailable {
+            throw CHDLZMAError.libraryNotAvailable(lzmaDependency)
+        }
+
         let dictSize = dictSizeOverride ?? max(UInt32(decompressedSize), 1 << 12)
 
         var options = lzma_options_lzma()
@@ -77,7 +104,7 @@ public enum CHDLZMADecompressor {
             var outPos = 0
             result = compressed.withUnsafeBufferPointer { inBuf in
                 output.withUnsafeMutableBufferPointer { outBuf in
-                    lzma_raw_buffer_decode(
+                    rawBufferDecode(
                         &filters, nil,
                         inBuf.baseAddress, &inPos, inBuf.count,
                         outBuf.baseAddress, &outPos, outBuf.count
