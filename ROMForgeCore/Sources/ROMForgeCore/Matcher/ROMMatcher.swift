@@ -528,18 +528,31 @@ public enum ROMMatcher {
             // own File Name after claiming just that one padding rom.
             //
             // Fixed here, once per game rather than per rom: tally, across
-            // every rom's raw (unscoped) candidates, how many distinct roms
-            // of *this* game each unclaimed archive could explain. An
-            // archive only counts as "genuinely renamed to belong to this
-            // game" if it explains at least two of its roms — a real
-            // renamed archive matches most/all of a game's roms; an
-            // accidental shared-content collision matches at most one —
-            // unless the game declares only one rom in total, the only case
-            // where that bar can never be honestly cleared.
+            // every rom's candidates, how many distinct roms of *this* game
+            // each unclaimed archive could explain. An archive only counts
+            // as "genuinely renamed to belong to this game" if it explains
+            // at least two of its roms — a real renamed archive matches
+            // most/all of a game's roms; an accidental shared-content
+            // collision matches at most one — unless the game declares only
+            // one rom in total, the one case that bar could never honestly
+            // clear.
+            //
+            // Deliberately uses `hashVerifiedCandidates` here, NOT the
+            // plain `candidates` (which still allows the size-only fallback
+            // tier) — real bug found live by jensyleo (2026-08-05, same
+            // day, second pass): duplicating the *entire* `blazstar.zip`
+            // (not just one file) meant "blazstar copy.zip" held ~15 files,
+            // giving pure same-size coincidences across unrelated games'
+            // roms far more chances to rack up two "matches" on their own —
+            // the exact `allowSizeOnlyFallback` cross-game-steal risk this
+            // same file's own doc comment already warns about, just not yet
+            // applied to this particular path. Only a real, verified
+            // crc/md5/sha1 match may count toward "this archive is
+            // genuinely this game's own", never a bare size coincidence.
             var unclaimedArchiveRomCounts: [URL: Int] = [:]
             if isArchiveOrganized, !gameIsStrict {
-                for (_, candidates, _, _, _) in perRom {
-                    let unclaimedArchiveURLs = Set(candidates.compactMap { index -> URL? in
+                for (_, _, hashVerifiedCandidates, _, _) in perRom {
+                    let unclaimedArchiveURLs = Set(hashVerifiedCandidates.compactMap { index -> URL? in
                         guard !ownArchiveIndices.contains(index), !isInClaimedArchive(index, hashedFiles: hashedFiles, allGameNames: allGameNames) else { return nil }
                         return hashedFiles[index].file.url
                     })
@@ -561,7 +574,12 @@ public enum ROMMatcher {
                     scopedCandidates = candidates.filter { ownArchiveIndices.contains($0) }
                 } else {
                     let inOwnArchive = candidates.filter { ownArchiveIndices.contains($0) }
-                    let inUnclaimedArchive = candidates.filter { index in
+                    // Also hash-verified only (not `candidates`, which still
+                    // allows the size-only tier) — the trusted-archive set
+                    // above was built from hash-verified matches, so a
+                    // size-only candidate must never slip back in here
+                    // regardless.
+                    let inUnclaimedArchive = hashVerifiedCandidates.filter { index in
                         !ownArchiveIndices.contains(index)
                             && !isInClaimedArchive(index, hashedFiles: hashedFiles, allGameNames: allGameNames)
                             && trustedUnclaimedArchives.contains(hashedFiles[index].file.url)

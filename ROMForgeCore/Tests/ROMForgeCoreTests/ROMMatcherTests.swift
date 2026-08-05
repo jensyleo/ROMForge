@@ -450,6 +450,38 @@ struct ROMMatcherTests {
         }
     }
 
+    @Test("a game never claims from an unclaimed archive via same-size-only coincidences across its several files")
+    func neverClaimsViaSizeOnlyCoincidencesAcrossAMultiFileUnclaimedArchive() throws {
+        // Real bug found live by jensyleo (2026-08-05, same day, second
+        // pass): the first fix (tallying real hash matches per archive)
+        // wasn't enough once the *whole* archive was duplicated (e.g.
+        // Finder's "blazstar copy.zip", not just one file inside it) —
+        // with ~15 files in that unclaimed archive, an unrelated
+        // multi-rom game could rack up two "matches" via pure same-size
+        // coincidence alone (the size-only fallback tier `candidateIndices`
+        // still allows), clearing the >=2 threshold without a single real
+        // hash match. Two of this game's roms happen to share a SIZE (not
+        // hash) with two different files in the unclaimed archive — this
+        // must never be claimed.
+        let multiRomGame = DATGame(
+            name: "Size Coincidence Game", description: "Size Coincidence Game", cloneOf: nil, romOf: nil,
+            roms: [
+                DATRom(name: "rom-a.bin", size: 900, crc: "deadbeef", md5: nil, sha1: "dead000000000000000000000000000000dead"),
+                DATRom(name: "rom-b.bin", size: 700, crc: "cafefeed", md5: nil, sha1: "cafe000000000000000000000000000000cafe"),
+            ]
+        )
+        let dupDAT = DATFile(header: dat.header, games: dat.games + [multiRomGame], mergeMode: dat.mergeMode)
+        // Same sizes, genuinely different content (different CRC/SHA1) —
+        // only a size-only fallback match could ever connect these.
+        let unrelatedFileA = zipEntryHashedFile(archiveName: "renamed-by-user", entryName: "unrelated-a.bin", size: 900, crc: "11110000", sha1: "1111000000000000000000000000000000aaaa")
+        let unrelatedFileB = zipEntryHashedFile(archiveName: "renamed-by-user", entryName: "unrelated-b.bin", size: 700, crc: "22220000", sha1: "2222000000000000000000000000000000bbbb")
+        let report = try ROMMatcher.match(dat: dupDAT, hashedFiles: [unrelatedFileA, unrelatedFileB])
+
+        let result = report.games.first { $0.game.name == "Size Coincidence Game" }!
+        #expect(result.matches[0].status == .missing)
+        #expect(result.matches[1].status == .missing)
+    }
+
     @Test("under Un-merged mode, a game that IS part of a real clone/parent family still never CLAIMS a rom from a renamed archive")
     func nonMergedCloneFamilyStillNeverBorrowsFromAnotherArchive() throws {
         // The other half of the fix above: the strictness itself is still
