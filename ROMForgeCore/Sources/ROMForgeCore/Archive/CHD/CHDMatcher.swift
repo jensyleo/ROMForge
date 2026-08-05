@@ -13,6 +13,15 @@ public enum CHDDiskStatus: Equatable, Sendable {
     /// A CHD exists at the expected filename, but its header SHA1 doesn't match.
     case incorrect(URL)
     case missing
+    /// The DAT declares this disk with no `sha1` at all — real hardware
+    /// media MAME knows exists but nobody has successfully dumped/verified
+    /// (the disk-level equivalent of a `nodump` rom, see `RomMatchStatus.nodump`'s
+    /// own doc comment) — and a `.chd` file exists at the expected filename.
+    /// There's nothing to verify its content against by design, so it can
+    /// never be `.correct`, but a same-named file existing at all is exactly
+    /// what a real reference tool (RomCenter/ClrMamePro) recognizes for this
+    /// case rather than reporting a false `.missing`.
+    case unverifiable(URL)
 }
 
 /// Matches an expected `MAMEDisk` (from a MAME `-listxml` machine) against a
@@ -32,7 +41,16 @@ public enum CHDMatcher {
     }
 
     public static func match(diskName: String, diskSHA1: String?, chdFiles: [URL]) -> CHDDiskStatus {
-        guard let expectedSHA1 = diskSHA1 else { return .missing }
+        guard let expectedSHA1 = diskSHA1 else {
+            // Real case found live by jensyleo (2026-08-04): 184 `<disk>`
+            // entries in a real MAME 0.288 dump declare no `sha1` at all —
+            // undumped media, same real-world pattern as a `nodump` rom.
+            // Only findable by name, same reasoning as the rom-side fix.
+            if let chdURL = chdFiles.first(where: { $0.deletingPathExtension().lastPathComponent == diskName }) {
+                return .unverifiable(chdURL)
+            }
+            return .missing
+        }
 
         for chdURL in chdFiles {
             guard let header = try? CHDHeaderReader.read(contentsOf: chdURL) else { continue }

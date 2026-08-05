@@ -143,11 +143,12 @@ private struct GameNode: Identifiable {
             case .incorrect: return "Incorrect"
             case .badDump: return "Bad"
             case .correct, .surplus: return "Correct"
-            // `DiskAuditor`'s own `CHDMatcher`-backed status never actually
-            // produces `.unverifiable` (that's a rom-only concept, see
-            // `RomMatchStatus.nodump`) — kept only so this switch stays
-            // exhaustive over the shared `AuditStatus` type.
-            case .unverifiable: return "Correct"
+            // A CHD whose DAT entry declares no sha1 at all — undumped
+            // media (`CHDDiskStatus.unverifiable`'s own doc comment) — with
+            // a same-named file present. Nothing to verify it against, by
+            // design, so never "Correct"; the file existing is the best
+            // this disk can ever report.
+            case .unverifiable: return "Nodump (unverifiable)"
             }
         }
         switch aggregateStatus {
@@ -2469,6 +2470,19 @@ struct LibraryDetailView: View {
         if entries.contains(where: { $0.status == .missing }) { return .missing }
         if entries.contains(where: { $0.status == .badDump }) { return .badDump }
         if entries.contains(where: { $0.status == .incorrect }) { return .incorrect }
+        if entries.contains(where: { $0.status == .correct }) { return .correct }
+        // Real case found live by jensyleo (2026-08-04): a game whose ONLY
+        // disk is a `<disk>` the DAT declares with no sha1 at all (undumped
+        // media — `CHDDiskStatus.unverifiable`'s own doc comment) has no
+        // `.correct` entry to fall back on the way a rom aggregate almost
+        // always does (a stray `.unverifiable` rom sitting alongside dozens
+        // of genuinely `.correct` ones). Silently reporting "Correct" here
+        // would claim something was actually verified when nothing was —
+        // surfaced as its own status instead, same non-severe tier as
+        // `.surplus` (never outranks missing/badDump/incorrect above), just
+        // not silently swallowed into a false "Correct" when it's all
+        // there is.
+        if entries.contains(where: { $0.status == .unverifiable }) { return .unverifiable }
         return .correct
     }
 

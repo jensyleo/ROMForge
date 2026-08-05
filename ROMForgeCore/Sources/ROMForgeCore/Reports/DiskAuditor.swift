@@ -90,6 +90,20 @@ public enum DiskAuditor {
                         isDisk: true, name: disk.name, path: nil,
                         expectedSHA1: disk.sha1
                     ))
+                case .unverifiable(let url):
+                    // See `CHDDiskStatus.unverifiable`'s own doc comment —
+                    // the DAT declares no sha1 to verify this disk against
+                    // at all, so `actualSHA1` is whatever the real header
+                    // happens to say, purely informational (never compared).
+                    let header = try? CHDHeaderReader.read(contentsOf: url)
+                    entries.append(AuditEntry(
+                        status: .unverifiable, game: game.name, gameDescription: game.description,
+                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, chdNames: chdNames,
+                        gameYear: game.year, gameManufacturer: game.manufacturer,
+                        isDisk: true, name: disk.name, path: url,
+                        expectedSize: header.map { Int64($0.logicalBytes) }, actualSize: header.map { Int64($0.logicalBytes) },
+                        actualSHA1: header?.sha1
+                    ))
                 }
             }
         }

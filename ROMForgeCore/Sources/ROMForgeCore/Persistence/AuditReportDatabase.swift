@@ -48,7 +48,15 @@ public final class AuditReportDatabase {
     // for any scan cached before this fix; the `status` column is a
     // free-form TEXT, so no schema/column change is needed, only the wipe
     // this version bump already triggers.
-    private static let currentSchemaVersion: Int32 = 11
+    // v12 (2026-08-05): `CHDMatcher.match`/`DiskAuditor.audit` now report
+    // `.unverifiable` for a `<disk>` the DAT declares with no sha1 at all
+    // (undumped media, the disk-side equivalent of a `nodump` rom) when a
+    // same-named `.chd` exists, instead of always `.missing` regardless of
+    // whether the file is actually present — real case: 184 such disks in
+    // a real MAME 0.288 dump (e.g. `astron`'s laserdisc). No schema/column
+    // change needed (same free-form TEXT `status` column), only the wipe
+    // this version bump triggers.
+    private static let currentSchemaVersion: Int32 = 12
 
     private let path: String
 

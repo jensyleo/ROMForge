@@ -254,6 +254,18 @@ Un solo rom missing pinta TODO el juego rojo (para esa fila — rom o disco, seg
 
 ---
 
+### 4e3. `.unverifiable` extendido a discos CHD (agregado 05-ago-2026)
+
+Investigación pedida por el usuario tras probar los tres modos de Rom merge mode: revisar el DAT real por otras variables/casos especiales no considerados. Encontrado: **184 elementos `<disk>`** en el DAT real (`mame0288.DAT`) declarados sin atributo `sha1` — el equivalente exacto de un rom `nodump`, pero del lado de discos CHD (ej. `astron`, laserdisc de Sega, `<disk name="astron" status="nodump" .../>`).
+
+**Antes:** `CHDMatcher.match` hacía `guard let expectedSHA1 = diskSHA1 else { return .missing }` de forma incondicional — sin importar si el archivo `.chd` real existía con el nombre correcto, siempre se reportaba "missing".
+
+**Corregido:** mismo patrón aplicado a roms — si el disco no declara `sha1`, se busca por NOMBRE (nuevo caso `CHDDiskStatus.unverifiable(URL)`); si existe un `.chd` con ese nombre, se reporta `.unverifiable` ("Nodump (unverifiable)") en vez de `.missing`. Si no existe ningún archivo, sigue siendo `.missing` (a diferencia de un rom `nodump`, un disco SÍ se sigue reportando si falta — MAME normalmente necesita el CHD para correr el juego, no es opcional como el chip PAL nunca dumpeado).
+
+**Ajuste adicional necesario:** `gameCategory(for:)` (agregación de estado por juego) antes convertía CUALQUIER estado no severo (missing/badDump/incorrect) a `.correct` en silencio — correcto para roms (donde `.unverifiable` casi siempre convive con otros roms sí verificados), pero incorrecto para un disco cuyo ÚNICO estado es `.unverifiable`: mostraría "Correct" falso. Ahora solo cae a `.correct` si hay al menos una entrada genuinamente `.correct`; si no, y hay alguna `.unverifiable`, se reporta como tal.
+
+Verificado con un caso sintético (archivo `.chd` vacío nombrado `astron.chd`, ya que el usuario no posee esa colección) contra el DAT real: con el archivo presente → `.unverifiable`; sin él → `.missing` (sanity check). `AuditReportDatabase.currentSchemaVersion` subido a v12 (no requiere cambio de esquema, solo invalidar caché vieja).
+
 ### 4e2. Nuevo estado: `.unverifiable` — roms `nodump` (agregado 04-ago-2026)
 
 **Caso real:** `Neo-Geo MV-6F` no aplicaba aquí, pero un caso paralelo sí: `Gryzor` (`gryzor.zip`, clon de `Contra`) mostraba "Unknown game" (gris) en la lista pese a que casi todas sus filas eran amarillas "Not needed here" — salvo una, `007766.20d.bin`, gris "Unrecognized" puro.
