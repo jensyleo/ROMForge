@@ -48,7 +48,7 @@ public enum AuditReporter {
                 let makeEntry: (AuditStatus, URL?, HashedFile?, Bool, String?) -> AuditEntry = { status, path, hashedFile, viaHeaderStrip, foundElsewhereArchiveName in
                     AuditEntry(
                         status: status, game: game.name, gameDescription: game.description, cloneOf: game.cloneOf, isBios: game.isBios,
-                        hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, romDumpStatus: rom.status, mergeName: rom.mergeName,
+                        hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: rom.optional, romDumpStatus: rom.status, mergeName: rom.mergeName,
                         chdNames: chdNames, gameYear: game.year, gameManufacturer: game.manufacturer,
                         requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames,
                         matchedViaHeaderStrip: viaHeaderStrip, foundElsewhereArchiveName: foundElsewhereArchiveName,

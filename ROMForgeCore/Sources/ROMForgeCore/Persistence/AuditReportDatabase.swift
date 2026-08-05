@@ -56,7 +56,7 @@ public final class AuditReportDatabase {
     // a real MAME 0.288 dump (e.g. `astron`'s laserdisc). No schema/column
     // change needed (same free-form TEXT `status` column), only the wipe
     // this version bump triggers.
-    private static let currentSchemaVersion: Int32 = 12
+    private static let currentSchemaVersion: Int32 = 13
 
     private let path: String
 
@@ -94,6 +94,7 @@ public final class AuditReportDatabase {
                 [
                     .text(systemID), .text(entry.status.rawValue), .textOrNull(entry.game), .textOrNull(entry.gameDescription), .textOrNull(entry.cloneOf),
                     .int(entry.isBios ? 1 : 0), .int(entry.hasCHD ? 1 : 0), .int(entry.hasSamples ? 1 : 0), .int(entry.isBadDump ? 1 : 0),
+                    .int(entry.isOptional ? 1 : 0),
                     .textOrNull(entry.romDumpStatus?.rawValue), .textOrNull(entry.mergeName), .textOrNull(entry.chdNames),
                     .textOrNull(entry.gameYear), .textOrNull(entry.gameManufacturer), .textOrNull(entry.requiredBiosNames), .textOrNull(entry.deviceRefNames),
                     .int(entry.isDisk ? 1 : 0), .textOrNull(entry.foundElsewhereArchiveName), .textOrNull(entry.requiredByGameDescription),
@@ -108,11 +109,12 @@ public final class AuditReportDatabase {
                 """
                 INSERT INTO audit_entries (
                     system_id, status, game, game_description, clone_of, is_bios, has_chd, has_samples, is_bad_dump,
+                    is_optional,
                     rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
                     is_disk, found_elsewhere_archive_name, required_by_game_description,
                     name, path, expected_size, actual_size,
                     expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 rowValues
             )
@@ -143,7 +145,8 @@ public final class AuditReportDatabase {
                    rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
                    is_disk, found_elsewhere_archive_name, required_by_game_description,
                    name, path, expected_size, actual_size,
-                   expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1
+                   expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
+                   is_optional
             FROM audit_entries WHERE system_id = ?;
             """,
             [.text(systemID)]
@@ -161,6 +164,7 @@ public final class AuditReportDatabase {
                     hasCHD: sqlite3_column_int(statement, 5) != 0,
                     hasSamples: sqlite3_column_int(statement, 6) != 0,
                     isBadDump: sqlite3_column_int(statement, 7) != 0,
+                    isOptional: sqlite3_column_int(statement, 28) != 0,
                     romDumpStatus: Self.columnText(statement, 8).flatMap(RomDumpStatus.init(rawValue:)),
                     mergeName: Self.columnText(statement, 9),
                     chdNames: Self.columnText(statement, 10),
@@ -190,7 +194,17 @@ public final class AuditReportDatabase {
         let badDump = entries.filter { $0.status == .badDump }.count
         let missing = entries.filter { $0.status == .missing }.count
         let surplus = entries.filter { $0.status == .surplus }.count
-        return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus)
+        // Real bug found live by jensyleo (2026-08-05): missing here ever
+        // since `.unverifiable` was added — a freshly-scanned `AuditReport`
+        // always got a correct `unverifiable` count from `AuditReporter`,
+        // but reloading the exact same report from this cache silently
+        // reset it to `0` (the `AuditReport.init` default), even though the
+        // individual entries themselves decoded with the right status. Any
+        // UI that trusted `report.unverifiable` directly (rather than
+        // recomputing from `entries`) would show a stale `0` after every
+        // app relaunch.
+        let unverifiable = entries.filter { $0.status == .unverifiable }.count
+        return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
     }
 
     /// The DAT name/version last used to scan a system, and when — shown
@@ -347,6 +361,7 @@ public final class AuditReportDatabase {
                 has_chd INTEGER NOT NULL,
                 has_samples INTEGER NOT NULL,
                 is_bad_dump INTEGER NOT NULL,
+                is_optional INTEGER NOT NULL DEFAULT 0,
                 rom_dump_status TEXT,
                 merge_name TEXT,
                 chd_names TEXT,
@@ -466,6 +481,16 @@ public final class AuditReportDatabase {
         // just fixed until they happened to rescan that particular system.
         // Only cached scan results are dropped — nothing the user configured
         // lives in this table, and a rescan rebuilds it fully.
+        // Schema v13 (2026-08-05): new `AuditEntry.isOptional`, for the DAT's
+        // own `optional="yes"` attribute (MAME's own DTD) — a rom/disk MAME
+        // can run the machine without, distinct from `nodump` (unverifiable,
+        // not "not needed"). Real case: 3 `<disk>` entries in a real MAME
+        // 0.288 dump (`cubeqst`/`cubeqsta`/`atronic`). A stale row simply
+        // lacks this new information (defaults to `0`/`false` via `ALTER
+        // TABLE`'s own `DEFAULT`) — same wipe-on-upgrade below as every
+        // prior bump, so it shows up correctly the next time each system
+        // gets rescanned.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN is_optional INTEGER NOT NULL DEFAULT 0;")
         if currentVersion > 0 {
             try? exec(db, "DELETE FROM audit_entries;")
             try? exec(db, "DELETE FROM scans;")

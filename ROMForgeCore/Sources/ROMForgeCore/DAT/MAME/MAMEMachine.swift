@@ -22,10 +22,14 @@ public struct MAMEBiosSet: Equatable, Sendable {
 public struct MAMEDisk: Equatable, Sendable {
     public let name: String
     public let sha1: String?
+    /// The `optional="yes"` attribute — see `DATDisk.optional`'s own doc
+    /// comment for the concept.
+    public let optional: Bool
 
-    public init(name: String, sha1: String?) {
+    public init(name: String, sha1: String?, optional: Bool = false) {
         self.name = name
         self.sha1 = sha1?.lowercased()
+        self.optional = optional
     }
 }
 

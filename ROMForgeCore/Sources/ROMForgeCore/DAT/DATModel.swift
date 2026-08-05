@@ -45,8 +45,20 @@ public struct DATRom: Equatable, Sendable, Codable {
     /// already in the parent archive under that name". Nil for Logiqx DATs
     /// (no such concept) and for a machine's own non-inherited roms.
     public let mergeName: String?
+    /// The `optional="yes"` attribute (MAME `-listxml`'s own DTD, embedded
+    /// in every real `-listxml` dump): MAME itself can run this machine
+    /// without this specific rom present — distinct from `nodump` (which
+    /// means "can't verify," not "not needed"). Real case found live by
+    /// jensyleo (2026-08-05), researched from MAME's own DTD after
+    /// investigating the real DAT for other unconsidered cases: `0` real
+    /// roms use this in a real MAME 0.288 dump (only `<disk>` does, see
+    /// `DATDisk.optional`), but the attribute genuinely exists in the
+    /// format, so it's modeled here too rather than assumed rom-exclusive.
+    /// `false` (MAME's own DTD default) for every DAT format without this
+    /// concept.
+    public let optional: Bool
 
-    public init(name: String, size: Int64, crc: String?, md5: String?, sha1: String?, status: RomDumpStatus = .good, mergeName: String? = nil) {
+    public init(name: String, size: Int64, crc: String?, md5: String?, sha1: String?, status: RomDumpStatus = .good, mergeName: String? = nil, optional: Bool = false) {
         self.name = name
         self.size = size
         self.crc = crc?.lowercased()
@@ -54,6 +66,7 @@ public struct DATRom: Equatable, Sendable, Codable {
         self.sha1 = sha1?.lowercased()
         self.status = status
         self.mergeName = mergeName
+        self.optional = optional
     }
 }
 
@@ -63,10 +76,18 @@ public struct DATRom: Equatable, Sendable, Codable {
 public struct DATDisk: Equatable, Sendable, Codable {
     public let name: String
     public let sha1: String?
+    /// The `optional="yes"` attribute — see `DATRom.optional`'s own doc
+    /// comment for the concept. Real case found live by jensyleo
+    /// (2026-08-05): 3 real `<disk>` entries in a real MAME 0.288 dump
+    /// (`cubeqst`, `cubeqsta`, `atronic`) — all with a real `sha1`, i.e.
+    /// genuinely dumped/verifiable content MAME simply doesn't require to
+    /// run. `false` for every DAT format without this concept.
+    public let optional: Bool
 
-    public init(name: String, sha1: String?) {
+    public init(name: String, sha1: String?, optional: Bool = false) {
         self.name = name
         self.sha1 = sha1?.lowercased()
+        self.optional = optional
     }
 }
 

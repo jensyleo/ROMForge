@@ -254,6 +254,24 @@ Un solo rom missing pinta TODO el juego rojo (para esa fila — rom o disco, seg
 
 ---
 
+### 4e4. `optional="yes"` — MAME puede correr sin este archivo (agregado 05-ago-2026)
+
+Segunda ronda de investigación (esta vez pedida explícitamente vía web), tras revisar el DTD que MAME incrusta al inicio de su propio `-listxml` (la referencia más autorizada posible — generada por MAME mismo, no un wiki de terceros). El DTD confirma un atributo real no considerado: `<!ATTLIST rom optional (yes|no) "no">` y el mismo para `<disk>`.
+
+**Distinto de `nodump`:** `nodump` significa "no se puede verificar" (sin hash). `optional="yes"` significa "MAME puede correr la máquina sin este archivo" — el archivo SÍ tiene hash real y es completamente verificable, simplemente no es obligatorio.
+
+**Uso real en el DAT:** 0 roms, 3 discos (`cubeqst`, `cubeqsta`, `atronic`) — todos con `sha1` real. Ninguno de tus sistemas actuales (CPS1-3/NEOGEO) lo usa.
+
+**Implementado:**
+- `DATRom.optional`/`DATDisk.optional`, parseados desde el atributo XML.
+- `AuditEntry.isOptional` — nuevo campo, persistido en SQLite (columna `is_optional`, sin necesidad de invalidar cachés viejas gracias al `DEFAULT 0`).
+- Texto de fila: "Missing (optional)" en vez de "Missing" plano cuando falta un archivo declarado opcional.
+- `gameCategory(for:)`: un rom/disco `optional` ausente ya NO fuerza el estado agregado del juego a rojo "Missing" — sigue el mismo razonamiento no-severo que `.unverifiable`. Si el juego tiene otro contenido verificado, el badge queda verde; si el único contenido es ese disco opcional ausente, cae a "Correct" por defecto (mismo comportamiento que ya existía para `.surplus`/`.unverifiable` sin ningún otro contenido).
+
+**Bug adicional encontrado y corregido en el mismo pase:** `AuditReportDatabase.loadReport` nunca calculaba el conteo `unverifiable` al recargar un reporte cacheado desde SQLite (siempre quedaba en 0 pese a que las entradas individuales sí tenían el status correcto) — corregido junto con este cambio.
+
+Verificado en vivo contra el DAT real: `cubeqst.disks.first?.optional == true`, y auditar sin el archivo produce `status=.missing, isOptional=true`. `AuditReportDatabase.currentSchemaVersion` subido a v13.
+
 ### 4e3. `.unverifiable` extendido a discos CHD (agregado 05-ago-2026)
 
 Investigación pedida por el usuario tras probar los tres modos de Rom merge mode: revisar el DAT real por otras variables/casos especiales no considerados. Encontrado: **184 elementos `<disk>`** en el DAT real (`mame0288.DAT`) declarados sin atributo `sha1` — el equivalente exacto de un rom `nodump`, pero del lado de discos CHD (ej. `astron`, laserdisc de Sega, `<disk name="astron" status="nodump" .../>`).

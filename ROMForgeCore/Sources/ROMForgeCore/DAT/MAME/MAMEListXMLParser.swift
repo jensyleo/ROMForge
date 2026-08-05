@@ -199,12 +199,12 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
                 DATRom(
                     name: romName, size: size, crc: attributeDict["crc"], md5: attributeDict["md5"], sha1: attributeDict["sha1"],
                     status: RomDumpStatus(rawValue: attributeDict["status"] ?? "good") ?? .good,
-                    mergeName: attributeDict["merge"]
+                    mergeName: attributeDict["merge"], optional: attributeDict["optional"] == "yes"
                 )
             )
         case "disk":
             guard inMachine, let diskName = attributeDict["name"] else { break }
-            disks.append(MAMEDisk(name: diskName, sha1: attributeDict["sha1"]))
+            disks.append(MAMEDisk(name: diskName, sha1: attributeDict["sha1"], optional: attributeDict["optional"] == "yes"))
         case "device_ref":
             guard inMachine, let refName = attributeDict["name"] else { break }
             deviceRefs.append(refName)

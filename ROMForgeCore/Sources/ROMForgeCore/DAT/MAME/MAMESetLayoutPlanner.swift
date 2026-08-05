@@ -246,7 +246,7 @@ public enum MAMESetLayoutPlanner {
                     roms.append(
                         DATRom(
                             name: "\(clone.name)/\(rom.name)", size: rom.size, crc: rom.crc, md5: rom.md5, sha1: rom.sha1,
-                            status: rom.status, mergeName: rom.mergeName
+                            status: rom.status, mergeName: rom.mergeName, optional: rom.optional
                         )
                     )
                 } else {

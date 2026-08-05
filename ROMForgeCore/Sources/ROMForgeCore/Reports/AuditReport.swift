@@ -67,6 +67,15 @@ public struct AuditEntry: Equatable, Sendable {
     /// what's (or isn't) found locally. Always false for surplus files,
     /// which have no DAT entry to flag.
     public let isBadDump: Bool
+    /// True when the DAT declares this specific rom/disk `optional="yes"` —
+    /// MAME itself can run the machine without it, distinct from `nodump`
+    /// (which means "can't verify," not "not needed"). Real case found
+    /// live by jensyleo (2026-08-05): 3 `<disk>` entries in a real MAME
+    /// 0.288 dump (`cubeqst`/`cubeqsta`/`atronic`), all with a real sha1 —
+    /// genuinely dumped content MAME just doesn't require. Always `false`
+    /// for surplus files, which have no DAT rom/disk entry to flag, and for
+    /// any DAT format without this concept (Logiqx/software-list).
+    public let isOptional: Bool
     /// The DAT's own dump-quality claim for this specific rom (`good`,
     /// `baddump`, or `nodump`) — `isBadDump` above collapses the latter two
     /// into one boolean for filtering; this keeps the actual distinction
@@ -165,6 +174,7 @@ public struct AuditEntry: Equatable, Sendable {
         hasCHD: Bool = false,
         hasSamples: Bool = false,
         isBadDump: Bool = false,
+        isOptional: Bool = false,
         romDumpStatus: RomDumpStatus? = nil,
         mergeName: String? = nil,
         chdNames: String? = nil,
@@ -195,6 +205,7 @@ public struct AuditEntry: Equatable, Sendable {
         self.hasCHD = hasCHD
         self.hasSamples = hasSamples
         self.isBadDump = isBadDump
+        self.isOptional = isOptional
         self.romDumpStatus = romDumpStatus
         self.mergeName = mergeName
         self.chdNames = chdNames

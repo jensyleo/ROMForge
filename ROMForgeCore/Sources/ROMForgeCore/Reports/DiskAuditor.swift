@@ -67,7 +67,7 @@ public enum DiskAuditor {
                     let header = try? CHDHeaderReader.read(contentsOf: url)
                     entries.append(AuditEntry(
                         status: .correct, game: game.name, gameDescription: game.description,
-                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, chdNames: chdNames,
+                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, isOptional: disk.optional, chdNames: chdNames,
                         gameYear: game.year, gameManufacturer: game.manufacturer,
                         isDisk: true, name: disk.name, path: url,
                         expectedSize: header.map { Int64($0.logicalBytes) }, actualSize: header.map { Int64($0.logicalBytes) },
@@ -77,7 +77,7 @@ public enum DiskAuditor {
                     let header = try? CHDHeaderReader.read(contentsOf: url)
                     entries.append(AuditEntry(
                         status: .incorrect, game: game.name, gameDescription: game.description,
-                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, chdNames: chdNames,
+                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, isOptional: disk.optional, chdNames: chdNames,
                         gameYear: game.year, gameManufacturer: game.manufacturer,
                         isDisk: true, name: disk.name, path: url,
                         expectedSHA1: disk.sha1, actualSHA1: header?.sha1
@@ -85,7 +85,7 @@ public enum DiskAuditor {
                 case .missing:
                     entries.append(AuditEntry(
                         status: .missing, game: game.name, gameDescription: game.description,
-                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, chdNames: chdNames,
+                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, isOptional: disk.optional, chdNames: chdNames,
                         gameYear: game.year, gameManufacturer: game.manufacturer,
                         isDisk: true, name: disk.name, path: nil,
                         expectedSHA1: disk.sha1
@@ -98,7 +98,7 @@ public enum DiskAuditor {
                     let header = try? CHDHeaderReader.read(contentsOf: url)
                     entries.append(AuditEntry(
                         status: .unverifiable, game: game.name, gameDescription: game.description,
-                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, chdNames: chdNames,
+                        cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, isOptional: disk.optional, chdNames: chdNames,
                         gameYear: game.year, gameManufacturer: game.manufacturer,
                         isDisk: true, name: disk.name, path: url,
                         expectedSize: header.map { Int64($0.logicalBytes) }, actualSize: header.map { Int64($0.logicalBytes) },

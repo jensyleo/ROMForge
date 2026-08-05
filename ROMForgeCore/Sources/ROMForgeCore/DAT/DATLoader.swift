@@ -197,12 +197,12 @@ public enum DATLoader {
     /// own `machine.disks` is already captured correctly on its own.
     private static func mergedDisks(for machine: MAMEMachine, mode: SetMergeMode, dataset: MAMEDataset) -> [DATDisk] {
         guard mode == .merged else {
-            return machine.disks.map { DATDisk(name: $0.name, sha1: $0.sha1) }
+            return machine.disks.map { DATDisk(name: $0.name, sha1: $0.sha1, optional: $0.optional) }
         }
         var seen = Set<String>()
         var disks: [DATDisk] = []
         for disk in machine.disks + dataset.clones(ofParent: machine.name).flatMap(\.disks) where seen.insert("\(disk.name)::\(disk.sha1 ?? "")").inserted {
-            disks.append(DATDisk(name: disk.name, sha1: disk.sha1))
+            disks.append(DATDisk(name: disk.name, sha1: disk.sha1, optional: disk.optional))
         }
         return disks
     }

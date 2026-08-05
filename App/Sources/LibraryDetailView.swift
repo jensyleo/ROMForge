@@ -1602,7 +1602,13 @@ struct LibraryDetailView: View {
         // baddump/nodump claim about the *reference* dump itself); this is
         // ROMForge's own finding about the *local* file.
         case .badDump: base = "Bad (hash mismatch)"
-        case .missing: base = "Missing"
+        // The DAT itself declares this rom/disk `optional="yes"` — MAME can
+        // run the machine without it, real case found live by jensyleo
+        // (2026-08-05) researched from MAME's own DTD (`cubeqst`/`cubeqsta`/
+        // `atronic`'s laserdisc). Distinct wording from plain "Missing" so
+        // it doesn't read as urgent/blocking the way a truly required
+        // absence does.
+        case .missing: base = entry.isOptional ? "Missing (optional)" : "Missing"
         case .surplus: base = "Unrecognized"
         // A file genuinely sits in this rom's own expected slot, but the
         // DAT itself declares this rom `nodump` — no CRC/MD5/SHA1 exists to
@@ -2467,7 +2473,16 @@ struct LibraryDetailView: View {
     /// file in archive"), never severe enough to outrank a real rom
     /// status.
     private nonisolated static func gameCategory(for entries: [AuditEntry]) -> AuditStatus {
-        if entries.contains(where: { $0.status == .missing }) { return .missing }
+        // `isOptional` excluded from this check — the DAT's own
+        // `optional="yes"` attribute (MAME's own DTD) means MAME can run
+        // the machine without this specific rom/disk at all, so its
+        // absence shouldn't force the whole game red the way a genuinely
+        // required absence does. Real case found live by jensyleo
+        // (2026-08-05): none of the 3 real optional `<disk>` entries in a
+        // real MAME 0.288 dump are missing/badDump otherwise, so this
+        // hasn't been exercised against real absence yet — the reasoning
+        // mirrors `.unverifiable`'s own non-severe tier below.
+        if entries.contains(where: { $0.status == .missing && !$0.isOptional }) { return .missing }
         if entries.contains(where: { $0.status == .badDump }) { return .badDump }
         if entries.contains(where: { $0.status == .incorrect }) { return .incorrect }
         if entries.contains(where: { $0.status == .correct }) { return .correct }
