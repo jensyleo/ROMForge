@@ -118,7 +118,12 @@ private struct GameNode: Identifiable {
             guard aggregateStatus == .incorrect, let requiredBy = entries.first?.requiredByGameDescription else {
                 return "Unknown game"
             }
-            return "Extra archive, not needed here (required by \(requiredBy))"
+            // jensyleo's own request (2026-08-05): make explicit that
+            // "Extra" here specifically means "a known duplicate of
+            // something already claimed elsewhere" — not a vague/unknown
+            // extra file, which reads as plain "Unknown game" instead (see
+            // the guard just above).
+            return "Extra archive (duplicated), not needed here (required by \(requiredBy))"
         }
         // Real bug found live by jensyleo (2026-08-04): this used to
         // re-derive its own answer from raw `entries` independently of
@@ -178,7 +183,7 @@ private struct GameNode: Identifiable {
             let archiveMisnamed = actualFileName != nil && expectedFileName != nil && actualFileName != expectedFileName
             if archiveMisnamed { return "Bad file name" }
             let hasOwnRomProblem = entries.contains { $0.status == .incorrect && $0.requiredByGameDescription == nil }
-            return hasOwnRomProblem ? "Rom need fix" : "Extra file, not needed here"
+            return hasOwnRomProblem ? "Rom need fix" : "Extra file (duplicated), not needed here"
         case .correct, .surplus:
             // A surplus entry can end up here (not in its own "Unknown
             // game" bucket) when it's an extra file inside an archive that
