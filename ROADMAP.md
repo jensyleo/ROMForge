@@ -8,18 +8,27 @@ core, without rewriting it.
 Pending/in-progress work tracked locally in `TODO.md` (gitignored, not
 part of the published repo) — see there for the current punch list.
 
-## Honest gap vs. RomCenter (last updated 2026-07-18)
+## Honest gap vs. RomCenter (last updated 2026-08-05)
 
 ROMForge is visually and structurally *inspired* by RomCenter 4.0.0, but it is
 still far from functionally equivalent. Worth stating plainly rather than
 implying parity:
 
-- **CHD**: RomCenter reads the CHD file, decompresses its hunks and verifies
-  the actual disc image. ROMForge's "Games with CHD" only reflects what the
-  *DAT declares* (`<disk>` present) — it never looks for a `.chd` file on
-  disk, never reads one, never verifies a hash. `CHDHeaderReader`/
-  `CHDMatcher` exist in Core (header-only verification) but aren't wired
-  into the scan pipeline at all yet.
+- **CHD**: header-SHA1 verification IS wired into the scan pipeline (`DiskAuditor`
+  + `CHDMatcher`, since 2026-07-30) — a `.chd` file is looked for, its v5
+  header read, and its own SHA1 compared against the DAT's declared one,
+  same as RomCenter itself does ("Romcenter gets the sha-1 from the chd
+  header... doesn't calculate the full file sha-1 for chd" — see this
+  file's own CHD research section below). `.unverifiable` (2026-08-05)
+  covers a DAT-declared `nodump` disk (undumped media, no sha1 at all —
+  184 real cases in a real MAME 0.288 dump) and an orphan `.chd` matching
+  no `<disk>` at all now surfaces as a surplus/"Unknown" entry instead of
+  vanishing (2026-08-05, real case: `cap-33s-22.chd`). The gap that
+  genuinely remains: neither ROMForge nor (per that same research) RomCenter
+  decompresses hunks to verify the actual disc *image* content — only the
+  header's own claimed SHA1. Full hunk decoding exists in Core
+  (`CHDHunkReader`, zlib only) but isn't wired to any verification path —
+  see its own section below for exactly what's blocked and why.
 - **Samples**: same gap — "Games with samples" is DAT-declared only, no
   sample file is ever looked for or checked.
 - **Headered dumps (copier headers)** — closed: a headered dump (iNES
@@ -607,12 +616,17 @@ doing what we're doing."
      against; only the pointer-resolution logic itself is exercised (via
      the map-reader's own hand-built PARENT-type fixture), not a full
      child-reads-from-parent flow.
-   - **Not wired into `CHDMatcher`/the scan pipeline** — this remains a
-     standalone, independently-tested capability, same as `HeaderSkipRule`
-     was before its own wiring pass. Wiring it in would mean deciding what
-     ROMForge actually *does* with decoded hunk content (verification-only
-     audit vs. extraction/rebuild), which is a product decision beyond
-     this step's scope.
+   - **Not wired into `CHDMatcher`/the scan pipeline** — `CHDMatcher` itself
+     (header-SHA1-only comparison) WAS wired in on 2026-07-30, and is what
+     every real CHD audit in the app actually uses today; this note is
+     specifically about `CHDHunkReader`'s own hunk *decompression*, a
+     different, unwired capability. Still a standalone, independently-
+     tested capability, same as `HeaderSkipRule` was before its own wiring
+     pass. Wiring it in would mean deciding what ROMForge actually *does*
+     with decoded hunk content (verification-only audit vs.
+     extraction/rebuild), which is a product decision beyond this step's
+     scope — and, per this file's own CHD research above, arguably
+     unnecessary: RomCenter itself never verifies past the header either.
 7. [x] **TorrentZip writer** — `TorrentZipWriter` (Core), producing archives
    that conform to the real TorrentZip standard (spec fetched and read from
    wiki.romvault.com/doku.php?id=torrentzip, itself a mirror of the

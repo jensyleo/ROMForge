@@ -56,7 +56,15 @@ public final class AuditReportDatabase {
     // a real MAME 0.288 dump (e.g. `astron`'s laserdisc). No schema/column
     // change needed (same free-form TEXT `status` column), only the wipe
     // this version bump triggers.
-    private static let currentSchemaVersion: Int32 = 13
+    // v14 (2026-08-05): `DiskAuditor.audit` now reports an orphan `.chd` —
+    // one that matches no `<disk>` any game in the DAT declares at all — as
+    // a `.surplus` entry, instead of it being completely invisible (neither
+    // a disk row nor a surplus row ever existed for it before). Real case
+    // found live by jensyleo: `cap-33s-22.chd` in his own real CPS3
+    // collection matches zero `<disk>` entries in the real DAT. A scan
+    // cached before this fix simply never emitted a row for such a file at
+    // all — the wipe below is what actually surfaces it on next scan.
+    private static let currentSchemaVersion: Int32 = 14
 
     private let path: String
 

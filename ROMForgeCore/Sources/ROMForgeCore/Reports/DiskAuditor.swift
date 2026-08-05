@@ -38,6 +38,16 @@ public enum DiskAuditor {
     public static func audit(dat: DATFile, chdFiles: [URL]) throws -> [AuditEntry] {
         try Task.checkCancellation()
         var entries: [AuditEntry] = []
+        // Every `.chd` file that ends up claimed by some disk's `.correct`/
+        // `.incorrect`/`.unverifiable` match below — whatever's left over
+        // afterward matches no `<disk>` the DAT declares at all. Real gap
+        // found live by jensyleo (2026-08-05): a `.chd` in this situation
+        // used to be completely invisible — neither its own disk row (no
+        // disk claims it) nor a surplus row (nothing here ever built one
+        // for CHDs) — confirmed against the user's own real collection,
+        // `cap-33s-22.chd` (CPS3 `sfiii3`), which matches zero `<disk>`
+        // entries in the real DAT at all.
+        var consumedCHDs = Set<URL>()
         // Several clones of the same game often share one physical disk
         // unmodified (MAME's own `romof`/`cloneof` hierarchy — a region or
         // revision variant that changes the program ROM but not the CD/HD
@@ -64,6 +74,7 @@ public enum DiskAuditor {
                 let status = CHDMatcher.match(disk: disk, chdFiles: chdFiles)
                 switch status {
                 case .correct(let url):
+                    consumedCHDs.insert(url)
                     let header = try? CHDHeaderReader.read(contentsOf: url)
                     entries.append(AuditEntry(
                         status: .correct, game: game.name, gameDescription: game.description,
@@ -74,6 +85,7 @@ public enum DiskAuditor {
                         expectedSHA1: disk.sha1, actualSHA1: header?.sha1
                     ))
                 case .incorrect(let url):
+                    consumedCHDs.insert(url)
                     let header = try? CHDHeaderReader.read(contentsOf: url)
                     entries.append(AuditEntry(
                         status: .incorrect, game: game.name, gameDescription: game.description,
@@ -91,6 +103,7 @@ public enum DiskAuditor {
                         expectedSHA1: disk.sha1
                     ))
                 case .unverifiable(let url):
+                    consumedCHDs.insert(url)
                     // See `CHDDiskStatus.unverifiable`'s own doc comment —
                     // the DAT declares no sha1 to verify this disk against
                     // at all, so `actualSHA1` is whatever the real header
@@ -106,6 +119,23 @@ public enum DiskAuditor {
                     ))
                 }
             }
+        }
+        // Any `.chd` no disk above ever claimed — genuinely unrecognized,
+        // the CHD-side equivalent of a surplus rom file (`ROMMatcher.match`'s
+        // own `surplusFiles`). `game: nil` (same convention as a rom
+        // surplus entry) routes it through the exact same "Unknown game"
+        // bucket the App layer already builds generically from any entry
+        // with no `game` — no App-layer change needed for this to stop
+        // being invisible.
+        for url in chdFiles where !consumedCHDs.contains(url) {
+            try Task.checkCancellation()
+            let header = try? CHDHeaderReader.read(contentsOf: url)
+            entries.append(AuditEntry(
+                status: .surplus, game: nil,
+                isDisk: true, name: url.lastPathComponent, path: url,
+                actualSize: header.map { Int64($0.logicalBytes) },
+                actualSHA1: header?.sha1
+            ))
         }
         return entries
     }

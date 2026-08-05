@@ -84,15 +84,16 @@ El color siempre refleja la primera pregunta (`tint(for: entry.status)`, nunca `
 
 ### 3b. Estado de disco/CHD (`DiskAuditor` + `CHDMatcher`)
 
-Un CHD solo tiene 3 estados posibles (nunca `.badDump`, nunca `.foundElsewhere` — se verifica por el SHA1 del header, no hay "está en otro lado"):
+Un CHD tiene 4 estados posibles (nunca `.badDump`, nunca `.foundElsewhere` — se verifica por el SHA1 del header, no hay "está en otro lado"):
 
 | `CHDDiskStatus` | `AuditStatus` | Texto en fila de disco (izquierda) |
 |---|---|---|
 | `.correct(url)` | `.correct` | "Correct" |
 | `.incorrect(url)` | `.incorrect` | "Incorrect" |
 | `.missing` | `.missing` | "Missing" |
+| `.unverifiable(url)` | `.unverifiable` | "Nodump (unverifiable)" — ver §4e3 |
 
-Un `.chd` en disco que no corresponde a NINGÚN disco declarado por el DAT actualmente no aparece en ningún lado (ni como disco, ni como surplus) — gap conocido, no corregido todavía.
+**Corregido (05-ago-2026):** un `.chd` en disco que no corresponde a NINGÚN disco declarado por el DAT (para ninguna máquina) ya NO desaparece — `DiskAuditor.audit` rastrea qué archivos `.chd` reclama cada disco (`.correct`/`.incorrect`/`.unverifiable`) y, al final, cualquier `.chd` sin reclamar se reporta como `.surplus` (`game: nil`, `isDisk: true`) — exactamente el mismo mecanismo que ya existía para roms sobrantes, así que la capa de la app (`gameNodes(from:)`) lo agrupa automáticamente en su propio bucket "Unknown game" sin cambios adicionales. Verificado en vivo contra un caso real del usuario: `cap-33s-22.chd` (en `CAPCOM/CPS3/BATOCERA/sfiii3`) no coincide con ningún `<disk>` del DAT real — antes invisible, ahora aparece como sobrante. `AuditReportDatabase.currentSchemaVersion` subido a v14.
 
 ### 3c. Surplus reconocido vs. surplus genuino (`requiredByGameDescription`)
 
@@ -369,5 +370,4 @@ Es el valor por defecto de la app (`MAMEMergeModeSettings.defaultMergeMode`, `Ge
 ## 8. Qué falta documentar (pendiente, no bloqueante)
 
 - El bug de visualización en CPS3 mencionado el 04-ago-2026 (pendiente de investigar).
-- Comportamiento de un `.chd` en disco que no corresponde a ningún disco del DAT (actualmente invisible, ni disco ni surplus).
 - Esta tabla es la base para la fase de manipulación de archivos (rebuild/fix) — cuando esa fase empiece, cada acción posible (renombrar, mover, reconstruir zip, etc.) debe mapearse explícitamente a uno de los estados de arriba, no inventarse ad-hoc.
