@@ -482,6 +482,44 @@ struct ROMMatcherTests {
         #expect(result.matches[1].status == .missing)
     }
 
+    @Test("a game with a single hashless (nodump) rom never claims a same-sized file out of a duplicated, unrelated archive")
+    func nodumpRomNeverClaimsFromAnUnrelatedDuplicatedArchive() throws {
+        // The real mechanism behind jensyleo's live "blazstar copy.zip"
+        // report (2026-08-05), confirmed by reading the actual MAME 0.288
+        // DAT: "Abacus (Ver 1.0)" and "AN1x Control Synthesizer" (both
+        // genuine, unrelated MESS/MAME skeleton drivers) each declare their
+        // one real rom as `status="nodump"` — no crc/md5/sha1 at all, just
+        // a size (131072 bytes). "blazstar" (NeoGeo) declares ~20 BIOS rom
+        // variants that are ALL exactly 131072 bytes. Duplicating the
+        // *entire* blazstar.zip under a new name gave every such
+        // single-rom, hashless game's own nodump rom a same-size (never
+        // same-hash) file to "match" against, via the plain size-only
+        // fallback tier — legitimately clearable even under the >=2 tally
+        // (single-rom games use a threshold of 1).
+        let hashlessSingleRomGame = DATGame(
+            name: "Abacus", description: "Abacus (Ver 1.0)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "abacus_ver1.0_hd64f3048f16.mcu", size: 131072, crc: nil, md5: nil, sha1: nil, status: .nodump)]
+        )
+        let dupDAT = DATFile(header: dat.header, games: dat.games + [hashlessSingleRomGame], mergeMode: dat.mergeMode)
+        // A same-size BIOS variant from the unrelated duplicated archive —
+        // genuinely different real content, just coincidentally the same
+        // size as the nodump placeholder.
+        let sameSizeBIOSVariant = zipEntryHashedFile(archiveName: "blazstar copy", entryName: "sp-s2.sp1", size: 131072, crc: "9036d879", sha1: "4f5ed7105b7128794654ce82b51723e16e389543")
+        let report = try ROMMatcher.match(dat: dupDAT, hashedFiles: [sameSizeBIOSVariant])
+
+        let result = report.games.first { $0.game.name == "Abacus" }!
+        // An unresolved `nodump` rom (no matching file under its own exact
+        // name anywhere in its clone family) reports no match at all —
+        // never silently claimed/misnamed as "Ok". The one thing that must
+        // never happen: this same-sized stranger sitting in a duplicated,
+        // completely unrelated archive getting treated as if it satisfied
+        // this rom.
+        #expect(result.matches.isEmpty)
+        // And the file itself must not have been consumed/claimed either —
+        // it's still a real surplus file, not swallowed silently.
+        #expect(report.surplusFiles.contains { $0.file == sameSizeBIOSVariant })
+    }
+
     @Test("under Un-merged mode, a game that IS part of a real clone/parent family still never CLAIMS a rom from a renamed archive")
     func nonMergedCloneFamilyStillNeverBorrowsFromAnotherArchive() throws {
         // The other half of the fix above: the strictness itself is still
