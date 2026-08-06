@@ -158,8 +158,13 @@ struct ContentView: View {
         case .incorrect: return .yellow
         case .badDump: return .orange
         case .missing: return .red
-        case .surplus: return .gray
-        case .unverifiable: return .gray
+        // jensyleo's own gray-file split (2026-08-06): the "check me,
+        // might be junk" tier (surplusInArchive/unknownFile/legacy surplus)
+        // renders as a fuller, more attention-grabbing gray than the
+        // "this is correct by definition" tier (unverifiable/nodump) — see
+        // `AuditStatus`'s own doc comment for the full reasoning.
+        case .surplus, .surplusInArchive, .unknownFile: return .gray
+        case .unverifiable: return .gray.opacity(0.5)
         }
     }
 }

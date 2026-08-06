@@ -174,7 +174,7 @@ private struct GameNode: Identifiable {
             case .missing: return "Missing"
             case .incorrect: return "Incorrect"
             case .badDump: return "Bad"
-            case .correct, .surplus: return "Correct"
+            case .correct, .surplus, .surplusInArchive, .unknownFile: return "Correct"
             // A CHD whose DAT entry declares no sha1 at all — undumped
             // media (`CHDDiskStatus.unverifiable`'s own doc comment) — with
             // a same-named file present. Nothing to verify it against, by
@@ -211,13 +211,19 @@ private struct GameNode: Identifiable {
             if archiveMisnamed { return "Bad file name" }
             let hasOwnRomProblem = entries.contains { $0.status == .incorrect && $0.requiredByGameDescription == nil }
             return hasOwnRomProblem ? "Rom need fix" : "Extra file (duplicated), not needed here"
-        case .correct, .surplus:
+        case .correct, .surplus, .surplusInArchive, .unknownFile:
             // A surplus entry can end up here (not in its own "Unknown
             // game" bucket) when it's an extra file inside an archive that
             // otherwise matches this exact game — worth calling out
             // explicitly rather than silently reporting "Ok" and hiding
             // that the archive has more in it than the DAT expects.
-            if entries.contains(where: { $0.status == .surplus }) { return "Extra file in archive" }
+            // jensyleo's own gray-file split (2026-08-06): distinguishes a
+            // recognized-archive leftover (likely a duplicate — check it)
+            // from a genuinely unrecognized file (e.g. a screenshot
+            // someone zipped up) sitting inside this same otherwise-correct
+            // archive — same UI slot, different actionable text.
+            if entries.contains(where: { $0.status == .unknownFile }) { return "Unknown file in archive" }
+            if entries.contains(where: { $0.status == .surplus || $0.status == .surplusInArchive }) { return "Extra file in archive" }
             return "Ok"
         case .unverifiable:
             return "Ok (contains a nodump rom)"
@@ -1641,7 +1647,12 @@ struct LibraryDetailView: View {
         // it doesn't read as urgent/blocking the way a truly required
         // absence does.
         case .missing: base = entry.isOptional ? "Missing (optional)" : "Missing"
-        case .surplus: base = "Unrecognized"
+        case .surplus, .unknownFile: base = "Unrecognized"
+        // jensyleo's own gray-file split (2026-08-06): this specific
+        // entry's own archive IS a real, recognized DAT machine name — a
+        // more actionable message than plain "Unrecognized" (which reads as
+        // "nobody knows what this .zip even is").
+        case .surplusInArchive: base = "Unrecognized (inside a known archive)"
         // A file genuinely sits in this rom's own expected slot, but the
         // DAT itself declares this rom `nodump` — no CRC/MD5/SHA1 exists to
         // confirm it against, by design (see `RomMatchStatus.nodump`'s own
@@ -2786,10 +2797,14 @@ struct LibraryDetailView: View {
         case .incorrect: return "exclamationmark.triangle.fill"
         case .badDump: return "exclamationmark.octagon.fill"
         case .missing: return "xmark.circle.fill"
-        case .surplus: return "questionmark.circle.fill"
-        // A distinct icon from `.surplus`'s plain "?" — this content IS
-        // known/documented (a DAT-declared `nodump` rom's name), just
-        // unverifiable, not genuinely unidentified.
+        // jensyleo's own gray-file split (2026-08-06): three visually
+        // distinct icons for the three gray meanings — a genuinely
+        // unrecognized file (❓/"?", legacy `.surplus` kept as its synonym),
+        // a recognized-archive leftover worth a second look (⚠/triangle),
+        // and content that's known/documented but unverifiable by design
+        // (a lighter "?" — distinct from plain unrecognized).
+        case .surplus, .unknownFile: return "questionmark.circle.fill"
+        case .surplusInArchive: return "exclamationmark.triangle"
         case .unverifiable: return "questionmark.circle"
         }
     }
@@ -2800,7 +2815,12 @@ struct LibraryDetailView: View {
         case .incorrect: return .yellow
         case .badDump: return .orange
         case .missing: return .red
-        case .surplus, .unverifiable: return .gray
+        // jensyleo's own gray-file split (2026-08-06): the "check me,
+        // might be junk" tier reads as a fuller gray than the "correct by
+        // definition, just unverifiable" tier — see `AuditStatus`'s own
+        // doc comment for the full reasoning behind the split.
+        case .surplus, .surplusInArchive, .unknownFile: return .gray
+        case .unverifiable: return .gray.opacity(0.5)
         }
     }
 }

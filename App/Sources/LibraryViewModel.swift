@@ -271,7 +271,7 @@ final class LibraryViewModel {
             case .incorrect: incorrect += 1
             case .badDump: badDump += 1
             case .missing: missing += 1
-            case .surplus: surplus += 1
+            case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
             }
         }
@@ -724,7 +724,7 @@ final class LibraryViewModel {
             case .incorrect: incorrect += 1
             case .badDump: badDump += 1
             case .missing: missing += 1
-            case .surplus: surplus += 1
+            case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
             }
         }

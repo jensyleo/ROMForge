@@ -601,5 +601,30 @@ struct ROMMatcherTests {
 
         let result = report.games.first { $0.game.name == "topcard" }!
         #expect(result.matches[0].status == .missing)
+
+        // The unclaimed file itself: not consumed by anyone (`topcard`
+        // correctly stayed `.missing` above), so it surfaces as a surplus
+        // file — `isInKnownArchive` must be true here (checked against
+        // `allMachineNames`, which still lists "sf2acca", not against
+        // Merged mode's own `dat.games`, which excludes it) — jensyleo's
+        // own gray-file split (2026-08-06): otherwise this genuinely real
+        // clone archive would misreport as fully unrecognized junk
+        // (`.unknownFile`) under Merged mode specifically, the same class
+        // of bug this whole test already guards against for claiming.
+        let surplus = try #require(report.surplusFiles.first { $0.file.file.name == "blank.bin" })
+        #expect(surplus.isInKnownArchive == true)
+    }
+
+    @Test("a surplus file inside an archive whose name matches no DAT machine at all is never marked isInKnownArchive")
+    func surplusInGenuinelyUnknownArchiveIsNotMarkedKnown() throws {
+        // "TEST 1.zip" — jensyleo's own real, live case (2026-08-06): a
+        // screenshot the user zipped up, sitting in a ROM folder. Its
+        // archive name matches no DAT machine, so it must never be
+        // conflated with a real, recognized archive holding one stray file.
+        let junkFile = zipEntryHashedFile(archiveName: "TEST 1", entryName: "Screenshot.png", size: 500, crc: "99999999", sha1: "8888888888888888888888888888888888888888")
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [junkFile])
+
+        let surplus = try #require(report.surplusFiles.first { $0.file.file.name == "Screenshot.png" })
+        #expect(surplus.isInKnownArchive == false)
     }
 }

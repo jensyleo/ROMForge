@@ -17,7 +17,7 @@ struct AuditReporterTests {
         )
     }
 
-    @Test("a surplus file with a requiredByGameDescription is reclassified .incorrect, not .surplus")
+    @Test("a surplus file with a requiredByGameDescription is reclassified .incorrect, not .unknownFile")
     func surplusWithKnownOwnerIsIncorrectNotSurplus() throws {
         // jensyleo's own correction (2026-08-04): "surplus" must mean
         // genuinely unrecognized — a leftover file whose content is fully
@@ -33,7 +33,11 @@ struct AuditReporterTests {
         let unknownEntry = report.entries.first { $0.name == "random.txt" }
         #expect(recognizedEntry?.status == .incorrect)
         #expect(recognizedEntry?.requiredByGameDescription == "Street Fighter II': Champion Edition")
-        #expect(unknownEntry?.status == .surplus)
+        // A loose file (no archive at all) with no matching hash anywhere
+        // in the DAT — `.unknownFile`, not `.surplusInArchive` (that needs
+        // a real, recognized archive name containing it; see
+        // `AuditStatus`'s own doc comment for the 2026-08-06 split).
+        #expect(unknownEntry?.status == .unknownFile)
         #expect(report.incorrect == 1)
         #expect(report.surplus == 1)
     }
@@ -63,7 +67,7 @@ struct AuditReporterTests {
         #expect(report.missing == 1)
         #expect(report.surplus == 1)
         #expect(report.entries.count == 4)
-        #expect(report.entries.contains { $0.status == .surplus && $0.name == "extra.bin" && $0.game == nil })
+        #expect(report.entries.contains { $0.status == .unknownFile && $0.name == "extra.bin" && $0.game == nil })
     }
 
     @Test("populates expected hashes from the DAT and actual hashes from the local file")
@@ -99,7 +103,7 @@ struct AuditReporterTests {
         #expect(missingEntry.expectedCRC == "cafefeed")
         #expect(missingEntry.actualCRC == nil, "a missing rom has no local file to hash")
 
-        let surplusEntry = try #require(report.entries.first { $0.status == .surplus })
+        let surplusEntry = try #require(report.entries.first { $0.status == .unknownFile })
         #expect(surplusEntry.expectedCRC == nil, "the DAT says nothing about a surplus file")
         #expect(surplusEntry.actualCRC == "aaaaaaaa")
     }
@@ -144,7 +148,7 @@ struct AuditReporterTests {
         let badEntry = try #require(report.entries.first { $0.name == "bad.bin" })
         #expect(badEntry.isBadDump == true)
 
-        let surplusEntry = try #require(report.entries.first { $0.status == .surplus })
+        let surplusEntry = try #require(report.entries.first { $0.status == .unknownFile })
         #expect(surplusEntry.hasCHD == false, "surplus files have no DAT game to inherit flags from")
         #expect(surplusEntry.isBadDump == false)
     }
@@ -158,5 +162,42 @@ struct AuditReporterTests {
         #expect(report.incorrect == 0)
         #expect(report.missing == 0)
         #expect(report.surplus == 0)
+    }
+
+    @Test("gray-file split (2026-08-06): a nodump-by-name surplus, a surplus inside a known archive, and a surplus inside an unknown archive each get their own distinct status")
+    func grayFileSplitAssignsDistinctStatuses() throws {
+        // 1) Nodump-by-name — checked first, regardless of `isInKnownArchive`
+        //    (a nodump rom has no hash, so this can only ever be reached by
+        //    name; see `AuditStatus`'s own doc comment).
+        let nodumpRom = DATRom(name: "007766.20d.bin", size: 1, crc: nil, md5: nil, sha1: nil, status: .nodump)
+        let nodumpGame = DATGame(name: "gryzor", description: "Gryzor", cloneOf: "contra", romOf: "contra", roms: [nodumpRom])
+        let nodumpSurplus = SurplusFile(
+            file: hashedFile(name: "007766.20d.bin", size: 1),
+            matchesNodumpRomName: true, isInKnownArchive: true
+        )
+
+        // 2) Inside a real, DAT-recognized archive, but this exact file
+        //    matches no rom anywhere — "check me, probably a duplicate".
+        let surplusInArchive = SurplusFile(file: hashedFile(name: "leftover.bin", size: 3), isInKnownArchive: true)
+
+        // 3) Not inside any DAT-recognized archive at all, matches nothing
+        //    — genuinely unrecognized junk (e.g. "TEST 1.zip" holding a
+        //    screenshot, the real case that motivated this split).
+        let unknownFile = SurplusFile(file: hashedFile(name: "Screenshot.png", size: 4), isInKnownArchive: false)
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: nodumpGame, matches: [RomMatch(rom: nodumpRom, status: .missing)])],
+            surplusFiles: [nodumpSurplus, surplusInArchive, unknownFile]
+        )
+        let report = try AuditReporter.generate(from: matchReport)
+
+        #expect(report.entries.first { $0.name == "007766.20d.bin" && $0.game == nil }?.status == .unverifiable)
+        #expect(report.entries.first { $0.name == "leftover.bin" }?.status == .surplusInArchive)
+        #expect(report.entries.first { $0.name == "Screenshot.png" }?.status == .unknownFile)
+        // The nodump one rolls up into its own separate `unverifiable`
+        // count; only the other two share the aggregate `surplus` count —
+        // the split only changes the per-entry `status`, not these summaries.
+        #expect(report.surplus == 2)
+        #expect(report.unverifiable == 1)
     }
 }

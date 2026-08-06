@@ -110,13 +110,25 @@ public enum AuditReporter {
             // other way. Distinct from `.incorrect` (that's a real,
             // fixable location problem; this is just an extra, unverifiable
             // copy of something already accounted for elsewhere).
+            // jensyleo's own gray-file split (2026-08-06): checked in this
+            // exact order — nodump-by-name first (a nodump rom has no hash,
+            // so it can never be reached any other way, regardless of which
+            // archive it's actually sitting in), then whether the
+            // containing archive is itself a real, recognized DAT machine
+            // name (`surplusInArchive`) or not (`unknownFile`) — see
+            // `AuditStatus`'s own doc comment for the full reasoning and the
+            // real, confusing live report (Gryzor's nodump PAL vs. two junk
+            // screenshot archives, both plain gray before this) that
+            // motivated it.
             let status: AuditStatus
             if surplusFile.requiredByGameDescription != nil {
                 status = .incorrect
             } else if surplusFile.matchesNodumpRomName {
                 status = .unverifiable
+            } else if surplusFile.isInKnownArchive {
+                status = .surplusInArchive
             } else {
-                status = .surplus
+                status = .unknownFile
             }
             entries.append(
                 AuditEntry(
@@ -136,7 +148,11 @@ public enum AuditReporter {
             case .incorrect: incorrect += 1
             case .badDump: badDump += 1
             case .missing: missing += 1
-            case .surplus: surplus += 1
+            // `surplusInArchive`/`unknownFile` both roll up into the same
+            // `surplus` aggregate count as the legacy single bucket did —
+            // the split only matters at the per-entry `status` level (what
+            // `LibraryDetailView` actually renders), not this summary tally.
+            case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
             }
         }
@@ -158,7 +174,7 @@ public enum AuditReporter {
             case .incorrect: incorrect += 1
             case .badDump: badDump += 1
             case .missing: missing += 1
-            case .surplus: surplus += 1
+            case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
             }
         }

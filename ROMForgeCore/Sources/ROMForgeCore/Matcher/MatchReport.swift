@@ -101,11 +101,25 @@ public struct SurplusFile: Equatable, Sendable {
     /// recognized by name. See `ROMMatcher.match`'s own `nodumpRomNames` doc
     /// comment for the real duplicate-placeholder case this exists for.
     public let matchesNodumpRomName: Bool
+    /// True when this file sits inside an archive (a zip entry, not a loose
+    /// file) whose own base name matches some real DAT machine name — from
+    /// `DATFile.allMachineNames`, the *raw* list, never `dat.games` (which
+    /// under Merged mode excludes every clone; see that field's own doc
+    /// comment for the exact cross-game "steal" bug checking the wrong list
+    /// caused elsewhere in this same matcher). `false` for a loose file (no
+    /// archive concept exists to be "known" or not) and for a file whose
+    /// containing archive's name matches nothing in the DAT at all.
+    /// jensyleo's own gray-file split (2026-08-06): distinguishes "this
+    /// archive is real, but this one entry inside it isn't" (worth a second
+    /// look — `AuditStatus.surplusInArchive`) from "nothing about this is
+    /// recognized" (`AuditStatus.unknownFile`).
+    public let isInKnownArchive: Bool
 
-    public init(file: HashedFile, requiredByGameDescription: String? = nil, matchesNodumpRomName: Bool = false) {
+    public init(file: HashedFile, requiredByGameDescription: String? = nil, matchesNodumpRomName: Bool = false, isInKnownArchive: Bool = false) {
         self.file = file
         self.requiredByGameDescription = requiredByGameDescription
         self.matchesNodumpRomName = matchesNodumpRomName
+        self.isInKnownArchive = isInKnownArchive
     }
 }
 

@@ -400,7 +400,19 @@ public enum ROMMatcher {
             let file = hashedFiles[index]
             let requiredBy = requiredByGameDescription(for: file, gamesByName: gamesByName, romsByHash: romsByHash, claimedArchiveURLsByGame: claimedArchiveURLsByGame)
             let matchesNodumpName = requiredBy == nil && nodumpRomNames.contains(file.file.name.lowercased())
-            return SurplusFile(file: file, requiredByGameDescription: requiredBy, matchesNodumpRomName: matchesNodumpName)
+            // Per-file (not the scan-wide `isArchiveOrganized` flag) — a
+            // loose file's own URL *is* the file itself, so its last path
+            // component always equals its own name; an archive entry's URL
+            // is the containing zip, whose last path component is the
+            // archive's own filename, never the entry's. `allGameNames`
+            // (not `dat.games`) — same reasoning as `isInClaimedArchive`
+            // above: a real clone archive (e.g. `sf2acca.zip`) must still
+            // read as "known" under Merged mode, even though `dat.games`
+            // itself excludes that clone by design there.
+            let isInArchive = file.file.url.lastPathComponent != file.file.name
+            let archiveBaseName = file.file.url.deletingPathExtension().lastPathComponent.lowercased()
+            let isInKnownArchive = isInArchive && allGameNames.contains(archiveBaseName)
+            return SurplusFile(file: file, requiredByGameDescription: requiredBy, matchesNodumpRomName: matchesNodumpName, isInKnownArchive: isInKnownArchive)
         }
         return MatchReport(games: gameResults, surplusFiles: surplusFiles)
     }

@@ -6,7 +6,7 @@
 
 import Foundation
 
-/// The five states a `Matcher` result collapses into for reporting.
+/// The states a `Matcher` result collapses into for reporting.
 /// jensyleo's own definitions (2026-08-04):
 /// - `correct`: right name, right hash.
 /// - `incorrect`: right content (hash matches), but the wrong name and/or
@@ -15,21 +15,59 @@ import Foundation
 /// - `badDump`: a file sits exactly where this rom is expected, but its
 ///   CRC32/MD5/SHA doesn't match — a genuine content problem ("Bad").
 /// - `missing`: nothing matching this rom exists anywhere the app can see.
-/// - `surplus`: a local file that matches no expected rom in the DAT at
-///   all ("Unknown").
-/// - `unverifiable`: a local file sits in a rom's own expected slot, but the
-///   rom itself is DAT-declared `nodump` — nothing to check its content
-///   against, so it can never be `correct`, but the DAT explicitly documents
-///   this exact name/slot, so it isn't `surplus` either. Added 2026-08-04,
-///   real case found live (`gryzor`'s nodump `007766.20d.bin` PAL) — see
-///   `RomMatchStatus.nodump`'s own doc comment.
+/// - `unverifiable`: a local file sits in a rom's own expected slot (or,
+///   for a surplus file, its entry NAME matches a DAT-declared `nodump` rom
+///   somewhere — see `SurplusFile.matchesNodumpRomName`), but the rom itself
+///   is DAT-declared `nodump` — nothing to check its content against, so it
+///   can never be `correct`, but the DAT explicitly documents this exact
+///   name/slot, so it isn't unknown either. Added 2026-08-04, real case
+///   found live (`gryzor`'s nodump `007766.20d.bin` PAL) — see
+///   `RomMatchStatus.nodump`'s own doc comment. Detected by NAME, never by
+///   hash — a `nodump` rom has no hash in the DAT by definition, so this can
+///   never be reached via a hash search.
+///
+/// jensyleo's own gray-file unification (2026-08-06), replacing the single
+/// `surplus` bucket with two more specific cases after a real, confusing
+/// live report (Gryzor's genuinely-correct nodump PAL and two junk
+/// screenshot files in "TEST 1"/"TEST 1 2" archives both rendered
+/// identically gray, with no way to tell "keep this" from "delete this" at a
+/// glance):
+/// - `surplusInArchive`: a local file's hash matches NO rom anywhere in the
+///   whole DAT, but it sits inside an archive whose own base name IS a real
+///   DAT machine name — the archive is recognized, this one entry inside it
+///   isn't. Likely a leftover/duplicate/misc file the user should check.
+/// - `unknownFile`: a local file's hash matches no rom anywhere in the DAT,
+///   AND (for an archive-organized scan) its containing archive's own name
+///   isn't a real DAT machine name either, or (for a loose, non-archive
+///   scan) there's no archive concept to check at all — genuinely
+///   unrecognized junk (e.g. a screenshot, a readme, a backup file dropped
+///   into a ROM folder). Should usually just be deleted.
+///
+/// Deliberately checked by NAME first (`unverifiable`), independent of
+/// archive — a nodump rom has no hash, so it can surface in this state no
+/// matter which archive it happens to be found in (see
+/// `ROMMatcher.match`'s own `nodumpRomNames` doc comment); only once that
+/// check fails does the archive-known-or-not distinction between
+/// `surplusInArchive`/`unknownFile` apply.
 public enum AuditStatus: String, Equatable, Sendable, CaseIterable {
     case correct
     case incorrect
     case badDump
     case missing
-    case surplus
     case unverifiable
+    /// A local file's hash matches no rom in the DAT at all, but the
+    /// archive containing it is a real, recognized DAT machine name.
+    case surplusInArchive
+    /// A local file's hash matches no rom in the DAT at all, and (for an
+    /// archive-organized scan) its containing archive isn't a recognized
+    /// DAT machine name either.
+    case unknownFile
+    /// Legacy value, kept only so an on-disk cached audit row written
+    /// before the 2026-08-06 gray-file split still decodes to *something*
+    /// sane (`AuditReportDatabase`'s own decode fallback) rather than
+    /// failing outright — new code never assigns this. Equivalent in
+    /// meaning/severity to `unknownFile`.
+    case surplus
 }
 
 /// One row of an audit report: an expected ROM's outcome, or a leftover local
@@ -286,7 +324,7 @@ extension AuditStatus {
             case .missing: return .missing
             case .badDump: sawBadDump = true
             case .incorrect: sawIncorrect = true
-            case .correct, .surplus, .unverifiable: sawOther = true
+            case .correct, .surplus, .surplusInArchive, .unknownFile, .unverifiable: sawOther = true
             }
         }
         if sawBadDump { return .badDump }
