@@ -153,10 +153,20 @@ private struct GameNode: Identifiable {
             // needed (it's the game's whole set). Checked before the
             // duplicate message below, since a misnamed archive also has a
             // `requiredByGameDescription` and would otherwise fall into it.
-            if let expected = entries.first?.misnamedArchiveForGameName {
+            // Scans for the FIRST entry that actually carries the value,
+            // rather than reading `entries.first` — a real bug found live by
+            // jensyleo (2026-08-06): in `1943 copy.zip` the first entry
+            // happened to be a junk file (a stray PDF/screenshot), whose own
+            // `requiredByGameDescription` is nil, so this fell through to
+            // "Unknown game" even though four later entries in the very same
+            // archive were fully identified `1943` roms. Order inside an
+            // archive is arbitrary, so nothing may depend on it.
+            if let expected = entries.compactMap(\.misnamedArchiveForGameName).first {
                 return "Bad file name — rename to \(expected).zip"
             }
-            guard aggregateStatus == .incorrect, let requiredBy = entries.first?.requiredByGameDescription else {
+            guard aggregateStatus == .incorrect,
+                  let requiredBy = entries.compactMap(\.requiredByGameDescription).first
+            else {
                 return "Unknown game"
             }
             // jensyleo's own request (2026-08-05): make explicit that this
@@ -1910,25 +1920,25 @@ struct LibraryDetailView: View {
         // this button.
         // Any archive left over below (no `gamesByName` entry to fold
         // into — e.g. a clone excluded from `dat.games` entirely under
-        // Merged, see `DATFile.allMachineNames`'s own doc comment) that's
-        // still fully identified (`requiredByGameDescription` on every one
-        // of its own entries — the exact same `isFullyIdentified` check
-        // `gameNodes(from:)` uses to color its row yellow instead of gray)
-        // gets counted here too, as one archive under `.incorrect` —
-        // closing the gap jensyleo asked about (2026-08-04): a row reading
-        // yellow "Extra archive, not needed here" that this header's own
-        // "Incorrect: N" never reflected.
-        var orphanedFullyIdentifiedCount = 0
+        // Merged, see `DATFile.allMachineNames`'s own doc comment) with ANY
+        // identified content in it (the exact same `hasAnyIdentifiedContent`
+        // check `gameNodes(from:)` uses to color its row yellow instead of
+        // gray — must stay identical, or this button's count disagrees with
+        // the very rows it filters) gets counted here too, as one archive
+        // under `.incorrect` — closing the gap jensyleo asked about
+        // (2026-08-04): a row reading yellow "Duplicated archive, not needed
+        // here" that this header's own "Incorrect: N" never reflected.
+        var orphanedIdentifiedArchiveCount = 0
         for (archiveKey, surplus) in surplusByArchive {
             let matchingGame = (surplusDisplayName(forArchiveKey: archiveKey) as NSString).deletingPathExtension
             if gamesByName[matchingGame] != nil {
                 entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
-            } else if !surplus.isEmpty, surplus.allSatisfy({ $0.requiredByGameDescription != nil || $0.status == .unverifiable }) {
-                orphanedFullyIdentifiedCount += 1
+            } else if surplus.contains(where: { $0.requiredByGameDescription != nil || $0.status == .unverifiable }) {
+                orphanedIdentifiedArchiveCount += 1
             }
         }
         var counts: [AuditStatus: Int] = [:]
-        counts[.incorrect] = orphanedFullyIdentifiedCount
+        counts[.incorrect] = orphanedIdentifiedArchiveCount
         for entries in entriesByGame.values {
             // No folder-scope special case: "Missing" counts the same way in
             // a "Rom files" folder as in "Database" — jensyleo's own
@@ -2205,7 +2215,19 @@ struct LibraryDetailView: View {
             // recognized nodump placeholder duplicate — see
             // `SurplusFile.matchesNodumpRomName`'s own doc comment), with
             // nothing genuinely unknown left in it at all.
-            let isFullyIdentified = !bucketEntries.isEmpty && bucketEntries.allSatisfy { $0.requiredByGameDescription != nil || $0.status == .unverifiable }
+            //
+            // ANY identified entry is enough, not all of them — jensyleo's
+            // own rule (2026-08-06, from a live case: `1943 copy.zip` holding
+            // 4 real `1943` roms alongside 2 junk files). Requiring *every*
+            // entry to be identified let those 2 strays drag the whole row to
+            // gray "Unknown game", hiding the 4 genuine roms sitting in it.
+            // Once even one real rom is recognized, this archive is not
+            // "genuinely no idea what this is" — so it reads yellow. The junk
+            // entries inside keep their own gray "Unrecognized" rows, which
+            // is exactly the distinction jensyleo asked to preserve: the
+            // archive-level row says "there's something real here", the
+            // file-level rows say precisely which parts aren't.
+            let hasAnyIdentifiedContent = bucketEntries.contains { $0.requiredByGameDescription != nil || $0.status == .unverifiable }
             roots.append(
                 GameNode(
                     // `id` is the archive's full path, so two same-named
@@ -2218,7 +2240,7 @@ struct LibraryDetailView: View {
                     id: "surplus-\(archiveKey)",
                     name: surplusDisplayName(forArchiveKey: archiveKey),
                     entries: bucketEntries,
-                    aggregateStatus: isFullyIdentified ? .incorrect : .surplus,
+                    aggregateStatus: hasAnyIdentifiedContent ? .incorrect : .unknownFile,
                     isSurplusBucket: true
                 )
             )
