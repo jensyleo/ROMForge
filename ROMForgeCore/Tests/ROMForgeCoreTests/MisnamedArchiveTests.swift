@@ -168,6 +168,40 @@ struct MisnamedArchiveTests {
         #expect(report.surplusFiles.allSatisfy { $0.requiredByGameDescription == "1943: The Battle of Midway (Euro)" })
     }
 
+    @Test("a genuinely unknown archive (nothing in it matches any DAT rom) is never proposed as a rename — it just stays unknown")
+    func pureJunkIsNeverProposedAsARename() throws {
+        // jensyleo's own observation (2026-08-06): "bien que no revise nada
+        // para archivos como XYZ ya que no importan… si fue casualidad, igual
+        // documéntalo ya que es un comportamiento esperado."
+        //
+        // It isn't a coincidence — it falls straight out of the criterion.
+        // The 60% tally only ever counts files whose hash matches a real DAT
+        // rom, so a file the DAT knows nothing about contributes zero and can
+        // never push any game to the bar. A junk archive therefore has an
+        // empty tally, no game qualifies, and nothing is ever suggested.
+        // Pinned by this test so it stays true by design rather than by luck:
+        // a rename suggestion on junk would be actively harmful (it would
+        // invite the user to rename a screenshot into a game's set name).
+        let realGame = DATGame(name: "1943", description: "1943: The Battle of Midway (Euro)", cloneOf: nil, romOf: nil, roms: roms(38, prefix: "bm"))
+        let dat = DATFile(header: DATHeader(name: "t", description: "t", version: "1", author: "t"), games: [realGame])
+        // "TEST 1.zip" holding screenshots — the real live case. None of these
+        // hashes appear anywhere in the DAT.
+        let junk = roms(6, prefix: "screenshot").map { entry(archive: "TEST 1", rom: $0) }
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: junk)
+
+        #expect(report.surplusFiles.count == 6)
+        #expect(
+            report.surplusFiles.allSatisfy { $0.misnamedArchiveForGameName == nil },
+            "junk must never be proposed as some game's misnamed archive"
+        )
+        // And it isn't quietly attributed to a game some other way either.
+        #expect(report.surplusFiles.allSatisfy { $0.requiredByGameDescription == nil })
+        #expect(report.surplusFiles.allSatisfy { !$0.isInKnownArchive })
+        // The game itself is untouched by any of this.
+        #expect(report.games.first!.matches.allSatisfy { $0.status == .missing })
+    }
+
     @Test("an archive named after a DIFFERENT real machine is never re-attributed to whatever its contents match")
     func archiveNamedAfterAnotherRealMachineIsLeftAlone() throws {
         // `1943kai.zip` is a real, separate machine. If a user wrongly filled

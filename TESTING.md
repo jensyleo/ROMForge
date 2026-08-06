@@ -340,7 +340,8 @@ anything that doesn't match "Expected".
 | 8 | Corrupt/truncate one byte of a real rom inside its own archive (bad dump) | `badDump`, "Bad (hash mismatch)" | unchanged |
 | 9 | Delete one rom from inside an otherwise-correct archive | that rom: `missing`; game row: `incorrect`/"Rom need fix" if it has its own real problem | unchanged |
 | 10 | Add a genuinely unknown/junk file into a game's own archive | `surplus` entry, "Extra file in archive" fold-in, game row stays otherwise correct | unchanged |
-| 11 | Add a genuinely unknown/junk file loose in the ROM folder (not in any archive) | shows as its own `surplus` "Unknown game" bucket | the junk file's own name |
+| 11 | Add a genuinely unknown/junk file loose in the ROM folder (not in any archive) | `unknownFile` — its own "Unknown game" bucket | the junk file's own name |
+| 11b | A whole archive of junk, named nothing like a real machine (e.g. `TEST 1.zip` full of screenshots) | **Verified 2026-08-06.** `unknownFile` (gray ❓), one row per physical archive. Crucially it must NEVER be proposed as some game's "Bad file name — rename to X" — the ≥60% rule only counts files matching real DAT roms, so junk can never reach the bar. Expected behavior, by design, not coincidence | the archive's own name |
 | 12 | A CLONE's own archive present, parent's archive absent (Split mode) | Clone: `correct` for its own roms; shared-with-parent roms `.foundElsewhere` pointing at parent | — |
 | 13 | Same as #12 but Merged mode (clone has no archive of its own by design) | Everything resolves from the parent's one archive; no clone-named row at all (folded into parent) | — |
 | 14 | Same family, Un-merged mode, BOTH parent and clone archives present, each self-contained | Both `correct` independently | — |

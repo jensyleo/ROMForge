@@ -444,6 +444,16 @@ public enum ROMMatcher {
     /// at or near 100% (the live case that prompted this was 38 of 38 files),
     /// so 60% costs nothing in practice while ruling out coincidence.
     ///
+    /// A useful property that falls out of this for free, confirmed as
+    /// intended by jensyleo (2026-08-06): **genuinely unknown junk is never
+    /// proposed as a rename.** The tally only counts files whose hash matches
+    /// a real DAT rom, so a screenshot/readme/backup contributes zero and can
+    /// never push any game to the bar — an archive full of them has an empty
+    /// tally and simply stays unknown. That matters, because suggesting a
+    /// rename there would invite a user to rename junk into a real game's set
+    /// name. Pinned by `MisnamedArchiveTests`'s own junk test rather than left
+    /// to luck.
+    ///
     /// **Known limitation, deliberately left for later** (jensyleo's own call,
     /// 2026-08-06: "después miramos cómo lo podríamos mejorar"): this counts
     /// FILES, treating every file as equally telling, which a smarter rule
