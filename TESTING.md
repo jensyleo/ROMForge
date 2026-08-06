@@ -332,7 +332,7 @@ anything that doesn't match "Expected".
 | 1 | A game's own archive present, untouched | `correct` | its own `name.zip` |
 | 2 | A game's own archive missing entirely, nothing else touches it | `missing` | game's short name (no file) |
 | 3 | Copy a game's own archive (Finder duplicate) to a NEW name, same folder | Original: `correct`. Duplicate: `incorrect`, "Duplicated archive…" | Original keeps its name; duplicate shows its own new name |
-| 4 | Copy a game's own archive to a SECOND configured ROM folder, same name | Original: `correct`. Duplicate: shows as `incorrect`/"required by X" surplus, not silently swallowed | — |
+| 4 | Copy a game's own archive to a SECOND configured ROM folder, same name | Original: `correct`. Duplicate: shows as `incorrect`/"required by X" surplus, not silently swallowed. **Then verify it's stable:** "Scan Folder" on folder A, confirm the game still appears under folder B; "Scan Folder" on B, confirm it still appears under A. Neither copy may ever vanish, and the duplicate must stay flagged either way (regression: the 2026-08-06 flip-flop) | — |
 | 5 | Copy a game's own archive into a subfolder past the depth-1 scan limit | Skipped + reported in the log, not silently ignored, not counted as duplicate | — |
 | 6 | Rename ONE entry INSIDE a game's own real archive to a nonsense name (e.g. `XXXXPPP`) | `incorrect`, "Bad file name" | the archive's real name (unchanged) |
 | 7 | Rename the WHOLE archive (Finder rename, not copy) to a nonsense name | Game shows `missing` (own archive gone); if content is still visible via `.foundElsewhere`, confirm it's informational only, never green | game's short name |

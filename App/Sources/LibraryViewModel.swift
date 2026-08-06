@@ -459,12 +459,51 @@ final class LibraryViewModel {
         defer { isBusy = false }
 
         let scanStart = Date()
-        let targetFolders = folders ?? system.romFolderURLs
-        let isScopedScan = folders != nil && folders != system.romFolderURLs
+        // Every scan always walks and matches EVERY one of the system's ROM
+        // folders, never just the selected scope — jensyleo's own
+        // architectural call (2026-08-06), and the fix for a whole class of
+        // bugs rather than one instance of it.
+        //
+        // Scoped scans used to hand `ROMMatcher` only the selected folder's
+        // files, then reconcile the partial result against the previous
+        // report afterward. That reconciliation was inherently guesswork: a
+        // matcher that can't see the other folders cannot know that
+        // `ghouls.zip` also sits in one of them, so it claimed whichever
+        // copy it was shown and the merge step had to decide, blind, what to
+        // keep — producing the game-vanishes-from-the-other-folder flip-flop
+        // (TESTING.md §9.2 scenario #4) and three earlier live-found bugs
+        // before it. jensyleo's own reasoning for removing it outright: if
+        // the app can't compare across folders, it can never correctly
+        // decide which duplicate to keep and which to repair, so ROM fixing
+        // could never be built on top of it.
+        //
+        // Affordable because the two costs are wildly asymmetric — measured
+        // 2026-08-06 on jensyleo's own real collection (5 folders, 161
+        // archives, ~1.8 GB, MAME 0.288 → 50,097 games):
+        //
+        //   DAT load       10.5s   (reused within a session, `cachedDATFile`)
+        //   hash, cold    408.7s   ← the only genuinely expensive phase
+        //   hash, warm      0.34s  ← `ScanCache`, unchanged files
+        //   match ALL      11.3s   ← what this change makes unconditional
+        //   audit report    0.39s
+        //
+        // So re-reading bytes is ~1200x more expensive than a cache hit, and
+        // matching everything costs about as much as loading the DAT once.
+        // The selected scope therefore now controls only what gets re-read
+        // from disk (`ScanCache.removingEntries(under:)`), never what gets
+        // matched: the expensive phase still scales with what actually
+        // changed, while the result is always a complete, correct report
+        // needing no reconciliation at all.
+        let allFolders = system.romFolderURLs
+        // Paths the user explicitly asked to re-read ("Scan Folder" on one
+        // folder, "Rescan This File" on one archive) — their cached hashes
+        // are dropped so they're genuinely rehashed even if size+mtime are
+        // unchanged, which is the whole point of asking.
+        let forcedRescanPaths = (folders != nil && folders != allFolders) ? (folders ?? []) : []
         log(
-            isScopedScan
-                ? "Scanning \(targetFolders.map(\.lastPathComponent).joined(separator: ", "))…"
-                : "Scanning \(system.name) (\(targetFolders.count) folder\(targetFolders.count == 1 ? "" : "s"))…"
+            forcedRescanPaths.isEmpty
+                ? "Scanning \(system.name) (\(allFolders.count) folder\(allFolders.count == 1 ? "" : "s"))…"
+                : "Rescanning \(forcedRescanPaths.map(\.lastPathComponent).joined(separator: ", ")) (matching against all \(allFolders.count) folders)…"
         )
 
         do {
@@ -578,18 +617,21 @@ final class LibraryViewModel {
                     datLoadLogHandler(Date().timeIntervalSince(datLoadStart))
                 }
                 let walkStart = Date()
-                // `paths` (not `folders`) since `targetFolders` may now
-                // include an individual file (a single archive rescanned
-                // directly, e.g. from a game's own right-click menu) mixed
-                // in alongside whole folders — `FolderScanner.scan(paths:)`
-                // handles either per-entry.
-                let scannedFiles = try FolderScanner.scan(paths: targetFolders, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler)
+                // Always every folder — see this function's own doc comment
+                // above for why the selected scope no longer limits this.
+                // `paths` (not `folders`) since `FolderScanner.scan(paths:)`
+                // handles a whole folder or an individual file per entry.
+                let scannedFiles = try FolderScanner.scan(paths: allFolders, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler)
                 walkLogHandler(scannedFiles.count, Date().timeIntervalSince(walkStart))
                 // A file whose size/mtime match a previous scan's cache
                 // entry is served from there instead of rehashed — a real
                 // collection can be tens of thousands of files, most of
-                // which never change between scans.
-                let cache = (try? ScanCache.load(contentsOf: cacheURL)) ?? ScanCache()
+                // which never change between scans. This is what makes
+                // always-walk-everything affordable (see above): only what
+                // genuinely changed, plus whatever the user explicitly asked
+                // to re-read, actually costs anything.
+                let cache = ((try? ScanCache.load(contentsOf: cacheURL)) ?? ScanCache())
+                    .removingEntries(under: forcedRescanPaths)
                 // Loose files are hashed directly; .zip archives are expanded
                 // and their entries hashed individually, since that's where
                 // most ROM sets actually keep each game.
@@ -606,60 +648,37 @@ final class LibraryViewModel {
                 // silently vanishing from the audit entirely.
                 let chdFiles = scannedFiles.filter { $0.url.pathExtension.lowercased() == "chd" }.map(\.url)
                 // `DiskAuditor.audit` always evaluates every disk in the
-                // *entire* DAT (it has no way to scope itself to just the
-                // files actually scanned) — fine for a real full-folder
-                // scan, but a real bug for a scoped rescan of one
-                // unrelated rom file (`isScopedScan`, e.g. "Rescan This
-                // File" on a single .zip): `chdFiles` comes back empty
-                // (no .chd was in this scan's scope at all), so it would
-                // freshly mark *every* disk in the whole DAT "missing",
-                // relying on `Self.merge`'s prior-state reconciliation
-                // below to quietly restore each one's real status —
-                // wasted computation at best, and a real path to a
-                // correct CHD's status flipping wrong if that
-                // reconciliation ever mismatches (jensyleo's own report,
-                // 2026-07-30: "rescan this file" on a rom left CHD
-                // statuses inconsistent). Skipped entirely for a scoped
-                // scan that touched no `.chd` at all — the previous
-                // report's disk entries are simply left untouched by
-                // `Self.merge` in that case, nothing to reconcile.
-                let shouldAuditDisks = !chdFiles.isEmpty || (!isScopedScan && dat.games.contains(where: { !$0.disks.isEmpty }))
-                if shouldAuditDisks {
+                // entire DAT, which is now exactly right: `chdFiles` covers
+                // every folder on every scan, so its verdicts are always
+                // complete rather than scoped guesses needing repair
+                // afterward. This used to need a carve-out precisely because
+                // a scoped scan could hand it an empty `chdFiles` and have it
+                // wrongly mark every disk in the DAT missing (jensyleo's own
+                // report, 2026-07-30: "rescan this file" on a rom left CHD
+                // statuses inconsistent) — the always-scan-everything change
+                // above removes the situation entirely.
+                if dat.games.contains(where: { !$0.disks.isEmpty }) {
                     let diskEntries = try DiskAuditor.audit(dat: dat, chdFiles: chdFiles)
                     auditReport = try AuditReporter.merging(diskEntries: diskEntries, into: auditReport)
                 }
-                return (dat.header, matchReport, auditReport, dat, shouldAuditDisks)
+                return (dat.header, matchReport, auditReport, dat)
             }
             cancelDetachedWork = { detached.cancel() }
-            let (header, report, audit, dat, disksWereAuditedFresh) = try await detached.value
+            let (header, report, audit, dat) = try await detached.value
 
             cachedDATKey = datCacheKey
             cachedDATFile = dat
             datHeader = header
-            let mergedAudit: AuditReport
-            if isScopedScan, let previous = auditReport {
-                // Disk entries were skipped entirely above (nothing
-                // relevant to this scan's own scope), so `audit.entries`
-                // has none at all right now — carrying the previous
-                // report's own disk rows over unchanged, rather than
-                // letting `Self.merge`'s (rom-oriented) key-reconciliation
-                // touch them, is what actually avoids the "rescan this
-                // file leaves CHD statuses inconsistent" bug: there's
-                // nothing to reconcile when nothing about them changed.
-                let freshForMerge = disksWereAuditedFresh
-                    ? audit
-                    : AuditReport(
-                        entries: audit.entries + previous.entries.filter(\.isDisk),
-                        correct: audit.correct, incorrect: audit.incorrect, badDump: audit.badDump, missing: audit.missing, surplus: audit.surplus
-                    )
-                mergedAudit = ScopedScanMerger.merge(previous: previous, fresh: freshForMerge, scopedFolders: targetFolders)
-                // `matchReport` backs `fix()`, which is disabled
-                // (`modificationsEnabled`) — not worth merging its far
-                // richer per-game structure for a feature that can't run.
-            } else {
-                matchReport = report
-                mergedAudit = audit
-            }
+            // Used verbatim, with no reconciliation against any previous
+            // report — every scan now matches every folder (see this
+            // function's own doc comment above), so this result is already
+            // the complete truth for the whole system. The merge step this
+            // replaced was the source of four separate live-found bugs, the
+            // last of which (a game vanishing from whichever folder wasn't
+            // just scanned) is what prompted removing the partial-scan
+            // design outright rather than patching it a fifth time.
+            let mergedAudit = audit
+            matchReport = report
             auditReport = mergedAudit
             scanProgress = nil
             folderScanFilesFound = nil

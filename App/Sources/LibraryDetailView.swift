@@ -1450,15 +1450,18 @@ struct LibraryDetailView: View {
 
     /// jensyleo's own request (2026-07-28): scanning used to only ever
     /// cover a whole folder (all of "Rom files", or one folder scoped via
-    /// "Scan Folder") — no way to rescan just one specific archive without
-    /// rescanning everything alongside it. `actualFileURL(for:)` is the
-    /// real physical file on disk this game's roms actually live in (the
+    /// "Scan Folder") — no way to force a re-read of one specific archive
+    /// without re-reading everything alongside it. `actualFileURL(for:)` is
+    /// the real physical file on disk this game's roms actually live in (the
     /// same one `actualFileName`/`totalSizeText` already derive from), fed
-    /// straight into `startScan`'s existing `folders:` scoping — which
-    /// already merges a partial rescan into the last full report by path
-    /// prefix (`LibraryViewModel.merge`), so scoping it down to one exact
-    /// file just narrows that same mechanism further, no new merge logic
-    /// needed.
+    /// straight into `startScan`'s `folders:` parameter.
+    ///
+    /// As of 2026-08-06 that parameter no longer scopes what gets *matched*
+    /// — every scan matches every folder, so cross-folder duplicates are
+    /// always visible (see `LibraryViewModel.scan`'s own doc comment for the
+    /// reasoning and the measurements). It now only forces these paths to be
+    /// genuinely rehashed rather than served from `ScanCache`, which is
+    /// exactly what "rescan *this* file" should mean.
     private func actualFileURL(for node: GameNode) -> URL? {
         node.entries.first(where: { $0.path != nil })?.path
     }

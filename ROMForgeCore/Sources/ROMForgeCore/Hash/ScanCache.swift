@@ -95,6 +95,32 @@ public struct ScanCache: Sendable, Codable, Equatable {
         return ScanCache(entries: entries)
     }
 
+    /// A copy with every entry under any of `paths` dropped, so those files
+    /// get genuinely rehashed on the next scan instead of served from here.
+    ///
+    /// Exists for an explicit user-driven "rescan this folder/file" — added
+    /// 2026-08-06, when scanning was changed to always feed the matcher every
+    /// folder's files (so cross-folder duplicates are always visible; see
+    /// `LibraryViewModel.scan`'s own doc comment). With that change the
+    /// selected scope no longer limits *what gets matched*, only *what gets
+    /// re-read from disk* — and an ordinary size+mtime cache hit would
+    /// otherwise make "Rescan This File" a silent no-op on a file whose
+    /// content was replaced without its size or mtime changing (some copy
+    /// tools preserve both), which is exactly the case a user reaches for
+    /// that command to resolve.
+    ///
+    /// Matched by path prefix, since a cache key is either a loose file's own
+    /// path or `"<archive path>::<entry name>"` for a zip entry (see
+    /// `key(for:)`) — both start with the real file's path, so one prefix
+    /// test covers an archive and every entry inside it.
+    public func removingEntries(under paths: [URL]) -> ScanCache {
+        guard !paths.isEmpty else { return self }
+        let prefixes = paths.map(\.path)
+        return ScanCache(entries: entries.filter { key, _ in
+            !prefixes.contains { key.hasPrefix($0) }
+        })
+    }
+
     public static func load(contentsOf url: URL) throws -> ScanCache {
         try JSONDecoder().decode(ScanCache.self, from: Data(contentsOf: url))
     }

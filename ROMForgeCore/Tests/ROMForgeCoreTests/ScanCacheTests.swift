@@ -64,6 +64,49 @@ struct ScanCacheTests {
         #expect(ScanCache.key(for: looseArchiveItself) == "/tmp/Game.zip")
     }
 
+    @Test("removingEntries(under:) drops a folder's own files and its archives' entries, keeping every other folder's")
+    func removingEntriesUnderAFolder() {
+        let cps3 = URL(fileURLWithPath: "/roms/CPS3", isDirectory: true)
+        let other = URL(fileURLWithPath: "/roms/OTHER", isDirectory: true)
+        let date = Date(timeIntervalSince1970: 1)
+        func file(_ archive: URL, entry: String) -> ScannedFile {
+            ScannedFile(url: archive, name: entry, size: 4, modificationDate: date)
+        }
+        let cps3Entry = file(cps3.appendingPathComponent("ghouls.zip"), entry: "09.4a")
+        let cps3Loose = file(cps3.appendingPathComponent("disk.chd"), entry: "disk.chd")
+        let otherEntry = file(other.appendingPathComponent("ghouls.zip"), entry: "09.4a")
+        let cache = ScanCache.build(from: [cps3Entry, cps3Loose, otherEntry].map {
+            HashedFile(file: $0, hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        })
+
+        // Sanity: all three are hits before pruning.
+        #expect(cache.lookup(for: cps3Entry) != nil)
+        #expect(cache.lookup(for: otherEntry) != nil)
+
+        let pruned = cache.removingEntries(under: [cps3])
+
+        #expect(pruned.lookup(for: cps3Entry) == nil, "a zip entry under the pruned folder must be dropped")
+        #expect(pruned.lookup(for: cps3Loose) == nil, "a loose file under the pruned folder must be dropped")
+        #expect(pruned.lookup(for: otherEntry) != nil, "another folder's identically-named archive must survive")
+    }
+
+    @Test("removingEntries(under:) accepts a single file path, dropping only that archive's own entries")
+    func removingEntriesUnderASingleFile() {
+        let date = Date(timeIntervalSince1970: 1)
+        let target = URL(fileURLWithPath: "/roms/OTHER/ghouls.zip")
+        let neighbour = URL(fileURLWithPath: "/roms/OTHER/contra.zip")
+        let targetEntry = ScannedFile(url: target, name: "09.4a", size: 4, modificationDate: date)
+        let neighbourEntry = ScannedFile(url: neighbour, name: "633e01.12a", size: 4, modificationDate: date)
+        let cache = ScanCache.build(from: [targetEntry, neighbourEntry].map {
+            HashedFile(file: $0, hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        })
+
+        let pruned = cache.removingEntries(under: [target])
+
+        #expect(pruned.lookup(for: targetEntry) == nil)
+        #expect(pruned.lookup(for: neighbourEntry) != nil, "a sibling archive in the same folder must survive")
+    }
+
     @Test("FileHasher.hash(files:cache:) uses the cached hash instead of rehashing, for both the single-file and concurrent paths")
     func fileHasherUsesCacheInstead() async throws {
         let root = try tempDirectory()
