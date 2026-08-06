@@ -304,16 +304,17 @@ systematically confirm every duplicate/misnamed scenario lands on the right
 content it doesn't actually, physically own. **Planned for tomorrow — none of
 this run yet.**
 
-### 9.1 The six states this app can show
+### 9.1 The states this app can show (updated 2026-08-06 — gray-file split)
 
 | State (`AuditStatus`) | What it means | How the panel shows it |
 |---|---|---|
-| `correct` | Right file, right name, right hash, inside the game's OWN archive | Green ●, "Ok" |
+| `correct` | Right file, right name, right hash, inside the game's OWN archive | Green ✓, "Ok" |
 | `incorrect` | Right content (hash matches) but wrong name, and/or a genuinely known duplicate elsewhere | Yellow ▲ — "Bad file name" / "Rom need fix" / "Extra file (duplicated), not needed here" / "Extra archive (duplicated), not needed here (required by X)" |
-| `badDump` | A file sits in the rom's own expected slot, but its hash is wrong (corrupt/bad dump) | Orange/red — "Bad (hash mismatch)" |
+| `badDump` | A file sits in the rom's own expected slot, but its hash is wrong (corrupt/bad dump) | Orange ⯁ — "Bad (hash mismatch)" |
 | `missing` | Nothing matching this rom exists anywhere the app can see | Red ✕ — "Incomplete (rom missing)" |
-| `surplus` | A local file matches no expected rom in the DAT at all | Gray — "Unknown game" / "Extra file in archive" |
-| `unverifiable` | The rom itself is DAT-declared `nodump` (unhashable real hardware) but a file sits in its exact slot | Gray/blue — "Nodump (unverifiable)" |
+| `unverifiable` | The rom is DAT-declared `nodump`; detected by NAME globally, in ANY archive — a file sits in its exact slot but there's no hash to check | Light gray ⊘ — "Nodump (unverifiable)" |
+| `surplusInArchive` **(new)** | Hash matches no rom in the whole DAT, but the containing archive's name IS a real DAT machine — likely a leftover/duplicate | Gray ⚠ — "Extra file in archive" / "Unrecognized (inside a known archive)" |
+| `unknownFile` **(new)** | Hash matches nothing, archive (if any) isn't recognized either — genuine junk | Gray ❓ — "Unrecognized" / "Unknown file in archive" / "Unknown game" |
 
 Also confirm the row-level (not just entry-level) aggregate text: "Ok",
 "Incomplete (rom missing)", "Bad (hash mismatch)", "Bad file name", "Rom need
