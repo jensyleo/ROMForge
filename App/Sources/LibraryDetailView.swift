@@ -1838,6 +1838,27 @@ struct LibraryDetailView: View {
     /// independent passes a separate `scopedStatusCount(_:)` per button
     /// used to do — on a ~188k-entry collection, redoing that scan/group
     /// 4x per render (once per status button) was real, avoidable work.
+    /// Groups a surplus entry by the archive it physically lives in, keyed by
+    /// FULL path so two same-named archives in different ROM folders stay two
+    /// distinct buckets — jensyleo's own question (2026-08-06): what if the
+    /// same archive sits in several folders? Keying by filename alone
+    /// collapsed every physically-distinct copy into one bucket, which showed
+    /// up as a single row for three real files and as status-button counts
+    /// that disagreed with the table beside them.
+    ///
+    /// Shared by all three places that build these buckets (`gameNodes(from:)`,
+    /// `computeScopedStatusCounts`, `computeGameAggregateStatusByName`) so
+    /// they can never drift apart on it again.
+    private nonisolated static func surplusArchiveKey(for entry: AuditEntry) -> String {
+        entry.path?.path ?? entry.name
+    }
+
+    /// The filename to display for a `surplusArchiveKey` — the key itself is
+    /// a full path, only ever used for grouping/identity.
+    private nonisolated static func surplusDisplayName(forArchiveKey key: String) -> String {
+        key.contains("/") ? (key as NSString).lastPathComponent : key
+    }
+
     private nonisolated static func computeScopedStatusCounts(scopedEntries: [AuditEntry], gamesByName: [String: DATGame]) -> [AuditStatus: Int] {
         var entriesByGame: [String: [AuditEntry]] = [:]
         var surplusByArchive: [String: [AuditEntry]] = [:]
@@ -1845,8 +1866,7 @@ struct LibraryDetailView: View {
             if let game = entry.game {
                 entriesByGame[game, default: []].append(entry)
             } else {
-                let archiveName = entry.path?.lastPathComponent ?? entry.name
-                surplusByArchive[archiveName, default: []].append(entry)
+                surplusByArchive[surplusArchiveKey(for: entry), default: []].append(entry)
             }
         }
         // Same fold as `gameNodes(from:)`/`computeGameAggregateStatusByName()`
@@ -1871,8 +1891,8 @@ struct LibraryDetailView: View {
         // yellow "Extra archive, not needed here" that this header's own
         // "Incorrect: N" never reflected.
         var orphanedFullyIdentifiedCount = 0
-        for (archiveName, surplus) in surplusByArchive {
-            let matchingGame = (archiveName as NSString).deletingPathExtension
+        for (archiveKey, surplus) in surplusByArchive {
+            let matchingGame = (surplusDisplayName(forArchiveKey: archiveKey) as NSString).deletingPathExtension
             if gamesByName[matchingGame] != nil {
                 entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
             } else if !surplus.isEmpty, surplus.allSatisfy({ $0.requiredByGameDescription != nil || $0.status == .unverifiable }) {
@@ -1987,12 +2007,22 @@ struct LibraryDetailView: View {
         // pane. Several surplus entries can share one archive (more than
         // one stray file inside the same unrecognized zip), so they're
         // grouped by their containing archive name first.
+        // Keyed by each archive's FULL path, not just its filename —
+        // jensyleo's own question (2026-08-06): what if the same archive sits
+        // in several ROM folders? Keying by `lastPathComponent` alone
+        // collapsed every physically-distinct copy into ONE row (three real
+        // `TEST 1.zip` files across three folders showing as a single
+        // "Unknown game"), which is exactly the Finder-style "a folder shows
+        // what is physically in it" rule this view is supposed to follow.
+        // A DAT-recognized name is unaffected either way (those buckets get
+        // folded into their real game's own row just below), so this
+        // specifically fixes the unrecognized-archive case.
         var surplusByArchive: [String: [AuditEntry]] = [:]
         var surplusOrder: [String] = []
         for entry in surplusEntries {
-            let archiveName = entry.path?.lastPathComponent ?? entry.name
-            if surplusByArchive[archiveName] == nil { surplusOrder.append(archiveName) }
-            surplusByArchive[archiveName, default: []].append(entry)
+            let archiveKey = surplusArchiveKey(for: entry)
+            if surplusByArchive[archiveKey] == nil { surplusOrder.append(archiveKey) }
+            surplusByArchive[archiveKey, default: []].append(entry)
         }
 
         // A surplus file living *inside* an archive that also fully/
@@ -2028,12 +2058,14 @@ struct LibraryDetailView: View {
         // with nothing of its own to expect right now. `gamesByName` is the
         // DAT's own catalog, independent of any scan result at all, so a
         // real game with zero expected roms is still recognized as real.
-        for archiveName in surplusOrder {
-            let matchingGame = (archiveName as NSString).deletingPathExtension
+        for archiveKey in surplusOrder {
+            // `archiveKey` is now a full path (see `surplusByArchive`'s own
+            // comment above), so the game name comes from its filename.
+            let matchingGame = (surplusDisplayName(forArchiveKey: archiveKey) as NSString).deletingPathExtension
             guard gamesByName[matchingGame] != nil else { continue }
             if entriesByGame[matchingGame] == nil { gameOrder.append(matchingGame) }
-            entriesByGame[matchingGame, default: []].append(contentsOf: surplusByArchive[archiveName] ?? [])
-            surplusByArchive.removeValue(forKey: archiveName)
+            entriesByGame[matchingGame, default: []].append(contentsOf: surplusByArchive[archiveKey] ?? [])
+            surplusByArchive.removeValue(forKey: archiveKey)
         }
         surplusOrder.removeAll { surplusByArchive[$0] == nil }
 
@@ -2122,8 +2154,8 @@ struct LibraryDetailView: View {
             }
             return nodes
         }
-        for archiveName in surplusOrder {
-            let bucketEntries = surplusByArchive[archiveName] ?? []
+        for archiveKey in surplusOrder {
+            let bucketEntries = surplusByArchive[archiveKey] ?? []
             // jensyleo's own question (2026-08-04, Merged mode): a clone
             // excluded from `dat.games` entirely (folded into its parent —
             // e.g. `sf2acca.zip`, a real archive `allMachineNames` now
@@ -2148,8 +2180,15 @@ struct LibraryDetailView: View {
             let isFullyIdentified = !bucketEntries.isEmpty && bucketEntries.allSatisfy { $0.requiredByGameDescription != nil || $0.status == .unverifiable }
             roots.append(
                 GameNode(
-                    id: "surplus-\(archiveName)",
-                    name: archiveName,
+                    // `id` is the archive's full path, so two same-named
+                    // archives in different ROM folders stay two distinct,
+                    // separately-selectable rows; `name` is just the filename
+                    // for display (the "Rom files" folder view already tells
+                    // the user which folder they're looking at, and the
+                    // all-folders view shows each copy's own real path in its
+                    // detail pane).
+                    id: "surplus-\(archiveKey)",
+                    name: surplusDisplayName(forArchiveKey: archiveKey),
                     entries: bucketEntries,
                     aggregateStatus: isFullyIdentified ? .incorrect : .surplus,
                     isSurplusBucket: true
@@ -2582,8 +2621,7 @@ struct LibraryDetailView: View {
             if let game = entry.game {
                 byGame[game, default: []].append(entry)
             } else {
-                let archiveName = entry.path?.lastPathComponent ?? entry.name
-                surplusByArchive[archiveName, default: []].append(entry)
+                surplusByArchive[Self.surplusArchiveKey(for: entry), default: []].append(entry)
             }
         }
         // Same fold `gameNodes(from:)` applies before building each row's
@@ -2613,8 +2651,8 @@ struct LibraryDetailView: View {
         // story (this must fold identically to there, or "Database" and a
         // "Rom files" folder view disagree on this exact game).
         let gamesByName = Self.gamesByName(viewModel.preloadedGames)
-        for (archiveName, surplus) in surplusByArchive {
-            let matchingGame = (archiveName as NSString).deletingPathExtension
+        for (archiveKey, surplus) in surplusByArchive {
+            let matchingGame = (Self.surplusDisplayName(forArchiveKey: archiveKey) as NSString).deletingPathExtension
             guard gamesByName[matchingGame] != nil else { continue }
             byGame[matchingGame, default: []].append(contentsOf: surplus)
         }

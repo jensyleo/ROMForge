@@ -758,9 +758,31 @@ public enum ROMMatcher {
         return nil
     }
 
+    /// Deduplicated AND sorted ascending — the sort is what makes "the first
+    /// ROM folder that has a copy owns it" a guaranteed rule rather than an
+    /// accident.
+    ///
+    /// jensyleo's own requirement (2026-08-06), after testing the same
+    /// archive present in several ROM folders: the first folder holding a
+    /// copy must always be treated as the original (green/`.correct`) and
+    /// every other copy as a duplicate (yellow) — never ambiguous, never
+    /// dependent on which folder happened to be scanned last.
+    ///
+    /// A file's index here is its position in `hashedFiles`, which follows
+    /// `FolderScanner.scan(paths:)`'s own walk over the system's ROM folders
+    /// in configured order (`CollectionHasher` preserves input order — see
+    /// its own tests). So the lowest index IS the earliest folder, and a rom
+    /// claiming its first available candidate claims the earliest folder's
+    /// copy. That only held incidentally before: every caller below
+    /// *concatenates* two separate index lists (a plain-hash lookup plus a
+    /// header-stripped one), and concatenation is not ordered — a later
+    /// folder's copy matching by plain hash sorted ahead of an earlier
+    /// folder's copy matching only after header-stripping, handing the claim
+    /// to the wrong folder. Sorting here removes that whole class of
+    /// order-dependence in one place.
     private static func uniqued(_ indices: [Int]) -> [Int] {
         var seen = Set<Int>()
-        return indices.filter { seen.insert($0).inserted }
+        return indices.filter { seen.insert($0).inserted }.sorted()
     }
 
     private static func index<Key: Hashable>(_ hashedFiles: [HashedFile], by keyPath: KeyPath<HashedFile, Key>) -> [Key: [Int]] {

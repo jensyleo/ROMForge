@@ -373,6 +373,125 @@ struct ROMMatcherTests {
         #expect(report.surplusFiles.first?.requiredByGameDescription == "Street Fighter III 2nd Impact")
     }
 
+    @Test("the FIRST ROM folder holding a copy always owns it — even when a later folder's copy would sort first through the plain-hash index")
+    func firstFolderAlwaysOwnsTheArchive() throws {
+        // jensyleo's own requirement (2026-08-06): the first folder holding a
+        // copy is the original (green), every other copy is a duplicate
+        // (yellow) — never ambiguous, never decided by which folder happened
+        // to be scanned last.
+        //
+        // The ordering trap this pins down: `candidateIndices` concatenates a
+        // plain-hash lookup with a header-stripped one, and concatenation is
+        // unordered. Here folder A's copy carries a copier header (so it only
+        // matches via the STRIPPED index) while folder B's is plain — so the
+        // raw concatenation yields [B, A], handing the claim to the later
+        // folder. Only sorting candidates ascending gives A (the first
+        // folder, index 0) the claim.
+        let payload = Data(repeating: 0xAB, count: 100)
+        let rom = DATRom(
+            name: "prog.bin", size: Int64(payload.count),
+            crc: "cccc1111", md5: nil, sha1: "3333333333333333333333333333333333333333"
+        )
+        let game = DATGame(name: "hdr", description: "Header Test", cloneOf: nil, romOf: nil, roms: [rom])
+        let singleGameDAT = DATFile(header: dat.header, games: [game])
+
+        // Folder A (walked FIRST): the file on disk carries a 512-byte copier
+        // header, so its own hash differs and only its header-stripped hash
+        // matches the DAT.
+        let inFolderA = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/A/hdr.zip"), name: "prog.bin", size: Int64(payload.count) + 512),
+            hash: FileHash(crc32: "ffff9999", md5: nil, sha1: "9999999999999999999999999999999999999999"),
+            headerStripped: HeaderStrippedHash(
+                rule: .copier512,
+                size: Int64(payload.count),
+                hash: FileHash(crc32: "cccc1111", md5: nil, sha1: "3333333333333333333333333333333333333333")
+            )
+        )
+        // Folder B (walked SECOND): a plain, unheadered copy.
+        let inFolderB = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/B/hdr.zip"), name: "prog.bin", size: Int64(payload.count)),
+            hash: FileHash(crc32: "cccc1111", md5: nil, sha1: "3333333333333333333333333333333333333333")
+        )
+
+        let report = try ROMMatcher.match(dat: singleGameDAT, hashedFiles: [inFolderA, inFolderB])
+
+        let claimed = report.games.first!.matches.first!.status
+        if case .correct(let file, _) = claimed {
+            #expect(
+                file.file.url.path == "/roms/A/hdr.zip",
+                "the FIRST folder's copy must own it, even though it only matched after header-stripping"
+            )
+        } else {
+            Issue.record("expected the first folder's copy to be claimed, got \(claimed)")
+        }
+        // And folder B's copy is the duplicate, tagged rather than unknown.
+        #expect(report.surplusFiles.count == 1)
+        #expect(report.surplusFiles.first?.file.file.url.path == "/roms/B/hdr.zip")
+        #expect(report.surplusFiles.first?.requiredByGameDescription == "Header Test")
+    }
+
+    @Test("the same archive present in FOUR different ROM folders: exactly one is claimed and ALL THREE extras are tagged as duplicates — never left unrecognized")
+    func sameArchiveInManyFoldersTagsEverySingleExtra() throws {
+        // jensyleo's own question (2026-08-06), after seeing scenario #4
+        // work with two folders: does this still hold when a copy sits in
+        // *several* folders? The two-folder test above can't answer it —
+        // tagging an extra copy depends on `requiredByGameDescription`
+        // finding a real hash owner while the file itself went unclaimed, so
+        // a bug that tagged only the *first* extra and dropped the rest to
+        // plain gray "Unrecognized" would pass that test and fail here.
+        //
+        // Uses a two-rom game deliberately: with several roms per archive,
+        // each rom claims independently, so a per-rom (rather than
+        // per-archive) claim leak would show up as a *partially* claimed
+        // duplicate rather than a cleanly tagged one.
+        let game = DATGame(
+            name: "ghouls", description: "Ghouls'n Ghosts (World)", cloneOf: nil, romOf: nil,
+            roms: [
+                DATRom(name: "09.4a", size: 60, crc: "aa110011", md5: nil, sha1: "1111111111111111111111111111111111111111"),
+                DATRom(name: "10.4b", size: 70, crc: "bb220022", md5: nil, sha1: "2222222222222222222222222222222222222222"),
+            ]
+        )
+        let singleGameDAT = DATFile(header: dat.header, games: [game])
+        func copy(in folder: String) -> [HashedFile] {
+            [
+                zipEntryHashedFile(archiveName: "ghouls", entryName: "09.4a", size: 60, crc: "aa110011", sha1: "1111111111111111111111111111111111111111"),
+                zipEntryHashedFile(archiveName: "ghouls", entryName: "10.4b", size: 70, crc: "bb220022", sha1: "2222222222222222222222222222222222222222"),
+            ].map { file in
+                HashedFile(
+                    file: ScannedFile(
+                        url: URL(fileURLWithPath: "/roms/\(folder)/ghouls.zip"),
+                        name: file.file.name, size: file.file.size
+                    ),
+                    hash: file.hash, headerStripped: file.headerStripped
+                )
+            }
+        }
+        let folders = ["CPS1", "NEOGEO", "CPS3", "OTHER"]
+        let report = try ROMMatcher.match(dat: singleGameDAT, hashedFiles: folders.flatMap(copy))
+
+        // Exactly one archive satisfies the game — both of its roms claimed
+        // out of the same physical copy, not one rom from each folder.
+        let claimedPaths = Set(report.games.first!.matches.compactMap { match -> URL? in
+            guard case .correct(let file, _) = match.status else { return nil }
+            return file.file.url
+        })
+        #expect(report.games.first!.matches.allSatisfy { if case .correct = $0.status { true } else { false } })
+        #expect(claimedPaths.count == 1, "all of a game's roms must be claimed from ONE archive, not spread across duplicates")
+
+        // Every one of the remaining three copies (2 roms each) is tagged as
+        // a known duplicate of this game — none silently unrecognized.
+        #expect(report.surplusFiles.count == 6, "3 unclaimed copies x 2 roms")
+        #expect(
+            report.surplusFiles.allSatisfy { $0.requiredByGameDescription == "Ghouls'n Ghosts (World)" },
+            "every extra copy must be tagged, not just the first"
+        )
+        // And they really are the other three folders, one claimed folder
+        // excluded — no copy counted twice or missed.
+        let surplusFolders = Set(report.surplusFiles.map { $0.file.file.url.deletingLastPathComponent().lastPathComponent })
+        #expect(surplusFolders.count == 3)
+        #expect(surplusFolders.union(claimedPaths.map { $0.deletingLastPathComponent().lastPathComponent }).count == 4)
+    }
+
     @Test("in an archive-organized scan, a game never claims a rom out of an archive the DAT doesn't name for it — only .foundElsewhere, regardless of merge mode")
     func neverClaimsFromARenamedOrUnclaimedArchive() throws {
         // jensyleo's own Finder/RomCenter philosophy directive (2026-08-05):
