@@ -309,7 +309,7 @@ this run yet.**
 | State (`AuditStatus`) | What it means | How the panel shows it |
 |---|---|---|
 | `correct` | Right file, right name, right hash, inside the game's OWN archive | Green ✓, "Ok" |
-| `incorrect` | Right content (hash matches) but wrong name, and/or a genuinely known duplicate elsewhere | Yellow ▲ — "Bad file name" / "Rom need fix" / "Extra file (duplicated), not needed here" / "Extra archive (duplicated), not needed here (required by X)" |
+| `incorrect` | Right content (hash matches) but wrong name, and/or a genuinely known duplicate elsewhere | Yellow ▲ — "Bad file name" / "Rom need fix" / "Duplicated file, not needed here" / "Duplicated archive, not needed here (required by X)" |
 | `badDump` | A file sits in the rom's own expected slot, but its hash is wrong (corrupt/bad dump) | Orange ⯁ — "Bad (hash mismatch)" |
 | `missing` | Nothing matching this rom exists anywhere the app can see | Red ✕ — "Incomplete (rom missing)" |
 | `unverifiable` | The rom is DAT-declared `nodump`; detected by NAME globally, in ANY archive — a file sits in its exact slot but there's no hash to check | Light gray ⊘ — "Nodump (unverifiable)" |
@@ -318,7 +318,7 @@ this run yet.**
 
 Also confirm the row-level (not just entry-level) aggregate text: "Ok",
 "Incomplete (rom missing)", "Bad (hash mismatch)", "Bad file name", "Rom need
-fix", "Extra file (duplicated), not needed here", "Extra file in archive",
+fix", "Duplicated file, not needed here", "Extra file in archive",
 "Ok (contains a nodump rom)".
 
 ### 9.2 Combinations to test
@@ -331,7 +331,7 @@ anything that doesn't match "Expected".
 |---|---|---|---|
 | 1 | A game's own archive present, untouched | `correct` | its own `name.zip` |
 | 2 | A game's own archive missing entirely, nothing else touches it | `missing` | game's short name (no file) |
-| 3 | Copy a game's own archive (Finder duplicate) to a NEW name, same folder | Original: `correct`. Duplicate: `incorrect`, "Extra archive (duplicated)…" | Original keeps its name; duplicate shows its own new name |
+| 3 | Copy a game's own archive (Finder duplicate) to a NEW name, same folder | Original: `correct`. Duplicate: `incorrect`, "Duplicated archive…" | Original keeps its name; duplicate shows its own new name |
 | 4 | Copy a game's own archive to a SECOND configured ROM folder, same name | Original: `correct`. Duplicate: shows as `incorrect`/"required by X" surplus, not silently swallowed | — |
 | 5 | Copy a game's own archive into a subfolder past the depth-1 scan limit | Skipped + reported in the log, not silently ignored, not counted as duplicate | — |
 | 6 | Rename ONE entry INSIDE a game's own real archive to a nonsense name (e.g. `XXXXPPP`) | `incorrect`, "Bad file name" | the archive's real name (unchanged) |
