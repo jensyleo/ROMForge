@@ -295,6 +295,82 @@ not your only copy.
 
 ---
 
+## 9. Duplicates, wrong names, and every state — Finder/RomCenter philosophy (added 2026-08-05)
+
+Added after the "own-archive-only" matching rewrite (see git log around
+2026-08-05: `blazstar copy.zip`/`ghouls copy.zip` cross-game leak bugs). Goal:
+systematically confirm every duplicate/misnamed scenario lands on the right
+`AuditStatus`, and that no game/rom ever shows correct/partially-correct
+content it doesn't actually, physically own. **Planned for tomorrow — none of
+this run yet.**
+
+### 9.1 The six states this app can show
+
+| State (`AuditStatus`) | What it means | How the panel shows it |
+|---|---|---|
+| `correct` | Right file, right name, right hash, inside the game's OWN archive | Green ●, "Ok" |
+| `incorrect` | Right content (hash matches) but wrong name, and/or a genuinely known duplicate elsewhere | Yellow ▲ — "Bad file name" / "Rom need fix" / "Extra file (duplicated), not needed here" / "Extra archive (duplicated), not needed here (required by X)" |
+| `badDump` | A file sits in the rom's own expected slot, but its hash is wrong (corrupt/bad dump) | Orange/red — "Bad (hash mismatch)" |
+| `missing` | Nothing matching this rom exists anywhere the app can see | Red ✕ — "Incomplete (rom missing)" |
+| `surplus` | A local file matches no expected rom in the DAT at all | Gray — "Unknown game" / "Extra file in archive" |
+| `unverifiable` | The rom itself is DAT-declared `nodump` (unhashable real hardware) but a file sits in its exact slot | Gray/blue — "Nodump (unverifiable)" |
+
+Also confirm the row-level (not just entry-level) aggregate text: "Ok",
+"Incomplete (rom missing)", "Bad (hash mismatch)", "Bad file name", "Rom need
+fix", "Extra file (duplicated), not needed here", "Extra file in archive",
+"Ok (contains a nodump rom)".
+
+### 9.2 Combinations to test
+
+For each row: set it up, run a full rescan (not partial), record the actual
+game-row status + entry-level status + File Name column text, and flag
+anything that doesn't match "Expected".
+
+| # | Setup | Expected game-row state | Expected File Name |
+|---|---|---|---|
+| 1 | A game's own archive present, untouched | `correct` | its own `name.zip` |
+| 2 | A game's own archive missing entirely, nothing else touches it | `missing` | game's short name (no file) |
+| 3 | Copy a game's own archive (Finder duplicate) to a NEW name, same folder | Original: `correct`. Duplicate: `incorrect`, "Extra archive (duplicated)…" | Original keeps its name; duplicate shows its own new name |
+| 4 | Copy a game's own archive to a SECOND configured ROM folder, same name | Original: `correct`. Duplicate: shows as `incorrect`/"required by X" surplus, not silently swallowed | — |
+| 5 | Copy a game's own archive into a subfolder past the depth-1 scan limit | Skipped + reported in the log, not silently ignored, not counted as duplicate | — |
+| 6 | Rename ONE entry INSIDE a game's own real archive to a nonsense name (e.g. `XXXXPPP`) | `incorrect`, "Bad file name" | the archive's real name (unchanged) |
+| 7 | Rename the WHOLE archive (Finder rename, not copy) to a nonsense name | Game shows `missing` (own archive gone); if content is still visible via `.foundElsewhere`, confirm it's informational only, never green | game's short name |
+| 8 | Corrupt/truncate one byte of a real rom inside its own archive (bad dump) | `badDump`, "Bad (hash mismatch)" | unchanged |
+| 9 | Delete one rom from inside an otherwise-correct archive | that rom: `missing`; game row: `incorrect`/"Rom need fix" if it has its own real problem | unchanged |
+| 10 | Add a genuinely unknown/junk file into a game's own archive | `surplus` entry, "Extra file in archive" fold-in, game row stays otherwise correct | unchanged |
+| 11 | Add a genuinely unknown/junk file loose in the ROM folder (not in any archive) | shows as its own `surplus` "Unknown game" bucket | the junk file's own name |
+| 12 | A CLONE's own archive present, parent's archive absent (Split mode) | Clone: `correct` for its own roms; shared-with-parent roms `.foundElsewhere` pointing at parent | — |
+| 13 | Same as #12 but Merged mode (clone has no archive of its own by design) | Everything resolves from the parent's one archive; no clone-named row at all (folded into parent) | — |
+| 14 | Same family, Un-merged mode, BOTH parent and clone archives present, each self-contained | Both `correct` independently | — |
+| 15 | A `nodump` rom with NO real file anywhere | that rom entry: absent (no row at all) — NOT `missing`, NOT `surplus` | — |
+| 16 | A `nodump` rom whose exact-named file DOES exist somewhere in its clone family | `unverifiable`, "Nodump (unverifiable)" | — |
+| 17 | Two totally unrelated games that legitimately share a real hardware sub-rom (e.g. CPS1 `aboardplds`, NeoGeo `sfix.sfix`/`sm1.sm1`) — only ONE of them has its own archive | The owning game: `correct`. The other (no archive at all): stays fully `missing`, the shared rom shows at most `.foundElsewhere`, NEVER green/correct | game's short name for the absent one |
+| 18 | A `.chd` duplicated (Finder copy) in the same CHD folder | Original: `correct`. Duplicate: flagged as a known duplicate (see §9.3) | — |
+| 19 | A `.chd` duplicated into a nested/BATOCERA-style subfolder past the depth limit | Same skip-and-report behavior as #5 | — |
+| 20 | A `.chd` renamed to a nonsense name (Finder rename, not copy) | Should behave like #7's rom equivalent — confirm it does, this is the CHD gap noted in §9.3 | — |
+
+### 9.3 CHD — flagged as "looks fine but not confirmed 100% Finder" (jensyleo, 2026-08-05)
+
+`DiskAuditor`/`CHDMatcher` match purely by exact SHA1 against each game's own
+declared `<disk>` — no cross-archive-name concept exists (CHDs aren't zip
+entries), so in principle there's no equivalent of the rom-side "renamed
+archive" bug. **Not yet confirmed live** — specifically check:
+
+- [ ] #18 above: does a duplicated `.chd` get flagged the same way a
+      duplicated `.zip` does (yellow, "duplicated, required by X"), or does
+      it show up as a plain gray "Unknown"?
+- [ ] #20 above: rename (not copy) a real `.chd` to a nonsense filename —
+      does the game correctly show its disk as `missing` (Finder-strict,
+      matching the new rom philosophy), or does something still resolve it
+      by content regardless of filename? (SHA1-only matching means it likely
+      *does* still resolve it by content — confirm whether that's the
+      desired behavior for CHDs specifically, since a `.chd`'s filename
+      genuinely doesn't matter to MAME the way a rom's archive name does.)
+- [ ] Confirm a `.chd` that matches NO `<disk>` in the DAT at all (orphan)
+      still shows as a real, visible surplus row, not silently invisible.
+
+---
+
 ## After finishing
 
 Update this file's checkboxes as you go (`- [ ]` → `- [x]`), and note the
