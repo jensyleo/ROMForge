@@ -373,44 +373,33 @@ struct ROMMatcherTests {
         #expect(report.surplusFiles.first?.requiredByGameDescription == "Street Fighter III 2nd Impact")
     }
 
-    @Test("in an archive-organized scan, a whole archive renamed by the user is still found via an unclaimed (non-DAT-name) archive")
-    func findsRomInsideARenamedArchive() throws {
-        // The archive itself ("renamed-by-user.zip") doesn't match any DAT
-        // game's own name, so it's not "claimed" by any other game — a
-        // real game whose own archive is absent can still resolve its rom
-        // from here (the common real case: the user renamed the whole
-        // archive, but its contents/entry name are untouched).
+    @Test("in an archive-organized scan, a game never claims a rom out of an archive the DAT doesn't name for it — only .foundElsewhere, regardless of merge mode")
+    func neverClaimsFromARenamedOrUnclaimedArchive() throws {
+        // jensyleo's own Finder/RomCenter philosophy directive (2026-08-05):
+        // this test used to assert `.correct` — ROMForge used to hunt
+        // through any archive the DAT didn't recognize by name for content
+        // that could plausibly belong to a game whose own archive was
+        // absent (the "user renamed the whole archive" case). That same
+        // mechanism is what let a totally unrelated game silently claim a
+        // stray shared/padding rom out of someone else's duplicated
+        // archive — a real, confusing bug (see this file's git history
+        // around 2026-08-05). Every game's roms may now ONLY come from that
+        // game's own archive (matched by name), full stop, no matter which
+        // Rom merge mode is active — "expected-name.bin" genuinely exists
+        // on disk, so it still surfaces as `.foundElsewhere` (informational,
+        // never claims), but "Misnamed Game" is never marked `.correct`
+        // just because *an* archive somewhere happens to hold it.
         let renamedArchive = zipEntryHashedFile(archiveName: "renamed-by-user", entryName: "expected-name.bin", size: 200, crc: "bbbbbbbb", sha1: "2222222222222222222222222222222222222222")
-        let report = try ROMMatcher.match(dat: dat, hashedFiles: [renamedArchive])
-
-        let result = report.games.first { $0.game.name == "Misnamed Game" }!
-        #expect(result.matches[0].status == .correct(renamedArchive))
-    }
-
-    @Test("under Un-merged mode, a game with no clone/parent relationship at all still uses the renamed-archive fallback")
-    func nonMergedStandaloneGameStillBorrowsFromRenamedArchive() throws {
-        // Real bug found live by jensyleo (2026-08-03): this test used to
-        // assert the opposite (`.missing`) — Un-merged's self-containment
-        // rule ("a game must never need a rom that actually lives in a
-        // different file on disk, clone/bootleg/parent or otherwise") was
-        // applied as one blanket DAT-wide toggle, regardless of whether
-        // the game in question had any clone/parent relationship to
-        // actually be strict *about*. For a system where NO game has any
-        // clone anywhere (e.g. every NEOGEO title), that meant Rom merge
-        // mode alone changed real audit results — a renamed archive
-        // resolved fine under Split/Merged but reported `.missing` under
-        // Un-merged — even though the entire concept "clone/bootleg/
-        // parent" doesn't apply to "Misnamed Game" at all (`cloneOf: nil`,
-        // and nothing in `dat` clones it either). Fixed by gating the
-        // strict-self-containment behavior per-game, on whether that game
-        // actually participates in a clone relationship — see
-        // `ROMMatcher.swift`'s own `strictOwnArchiveOnly` doc comment.
-        let nonMergedDAT = DATFile(header: dat.header, games: dat.games, mergeMode: .nonMerged)
-        let renamedArchive = zipEntryHashedFile(archiveName: "renamed-by-user", entryName: "expected-name.bin", size: 200, crc: "bbbbbbbb", sha1: "2222222222222222222222222222222222222222")
-        let report = try ROMMatcher.match(dat: nonMergedDAT, hashedFiles: [renamedArchive])
-
-        let result = report.games.first { $0.game.name == "Misnamed Game" }!
-        #expect(result.matches[0].status == .correct(renamedArchive))
+        for mergeMode in [SetMergeMode.split, .merged, .nonMerged] {
+            let modeDAT = DATFile(header: dat.header, games: dat.games, mergeMode: mergeMode)
+            let report = try ROMMatcher.match(dat: modeDAT, hashedFiles: [renamedArchive])
+            let result = report.games.first { $0.game.name == "Misnamed Game" }!
+            if case .foundElsewhere(let file) = result.matches[0].status {
+                #expect(file == renamedArchive)
+            } else {
+                Issue.record("expected .foundElsewhere under \(mergeMode), got \(result.matches[0].status)")
+            }
+        }
     }
 
     @Test("a game needing 2+ roms never claims a single stray shared rom out of an unclaimed archive that isn't actually its own")

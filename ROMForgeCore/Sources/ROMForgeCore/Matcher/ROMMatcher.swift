@@ -84,15 +84,14 @@ public enum ROMMatcher {
         // hash-keyed index alone could never find.
         let nameIndex = index(hashedFiles, by: \.file.name)
         // An archive whose own name matches some *other* real DAT game is
-        // "claimed" by that game and off-limits to everyone else — this is
-        // what stops the cross-machine steal above. An archive whose name
-        // matches no DAT game at all isn't claimed by anyone, so it's a
-        // legitimate fallback candidate: the common real case is a whole
-        // archive renamed by the user (e.g. `sf2.zip` → `street2.zip`),
-        // whose contents still hash-match a real game's roms perfectly.
-        // Restricting fallback to unclaimed archives only detects that
-        // ("Bad file name") without reopening the door to false steals
-        // between two archives that both happen to be real game names.
+        // "claimed" by that game — still consulted below by
+        // `.foundElsewhere`'s own gate (`isInClaimedArchive`), purely to
+        // decide whether a rom missing from its own archive but visible
+        // elsewhere is worth mentioning informationally. No archive, claimed
+        // or not, is ever a candidate a game can actually be resolved
+        // *from* other than its own (see the Finder/RomCenter philosophy
+        // note further below) — this index only still matters for that one
+        // informational purpose now.
         //
         // Read from `dat.allMachineNames` (the *raw*, pre-layout-planning
         // machine list), not derived from `dat.games` here — real bug
@@ -103,47 +102,23 @@ public enum ROMMatcher {
         // Merged mode's own `dat.games` excludes every clone by design —
         // reopening the door this check exists to keep shut).
         let allGameNames = dat.allMachineNames
-        // Un-merged means every game's own archive must be fully
-        // self-contained, full stop — jensyleo's own definition
-        // (2026-07-28): a game must never "need" a rom that actually lives
-        // in some other game's file, clone/bootleg/parent or otherwise.
-        // The renamed-whole-archive fallback above (matching against an
-        // *unclaimed* archive) is exactly that — content borrowed from a
-        // different archive — so it's disabled entirely under `.nonMerged`,
-        // even though it stays available for `.split`/`.merged` scans
-        // (where MAME's own layout already expects a clone to lean on its
-        // parent's separate archive, so "not on an unrelated real game's
-        // archive" is the only restriction that still makes sense there).
-        //
-        // Gated per-game (not DAT-wide as a single Bool) since — jensyleo's
-        // own report (2026-08-03), confirmed live: a system where no game
-        // has any clone/parent relationship at all (e.g. NEOGEO — every
-        // machine is its own standalone entry) still visibly changed audit
-        // results depending on Rom merge mode, even after
-        // `MAMESetLayoutPlanner`'s own no-clone no-op fix, because THIS
-        // flag used to be `dat.mergeMode == .nonMerged` alone — a single
-        // DAT-wide toggle applied to every game regardless of whether it
-        // has any clone/parent relationship whatsoever. The entire
-        // rationale above ("a game must never need a rom sitting in some
-        // other game's file, clone/bootleg/parent or otherwise") is
-        // inherently about clone/parent relationships — it has nothing to
-        // say about a standalone machine with neither, so restricting its
-        // fallback based only on the *system's* merge mode, with no
-        // parent/clone of its own to actually protect against, was a real
-        // bug: a misnamed/renamed archive that would resolve fine under
-        // Split/Merged could show as missing/incorrect under Un-merged for
-        // a game this restriction was never meant to touch. A game only
-        // qualifies for the stricter behavior under `.nonMerged` if it
-        // actually clones something (`cloneOf != nil`) or is itself cloned
-        // by something else (`gameNamesWithClones`, below) — a fully
-        // standalone game keeps the renamed-archive fallback available
-        // regardless of which Rom merge mode is selected.
-        let gameNamesWithClones = Set(dat.games.compactMap(\.cloneOf))
-        let datMergeModeIsNonMerged = dat.mergeMode == .nonMerged
-        @Sendable func strictOwnArchiveOnly(_ game: DATGame) -> Bool {
-            guard datMergeModeIsNonMerged else { return false }
-            return game.cloneOf != nil || gameNamesWithClones.contains(game.name)
-        }
+        // jensyleo's own philosophy directive (2026-08-05), after a real,
+        // confusing live case: `ghouls copy.zip` (a duplicate) and unrelated
+        // CPS1 titles sharing tiny hardware-PAL roms both fed a fallback
+        // that hunted through *any* archive the DAT didn't recognize by
+        // name for a rom that could plausibly belong to it — legitimate for
+        // the one case it was built for (a user renamed a whole archive),
+        // but it also let a single stray/shared rom quietly turn an
+        // otherwise-absent game partially green. jensyleo's call: every
+        // game's own roms may now ONLY ever come from that game's own
+        // archive (matched by name) — a RomCenter/Finder-style rule, "what
+        // you see is what gets evaluated," with no cross-archive guessing
+        // at all, regardless of Rom merge mode or clone/parent
+        // relationship. This is a deliberate loss of the old
+        // "detect a renamed archive" feature, in exchange for eliminating
+        // this entire class of confusing false-positive bugs. Every game is
+        // therefore "strict" now — see `scopedCandidates`'s own doc comment
+        // in `computePerGameCandidates`, below.
 
         // Phase 1 (parallel, read-only): scope each game's own roms down to
         // their candidate file indices. This is the expensive part on a
@@ -163,7 +138,7 @@ public enum ROMMatcher {
             crcIndex: crcIndex, md5Index: md5Index, sha1Index: sha1Index, sizeIndex: sizeIndex,
             crcIndexStripped: crcIndexStripped, md5IndexStripped: md5IndexStripped, sha1IndexStripped: sha1IndexStripped, sizeIndexStripped: sizeIndexStripped,
             archiveNameIndex: archiveNameIndex, nameIndex: nameIndex, isArchiveOrganized: isArchiveOrganized, allGameNames: allGameNames,
-            strictOwnArchiveOnly: strictOwnArchiveOnly, onProgress: onProgress, cancellationFlag: cancellationFlag
+            onProgress: onProgress, cancellationFlag: cancellationFlag
         )
 
         // `computePerGameCandidates`'s own workers bail out early on
@@ -300,8 +275,8 @@ public enum ROMMatcher {
             }
 
             // Does this game genuinely exist on disk — i.e. did *any* of
-            // its own roms actually get claimed from its own (or a
-            // legitimately-renamed) archive above? Real bug found live by
+            // its own roms actually get claimed from its own archive above?
+            // Real bug found live by
             // jensyleo (2026-08-04): a clone the user doesn't own at all
             // (e.g. `1943j` — no `1943j.zip` anywhere, its three genuinely
             // unique roms `bm01b.12d`/`bm02b.13d`/`bm03b.14d` present
@@ -473,13 +448,11 @@ public enum ROMMatcher {
         crcIndex: [String: [Int]], md5Index: [String: [Int]], sha1Index: [String: [Int]], sizeIndex: [Int64: [Int]],
         crcIndexStripped: [String: [Int]], md5IndexStripped: [String: [Int]], sha1IndexStripped: [String: [Int]], sizeIndexStripped: [Int64: [Int]],
         archiveNameIndex: [String: [Int]], nameIndex: [String: [Int]], isArchiveOrganized: Bool, allGameNames: Set<String>,
-        strictOwnArchiveOnly: @escaping @Sendable (DATGame) -> Bool,
         onProgress: (@Sendable (Int, Int) -> Void)?,
         cancellationFlag: CancellationFlag?
     ) -> [GameCandidates] {
         @Sendable func candidates(for game: DATGame) -> GameCandidates {
             let ownArchiveIndices = Set(archiveNameIndex[game.name.lowercased()] ?? [])
-            let gameIsStrict = strictOwnArchiveOnly(game)
             // Every archive belonging to this merged family (already
             // lowercased — see `DATGame.mergedFamilyMachineNames`'s own doc
             // comment) — empty for Split/Non-merged, where it's simply never
@@ -514,78 +487,24 @@ public enum ROMMatcher {
                 return (rom, candidates, hashVerifiedCandidates, nameMatchIndex, familyNameMatchIndex)
             }
 
-            // Real bug found live by jensyleo (2026-08-05): duplicating an
-            // archive under a new name (e.g. copying `blazstar.zip` to
-            // "blazstar copy.zip") made every completely unrelated game
-            // whose *any single rom* happened to hash-match *any single
-            // file* inside that copy (shared/filler/padding content, common
-            // across totally unrelated machines) legitimately claim it
-            // through the "renamed-whole-archive" fallback below — meant
-            // for the case where a user renamed one game's *entire*
-            // archive, not for cherry-picking one stray rom out of an
-            // archive that in fact belongs to a different game. Dozens of
-            // still-missing games all showed "blazstar copy.zip" as their
-            // own File Name after claiming just that one padding rom.
-            //
-            // Fixed here, once per game rather than per rom: tally, across
-            // every rom's candidates, how many distinct roms of *this* game
-            // each unclaimed archive could explain. An archive only counts
-            // as "genuinely renamed to belong to this game" if it explains
-            // at least two of its roms — a real renamed archive matches
-            // most/all of a game's roms; an accidental shared-content
-            // collision matches at most one — unless the game declares only
-            // one rom in total, the one case that bar could never honestly
-            // clear.
-            //
-            // Deliberately uses `hashVerifiedCandidates` here, NOT the
-            // plain `candidates` (which still allows the size-only fallback
-            // tier) — real bug found live by jensyleo (2026-08-05, same
-            // day, second pass): duplicating the *entire* `blazstar.zip`
-            // (not just one file) meant "blazstar copy.zip" held ~15 files,
-            // giving pure same-size coincidences across unrelated games'
-            // roms far more chances to rack up two "matches" on their own —
-            // the exact `allowSizeOnlyFallback` cross-game-steal risk this
-            // same file's own doc comment already warns about, just not yet
-            // applied to this particular path. Only a real, verified
-            // crc/md5/sha1 match may count toward "this archive is
-            // genuinely this game's own", never a bare size coincidence.
-            var unclaimedArchiveRomCounts: [URL: Int] = [:]
-            if isArchiveOrganized, !gameIsStrict {
-                for (_, _, hashVerifiedCandidates, _, _) in perRom {
-                    let unclaimedArchiveURLs = Set(hashVerifiedCandidates.compactMap { index -> URL? in
-                        guard !ownArchiveIndices.contains(index), !isInClaimedArchive(index, hashedFiles: hashedFiles, allGameNames: allGameNames) else { return nil }
-                        return hashedFiles[index].file.url
-                    })
-                    for url in unclaimedArchiveURLs { unclaimedArchiveRomCounts[url, default: 0] += 1 }
-                }
-            }
-            let trustedUnclaimedArchiveThreshold = game.roms.count == 1 ? 1 : 2
-            let trustedUnclaimedArchives = Set(unclaimedArchiveRomCounts.filter { $0.value >= trustedUnclaimedArchiveThreshold }.keys)
-
+            // jensyleo's own Finder/RomCenter philosophy directive
+            // (2026-08-05): a game's roms may ONLY ever be claimed from that
+            // game's own archive (matched by name) — never from some other,
+            // unrecognized archive the DAT doesn't name for it, no matter
+            // how many of its roms that archive could technically explain.
+            // This replaces an earlier, more permissive "renamed-whole-
+            // archive" fallback that hunted through unclaimed archives for
+            // plausible content — real, confusing bugs kept surfacing from
+            // it (a duplicated archive's stray shared rom quietly claimed
+            // by a totally unrelated, otherwise fully-absent game; see this
+            // file's git history around 2026-08-05 for the specifics). A
+            // rom that's missing from this game's own archive but visibly
+            // exists somewhere else in the scan still surfaces via
+            // `.foundElsewhere` below (informational only, never claims) —
+            // this only removes the ability to silently treat that "somewhere
+            // else" as if it were this game's own file.
             return perRom.map { rom, candidates, hashVerifiedCandidates, nameMatchIndex, familyNameMatchIndex in
-                let scopedCandidates: [Int]
-                if !isArchiveOrganized {
-                    scopedCandidates = candidates
-                } else if gameIsStrict {
-                    // Un-merged: this game's roms may only ever come from
-                    // its own archive — not even the renamed-whole-archive
-                    // fallback below, since that would still mean the game
-                    // "needed" a rom sitting in some other file on disk.
-                    scopedCandidates = candidates.filter { ownArchiveIndices.contains($0) }
-                } else {
-                    let inOwnArchive = candidates.filter { ownArchiveIndices.contains($0) }
-                    // Also hash-verified only (not `candidates`, which still
-                    // allows the size-only tier) — the trusted-archive set
-                    // above was built from hash-verified matches, so a
-                    // size-only candidate must never slip back in here
-                    // regardless.
-                    let inUnclaimedArchive = hashVerifiedCandidates.filter { index in
-                        !ownArchiveIndices.contains(index)
-                            && !isInClaimedArchive(index, hashedFiles: hashedFiles, allGameNames: allGameNames)
-                            && trustedUnclaimedArchives.contains(hashedFiles[index].file.url)
-                    }
-                    scopedCandidates = inOwnArchive + inUnclaimedArchive
-                }
+                let scopedCandidates = isArchiveOrganized ? candidates.filter { ownArchiveIndices.contains($0) } : candidates
                 return (rom, scopedCandidates, hashVerifiedCandidates, nameMatchIndex, familyNameMatchIndex)
             }
         }
