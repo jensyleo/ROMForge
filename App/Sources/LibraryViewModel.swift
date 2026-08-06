@@ -652,7 +652,7 @@ final class LibraryViewModel {
                         entries: audit.entries + previous.entries.filter(\.isDisk),
                         correct: audit.correct, incorrect: audit.incorrect, badDump: audit.badDump, missing: audit.missing, surplus: audit.surplus
                     )
-                mergedAudit = Self.merge(previous: previous, fresh: freshForMerge, scopedFolders: targetFolders)
+                mergedAudit = ScopedScanMerger.merge(previous: previous, fresh: freshForMerge, scopedFolders: targetFolders)
                 // `matchReport` backs `fix()`, which is disabled
                 // (`modificationsEnabled`) — not worth merging its far
                 // richer per-game structure for a feature that can't run.
@@ -701,135 +701,6 @@ final class LibraryViewModel {
         }
     }
 
-    /// Combines a freshly-scoped scan (only some of the system's folders)
-    /// with the last full/partial report — a "missing" verdict from the
-    /// scoped scan means only "not found in *this* folder", not "not found
-    /// anywhere", so it falls back to whatever the previous report already
-    /// knew for that exact (game, rom) pair rather than overwriting a real
-    /// match with a false negative. Matched by (game, rom name) since
-    /// that's stable across scans of the same DAT regardless of which
-    /// folder a file happens to live in.
-    private static func merge(previous: AuditReport, fresh: AuditReport, scopedFolders: [URL]) -> AuditReport {
-        var merged: [AuditEntry] = []
-        merged.reserveCapacity(fresh.entries.count + previous.entries.count)
-        // Single pass over the merged result for all five counts, instead
-        // of five separate full-array `.filter { }.count` passes — the
-        // same redundant-rescan cost `computeScopedStatusCounts` was
-        // already fixed for, here too.
-        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0
-        func append(_ entry: AuditEntry) {
-            merged.append(entry)
-            switch entry.status {
-            case .correct: correct += 1
-            case .incorrect: incorrect += 1
-            case .badDump: badDump += 1
-            case .missing: missing += 1
-            case .surplus, .surplusInArchive, .unknownFile: surplus += 1
-            case .unverifiable: unverifiable += 1
-            }
-        }
-
-        let scopedPaths = scopedFolders.map(\.path)
-
-        // Which games did this scan actually touch — i.e. have a REAL file
-        // (not a `.foundElsewhere` borrowed path, see its own doc comment)
-        // somewhere inside `scopedFolders`, per `fresh`'s own results.
-        // Real bug found live by jensyleo (2026-08-04): the previous
-        // version of this function only ever detected "touched" this way
-        // for a *single-file* scope (`scopedFolders` naming exactly one
-        // game by MAME's own "archive named after the machine"
-        // convention) — any whole-*folder* scope (an ordinary "Scan
-        // Folder" click, the overwhelmingly common case) fell back to a
-        // much weaker per-rom `RomKey` reconciliation that only restored
-        // `previous`'s status when fresh reported a rom plain `.missing`.
-        // Once `ROMMatcher` started also reporting `.foundElsewhere`/
-        // `.hashMismatch` (both map to `.incorrect`, not `.missing`) for a
-        // rom it merely couldn't claim in *this* scan's own limited file
-        // pool, that per-rom check no longer caught them: scanning one
-        // folder (e.g. NEOGEO) could produce a stray `.incorrect` verdict
-        // for some *completely different* system's game (e.g. a CPS1 rom
-        // whose declared hash happens to collide, or one riding along via
-        // `foundElsewhere`'s intentionally-generous cross-scan lookup) —
-        // and since that verdict wasn't literally `.missing`, the old
-        // per-rom check trusted it outright over the real, correct
-        // `previous` status, flipping an untouched game's entire row
-        // yellow. Fixed by generalizing the *entire* file-scope's
-        // wholesale-carryover strategy to folder scopes too: a game this
-        // scan didn't actually touch has its whole previous row carried
-        // forward completely unreconciled, regardless of what fresh
-        // (wrongly, out of its own limited scope) claims about it.
-        var touchedGameNames: Set<String> = []
-        for entry in fresh.entries {
-            guard let game = entry.game, entry.foundElsewhereArchiveName == nil, let path = entry.path,
-                  scopedPaths.contains(where: { path.path.hasPrefix($0) }) else { continue }
-            touchedGameNames.insert(game.lowercased())
-        }
-        // Real bug found live by jensyleo (2026-08-04): a game whose entire
-        // fresh footprint is surplus-derived (`entry.game == nil` — e.g.
-        // `qsound_hle` under Split, where its only rom is merge-tagged and
-        // stripped from its own expected list entirely, so nothing with
-        // `game == "qsound_hle"` can ever exist in a Split-mode scan) never
-        // satisfied the loop above at all, since that loop only ever looks
-        // at entries that already have a real `game`. Untouched by this
-        // definition, `qsound_hle`'s *stale* `previous` row (e.g. a
-        // genuine `.correct` claim from an earlier scan under a merge mode
-        // where its own rom wasn't stripped) got carried forward wholesale
-        // instead of being superseded — alongside the fresh scan's own
-        // surplus entry for the exact same physical file (always appended
-        // unconditionally below), producing two contradictory rows for the
-        // same rom slot: a stale green "Ok" next to a fresh yellow "Not
-        // needed here". Any real, physically-scanned file inside scope —
-        // rom-matched or not — did genuinely get looked at during this
-        // scan, so whatever game its own archive's name implies must count
-        // as touched too, regardless of whether the matcher ended up
-        // attributing it to that name.
-        for entry in fresh.entries {
-            guard entry.game == nil, let path = entry.path, scopedPaths.contains(where: { path.path.hasPrefix($0) }) else { continue }
-            touchedGameNames.insert(path.deletingPathExtension().lastPathComponent.lowercased())
-        }
-        // A single-FILE scope (e.g. "Rescan This File") also names its own
-        // touched game directly by filename — needed for the edge case
-        // where *every* one of that file's roms came back missing/
-        // `.foundElsewhere` (no real in-scope path for the loop above to
-        // have found at all), which would otherwise look "untouched".
-        for url in scopedFolders {
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue {
-                touchedGameNames.insert(url.deletingPathExtension().lastPathComponent.lowercased())
-            }
-        }
-
-        // A rom's own archive is named after its *game* (MAME convention),
-        // but a CHD disk's physical filename is the *disk's own* declared
-        // name, which often doesn't match its game's name at all (e.g.
-        // disk "cap-sf3-3" belongs to game "sfiii") — checked against
-        // `entry.name` too, not just `entry.game`, so rescanning one
-        // specific `.chd` file is correctly recognized as touching that
-        // disk's entry.
-        func isTouched(_ entry: AuditEntry, game: String) -> Bool {
-            touchedGameNames.contains(game.lowercased()) || touchedGameNames.contains(entry.name.lowercased())
-        }
-
-        for entry in fresh.entries {
-            guard let game = entry.game else {
-                append(entry) // a surplus file found fresh, inside scope
-                continue
-            }
-            if isTouched(entry, game: game) { append(entry) }
-            // Untouched games are skipped here entirely — carried forward
-            // from `previous` below instead, wholesale.
-        }
-        for entry in previous.entries {
-            if let game = entry.game {
-                if !isTouched(entry, game: game) { append(entry) }
-            } else {
-                let isInsideScope = entry.path.map { path in scopedPaths.contains { path.path.hasPrefix($0) } } ?? false
-                if !isInsideScope { append(entry) }
-            }
-        }
-
-        return AuditReport(entries: merged, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
-    }
 
 
     func fix(system: RomSystem) async {
