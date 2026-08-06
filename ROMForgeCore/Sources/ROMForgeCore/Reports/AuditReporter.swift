@@ -134,6 +134,7 @@ public enum AuditReporter {
                 AuditEntry(
                     status: status, game: nil,
                     requiredByGameDescription: surplusFile.requiredByGameDescription,
+                    misnamedArchiveForGameName: surplusFile.misnamedArchiveForGameName,
                     name: hashedFile.file.name, path: hashedFile.file.url,
                     actualSize: hashedFile.file.size,
                     actualCRC: hashedFile.hash.crc32, actualMD5: hashedFile.hash.md5, actualSHA1: hashedFile.hash.sha1

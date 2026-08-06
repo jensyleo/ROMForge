@@ -142,6 +142,20 @@ private struct GameNode: Identifiable {
             // folded into its parent) but whose entire content is
             // nonetheless fully identified elsewhere reads as its own
             // distinct message, not the genuinely-unknown default.
+            // This whole archive is one game's set under the wrong filename
+            // (at least half its files are that game's roms, and that game
+            // owns no archive of its own — see
+            // `SurplusFile.misnamedArchiveForGameName` for the full
+            // criterion). Real bug found live by jensyleo (2026-08-06):
+            // renaming `1943.zip` to `1949.zip` reported it as "Duplicated
+            // archive, not needed here", which is actively wrong on both
+            // counts — nothing is duplicated (it's the only copy) and it IS
+            // needed (it's the game's whole set). Checked before the
+            // duplicate message below, since a misnamed archive also has a
+            // `requiredByGameDescription` and would otherwise fall into it.
+            if let expected = entries.first?.misnamedArchiveForGameName {
+                return "Bad file name — rename to \(expected).zip"
+            }
             guard aggregateStatus == .incorrect, let requiredBy = entries.first?.requiredByGameDescription else {
                 return "Unknown game"
             }
@@ -215,6 +229,20 @@ private struct GameNode: Identifiable {
             //   above does (see that message's own comment).
             let archiveMisnamed = actualFileName != nil && expectedFileName != nil && actualFileName != expectedFileName
             if archiveMisnamed { return "Bad file name" }
+            // This game owns no archive at all, yet every one of its roms is
+            // visible inside ONE other archive — that archive is this game's
+            // whole set under the wrong filename. Real bug found live by
+            // jensyleo (2026-08-06): renaming `1943.zip` to `1949.zip` left
+            // this row reading the far vaguer "Rom need fix", when the actual
+            // fix is a single rename. `actualFileName` is nil here precisely
+            // because every entry is `.foundElsewhere` (see its own doc
+            // comment), so the check above can't catch this case.
+            if actualFileName == nil, let expected = expectedFileName {
+                let borrowedArchives = Set(entries.compactMap(\.foundElsewhereArchiveName))
+                if borrowedArchives.count == 1, let wrongName = borrowedArchives.first, wrongName != expected {
+                    return "Bad file name — rename \(wrongName) to \(expected)"
+                }
+            }
             let hasOwnRomProblem = entries.contains { $0.status == .incorrect && $0.requiredByGameDescription == nil }
             return hasOwnRomProblem ? "Rom need fix" : "Duplicated file, not needed here"
         case .correct, .surplus, .surplusInArchive, .unknownFile:

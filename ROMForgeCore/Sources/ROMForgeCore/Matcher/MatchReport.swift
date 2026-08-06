@@ -114,12 +114,43 @@ public struct SurplusFile: Equatable, Sendable {
     /// look — `AuditStatus.surplusInArchive`) from "nothing about this is
     /// recognized" (`AuditStatus.unknownFile`).
     public let isInKnownArchive: Bool
+    /// The DAT machine name (e.g. `"1943"`) this file's containing archive
+    /// really belongs to, when that archive turns out to be a whole game's
+    /// archive sitting under the wrong filename — so a UI can say "rename
+    /// this to `1943.zip`" instead of mislabelling it.
+    ///
+    /// jensyleo's own criterion (2026-08-06), after renaming `1943.zip` to
+    /// `1949.zip` and seeing it reported as a duplicate: an archive counts as
+    /// misnamed when **at least 60% of its files are roms of one single
+    /// game** (see `ROMMatcher.meetsMisnamedThreshold` for why that exact
+    /// number, and for its known limitation), and that game owns no archive
+    /// of its own anywhere in the scan.
+    ///
+    /// Both halves matter. The threshold is what separates a genuinely
+    /// renamed archive (38 of 38 files were `1943`'s) from an unrelated
+    /// archive that merely happens to share a rom or two (shared hardware
+    /// PALs, filler/padding content) — exactly the false positive that sank
+    /// the earlier, weaker "≥2 matching roms" version of this idea (see the
+    /// 2026-08-05 own-archive-only rewrite). And requiring the game to own
+    /// nothing is what keeps a real duplicate labelled a duplicate: if
+    /// `1943.zip` also exists, then `1949.zip` genuinely is a spare copy
+    /// rather than the game's only, misnamed one.
+    ///
+    /// `nil` for everything else. Deliberately does NOT cause the game to
+    /// claim these roms — a game's roms still only ever come from its own
+    /// correctly-named archive (jensyleo's Finder philosophy, 2026-08-05).
+    /// This is purely a more accurate label on the misnamed archive itself.
+    public let misnamedArchiveForGameName: String?
 
-    public init(file: HashedFile, requiredByGameDescription: String? = nil, matchesNodumpRomName: Bool = false, isInKnownArchive: Bool = false) {
+    public init(
+        file: HashedFile, requiredByGameDescription: String? = nil, matchesNodumpRomName: Bool = false,
+        isInKnownArchive: Bool = false, misnamedArchiveForGameName: String? = nil
+    ) {
         self.file = file
         self.requiredByGameDescription = requiredByGameDescription
         self.matchesNodumpRomName = matchesNodumpRomName
         self.isInKnownArchive = isInKnownArchive
+        self.misnamedArchiveForGameName = misnamedArchiveForGameName
     }
 }
 

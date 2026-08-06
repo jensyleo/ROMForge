@@ -396,9 +396,12 @@ public enum ROMMatcher {
         // unverifiable and no longer needed here — reporting it as plain
         // gray "Unrecognized" would be indistinguishable from genuine junk.
         let nodumpRomNames = Set(dat.games.lazy.flatMap(\.roms).filter { $0.status == .nodump }.map { $0.name.lowercased() })
-        let surplusFiles = hashedFiles.indices.filter { !consumed[$0] }.map { index -> SurplusFile in
+        var owningGameByIndex: [Int: DATGame] = [:]
+        var surplusFiles = hashedFiles.indices.filter { !consumed[$0] }.map { index -> SurplusFile in
             let file = hashedFiles[index]
-            let requiredBy = requiredByGameDescription(for: file, gamesByName: gamesByName, romsByHash: romsByHash, claimedArchiveURLsByGame: claimedArchiveURLsByGame)
+            let owner = requiredByGame(for: file, gamesByName: gamesByName, romsByHash: romsByHash, claimedArchiveURLsByGame: claimedArchiveURLsByGame)
+            if let owner { owningGameByIndex[index] = owner }
+            let requiredBy = owner?.description
             let matchesNodumpName = requiredBy == nil && nodumpRomNames.contains(file.file.name.lowercased())
             // Per-file (not the scan-wide `isArchiveOrganized` flag) — a
             // loose file's own URL *is* the file itself, so its last path
@@ -414,7 +417,113 @@ public enum ROMMatcher {
             let isInKnownArchive = isInArchive && allGameNames.contains(archiveBaseName)
             return SurplusFile(file: file, requiredByGameDescription: requiredBy, matchesNodumpRomName: matchesNodumpName, isInKnownArchive: isInKnownArchive)
         }
+        annotateMisnamedArchives(
+            &surplusFiles, hashedFiles: hashedFiles, owningGameByIndex: owningGameByIndex,
+            unclaimedIndices: hashedFiles.indices.filter { !consumed[$0] },
+            allGameNames: allGameNames, claimedArchiveURLsByGame: claimedArchiveURLsByGame
+        )
         return MatchReport(games: gameResults, surplusFiles: surplusFiles)
+    }
+
+    /// How much of an archive must belong to one single game before that
+    /// archive is called that game's set under a wrong filename: **60%**.
+    ///
+    /// jensyleo originally proposed 50% and then raised it themselves
+    /// (2026-08-06) on spotting the hole in it: at exactly half, an archive
+    /// split evenly between two games satisfies "at least half" for BOTH, and
+    /// whichever one a dictionary happened to yield first would win — an
+    /// arbitrary, unexplainable answer of exactly the kind this whole
+    /// area has been cleaned of.
+    ///
+    /// 60% closes that structurally rather than by luck: **two games can
+    /// never both clear it**, since that would take 120% of one archive
+    /// between them. So a qualifying game is always unique, with no
+    /// tie-breaking rule needed anywhere (see `annotateMisnamedArchives`,
+    /// which is written as a filter rather than a `max` to keep that visible).
+    /// It also leaves real headroom — a genuinely renamed archive is normally
+    /// at or near 100% (the live case that prompted this was 38 of 38 files),
+    /// so 60% costs nothing in practice while ruling out coincidence.
+    ///
+    /// **Known limitation, deliberately left for later** (jensyleo's own call,
+    /// 2026-08-06: "después miramos cómo lo podríamos mejorar"): this counts
+    /// FILES, treating every file as equally telling, which a smarter rule
+    /// wouldn't. An archive holding a game's two tiny shared PALs plus one
+    /// huge stranger is 2/3 = 67% and would qualify, while a nearly-complete
+    /// set that also picked up a dozen junk files could fall under the bar.
+    /// Weighing by bytes, or by the fraction of the GAME's roms accounted for
+    /// (rather than of the archive's files), would both be more honest — but
+    /// each has its own edge cases and neither is needed for the case at hand.
+    private static func meetsMisnamedThreshold(matching matchingFileCount: Int, outOf totalFileCount: Int) -> Bool {
+        guard totalFileCount > 0 else { return false }
+        // 60%, integer-only so there's no floating-point boundary fuzz:
+        // matching/total >= 3/5  ⇔  matching * 5 >= total * 3
+        return matchingFileCount * 5 >= totalFileCount * 3
+    }
+
+    /// Fills in `SurplusFile.misnamedArchiveForGameName` — see that field's
+    /// own doc comment for jensyleo's criterion and the reasoning behind both
+    /// of its halves, and `meetsMisnamedThreshold` for why the bar is 60%.
+    ///
+    /// Runs per archive rather than per file, because "at least half of this
+    /// archive's files belong to one game" is inherently an archive-level
+    /// question that the per-file pass above cannot answer on its own.
+    private static func annotateMisnamedArchives(
+        _ surplusFiles: inout [SurplusFile],
+        hashedFiles: [HashedFile],
+        owningGameByIndex: [Int: DATGame],
+        unclaimedIndices: [Int],
+        allGameNames: Set<String>,
+        claimedArchiveURLsByGame: [String: Set<URL>]
+    ) {
+        // Only archives whose own base name matches NO DAT machine are
+        // candidates: a correctly-named archive is never "misnamed", and one
+        // named after a *different* real machine is a different problem
+        // entirely (it's that machine's archive, holding wrong content) —
+        // never silently re-attributed to whichever game its contents match.
+        var positionsByArchive: [URL: [Int]] = [:]
+        for (position, index) in unclaimedIndices.enumerated() {
+            let file = hashedFiles[index].file
+            guard file.url.lastPathComponent != file.name else { continue } // a loose file has no archive
+            let base = file.url.deletingPathExtension().lastPathComponent.lowercased()
+            guard !allGameNames.contains(base) else { continue }
+            positionsByArchive[file.url, default: []].append(position)
+        }
+
+        for (_, positions) in positionsByArchive {
+            var fileCountByGameName: [String: Int] = [:]
+            var gamesByLowercasedName: [String: DATGame] = [:]
+            for position in positions {
+                guard let owner = owningGameByIndex[unclaimedIndices[position]] else { continue }
+                let key = owner.name.lowercased()
+                fileCountByGameName[key, default: 0] += 1
+                gamesByLowercasedName[key] = owner
+            }
+            // Written as a filter, not `max(by:)`, precisely because at this
+            // threshold AT MOST ONE game can ever qualify — two games would
+            // need 120% of one archive between them. So there is no tie to
+            // break, and no arbitrary winner to pick: expressing it this way
+            // makes that invariant visible in the code instead of hiding it
+            // behind `max`'s undefined tie-breaking.
+            let qualifying = fileCountByGameName.filter { _, matchingFileCount in
+                meetsMisnamedThreshold(matching: matchingFileCount, outOf: positions.count)
+            }
+            guard qualifying.count == 1, let (topGameName, _) = qualifying.first,
+                  let topGame = gamesByLowercasedName[topGameName],
+                  // ...and that game owns no archive of its own anywhere in
+                  // the scan, or this really is just a spare copy.
+                  (claimedArchiveURLsByGame[topGameName] ?? []).isEmpty
+            else { continue }
+            for position in positions {
+                let existing = surplusFiles[position]
+                surplusFiles[position] = SurplusFile(
+                    file: existing.file,
+                    requiredByGameDescription: existing.requiredByGameDescription,
+                    matchesNodumpRomName: existing.matchesNodumpRomName,
+                    isInKnownArchive: existing.isInKnownArchive,
+                    misnamedArchiveForGameName: topGame.name
+                )
+            }
+        }
     }
 
     /// One game's roms, each paired with its scoped candidate file indices
@@ -731,7 +840,11 @@ public enum ROMMatcher {
     /// path duplicate is no longer silently swallowed as if it were the
     /// game's own archive; it correctly reports "Not needed here (required
     /// by …)" instead.
-    private static func requiredByGameDescription(for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame], claimedArchiveURLsByGame: [String: Set<URL>]) -> String? {
+    /// Returns the whole `DATGame` (not just its description) so callers can
+    /// also read its machine name — needed to tell a user the correct
+    /// filename for a misnamed archive (see
+    /// `SurplusFile.misnamedArchiveForGameName`).
+    private static func requiredByGame(for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame], claimedArchiveURLsByGame: [String: Set<URL>]) -> DATGame? {
         let fileHashes = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
         let isArchiveEntry = file.file.url.lastPathComponent != file.file.name
         if isArchiveEntry {
@@ -753,7 +866,7 @@ public enum ROMMatcher {
             }
         }
         for key in fileHashes {
-            if let game = romsByHash[key] { return game.description }
+            if let game = romsByHash[key] { return game }
         }
         return nil
     }

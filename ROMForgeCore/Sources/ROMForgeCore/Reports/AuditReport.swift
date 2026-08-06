@@ -192,6 +192,12 @@ public struct AuditEntry: Equatable, Sendable {
     /// the DAT at all, and for every rom/disk entry that has a real
     /// expected `game` of its own.
     public let requiredByGameDescription: String?
+    /// The DAT machine name this entry's containing archive really belongs to
+    /// when that archive is a whole game's set under the wrong filename — see
+    /// `SurplusFile.misnamedArchiveForGameName` for jensyleo's own ≥50%
+    /// criterion. Lets a UI say "rename this to `1943.zip`" rather than
+    /// mislabelling the archive a duplicate.
+    public let misnamedArchiveForGameName: String?
     public let name: String
     public let path: URL?
     public let expectedSize: Int64?
@@ -224,6 +230,7 @@ public struct AuditEntry: Equatable, Sendable {
         isDisk: Bool = false,
         foundElsewhereArchiveName: String? = nil,
         requiredByGameDescription: String? = nil,
+        misnamedArchiveForGameName: String? = nil,
         name: String,
         path: URL?,
         expectedSize: Int64? = nil,
@@ -255,6 +262,7 @@ public struct AuditEntry: Equatable, Sendable {
         self.isDisk = isDisk
         self.foundElsewhereArchiveName = foundElsewhereArchiveName
         self.requiredByGameDescription = requiredByGameDescription
+        self.misnamedArchiveForGameName = misnamedArchiveForGameName
         self.name = name
         self.path = path
         self.expectedSize = expectedSize
