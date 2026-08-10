@@ -88,14 +88,46 @@ struct ROMMatcherTests {
         // must not be treated as correct. jensyleo's own definition
         // (2026-08-04): a file genuinely sitting in this rom's own slot
         // (same name) with the wrong content is `.hashMismatch` ("Bad"),
-        // distinct from `.missing` (nothing there at all). Left unconsumed
-        // (same as `.foundElsewhere`), so it still shows up as surplus too.
+        // distinct from `.missing` (nothing there at all).
+        //
+        // Left unconsumed in `consumed[]` (so a coincidental hash match by
+        // some OTHER rom can still claim it normally), but must NOT also
+        // reappear a second time in `surplusFiles` — real bug found live by
+        // jensyleo (2026-08-10, TESTING.md §9.2 scenario #8: corrupting one
+        // real rom's byte in its own archive): the same physical file showed
+        // up twice, once correctly as orange "Bad (hash mismatch)" and once
+        // as a confusing, duplicate gray "Unrecognized" ghost row for the
+        // exact same bytes. A corrupted file's real hash matches nothing
+        // valid by definition, so in the overwhelmingly common case nothing
+        // else will ever legitimately claim it either — reporting it via
+        // `.hashMismatch` already fully explains it.
         let local = hashedFile(name: "correct.bin", size: 100, crc: "ffffffff", sha1: "9999999999999999999999999999999999999999")
         let report = try ROMMatcher.match(dat: dat, hashedFiles: [local])
 
         let result = report.games.first { $0.game.name == "Correct Game" }!
         #expect(result.matches[0].status == .hashMismatch(local))
-        #expect(report.surplusFiles == [SurplusFile(file: local)])
+        #expect(report.surplusFiles.isEmpty, "a hashMismatch file must never also appear as a surplus ghost row")
+    }
+
+    @Test("a hashMismatch file is still free to be claimed by a DIFFERENT rom it coincidentally, genuinely hash-matches")
+    func hashMismatchFileStaysClaimableByAnotherRom() throws {
+        // The exact case `hashMismatch`'s own "never consumed" design exists
+        // for, still confirmed after the 2026-08-10 fix above: NOT tracking
+        // this in `consumed[]` (only excluding it from the surplus list)
+        // means a second rom whose own real, declared hash genuinely matches
+        // this same file can still claim it normally.
+        let elsewhereRom = DATRom(name: "elsewhere.bin", size: 100, crc: "ffffffff", md5: nil, sha1: "9999999999999999999999999999999999999999")
+        let elsewhereGame = DATGame(name: "Elsewhere Game", description: "Elsewhere Game", cloneOf: nil, romOf: nil, roms: [elsewhereRom])
+        let twoGameDAT = DATFile(header: dat.header, games: dat.games + [elsewhereGame])
+        let local = hashedFile(name: "correct.bin", size: 100, crc: "ffffffff", sha1: "9999999999999999999999999999999999999999")
+
+        let report = try ROMMatcher.match(dat: twoGameDAT, hashedFiles: [local])
+
+        let misnamed = report.games.first { $0.game.name == "Correct Game" }!
+        #expect(misnamed.matches[0].status == .hashMismatch(local))
+        let claimed = report.games.first { $0.game.name == "Elsewhere Game" }!
+        #expect(claimed.matches[0].status == .misnamed(local))
+        #expect(report.surplusFiles.isEmpty)
     }
 
     @Test("a hash the DAT declares but the scan didn't compute (HashAlgorithms skipped it) doesn't reject an otherwise-correct match")

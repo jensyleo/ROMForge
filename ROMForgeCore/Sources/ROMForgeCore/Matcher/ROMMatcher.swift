@@ -156,6 +156,23 @@ public enum ROMMatcher {
         // pass is only array indexing and enum comparisons, not string
         // work, so it stays fast even at MAME's full scale.
         var consumed = [Bool](repeating: false, count: hashedFiles.count)
+        // Every file index already reported as `.hashMismatch` for some
+        // rom's own expected slot — deliberately NOT folded into `consumed`
+        // itself (see `.hashMismatch`'s own comment just below for why: if
+        // this exact file coincidentally hash-matches some *other* rom, that
+        // rom must still be free to claim it normally). But a corrupted
+        // file's real hash matches nothing valid by definition, so in the
+        // overwhelmingly common case nothing ever does claim it — and
+        // without this, it silently reappeared a second time in the surplus
+        // computation below as a ghost, confusingly labeled gray
+        // "Unrecognized" right next to its own correct orange "Bad (hash
+        // mismatch)" row. Real bug found live by jensyleo (2026-08-10,
+        // TESTING.md §9.2 scenario #8: corrupting one byte of a real rom).
+        // `.foundElsewhere` is deliberately NOT tracked here — that file IS
+        // legitimately, correctly a real duplicate rom sitting elsewhere, so
+        // surfacing it in the surplus list with its own accurate
+        // `requiredByGameDescription` is correct information, not a ghost.
+        var reportedAsHashMismatch = Set<Int>()
         // Every archive URL a game's own roms actually got claimed from —
         // real bug found live by jensyleo (2026-08-05): `requiredByGameDescription`
         // below used to decide "is this surplus file secretly this game's
@@ -315,6 +332,7 @@ public enum ROMMatcher {
                     // hash-match some *other* rom, that rom still claims it
                     // normally via the ordinary path above.
                     resolvedStatuses[index] = .hashMismatch(hashedFiles[nameMatchIndex])
+                    reportedAsHashMismatch.insert(nameMatchIndex)
                 } else if let elsewhereIndex = candidate.hashVerifiedCandidates.first(where: { index in
                     guard matches(hashedFiles[index], rom) else { return false }
                     // Either this game genuinely exists on disk (so a rom of
@@ -397,7 +415,8 @@ public enum ROMMatcher {
         // gray "Unrecognized" would be indistinguishable from genuine junk.
         let nodumpRomNames = Set(dat.games.lazy.flatMap(\.roms).filter { $0.status == .nodump }.map { $0.name.lowercased() })
         var owningGameByIndex: [Int: DATGame] = [:]
-        var surplusFiles = hashedFiles.indices.filter { !consumed[$0] }.map { index -> SurplusFile in
+        let unclaimedForSurplus = hashedFiles.indices.filter { !consumed[$0] && !reportedAsHashMismatch.contains($0) }
+        var surplusFiles = unclaimedForSurplus.map { index -> SurplusFile in
             let file = hashedFiles[index]
             let owner = requiredByGame(for: file, gamesByName: gamesByName, romsByHash: romsByHash, claimedArchiveURLsByGame: claimedArchiveURLsByGame)
             if let owner { owningGameByIndex[index] = owner }
@@ -419,7 +438,7 @@ public enum ROMMatcher {
         }
         annotateMisnamedArchives(
             &surplusFiles, hashedFiles: hashedFiles, owningGameByIndex: owningGameByIndex,
-            unclaimedIndices: hashedFiles.indices.filter { !consumed[$0] },
+            unclaimedIndices: unclaimedForSurplus,
             allGameNames: allGameNames, claimedArchiveURLsByGame: claimedArchiveURLsByGame
         )
         return MatchReport(games: gameResults, surplusFiles: surplusFiles)
