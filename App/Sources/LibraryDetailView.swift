@@ -416,6 +416,16 @@ struct LibraryDetailView: View {
     /// clone-less system (e.g. NEOGEO) without needing its own DAT access.
     var onDATAnalyzed: ((Bool) -> Void)?
 
+    /// Drives the selected "Rom files" folder row's highlight color —
+    /// jensyleo's own request (2026-08-11): a selected folder only ever
+    /// showed bold text, unlike a selected row in the Games/roms tables to
+    /// the right (a real filled background). `.active` (this window is key)
+    /// tints the row with the system accent color, same as a native
+    /// `List`/`NSTableView` selection; `.inactive` (app/window not focused)
+    /// dims it to gray — matching that same native behavior, where a
+    /// selection stays visible but unobtrusive once focus moves elsewhere.
+    @Environment(\.controlActiveState) private var controlActiveState
+
     @State private var viewModel = LibraryViewModel()
     @State private var selectedGameID: String?
     @State private var selectedRomID: String?
@@ -1195,6 +1205,17 @@ struct LibraryDetailView: View {
                         }
                         .buttonStyle(.plain)
                         .help(url.path)
+                        // A real selection background, not just bold text —
+                        // see `controlActiveState`'s own doc comment for why
+                        // this is blue when the window is key and gray
+                        // otherwise, matching native List/NSTableView
+                        // selection rather than a static color.
+                        .listRowBackground(
+                            selectedRomFolder == url
+                                ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
+                                : Color.clear
+                        )
+                        .foregroundStyle(selectedRomFolder == url && controlActiveState != .inactive ? Color.white : Color.primary)
                         .contextMenu {
                             Button("Remove Folder", role: .destructive) {
                                 removeRomFolder(url)
@@ -1210,7 +1231,15 @@ struct LibraryDetailView: View {
                     .foregroundStyle(.secondary)
                 }
             } header: {
-                sectionHeaderButton(title: "Rom files", systemImage: "externaldrive.fill", isExpanded: $isRomFilesSectionExpanded)
+                // jensyleo's own wording call (2026-08-11): "Rom files" →
+                // "ROM folder" — this section lists actual folders on disk,
+                // not a list of individual files. Only the user-visible
+                // label changed here; every internal comment/identifier
+                // elsewhere in this file still says "Rom files" (the
+                // section's own long-standing internal name), deliberately
+                // left alone to avoid a purely cosmetic rename touching
+                // dozens of unrelated lines.
+                sectionHeaderButton(title: "ROM folder", systemImage: "externaldrive.fill", isExpanded: $isRomFilesSectionExpanded)
             }
         }
         .listStyle(.sidebar)
