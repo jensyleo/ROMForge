@@ -544,14 +544,18 @@ struct LibraryDetailView: View {
     /// clicks queued that same expensive work multiple times back to
     /// back, each one blocking the next click's hit-testing until it
     /// finished. Cancelling any still-pending recompute before starting a
-    /// new one means only the *last* folder actually selected pays that
-    /// cost, instead of every intermediate one along the way.
+    /// new one means only the *last* selection actually made pays that
+    /// cost, instead of every intermediate one along the way. Shared by
+    /// both a "Rom files" folder click and a "Database" category click
+    /// (added 2026-08-11) — see `triggerCachedGameDataRecompute()`'s own
+    /// doc comment for why one shared task/counter pair is correct for
+    /// both rather than each needing its own.
     @State private var pendingFolderRecompute: Task<Void, Never>?
-    /// Monotonic counter, bumped once per `selectedRomFolder` change —
-    /// jensyleo's own report (2026-08-03): once the recompute in
+    /// Monotonic counter, bumped once per `triggerCachedGameDataRecompute()`
+    /// call — jensyleo's own report (2026-08-03): once the recompute in
     /// `pendingFolderRecompute` genuinely runs on a background thread
-    /// (`Task.detached`, see that `.onChange`'s own doc comment), two
-    /// clicks in quick succession can race for real, and `Task.isCancelled`
+    /// (`Task.detached`, see that function's own doc comment), two clicks
+    /// in quick succession can race for real, and `Task.isCancelled`
     /// alone doesn't stop a slower, older background computation from
     /// finishing *after* a newer one and overwriting its correct result —
     /// cancellation only marks a flag, it doesn't halt in-flight work.
@@ -751,69 +755,26 @@ struct LibraryDetailView: View {
         .onChange(of: selectedDatabaseFilter) {
             if selectedDatabaseFilter != nil { selectedRomFolder = nil }
             selectedGameID = nil; selectedRomID = nil
-            recomputeCachedGameDataSync()
+            // Real bug found live by jensyleo (2026-08-11): clicking a
+            // "Database" category (All games/Clones/Bios files/…) still
+            // called the SYNCHRONOUS `recomputeCachedGameDataSync()` here —
+            // the exact same class of main-thread-blocking freeze already
+            // fixed for "Rom files" folder clicks back on 2026-08-03 (see
+            // `triggerCachedGameDataRecompute()`'s own doc comment), just
+            // never applied to this sibling trigger. Blocking the main
+            // thread on a full MAME DAT's ~43,000 games doesn't just freeze
+            // the UI — a click landing *during* that block gets queued by
+            // AppKit rather than dropped, so it's delivered late once the
+            // block finally ends, reading as "the app didn't receive my
+            // click" or "I had to click twice" (jensyleo's own reports,
+            // same day). Switched to the same detached-with-generation-guard
+            // pattern the folder path already uses.
+            triggerCachedGameDataRecompute()
         }
         .onChange(of: selectedGameID) { selectedRomID = nil }
         .onChange(of: selectedRomFolder) {
             selectedGameID = nil; selectedRomID = nil
-            // A folder click on a large collection (a full MAME set can
-            // have 40,000+ games) does real, O(entries) work — jensyleo's
-            // own report (2026-08-03): the app visibly froze for a moment
-            // on every single click, even with the debounce below (which
-            // only ever stopped a *pileup* of stale recomputes from
-            // starting — Swift's cooperative cancellation can't preempt
-            // one that's already synchronously running on the main
-            // thread, so the *current* click's own work still blocked the
-            // UI for its whole duration). Every function this now calls
-            // (`Self.recomputeGamesInFolder`, `Self.computeBaseGameNodes`,
-            // `Self.computeGameNodes`, `Self.computeScopedStatusCounts`,
-            // `Self.computeUnknownArchivesCount`) is `static` and touches
-            // no `@State` directly — only plain value-type parameters —
-            // specifically so this heavy part can run on a background
-            // thread via `Task.detached`, with only the final assignment
-            // back on `@MainActor`.
-            pendingFolderRecompute?.cancel()
-            folderRecomputeGeneration += 1
-            let generation = folderRecomputeGeneration
-            let hasAuditReport = viewModel.auditReport != nil
-            let entries = viewModel.auditReport?.entries ?? []
-            let folder = selectedRomFolder
-            let preloadedGames = viewModel.preloadedGames
-            let databaseFilter = selectedDatabaseFilter
-            let aggStatus = gameAggregateStatusByName
-            let combine = combineRomAndCHD
-            let showUnknown = showUnknownArchives
-            let statusFilters = activeStatusFilters
-            pendingFolderRecompute = Task.detached(priority: .userInitiated) {
-                let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
-                let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
-                let baseNodes = Self.computeBaseGameNodes(
-                    hasAuditReport: hasAuditReport, auditEntries: entries,
-                    selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
-                    gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
-                )
-                let nodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters)
-                let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
-                let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
-                await MainActor.run {
-                    // Guards against out-of-order completion, not just
-                    // cancellation: once genuinely concurrent, a slower
-                    // background task for a folder the user already
-                    // clicked past could otherwise finish *after* the
-                    // newer one and stomp its correct, already-displayed
-                    // result — `Task.isCancelled` alone doesn't prevent
-                    // this (cancellation only marks a flag; it doesn't
-                    // stop already-in-flight work from completing). This
-                    // monotonic counter directly answers "is this still
-                    // the most recent click" at the one moment that
-                    // actually matters: right before the write.
-                    guard generation == folderRecomputeGeneration else { return }
-                    cachedGamesInFolder = gamesInFolder
-                    cachedGameNodes = nodes
-                    cachedScopedStatusCounts = counts
-                    cachedUnknownArchivesCount = unknownCount
-                }
-            }
+            triggerCachedGameDataRecompute()
         }
         .onChange(of: viewModel.auditReport) {
             // Computed first: `gameNodes(from:)` (inside
@@ -2306,15 +2267,93 @@ struct LibraryDetailView: View {
     }
 
     /// Synchronous convenience for the sites where the underlying scope
-    /// itself just changed (`selectedDatabaseFilter`, a fresh
-    /// `viewModel.auditReport`, first appearance) — recomputes everything
-    /// `recomputeGameNodes()` does, plus `cachedGamesInFolder`,
-    /// `cachedScopedStatusCounts`, and `cachedUnknownArchivesCount`. Kept
-    /// synchronous (unlike `selectedRomFolder`'s own `Task.detached` path)
-    /// since none of these three sites were the one jensyleo actually
-    /// reported freezing — see `.onChange(of: selectedRomFolder)`'s own
-    /// doc comment for why that one specifically needed to move off the
-    /// main thread.
+    /// itself just changed (a fresh `viewModel.auditReport`, first
+    /// appearance) — recomputes everything `recomputeGameNodes()` does,
+    /// plus `cachedGamesInFolder`, `cachedScopedStatusCounts`, and
+    /// `cachedUnknownArchivesCount`. Kept synchronous (unlike
+    /// `triggerCachedGameDataRecompute()`'s own `Task.detached` path) since
+    /// these two remaining sites (a scan just finished; the view just
+    /// appeared) each run once per real event, not once per user click —
+    /// jensyleo's own report (2026-08-11): a THIRD call site used to exist
+    /// here, `.onChange(of: selectedDatabaseFilter)`, which very much IS a
+    /// per-click trigger — moved to `triggerCachedGameDataRecompute()`
+    /// instead, the same fix `.onChange(of: selectedRomFolder)` already
+    /// had since 2026-08-03. This function's own doc comment used to claim
+    /// "none of these three sites were the one jensyleo actually reported
+    /// freezing" — true when written, but the Database-filter site was
+    /// exactly that once it got added later, and nobody revisited this
+    /// claim when it did.
+    /// The async, off-main-thread path for recomputing everything
+    /// `recomputeCachedGameDataSync()` does, guarded against out-of-order
+    /// completion by `folderRecomputeGeneration` — shared by both
+    /// `.onChange(of: selectedRomFolder)` and `.onChange(of:
+    /// selectedDatabaseFilter)` (added 2026-08-11; originally only the
+    /// former had it). `selectedRomFolder`/`selectedDatabaseFilter` are
+    /// mutually exclusive (selecting one always clears the other, just
+    /// above), so both triggers mean exactly the same thing here: "what's
+    /// currently displayed changed, recompute it" — one shared function,
+    /// one shared generation counter, rather than two independent copies
+    /// that could race each other.
+    ///
+    /// A large collection (a full MAME set can have 40,000+ games) makes
+    /// every function this calls (`Self.recomputeGamesInFolder`,
+    /// `Self.computeBaseGameNodes`, `Self.computeGameNodes`,
+    /// `Self.computeScopedStatusCounts`, `Self.computeUnknownArchivesCount`)
+    /// real, O(entries) work — jensyleo's own report (2026-08-03, for the
+    /// folder case only at the time): the app visibly froze for a moment on
+    /// every single click. Swift's cooperative cancellation can't preempt
+    /// work already running synchronously on the main thread, so merely
+    /// cancelling a stale in-flight request doesn't help the *current*
+    /// click — the fix has to be running this off the main thread in the
+    /// first place. Every function called here is `static` and touches no
+    /// `@State` directly (only plain value-type parameters), specifically
+    /// so it's safe to run inside `Task.detached`, with only the final
+    /// assignment back on `@MainActor`.
+    private func triggerCachedGameDataRecompute() {
+        pendingFolderRecompute?.cancel()
+        folderRecomputeGeneration += 1
+        let generation = folderRecomputeGeneration
+        let hasAuditReport = viewModel.auditReport != nil
+        let entries = viewModel.auditReport?.entries ?? []
+        let folder = selectedRomFolder
+        let preloadedGames = viewModel.preloadedGames
+        let databaseFilter = selectedDatabaseFilter
+        let aggStatus = gameAggregateStatusByName
+        let combine = combineRomAndCHD
+        let showUnknown = showUnknownArchives
+        let statusFilters = activeStatusFilters
+        pendingFolderRecompute = Task.detached(priority: .userInitiated) {
+            let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
+            let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
+            let baseNodes = Self.computeBaseGameNodes(
+                hasAuditReport: hasAuditReport, auditEntries: entries,
+                selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
+                gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
+            )
+            let nodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters)
+            let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
+            let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
+            await MainActor.run {
+                // Guards against out-of-order completion, not just
+                // cancellation: once genuinely concurrent, a slower
+                // background task for a click the user already clicked
+                // past could otherwise finish *after* the newer one and
+                // stomp its correct, already-displayed result —
+                // `Task.isCancelled` alone doesn't prevent this
+                // (cancellation only marks a flag; it doesn't stop
+                // already-in-flight work from completing). This monotonic
+                // counter directly answers "is this still the most recent
+                // click" at the one moment that actually matters: right
+                // before the write.
+                guard generation == folderRecomputeGeneration else { return }
+                cachedGamesInFolder = gamesInFolder
+                cachedGameNodes = nodes
+                cachedScopedStatusCounts = counts
+                cachedUnknownArchivesCount = unknownCount
+            }
+        }
+    }
+
     private func recomputeCachedGameDataSync() {
         cachedGamesInFolder = Self.recomputeGamesInFolder(entries: viewModel.auditReport?.entries ?? [], selectedFolder: selectedRomFolder)
         let baseNodes = Self.computeBaseGameNodes(
