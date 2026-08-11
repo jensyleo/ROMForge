@@ -638,42 +638,47 @@ struct LibraryDetailView: View {
                     .foregroundStyle(.secondary)
             }
             Divider()
-            if viewModel.isLoadingDAT {
-                // Real, reported confusion: switching between two DATs for
-                // the same system (e.g. comparing an older MAME version's
-                // results) could take a real while, and until now the
-                // *entire previous* Games/Database view stayed fully
-                // visible and interactive underneath the small loading
-                // card the whole time — reading as if it were still
-                // current/live data, not a stale snapshot about to be
-                // replaced. Blanked outright instead: nothing here is
-                // trustworthy again until the new DAT actually finishes
-                // loading.
-                loadingDATPlaceholder
-            } else {
-                statusSummary
-                Divider()
-                // `AutosavingSplitView` (a thin `NSSplitView` wrapper — see its
-                // own doc comment for the real story) instead of SwiftUI's
-                // `VSplitView`/`HSplitView`: both give a draggable divider for
-                // free, but neither remembers where the user leaves it across
-                // launches.
-                AutosavingSplitView(axis: .stacked, autosaveName: "ROMForge.mainRowsSplit", panes: [
-                    SplitPane(minLength: 160) {
-                        AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.databaseGamesRomsSplit", panes: [
-                            SplitPane(minLength: 150) { databaseList },
-                            SplitPane(minLength: 220) { gamesList },
-                            SplitPane(minLength: 260) { romsList },
-                        ])
-                    },
-                    SplitPane(minLength: 90) {
-                        AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.detailLogSplit", panes: [
-                            SplitPane(minLength: 260) { detailPane },
-                            SplitPane(minLength: 220) { logPane },
-                        ])
-                    },
-                ])
-            }
+            // jensyleo's own report (2026-08-11): "la imagen de fondo
+            // desaparece durante el Rescan" — a rescan that needed to
+            // reload the DAT (e.g. right after changing Rom merge mode)
+            // blanked this ENTIRE area to a bare loading card, hiding
+            // whatever the user was just looking at. That blanking was a
+            // deliberate fix for a different, narrower case (switching
+            // between two genuinely different DATs for the same system,
+            // e.g. comparing MAME versions — see `header`'s own doc
+            // comment, which still applies: the DAT name/version there
+            // still reads "Loading…" rather than the stale previous one).
+            // jensyleo's own call once shown both options: never blank this
+            // area at all — keep whatever was already visible up, with
+            // `scanProgressOverlay` (below) on top, exactly like every
+            // other busy state already works (folder/category clicks,
+            // scanning, matching). `scanProgressOverlay` already has its
+            // own `isLoadingDAT` branch with the identical progress UI
+            // `loadingDATPlaceholder` used to duplicate, so nothing about
+            // the loading feedback itself was lost — only the full-screen
+            // wipe.
+            statusSummary
+            Divider()
+            // `AutosavingSplitView` (a thin `NSSplitView` wrapper — see its
+            // own doc comment for the real story) instead of SwiftUI's
+            // `VSplitView`/`HSplitView`: both give a draggable divider for
+            // free, but neither remembers where the user leaves it across
+            // launches.
+            AutosavingSplitView(axis: .stacked, autosaveName: "ROMForge.mainRowsSplit", panes: [
+                SplitPane(minLength: 160) {
+                    AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.databaseGamesRomsSplit", panes: [
+                        SplitPane(minLength: 150) { databaseList },
+                        SplitPane(minLength: 220) { gamesList },
+                        SplitPane(minLength: 260) { romsList },
+                    ])
+                },
+                SplitPane(minLength: 90) {
+                    AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.detailLogSplit", panes: [
+                        SplitPane(minLength: 260) { detailPane },
+                        SplitPane(minLength: 220) { logPane },
+                    ])
+                },
+            ])
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
                     .font(.callout)
@@ -728,11 +733,13 @@ struct LibraryDetailView: View {
             }
         }
         .overlay {
-            // While a DAT is loading, `loadingDATPlaceholder` already
-            // replaces the whole content area (with its own progress UI
-            // and Cancel button) — showing this floating card on top too
-            // would just duplicate it.
-            if viewModel.isBusy, !viewModel.isLoadingDAT {
+            // Covers `isLoadingDAT` too now (2026-08-11) — `scanProgressOverlay`
+            // already has its own DAT-loading branch with the same progress
+            // UI `loadingDATPlaceholder` used to duplicate; see `body`'s own
+            // doc comment above (right before `statusSummary`) for why the
+            // full-screen blank this used to avoid double-showing with is
+            // gone entirely now, not just narrowed.
+            if viewModel.isBusy {
                 scanProgressOverlay
             }
         }
@@ -828,46 +835,6 @@ struct LibraryDetailView: View {
             UserDefaults.standard.removeObject(forKey: Self.gameColumnCustomizationKey)
             UserDefaults.standard.removeObject(forKey: Self.romColumnCustomizationKey)
         }
-    }
-
-    /// Replaces the entire Database/Games/detail area while a DAT is
-    /// loading — see `body`'s own comment for why: the small floating
-    /// `scanProgressOverlay` card alone left the *previous* DAT's full
-    /// results fully visible and interactive underneath it, which read as
-    /// current when it wasn't. This is the primary content in that state,
-    /// not an overlay on top of stale data.
-    private var loadingDATPlaceholder: some View {
-        VStack(spacing: 12) {
-            Spacer()
-            if let dat = viewModel.datLoadProgress, dat.total > 0 {
-                ProgressView(value: Double(dat.parsed), total: Double(dat.total))
-                    .frame(width: 280)
-                Text("Loading DAT… \(dat.parsed) of \(dat.total) machines")
-                    .foregroundStyle(.secondary)
-            } else if let fileRead = viewModel.datFileReadProgress, fileRead.total > 0 {
-                ProgressView(value: Double(fileRead.read), total: Double(fileRead.total))
-                    .frame(width: 280)
-                Text("Reading DAT file… \(Self.formattedBytes(fileRead.read)) of \(Self.formattedBytes(fileRead.total))")
-                    .foregroundStyle(.secondary)
-            } else if viewModel.isCountingDATMachines {
-                if let counting = viewModel.datCountingProgress, counting.total > 0 {
-                    ProgressView(value: Double(counting.scanned), total: Double(counting.total))
-                        .frame(width: 280)
-                } else {
-                    ProgressView()
-                }
-                Text("Counting machines…")
-                    .foregroundStyle(.secondary)
-            } else {
-                ProgressView()
-                Text("Loading DAT…")
-                    .foregroundStyle(.secondary)
-            }
-            Button("Cancel") { viewModel.cancelCurrentOperation() }
-                .font(.caption)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var header: some View {
