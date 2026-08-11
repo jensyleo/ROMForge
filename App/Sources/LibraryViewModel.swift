@@ -170,6 +170,48 @@ final class LibraryViewModel {
     /// change.
     private static var sharedDATCache: [UUID: (key: DATCacheKey, file: DATFile)] = [:]
 
+    /// A DAT file's identity for the purpose of deciding whether a cached
+    /// *raw parse* (`ParsedDAT`, mode-independent) still applies — its own
+    /// (size, mtime), deliberately WITHOUT `mergeMode`/`biosMergeMode` at
+    /// all, unlike `DATCacheKey` above. That's the entire point: the same
+    /// parse serves every mode.
+    private struct RawDATIdentity: Equatable {
+        let url: URL
+        let sourceSize: Int64
+        let sourceModificationDate: Date
+    }
+
+    /// Shared across every `LibraryViewModel` instance, keyed by system,
+    /// same rationale as `sharedDATCache` just above (survives a
+    /// `LibraryDetailView.id(system.id)` teardown/recreation) — but this one
+    /// caches the (slow) raw *parse* independently of Rom/Bios merge mode,
+    /// rather than the (fast, mode-dependent) final `DATFile` derived from
+    /// it.
+    ///
+    /// jensyleo's own request (2026-08-11), after reporting that switching
+    /// Rom/Bios merge mode mid-session re-triggered the full, slow DAT
+    /// reload: measured separately against a real MAME 0.288 dump (50,097
+    /// machines) — the raw XML parse alone takes ~9.4s, while re-deriving a
+    /// `DATFile` from an already-parsed dataset under a different mode
+    /// takes ~0.2-0.9s (see `ParsedDAT`/`DATLoader.build(from:mergeMode:biosMergeMode:)`'s
+    /// own doc comments in Core for the full reasoning and numbers). Before
+    /// this cache existed, `DATFileCache` (the on-disk cache of the final,
+    /// mode-baked `DATFile`) was the ONLY cache in the whole chain, and it's
+    /// keyed by mode too — so changing mode was a guaranteed miss there AND
+    /// nowhere else remembered the expensive part (the parse) independently
+    /// of it, forcing a full ~9.4s re-parse for a file that hadn't changed
+    /// by a single byte. This cache is what lets `loadDAT` skip straight to
+    /// the cheap derivation step instead.
+    ///
+    /// `Optional` `ParsedDAT` at the call site (not stored) rather than a
+    /// non-optional value here: `loadDAT` only returns a fresh one to store
+    /// when it genuinely had to parse — a `DATFileCache` (final-`DATFile`)
+    /// hit skips parsing entirely and has no raw dataset to offer, so this
+    /// dictionary simply keeps whatever it already had (possibly nothing
+    /// yet, until the first real parse this session) rather than being
+    /// overwritten with nothing.
+    private static var sharedRawDatasetCache: [UUID: (identity: RawDATIdentity, parsed: ParsedDAT)] = [:]
+
     /// Backs the in-memory cache above with a disk-persisted one
     /// (`DATFileCache`) — the in-memory cache only lives for as long as this
     /// `LibraryViewModel` does, so it's already empty again on every fresh
@@ -178,29 +220,53 @@ final class LibraryViewModel {
     /// though nothing about it changed. Runs off the main actor (called
     /// from inside a `Task.detached`), so it only touches `FileManager`/
     /// `DATFileCache`, never `self`.
+    /// `reusableParsed` is the caller's own `sharedRawDatasetCache` entry
+    /// for this system, passed in (rather than read from the `static var`
+    /// directly here) so every touch of that dictionary stays on the main
+    /// actor — this function itself runs detached, and reading/writing a
+    /// plain `static var` from a genuinely concurrent context is exactly
+    /// the kind of data race Swift's strict concurrency checking exists to
+    /// catch. Returning the freshly-parsed `ParsedDAT` (when one had to
+    /// happen at all — see `sharedRawDatasetCache`'s own doc comment for
+    /// when it doesn't) lets the caller store it back the same safe way.
     private nonisolated static func loadDAT(
         datURL: URL,
         mergeMode: SetMergeMode,
         biosMergeMode: SetMergeMode,
         diskCacheURL: URL,
+        reusableParsed: (identity: RawDATIdentity, parsed: ParsedDAT)?,
         onFileReadProgress: @escaping @Sendable (Int64, Int64) -> Void,
         onCountingStarted: @escaping @Sendable () -> Void,
         onCountingProgress: @escaping @Sendable (Int, Int) -> Void,
         onProgress: @escaping @Sendable (Int, Int) -> Void
-    ) throws -> DATFile {
+    ) throws -> (dat: DATFile, freshlyParsed: ParsedDAT?, identity: RawDATIdentity) {
         let attributes = try FileManager.default.attributesOfItem(atPath: datURL.path)
         let sourceSize = (attributes[.size] as? Int64) ?? Int64((attributes[.size] as? Int) ?? 0)
         let sourceModificationDate = (attributes[.modificationDate] as? Date) ?? Date.distantPast
+        let identity = RawDATIdentity(url: datURL, sourceSize: sourceSize, sourceModificationDate: sourceModificationDate)
+        // Fastest path: the final, mode-baked `DATFile` itself is still
+        // valid — nothing to parse OR derive at all.
         if let cached = try? DATFileCache.load(contentsOf: diskCacheURL),
            cached.isValid(sourceSize: sourceSize, sourceModificationDate: sourceModificationDate, mergeMode: mergeMode, biosMergeMode: biosMergeMode) {
-            return cached.dat
+            return (cached.dat, nil, identity)
         }
-        let dat = try DATLoader.load(
-            contentsOf: datURL, mergeMode: mergeMode, biosMergeMode: biosMergeMode,
+        // Second-fastest: the mode changed (or this is the very first
+        // request this session for a mode not yet cached on disk), but the
+        // raw file itself is byte-identical to a parse already sitting in
+        // memory — skip straight to the cheap, mode-dependent derivation.
+        if let reusableParsed, reusableParsed.identity == identity {
+            let dat = try DATLoader.build(from: reusableParsed.parsed, mergeMode: mergeMode, biosMergeMode: biosMergeMode)
+            try? DATFileCache(sourceSize: sourceSize, sourceModificationDate: sourceModificationDate, mergeMode: mergeMode, biosMergeMode: biosMergeMode, dat: dat).save(to: diskCacheURL)
+            return (dat, nil, identity)
+        }
+        // Cold path: genuinely nothing to reuse — parse for real.
+        let parsed = try DATLoader.parse(
+            contentsOf: datURL,
             onFileReadProgress: onFileReadProgress, onCountingStarted: onCountingStarted, onCountingProgress: onCountingProgress, onProgress: onProgress
         )
+        let dat = try DATLoader.build(from: parsed, mergeMode: mergeMode, biosMergeMode: biosMergeMode)
         try? DATFileCache(sourceSize: sourceSize, sourceModificationDate: sourceModificationDate, mergeMode: mergeMode, biosMergeMode: biosMergeMode, dat: dat).save(to: diskCacheURL)
-        return dat
+        return (dat, parsed, identity)
     }
     /// The most recently loaded/scanned DAT — not `private` so the detail
     /// view can browse the DAT's own game catalog (`preloadedGames`) as
@@ -388,20 +454,28 @@ final class LibraryViewModel {
             }
         }
         let diskCacheURL = DATCacheLocation.url(for: system)
+        // Read on the main actor, passed into the detached task rather than
+        // read from inside it — see `loadDAT`'s own doc comment for why.
+        let reusableParsed = Self.sharedRawDatasetCache[system.id]
         do {
             let datLoadStart = Date()
             let detached = Task.detached(priority: .userInitiated) {
                 try Self.loadDAT(
                     datURL: datURL, mergeMode: mergeMode, biosMergeMode: biosMergeMode, diskCacheURL: diskCacheURL,
+                    reusableParsed: reusableParsed,
                     onFileReadProgress: fileReadProgressHandler, onCountingStarted: countingStartedHandler, onCountingProgress: countingProgressHandler, onProgress: datLoadProgressHandler
                 )
             }
             cancelDetachedWork = { detached.cancel() }
-            let dat = try await detached.value
+            let result = try await detached.value
+            let dat = result.dat
             cachedDATKey = key
             cachedDATFile = dat
             datHeader = dat.header
             Self.sharedDATCache[system.id] = (key, dat)
+            if let freshlyParsed = result.freshlyParsed {
+                Self.sharedRawDatasetCache[system.id] = (result.identity, freshlyParsed)
+            }
             isLoadingDAT = false
             datFileReadProgress = nil
             isCountingDATMachines = false
@@ -522,6 +596,10 @@ final class LibraryViewModel {
             let hashAlgorithms = HashAlgorithmSettings.current
             let cacheURL = ScanCacheLocation.url(for: system)
             let datDiskCacheURL = DATCacheLocation.url(for: system)
+            // Read on the main actor, passed into the detached task rather
+            // than read from inside it — see `loadDAT`'s own doc comment
+            // for why.
+            let reusableParsed = Self.sharedRawDatasetCache[system.id]
             let fileReadProgressHandler: @Sendable (Int64, Int64) -> Void = { [weak self] read, total in
                 Task { @MainActor in self?.datFileReadProgress = (read, total) }
             }
@@ -605,15 +683,21 @@ final class LibraryViewModel {
                 // entirely on a cache hit (`reusableDAT`), the whole point
                 // of caching it in the first place.
                 let dat: DATFile
+                var freshlyParsed: ParsedDAT?
+                var freshlyParsedIdentity: RawDATIdentity?
                 if let reusableDAT {
                     dat = reusableDAT
                     cachedDATLogHandler()
                 } else {
                     let datLoadStart = Date()
-                    dat = try Self.loadDAT(
+                    let result = try Self.loadDAT(
                         datURL: datURL, mergeMode: mergeMode, biosMergeMode: biosMergeMode, diskCacheURL: datDiskCacheURL,
+                        reusableParsed: reusableParsed,
                         onFileReadProgress: fileReadProgressHandler, onCountingStarted: countingStartedHandler, onCountingProgress: countingProgressHandler, onProgress: datLoadProgressHandler
                     )
+                    dat = result.dat
+                    freshlyParsed = result.freshlyParsed
+                    freshlyParsedIdentity = result.identity
                     datLoadLogHandler(Date().timeIntervalSince(datLoadStart))
                 }
                 let walkStart = Date()
@@ -661,10 +745,13 @@ final class LibraryViewModel {
                     let diskEntries = try DiskAuditor.audit(dat: dat, chdFiles: chdFiles)
                     auditReport = try AuditReporter.merging(diskEntries: diskEntries, into: auditReport)
                 }
-                return (dat.header, matchReport, auditReport, dat)
+                return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity)
             }
             cancelDetachedWork = { detached.cancel() }
-            let (header, report, audit, dat) = try await detached.value
+            let (header, report, audit, dat, freshlyParsed, freshlyParsedIdentity) = try await detached.value
+            if let freshlyParsed, let freshlyParsedIdentity {
+                Self.sharedRawDatasetCache[system.id] = (freshlyParsedIdentity, freshlyParsed)
+            }
 
             cachedDATKey = datCacheKey
             cachedDATFile = dat

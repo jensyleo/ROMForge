@@ -6,6 +6,23 @@
 
 import Foundation
 
+/// The result of `DATLoader.parse` — everything genuinely learned from the
+/// DAT's own bytes, BEFORE `mergeMode`/`biosMergeMode` get applied. Exists
+/// to let a caller cache the (slow) parse independently of the (fast)
+/// mode-dependent derivation — see `DATLoader.build(from:mergeMode:biosMergeMode:)`'s
+/// own doc comment for why that split exists and the measurements behind it.
+///
+/// Only the MAME `-listxml` case has a real, separate derivation step at
+/// all (`MAMESetLayoutPlanner`, driven by `mode`/`biosMode`) — a Logiqx/
+/// ClrMamePro XML or MAME software list DAT already IS one flat rom list
+/// per machine with no merge concept to apply, so `.build` returns those
+/// two cases back out untouched, at whatever mode was asked for.
+public enum ParsedDAT: Sendable {
+    case logiqx(DATFile)
+    case mame(MAMEDataset)
+    case softwareList(SoftwareListDataset)
+}
+
 /// Loads a DAT of any supported format into the generic `DATFile` model, so
 /// callers (the Matcher, Reports, Rebuilder, the app) never need to know or
 /// care which one it was. Tries Logiqx/ClrMamePro XML first (the more
@@ -66,7 +83,26 @@ public enum DATLoader {
         onCountingProgress: (@Sendable (Int, Int) -> Void)? = nil,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) throws -> DATFile {
-        try load(data: try readFile(at: url, onProgress: onFileReadProgress), mergeMode: mergeMode, biosMergeMode: biosMergeMode, onCountingStarted: onCountingStarted, onCountingProgress: onCountingProgress, onProgress: onProgress)
+        try build(
+            from: try parse(contentsOf: url, onFileReadProgress: onFileReadProgress, onCountingStarted: onCountingStarted, onCountingProgress: onCountingProgress, onProgress: onProgress),
+            mergeMode: mergeMode, biosMergeMode: biosMergeMode
+        )
+    }
+
+    /// The `contentsOf:` counterpart to `parse(data:...)` — reads the file
+    /// off disk (with the same chunked, progress-reporting read
+    /// `load(contentsOf:...)` always used) and parses it, without applying
+    /// any `mergeMode`/`biosMergeMode` yet. See `ParsedDAT`'s and
+    /// `build(from:mergeMode:biosMergeMode:)`'s own doc comments for why a
+    /// caller would want this split instead of just calling `load`.
+    public static func parse(
+        contentsOf url: URL,
+        onFileReadProgress: (@Sendable (Int64, Int64) -> Void)? = nil,
+        onCountingStarted: (@Sendable () -> Void)? = nil,
+        onCountingProgress: (@Sendable (Int, Int) -> Void)? = nil,
+        onProgress: (@Sendable (Int, Int) -> Void)? = nil
+    ) throws -> ParsedDAT {
+        try parse(data: try readFile(at: url, onProgress: onFileReadProgress), onCountingStarted: onCountingStarted, onCountingProgress: onCountingProgress, onProgress: onProgress)
     }
 
     /// A chunked read instead of a single blocking `Data(contentsOf:)` call
@@ -105,30 +141,53 @@ public enum DATLoader {
         onCountingProgress: (@Sendable (Int, Int) -> Void)? = nil,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) throws -> DATFile {
+        try build(
+            from: try parse(data: data, onCountingStarted: onCountingStarted, onCountingProgress: onCountingProgress, onProgress: onProgress),
+            mergeMode: mergeMode, biosMergeMode: biosMergeMode
+        )
+    }
+
+    /// Everything genuinely learned from the DAT's own bytes, with NO
+    /// `mergeMode`/`biosMergeMode` applied yet — see `ParsedDAT`'s own doc
+    /// comment for why this is worth having as its own step, and
+    /// `build(from:mergeMode:biosMergeMode:)`'s own doc comment for the
+    /// measurements that justify it.
+    ///
+    /// Split out of `load(data:mergeMode:biosMergeMode:...)` on 2026-08-11
+    /// (jensyleo's own request, after reporting that changing Rom/Bios merge
+    /// mode mid-session re-triggered the full, slow reload) — `load` itself
+    /// is now a thin `parse` + `build` wrapper, so every existing call site
+    /// and test keeps working completely unchanged; only a caller that
+    /// wants to cache the parse independently of the mode needs to call
+    /// these two separately.
+    public static func parse(
+        data: Data,
+        onCountingStarted: (@Sendable () -> Void)? = nil,
+        onCountingProgress: (@Sendable (Int, Int) -> Void)? = nil,
+        onProgress: (@Sendable (Int, Int) -> Void)? = nil
+    ) throws -> ParsedDAT {
         // A genuine cancellation must never fall into the "try the next
         // format" cascade below — real bug found live by jensyleo
         // (2026-08-04), the same class as `ROMMatcher`/`AuditReporter`
         // needing this fix downstream: without this explicit re-throw, a
-        // `CancellationError` from `datFile(from:mode:biosMode:)`'s own new
-        // check (deep inside the MAME branch) would be caught by `catch let
-        // mameError` below, misread as "this isn't a MAME DAT after all",
-        // and swallowed into a fallback attempt at `SoftwareListParser` —
-        // hiding the real cancellation behind an unrelated "unrecognized
-        // format" error instead of actually stopping.
+        // `CancellationError` from deep inside the MAME branch would be
+        // caught by `catch let mameError` below, misread as "this isn't a
+        // MAME DAT after all", and swallowed into a fallback attempt at
+        // `SoftwareListParser` — hiding the real cancellation behind an
+        // unrelated "unrecognized format" error instead of actually
+        // stopping.
         do {
-            return try LogiqxDATParser.parse(data: data)
+            return .logiqx(try LogiqxDATParser.parse(data: data))
         } catch is CancellationError {
             throw CancellationError()
         } catch let logiqxError {
             do {
-                let dataset = try MAMEListXMLParser.parse(data: data, onCountingStarted: onCountingStarted, onCountingProgress: onCountingProgress, onProgress: onProgress)
-                return try datFile(from: dataset, mode: mergeMode, biosMode: biosMergeMode)
+                return .mame(try MAMEListXMLParser.parse(data: data, onCountingStarted: onCountingStarted, onCountingProgress: onCountingProgress, onProgress: onProgress))
             } catch is CancellationError {
                 throw CancellationError()
             } catch let mameError {
                 do {
-                    let dataset = try SoftwareListParser.parse(data: data)
-                    return datFile(from: dataset)
+                    return .softwareList(try SoftwareListParser.parse(data: data))
                 } catch let softwareListError {
                     throw DATLoaderError.unrecognizedFormat(
                         logiqxError: String(describing: logiqxError),
@@ -137,6 +196,40 @@ public enum DATLoader {
                     )
                 }
             }
+        }
+    }
+
+    /// Applies `mergeMode`/`biosMergeMode` to an already-`parse`d DAT —
+    /// the ONLY step that actually depends on either setting.
+    ///
+    /// **Why this split exists, with real numbers behind it** (jensyleo's
+    /// own request, 2026-08-11, after reporting that changing Rom/Bios merge
+    /// mode re-triggered a full, slow DAT reload): timed separately against
+    /// a real MAME 0.288 dump (50,097 machines) —
+    ///
+    ///   raw XML parse (`parse`, above)          9.4s
+    ///   derivation only (this function, MAME)   0.17 – 0.92s  (mode-dependent)
+    ///   `load` end to end (both combined)        9.7 – 10.4s
+    ///
+    /// The parse is 90%+ of the total cost, and it does not depend on
+    /// `mergeMode`/`biosMergeMode` at all — those only affect this
+    /// derivation step, which is at least an order of magnitude cheaper. A
+    /// caller that keeps its own already-`parse`d `ParsedDAT` around (the
+    /// app's `LibraryViewModel` does, per-system, for exactly this reason)
+    /// can therefore let a user switch merge modes near-instantly instead of
+    /// paying the full parse again for a file that hasn't actually changed.
+    ///
+    /// A Logiqx/software-list DAT has no such step (already one flat rom
+    /// list per machine, mode-independent by construction) — returned as-is,
+    /// `mergeMode`/`biosMergeMode` simply don't apply to those two cases.
+    public static func build(from parsed: ParsedDAT, mergeMode: SetMergeMode = .split, biosMergeMode: SetMergeMode = .split) throws -> DATFile {
+        switch parsed {
+        case .logiqx(let dat):
+            return dat
+        case .mame(let dataset):
+            return try datFile(from: dataset, mode: mergeMode, biosMode: biosMergeMode)
+        case .softwareList(let dataset):
+            return datFile(from: dataset)
         }
     }
 

@@ -292,4 +292,97 @@ struct DATLoaderTests {
             try DATLoader.load(data: garbage)
         }
     }
+
+    // MARK: - parse/build split (2026-08-11)
+    //
+    // jensyleo's own request, after reporting that changing Rom/Bios merge
+    // mode mid-session re-triggered a full DAT reload: `load` used to do the
+    // (slow) parse and the (fast, mode-dependent) derivation in one
+    // inseparable step, so a caller wanting to cache the parse independently
+    // of the mode had no way to. These tests fix `parse(data:)` +
+    // `build(from:mergeMode:biosMergeMode:)` as the seam that split created.
+
+    @Test("parse(data:) then build(from:) produces the exact same result as load(data:), for every DAT format")
+    func parseAndBuildMatchLoadForEveryFormat() throws {
+        let logiqxXML = """
+        <?xml version="1.0"?>
+        <datafile>
+            <header><name>Test</name><description>Test</description><version>1.0</version><author>t</author></header>
+            <game name="Correct Game">
+                <description>Correct Game</description>
+                <rom name="correct.bin" size="7" crc="f45595a1"/>
+            </game>
+        </datafile>
+        """
+        let mameXML = """
+        <mame build="0.278">
+            <machine name="neogeo" isbios="yes">
+                <description>Neo-Geo</description>
+                <rom name="sp-s2.sp1" size="131072" crc="9036d879"/>
+            </machine>
+            <machine name="mslug" romof="neogeo">
+                <description>Metal Slug</description>
+                <rom name="038-p1.p1" size="524288" crc="1e174290"/>
+            </machine>
+        </mame>
+        """
+        for xml in [logiqxXML, mameXML] {
+            let data = Data(xml.utf8)
+            let viaLoad = try DATLoader.load(data: data, mergeMode: .merged, biosMergeMode: .merged)
+            let viaParseAndBuild = try DATLoader.build(from: try DATLoader.parse(data: data), mergeMode: .merged, biosMergeMode: .merged)
+            #expect(viaLoad.games.map(\.name) == viaParseAndBuild.games.map(\.name))
+            #expect(viaLoad.games.map { $0.roms.map(\.name) } == viaParseAndBuild.games.map { $0.roms.map(\.name) })
+        }
+    }
+
+    @Test("build(from:) called twice on the SAME parsed MAME dataset with different modes reflects each mode correctly — no re-parse needed")
+    func buildTwiceOnSameParsedDatasetReflectsEachMode() throws {
+        // The whole point of the split: `parse` runs once, `build` runs
+        // twice against the identical in-memory `ParsedDAT` — proving a
+        // cached parse genuinely can serve more than one mode correctly,
+        // which is what makes reusing it across a merge-mode change safe.
+        let xml = """
+        <mame build="0.278">
+            <machine name="neogeo" isbios="yes">
+                <description>Neo-Geo</description>
+                <rom name="sp-s2.sp1" size="131072" crc="9036d879"/>
+            </machine>
+            <machine name="mslug" romof="neogeo">
+                <description>Metal Slug</description>
+                <rom name="038-p1.p1" size="524288" crc="1e174290"/>
+            </machine>
+            <machine name="mslugx" cloneof="mslug" romof="mslug">
+                <description>Metal Slug X</description>
+                <rom name="x-p1.p1" size="524288" crc="deadbeef"/>
+            </machine>
+        </mame>
+        """
+        let parsed = try DATLoader.parse(data: Data(xml.utf8))
+
+        let split = try DATLoader.build(from: parsed, mergeMode: .split, biosMergeMode: .split)
+        #expect(split.games.map(\.name).sorted() == ["mslug", "mslugx", "neogeo"], "Split: every machine keeps its own top-level entry")
+
+        let merged = try DATLoader.build(from: parsed, mergeMode: .merged, biosMergeMode: .split)
+        #expect(merged.games.map(\.name).sorted() == ["mslug", "neogeo"], "Merged: the clone is folded into its parent, no separate entry")
+        let mergedParent = try #require(merged.games.first { $0.name == "mslug" })
+        #expect(mergedParent.roms.contains { $0.name.contains("x-p1.p1") }, "the clone's own unique rom must still be reachable, folded into the parent")
+    }
+
+    @Test("build(from:) returns a Logiqx or software-list DAT unchanged, regardless of mergeMode/biosMergeMode — those settings genuinely don't apply")
+    func buildIsAPureIdentityForFormatsWithNoMergeConcept() throws {
+        let logiqxXML = """
+        <?xml version="1.0"?>
+        <datafile>
+            <header><name>Test</name><description>Test</description><version>1.0</version><author>t</author></header>
+            <game name="Correct Game">
+                <description>Correct Game</description>
+                <rom name="correct.bin" size="7" crc="f45595a1"/>
+            </game>
+        </datafile>
+        """
+        let parsed = try DATLoader.parse(data: Data(logiqxXML.utf8))
+        let asSplit = try DATLoader.build(from: parsed, mergeMode: .split, biosMergeMode: .split)
+        let asMerged = try DATLoader.build(from: parsed, mergeMode: .merged, biosMergeMode: .merged)
+        #expect(asSplit == asMerged)
+    }
 }
