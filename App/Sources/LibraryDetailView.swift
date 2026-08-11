@@ -378,6 +378,13 @@ private struct DatabaseTreeNode: Identifiable {
     let machineName: String
     let label: String
     let status: AuditStatus?
+    /// The DAT's own `<manufacturer>` for this machine — jensyleo's own
+    /// request (2026-08-11), RomCenter-style: shown as trailing secondary
+    /// text on the leaf row itself, since this tree (unlike the Games
+    /// `Table` on the right) has no separate column concept at all. `nil`
+    /// for a catalog row with none declared, or for a category header /
+    /// truncation-notice row.
+    var manufacturer: String?
     var children: [DatabaseTreeNode]?
     /// True only for the synthetic "…and N more" row a category's own
     /// children get capped with (see `treeChildren(forCategory:)`) — a
@@ -1141,6 +1148,7 @@ struct LibraryDetailView: View {
             Section {
                 if isDatabaseSectionExpanded {
                     ForEach(DatabaseFilter.allCases) { filter in
+                        let isSelected = selectedDatabaseFilter == filter
                         DisclosureGroup(isExpanded: databaseCategoryExpansion(for: filter)) {
                             ForEach(databaseCategoryChildrenCache[filter] ?? []) { node in
                                 databaseTreeNodeRow(node, filter: filter)
@@ -1151,10 +1159,21 @@ struct LibraryDetailView: View {
                                 selectedRomFolder = nil
                             } label: {
                                 Label(filter.rawValue, systemImage: filter.symbolName)
-                                    .fontWeight(selectedDatabaseFilter == filter ? .semibold : .regular)
+                                    .fontWeight(isSelected ? .semibold : .regular)
                             }
                             .buttonStyle(.plain)
+                            .foregroundStyle(isSelected && controlActiveState != .inactive ? Color.white : Color.primary)
                         }
+                        // Same real-selection-background treatment as every
+                        // other row in this sidebar (leaf games, "Rom
+                        // folder" entries) — jensyleo's own request
+                        // (2026-08-11), for consistency across the whole
+                        // "Database" section, category headers included.
+                        .listRowBackground(
+                            isSelected
+                                ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
+                                : Color.clear
+                        )
                     }
                 }
             } header: {
@@ -2371,12 +2390,26 @@ struct LibraryDetailView: View {
     /// its entire `ForEach` from scratch) with tens of thousands of real
     /// rows (a full MAME DAT's "All games" is ~43,000 games) pegged one
     /// core at 100% for minutes, reading as a full app hang/crash. Capping
-    /// at a number SwiftUI can actually render instantly, with a plain
-    /// "…and N more" notice instead of the rest, is what keeps this
-    /// feature safe at MAME's real scale — the Games table (already
+    /// at a number SwiftUI can actually render without a visible stutter,
+    /// with a plain "…and N more" notice instead of the rest, is what keeps
+    /// this feature safe at MAME's real scale — the Games table (already
     /// scoped to the same category, already handles arbitrarily large
     /// counts) is still there for the full list.
-    private static let maxTreeChildrenPerCategory = 200
+    ///
+    /// Raised from 200 → 500 (jensyleo's own request, 2026-08-11, "liberar
+    /// la vista All"). Deliberately NOT removed outright, and raised
+    /// cautiously rather than to some large/unbounded number: the original
+    /// bug this cap fixed took *minutes* at ~43,000 rows, and this view's
+    /// per-row cost (icon + name + manufacturer + a Button) scales roughly
+    /// linearly with row count — a rough linear estimate from that same
+    /// data point puts even a few thousand rows back in "visibly slow"
+    /// territory, not the instant feel a disclosure expand should have.
+    /// 500 is a genuinely untested first step (this session's own GUI
+    /// automation proved unreliable for measuring it live), not a number
+    /// verified safe by profiling — **please tell me if expanding "All
+    /// games" at 500 still feels instant, or if it now stutters**, so this
+    /// gets tuned against real, felt performance instead of a guess.
+    private static let maxTreeChildrenPerCategory = 500
 
     private func treeChildren(forCategory filter: DatabaseFilter) -> [DatabaseTreeNode] {
         let nodes: [GameNode]
@@ -2476,7 +2509,16 @@ struct LibraryDetailView: View {
     }
 
     private func leafNode(for game: GameNode, children: [DatabaseTreeNode]? = nil) -> DatabaseTreeNode {
-        DatabaseTreeNode(id: game.id, machineName: game.name, label: game.gameName, status: game.aggregateStatus, children: children)
+        // Any entry carries the same game-level `gameManufacturer` (see
+        // `AuditReporter.generate`'s own doc comment: computed once per
+        // game, shared by every rom row it produces) — the first one found
+        // is enough. Falls back to `sourceGame.manufacturer` (the DAT's own
+        // catalog entry) for the unscanned-catalog case (`unscannedCatalogNodes`),
+        // whose `entries` is always empty by design (no scan has run yet to
+        // produce any) — without this, every game would show no
+        // manufacturer at all until the first scan.
+        let manufacturer = game.entries.first?.gameManufacturer ?? game.sourceGame?.manufacturer
+        return DatabaseTreeNode(id: game.id, machineName: game.name, label: game.gameName, status: game.aggregateStatus, manufacturer: manufacturer, children: children)
     }
 
     /// Expands/collapses a "Database" category in place — computing its
@@ -2545,7 +2587,11 @@ struct LibraryDetailView: View {
                 HStack(spacing: 4) {
                     // Always a real game here — `treeChildren(forCategory:)`
                     // excludes the synthetic "Unknown game" bucket before
-                    // building tree leaves at all.
+                    // building tree leaves at all. Its own explicit
+                    // `.foregroundStyle` always wins over the row's ambient
+                    // one set below, so the red/yellow/green status color
+                    // stays visible even while this row is selected and
+                    // tinted with the accent color.
                     if let status = liveStatus {
                         Image(systemName: symbolName(for: status)).foregroundStyle(tint(for: status))
                     } else {
@@ -2554,9 +2600,30 @@ struct LibraryDetailView: View {
                     Text(node.label)
                         .fontWeight(isSelected ? .semibold : .regular)
                         .lineLimit(1)
+                    // RomCenter-style manufacturer, trailing — jensyleo's
+                    // own request (2026-08-11). Secondary/muted so it never
+                    // competes with the game's own name for attention.
+                    if let manufacturer = node.manufacturer, !manufacturer.isEmpty {
+                        Text(manufacturer)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
             .buttonStyle(.plain)
+            // A real selection background, not just bold text — same
+            // pattern (and same reasoning) as the "ROM folder" section's
+            // own row highlight, see `controlActiveState`'s own doc
+            // comment: accent-tinted while this window is key, dimmed to
+            // gray once it isn't, matching native List/NSTableView
+            // selection instead of a static color.
+            .listRowBackground(
+                isSelected
+                    ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
+                    : Color.clear
+            )
+            .foregroundStyle(isSelected && controlActiveState != .inactive ? Color.white : Color.primary)
         }
     }
 
