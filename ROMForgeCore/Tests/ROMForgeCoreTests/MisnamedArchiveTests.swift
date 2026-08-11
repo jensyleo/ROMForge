@@ -74,14 +74,27 @@ struct MisnamedArchiveTests {
     func sharedRomsAloneNeverTripTheThreshold() throws {
         // The false positive that sank the earlier "≥2 matching roms"
         // version of this idea: unrelated boards genuinely share small
-        // hardware roms (CPS1 PALs, filler/padding). Here 2 of a 20-file
-        // archive match — real content, but nowhere near half.
+        // hardware roms (CPS1 PALs, filler/padding). Here 2 of a real, ~20-rom
+        // game's OWN roms show up in a junk archive — real content, but
+        // nowhere near what that game actually needs.
+        //
+        // The game is deliberately declared with its FULL, realistic rom
+        // count (20) — `sharedRoms` is only the 2 of those 20 that happen to
+        // sit in this junk archive; `missingRoms` are the other 18 the
+        // archive does NOT have. Measuring "2 of ghouls' own 20 roms present
+        // here" (10%) is the whole point of the 2026-08-11 refinement; an
+        // earlier version of this test declared the game with ONLY 2 roms
+        // total, which made 2/2 = 100% under the new game-based measure — a
+        // fixture bug that no longer tested the scenario its own name claims.
         let sharedRoms = roms(2, prefix: "pal")
+        let missingRoms = roms(18, prefix: "ownmissing")
         let ownRoms = roms(18, prefix: "own")
-        let game = DATGame(name: "ghouls", description: "Ghouls'n Ghosts", cloneOf: nil, romOf: nil, roms: sharedRoms)
+        let game = DATGame(name: "ghouls", description: "Ghouls'n Ghosts", cloneOf: nil, romOf: nil, roms: sharedRoms + missingRoms)
         let dat = DATFile(header: DATHeader(name: "t", description: "t", version: "1", author: "t"), games: [game])
         // "junkbox" holds the 2 shared roms plus 18 files the DAT knows
-        // nothing about at all.
+        // nothing about at all (NOT `missingRoms` — those are genuinely
+        // absent everywhere, which is exactly what makes this ghouls'
+        // archive only 10% complete rather than 100%).
         let files = (sharedRoms + ownRoms).map { entry(archive: "junkbox", rom: $0) }
 
         let report = try ROMMatcher.match(dat: dat, hashedFiles: files)
@@ -89,46 +102,81 @@ struct MisnamedArchiveTests {
         #expect(report.surplusFiles.count == 20)
         #expect(
             report.surplusFiles.allSatisfy { $0.misnamedArchiveForGameName == nil },
-            "2 shared roms out of 20 files must never make this ghouls' misnamed archive"
+            "2 of ghouls' 20 own roms (10%) must never make this ghouls' misnamed archive"
         )
     }
 
-    @Test("exactly half is NOT enough — the bar is 60%, so a half-and-half archive is never attributed to either side")
-    func exactlyHalfDoesNotMeetTheBar() throws {
+    @Test("exactly half of a game's own roms present is NOT enough — the bar is 60%, measured against what the game needs")
+    func exactlyHalfOfTheGamesOwnRomsDoesNotMeetTheBar() throws {
         // jensyleo raised the bar from 50% to 60% themselves (2026-08-06) on
         // spotting that "at least half" is satisfiable by BOTH sides of an
-        // evenly-split archive. 5 of 10 files must therefore NOT qualify.
-        let gameRoms = roms(5, prefix: "bm")
+        // evenly-split archive. Refined 2026-08-11 to measure against the
+        // GAME's own total rom count rather than the archive's file count —
+        // here `1943` declares 10 roms total, and only 5 of them (half) sit
+        // in this archive; the other 5 files present are unrelated strangers,
+        // never part of `1943` at all.
+        let presentRoms = roms(5, prefix: "bm")
+        let missingRoms = roms(5, prefix: "bmmissing")
         let strangers = roms(5, prefix: "xx")
-        let game = DATGame(name: "1943", description: "1943: The Battle of Midway (Euro)", cloneOf: nil, romOf: nil, roms: gameRoms)
+        let game = DATGame(name: "1943", description: "1943: The Battle of Midway (Euro)", cloneOf: nil, romOf: nil, roms: presentRoms + missingRoms)
         let dat = DATFile(header: DATHeader(name: "t", description: "t", version: "1", author: "t"), games: [game])
-        let files = (gameRoms + strangers).map { entry(archive: "1949", rom: $0) }
+        let files = (presentRoms + strangers).map { entry(archive: "1949", rom: $0) }
 
         let report = try ROMMatcher.match(dat: dat, hashedFiles: files)
 
         #expect(report.surplusFiles.allSatisfy { $0.misnamedArchiveForGameName == nil })
     }
 
-    @Test("6 of 10 files (exactly 60%) DOES qualify — the bar is inclusive")
-    func exactlySixtyPercentQualifies() throws {
-        let gameRoms = roms(6, prefix: "bm")
+    @Test("exactly 60% of a game's own roms present DOES qualify — the bar is inclusive")
+    func exactlySixtyPercentOfTheGamesOwnRomsQualifies() throws {
+        // `1943` declares 10 roms total; 6 of them (60%) sit in this archive,
+        // alongside some unrelated strangers that never count either way.
+        let presentRoms = roms(6, prefix: "bm")
+        let missingRoms = roms(4, prefix: "bmmissing")
         let strangers = roms(4, prefix: "xx")
-        let game = DATGame(name: "1943", description: "1943: The Battle of Midway (Euro)", cloneOf: nil, romOf: nil, roms: gameRoms)
+        let game = DATGame(name: "1943", description: "1943: The Battle of Midway (Euro)", cloneOf: nil, romOf: nil, roms: presentRoms + missingRoms)
         let dat = DATFile(header: DATHeader(name: "t", description: "t", version: "1", author: "t"), games: [game])
-        let files = (gameRoms + strangers).map { entry(archive: "1949", rom: $0) }
+        let files = (presentRoms + strangers).map { entry(archive: "1949", rom: $0) }
 
         let report = try ROMMatcher.match(dat: dat, hashedFiles: files)
 
         #expect(report.surplusFiles.allSatisfy { $0.misnamedArchiveForGameName == "1943" })
     }
 
-    @Test("an archive split 50/50 between TWO games is attributed to neither — the exact tie jensyleo asked about")
+    @Test("junk padding an otherwise-complete set no longer dilutes anything — the false negative the file-count version had")
+    func junkAlongsideACompleteSetNoLongerDilutesTheMeasure() throws {
+        // jensyleo's own motivating case for the 2026-08-11 refinement: a
+        // nearly-complete 38-rom `1943` set that also picked up a dozen junk
+        // files. Under the OLD file-count measure this read 38/50 = 76% —
+        // which actually still passed, but the point stands structurally:
+        // however much junk piles on top, all 38 of 1943's own roms being
+        // present must read as 100% of what THE GAME needs, never diluted by
+        // how much unrelated clutter happens to share the same zip.
+        let gameRoms = roms(38, prefix: "bm")
+        let junk = roms(20, prefix: "screenshot")
+        let game = DATGame(name: "1943", description: "1943: The Battle of Midway (Euro)", cloneOf: nil, romOf: nil, roms: gameRoms)
+        let dat = DATFile(header: DATHeader(name: "t", description: "t", version: "1", author: "t"), games: [game])
+        let files = (gameRoms + junk).map { entry(archive: "1949", rom: $0) }
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: files)
+
+        let romEntries = report.surplusFiles.filter { $0.file.file.name.hasPrefix("bm_") }
+        #expect(romEntries.count == 38)
+        #expect(romEntries.allSatisfy { $0.misnamedArchiveForGameName == "1943" })
+    }
+
+    @Test("an archive split 50/50 between TWO games, each fully present, is attributed to neither — a real tie under the new measure")
     func aFiftyFiftyTieBetweenTwoGamesResolvesToNeither() throws {
         // jensyleo's own question (2026-08-06): "¿cómo hacemos para el caso
-        // especial de 50% vs 50%?". At the old 50% bar both games qualified
-        // and whichever the dictionary yielded first won — arbitrary. At 60%
-        // neither can qualify, which is the honest answer: this archive is
-        // not recognizably either game's set.
+        // especial de 50% vs 50%?". Under the 2026-08-11 game-based measure,
+        // two games with different rom counts generally CAN'T both qualify
+        // (see `meetsMisnamedThreshold`'s own doc comment on why the old
+        // "structurally impossible" proof no longer holds) — but two games
+        // that each declare exactly 5 roms, all 5 present in the same
+        // 10-file archive, both read 100% and DO produce a real tie. The
+        // `qualifying.count == 1` check must still resolve it to neither,
+        // exactly as it did under the old measure — just for a genuinely
+        // possible tie now, not a mathematically foreclosed one.
         let aRoms = roms(5, prefix: "aa")
         let bRoms = roms(5, prefix: "bb")
         let gameA = DATGame(name: "gamea", description: "Game A", cloneOf: nil, romOf: nil, roms: aRoms)
@@ -141,7 +189,7 @@ struct MisnamedArchiveTests {
         #expect(report.surplusFiles.count == 10)
         #expect(
             report.surplusFiles.allSatisfy { $0.misnamedArchiveForGameName == nil },
-            "a 50/50 split must never be attributed to an arbitrarily-chosen side"
+            "a 50/50 split (each side 100% of ITS OWN roms) must never be attributed to an arbitrarily-chosen side"
         )
     }
 

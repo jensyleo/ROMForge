@@ -121,10 +121,11 @@ public struct SurplusFile: Equatable, Sendable {
     ///
     /// jensyleo's own criterion (2026-08-06), after renaming `1943.zip` to
     /// `1949.zip` and seeing it reported as a duplicate: an archive counts as
-    /// misnamed when **at least 60% of its files are roms of one single
-    /// game** (see `ROMMatcher.meetsMisnamedThreshold` for why that exact
-    /// number, and for its known limitation), and that game owns no archive
-    /// of its own anywhere in the scan.
+    /// misnamed when **at least 60% of some one game's OWN roms are present
+    /// in it** (not 60% of the archive's own files — jensyleo's own
+    /// refinement, 2026-08-11; see `ROMMatcher.meetsMisnamedThreshold` for the
+    /// exact reasoning), and that game owns no archive of its own anywhere in
+    /// the scan.
     ///
     /// Both halves matter. The threshold is what separates a genuinely
     /// renamed archive (38 of 38 files were `1943`'s) from an unrelated

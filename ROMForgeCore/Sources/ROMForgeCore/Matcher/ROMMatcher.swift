@@ -473,20 +473,37 @@ public enum ROMMatcher {
     /// name. Pinned by `MisnamedArchiveTests`'s own junk test rather than left
     /// to luck.
     ///
-    /// **Known limitation, deliberately left for later** (jensyleo's own call,
-    /// 2026-08-06: "después miramos cómo lo podríamos mejorar"): this counts
-    /// FILES, treating every file as equally telling, which a smarter rule
-    /// wouldn't. An archive holding a game's two tiny shared PALs plus one
-    /// huge stranger is 2/3 = 67% and would qualify, while a nearly-complete
-    /// set that also picked up a dozen junk files could fall under the bar.
-    /// Weighing by bytes, or by the fraction of the GAME's roms accounted for
-    /// (rather than of the archive's files), would both be more honest — but
-    /// each has its own edge cases and neither is needed for the case at hand.
-    private static func meetsMisnamedThreshold(matching matchingFileCount: Int, outOf totalFileCount: Int) -> Bool {
-        guard totalFileCount > 0 else { return false }
+    /// **Measured against the GAME's own roms, not the archive's files** —
+    /// jensyleo's own choice (2026-08-11) among the alternatives this doc
+    /// comment used to list, after confirming it's "la mejor opción": the
+    /// denominator is `game.roms.count` (how many roms the candidate game
+    /// declares in total), never `positions.count` (how many files happen to
+    /// sit in this particular archive). This directly fixes the false
+    /// negative the file-count version had: a nearly-complete 38-rom set that
+    /// also picked up a dozen junk files used to read 38/50 = 76%... which
+    /// actually would've passed — the REAL failure mode was the opposite, an
+    /// archive holding a game's two tiny shared PALs plus one huge stranger
+    /// (2 of the game's, say, 20 total roms, but 2 of only 3 files in this
+    /// particular archive) used to read 2/3 = 67% by file-count and wrongly
+    /// qualify; measured against the game's own 20 roms it's 2/20 = 10% and
+    /// correctly fails. Junk sitting alongside a real set no longer dilutes
+    /// anything, because it was never in the denominator to begin with.
+    ///
+    /// Trade-off accepted along with this: the "two games can never both
+    /// qualify" guarantee the file-count version had (60% × 2 > 100% of one
+    /// archive) no longer holds mathematically, since two different games'
+    /// rom counts are independent numbers — a game with exactly 5 roms fully
+    /// present alongside a different game's exactly 5 roms fully present in
+    /// the same 10-file archive would both read 100%. `annotateMisnamedArchives`'s
+    /// own `qualifying.count == 1` check still catches this: a real tie is
+    /// simply no longer *provably impossible*, but it's still never handed to
+    /// an arbitrary winner — this is why that check stayed a `filter` and not
+    /// a `max` even now that the tidy proof no longer applies to it.
+    private static func meetsMisnamedThreshold(matching matchingRomCount: Int, outOfGameOwnRomCount gameOwnRomCount: Int) -> Bool {
+        guard gameOwnRomCount > 0 else { return false }
         // 60%, integer-only so there's no floating-point boundary fuzz:
         // matching/total >= 3/5  ⇔  matching * 5 >= total * 3
-        return matchingFileCount * 5 >= totalFileCount * 3
+        return matchingRomCount * 5 >= gameOwnRomCount * 3
     }
 
     /// Fills in `SurplusFile.misnamedArchiveForGameName` — see that field's
@@ -527,14 +544,18 @@ public enum ROMMatcher {
                 fileCountByGameName[key, default: 0] += 1
                 gamesByLowercasedName[key] = owner
             }
-            // Written as a filter, not `max(by:)`, precisely because at this
-            // threshold AT MOST ONE game can ever qualify — two games would
-            // need 120% of one archive between them. So there is no tie to
-            // break, and no arbitrary winner to pick: expressing it this way
-            // makes that invariant visible in the code instead of hiding it
-            // behind `max`'s undefined tie-breaking.
-            let qualifying = fileCountByGameName.filter { _, matchingFileCount in
-                meetsMisnamedThreshold(matching: matchingFileCount, outOf: positions.count)
+            // Measured against each candidate game's OWN rom count, not this
+            // archive's file count — see `meetsMisnamedThreshold`'s own doc
+            // comment for jensyleo's reasoning (2026-08-11). Written as a
+            // filter, not `max(by:)`: two games qualifying simultaneously is
+            // no longer mathematically impossible under this measure (see
+            // that same doc comment), but a filter still means a genuine tie
+            // is caught by the `qualifying.count == 1` check below rather
+            // than handed to whichever one a dictionary happened to yield
+            // first.
+            let qualifying = fileCountByGameName.filter { key, matchingRomCount in
+                guard let game = gamesByLowercasedName[key] else { return false }
+                return meetsMisnamedThreshold(matching: matchingRomCount, outOfGameOwnRomCount: game.roms.count)
             }
             guard qualifying.count == 1, let (topGameName, _) = qualifying.first,
                   let topGame = gamesByLowercasedName[topGameName],
