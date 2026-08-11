@@ -373,8 +373,7 @@ private struct DatabaseTreeNode: Identifiable {
     let id: String
     /// The DAT's own internal machine/game name (e.g. "sf2ee") — what the
     /// Games table's own `GameNode.id` is keyed on (`"game-\(name)"`), so
-    /// tapping this leaf can select the exact same row there. Empty for a
-    /// `isTruncationNotice` row, which has no real game behind it.
+    /// tapping this leaf can select the exact same row there.
     let machineName: String
     let label: String
     let status: AuditStatus?
@@ -382,14 +381,46 @@ private struct DatabaseTreeNode: Identifiable {
     /// request (2026-08-11), RomCenter-style: shown as trailing secondary
     /// text on the leaf row itself, since this tree (unlike the Games
     /// `Table` on the right) has no separate column concept at all. `nil`
-    /// for a catalog row with none declared, or for a category header /
-    /// truncation-notice row.
+    /// for a catalog row with none declared.
     var manufacturer: String?
+    /// A root game's clones, if any — flattened to their own individual
+    /// rows (depth 1, indented) by `flattenedGameRows(forCategory:)` rather
+    /// than nested inside a `DisclosureGroup`, so a huge category like "All
+    /// games" stays a single flat, natively-virtualized list all the way
+    /// down. See `DatabaseRow`'s own doc comment for the full reasoning.
     var children: [DatabaseTreeNode]?
-    /// True only for the synthetic "…and N more" row a category's own
-    /// children get capped with (see `treeChildren(forCategory:)`) — a
-    /// plain, non-selectable line, not a real game.
-    var isTruncationNotice: Bool = false
+}
+
+/// One flattened, individually-rendered row of the "Database" tree —
+/// either a category header or one game at some indentation depth.
+///
+/// Replaces the earlier design (2026-07-28 → 2026-08-11), where a whole
+/// category's games were nested inside one `DisclosureGroup`, capped at a
+/// few hundred rows with a "…and N more" notice because SwiftUI's `List`
+/// does NOT lazily virtualize `DisclosureGroup` content the way it does its
+/// own direct rows — building a `DisclosureGroup`'s entire subtree eagerly,
+/// all at once, is exactly what pegged a core for minutes at MAME's real
+/// ~43,000-game scale (2026-07-28's own real bug).
+///
+/// jensyleo's own report (2026-08-11): even the raised 500-row cap still
+/// felt "un poquitín lento" to expand, and — the actual ask — they want to
+/// see a category's full, real row count, not a capped preview. The fix
+/// isn't a bigger cap or a hand-rolled buffer: `List` already virtualizes
+/// (loads/recycles rows as you scroll) any content that's a *direct*,
+/// un-nested sequence of rows — the DisclosureGroup was the only thing
+/// standing in the way of that. Flattening a category's games (and their
+/// clones, indented one level further) into their own top-level `ForEach`
+/// entries, with a plain manual chevron instead of `DisclosureGroup` for
+/// each category, gets List's native laziness for free: no cap needed at
+/// all, "All games" shows every one of its ~43,000 rows, and only the
+/// handful actually on screen at any moment are ever built.
+private struct DatabaseRow: Identifiable {
+    enum Kind {
+        case categoryHeader(DatabaseFilter)
+        case game(DatabaseTreeNode, filter: DatabaseFilter, depth: Int)
+    }
+    let id: String
+    let kind: Kind
 }
 
 /// Per-archive cache for `ZipCommentReader`'s result — a plain reference
@@ -1147,13 +1178,34 @@ struct LibraryDetailView: View {
         List {
             Section {
                 if isDatabaseSectionExpanded {
+                    // Deliberately TWO separate, sibling `ForEach`s per
+                    // category — the category header row, then (only when
+                    // expanded) its games as their OWN top-level `ForEach`,
+                    // never nested inside a `DisclosureGroup`. See
+                    // `DatabaseRow`'s own doc comment for why that specific
+                    // shape is what lets `List` virtualize every one of
+                    // "All games"' ~43,000 rows instead of building them all
+                    // at once.
                     ForEach(DatabaseFilter.allCases) { filter in
                         let isSelected = selectedDatabaseFilter == filter
-                        DisclosureGroup(isExpanded: databaseCategoryExpansion(for: filter)) {
-                            ForEach(databaseCategoryChildrenCache[filter] ?? []) { node in
-                                databaseTreeNodeRow(node, filter: filter)
+                        let isCategoryExpanded = expandedDatabaseCategories.contains(filter)
+                        HStack(spacing: 4) {
+                            // A separate, sibling `Button` — not nested
+                            // inside the "select category" one below, which
+                            // would create two overlapping tap targets on
+                            // the same view. Toggling this only flips
+                            // membership in `expandedDatabaseCategories`
+                            // (via `databaseCategoryExpansion`'s existing
+                            // Binding); it never wraps `DisclosureGroup` or
+                            // any content of its own — see `DatabaseRow`'s
+                            // own doc comment for why.
+                            Button {
+                                databaseCategoryExpansion(for: filter).wrappedValue.toggle()
+                            } label: {
+                                Image(systemName: isCategoryExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
                             }
-                        } label: {
+                            .buttonStyle(.plain)
                             Button {
                                 selectedDatabaseFilter = filter
                                 selectedRomFolder = nil
@@ -1162,8 +1214,8 @@ struct LibraryDetailView: View {
                                     .fontWeight(isSelected ? .semibold : .regular)
                             }
                             .buttonStyle(.plain)
-                            .foregroundStyle(isSelected && controlActiveState != .inactive ? Color.white : Color.primary)
                         }
+                        .foregroundStyle(isSelected && controlActiveState != .inactive ? Color.white : Color.primary)
                         // Same real-selection-background treatment as every
                         // other row in this sidebar (leaf games, "Rom
                         // folder" entries) — jensyleo's own request
@@ -1174,6 +1226,13 @@ struct LibraryDetailView: View {
                                 ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
                                 : Color.clear
                         )
+                        if isCategoryExpanded {
+                            ForEach(flattenedGameRows(forCategory: filter)) { row in
+                                if case .game(let node, let rowFilter, let depth) = row.kind {
+                                    databaseGameRow(node, filter: rowFilter, depth: depth)
+                                }
+                            }
+                        }
                     }
                 }
             } header: {
@@ -2381,35 +2440,22 @@ struct LibraryDetailView: View {
         cachedUnknownArchivesCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
     }
 
-    /// Hard cap on how many top-level rows a single category ever renders
-    /// inline in the tree — a real, serious bug found live (2026-07-28):
-    /// unlike the Games `Table` on the right (already virtualized for
-    /// large row counts), a `List` row's `DisclosureGroup` content isn't
-    /// lazily virtualized by SwiftUI at all — expanding (or, worse,
-    /// *invalidating* an already-expanded category's cache, which rebuilds
-    /// its entire `ForEach` from scratch) with tens of thousands of real
-    /// rows (a full MAME DAT's "All games" is ~43,000 games) pegged one
-    /// core at 100% for minutes, reading as a full app hang/crash. Capping
-    /// at a number SwiftUI can actually render without a visible stutter,
-    /// with a plain "…and N more" notice instead of the rest, is what keeps
-    /// this feature safe at MAME's real scale — the Games table (already
-    /// scoped to the same category, already handles arbitrarily large
-    /// counts) is still there for the full list.
-    ///
-    /// Raised from 200 → 500 (jensyleo's own request, 2026-08-11, "liberar
-    /// la vista All"). Deliberately NOT removed outright, and raised
-    /// cautiously rather than to some large/unbounded number: the original
-    /// bug this cap fixed took *minutes* at ~43,000 rows, and this view's
-    /// per-row cost (icon + name + manufacturer + a Button) scales roughly
-    /// linearly with row count — a rough linear estimate from that same
-    /// data point puts even a few thousand rows back in "visibly slow"
-    /// territory, not the instant feel a disclosure expand should have.
-    /// 500 is a genuinely untested first step (this session's own GUI
-    /// automation proved unreliable for measuring it live), not a number
-    /// verified safe by profiling — **please tell me if expanding "All
-    /// games" at 500 still feels instant, or if it now stutters**, so this
-    /// gets tuned against real, felt performance instead of a guess.
-    private static let maxTreeChildrenPerCategory = 500
+    /// Every row a category currently shows, flattened — see `DatabaseRow`'s
+    /// own doc comment for why this replaces the older capped-`DisclosureGroup`
+    /// design entirely (2026-08-11): no cap, no "…and N more" notice, every
+    /// one of "All games"' ~43,000 rows is a real row here. `List` itself
+    /// (not this function) is what makes that affordable — it only ever
+    /// *builds* the handful actually scrolled into view at a given moment,
+    /// same as the Games `Table` on the right already did.
+    private func flattenedGameRows(forCategory filter: DatabaseFilter) -> [DatabaseRow] {
+        (databaseCategoryChildrenCache[filter] ?? []).flatMap { root -> [DatabaseRow] in
+            var rows = [DatabaseRow(id: root.id, kind: .game(root, filter: filter, depth: 0))]
+            for clone in root.children ?? [] {
+                rows.append(DatabaseRow(id: clone.id, kind: .game(clone, filter: filter, depth: 1)))
+            }
+            return rows
+        }
+    }
 
     private func treeChildren(forCategory filter: DatabaseFilter) -> [DatabaseTreeNode] {
         let nodes: [GameNode]
@@ -2451,7 +2497,7 @@ struct LibraryDetailView: View {
 
         guard filter == .allGames else {
             let sorted = realGames.sorted { $0.gameName.localizedCaseInsensitiveCompare($1.gameName) == .orderedAscending }
-            return capped(sorted.map { leafNode(for: $0) })
+            return sorted.map { leafNode(for: $0) }
         }
 
         var clonesByParent: [String: [GameNode]] = [:]
@@ -2471,41 +2517,11 @@ struct LibraryDetailView: View {
         }
 
         let sortedRoots = roots.sorted { $0.gameName.localizedCaseInsensitiveCompare($1.gameName) == .orderedAscending }
-        let cappedRoots = Array(sortedRoots.prefix(Self.maxTreeChildrenPerCategory))
-        var result = cappedRoots.map { root -> DatabaseTreeNode in
+        return sortedRoots.map { root -> DatabaseTreeNode in
             let clones = (clonesByParent[root.name] ?? [])
                 .sorted { $0.gameName.localizedCaseInsensitiveCompare($1.gameName) == .orderedAscending }
-            // Clone children are capped too — a parent with an unusually
-            // large clone family (rare, but the same runaway-row risk
-            // applies) shouldn't be able to bypass the cap either.
-            return leafNode(for: root, children: capped(clones.map { leafNode(for: $0) }))
+            return leafNode(for: root, children: clones.map { leafNode(for: $0) })
         }
-        if sortedRoots.count > cappedRoots.count {
-            result.append(truncationNotice(shown: cappedRoots.count, total: sortedRoots.count))
-        }
-        return result
-    }
-
-    /// Truncates to `maxTreeChildrenPerCategory`, appending a plain,
-    /// non-selectable notice row when anything was actually cut — an empty
-    /// `children` array here (rather than this whole function returning
-    /// early) is the correct "nothing to show" case, not an error.
-    private func capped(_ nodes: [DatabaseTreeNode]) -> [DatabaseTreeNode] {
-        guard nodes.count > Self.maxTreeChildrenPerCategory else { return nodes }
-        var result = Array(nodes.prefix(Self.maxTreeChildrenPerCategory))
-        result.append(truncationNotice(shown: result.count, total: nodes.count))
-        return result
-    }
-
-    private func truncationNotice(shown: Int, total: Int) -> DatabaseTreeNode {
-        DatabaseTreeNode(
-            id: "truncated-\(shown)-of-\(total)",
-            machineName: "",
-            label: "…and \(total - shown) more — use the Games table for the full list",
-            status: nil,
-            children: nil,
-            isTruncationNotice: true
-        )
     }
 
     private func leafNode(for game: GameNode, children: [DatabaseTreeNode]? = nil) -> DatabaseTreeNode {
@@ -2551,80 +2567,69 @@ struct LibraryDetailView: View {
     // defining the opaque type in terms of itself) — only actually
     // recurses one level deep in practice (parent → clone), so the type-
     // erasure cost here is negligible.
-    private func databaseTreeNodeRow(_ node: DatabaseTreeNode, filter: DatabaseFilter) -> AnyView {
-        guard let children = node.children, !children.isEmpty else {
-            return AnyView(databaseTreeLeafLabel(node, filter: filter))
-        }
-        return AnyView(
-            DisclosureGroup {
-                ForEach(children) { child in databaseTreeNodeRow(child, filter: filter) }
-            } label: {
-                databaseTreeLeafLabel(node, filter: filter)
-            }
-        )
-    }
-
+    /// Renders one flattened `DatabaseRow.Kind.game` — no `DisclosureGroup`
+    /// anywhere in this function, deliberately: see `DatabaseRow`'s own doc
+    /// comment for why that's the entire point. `depth` only ever
+    /// indents visually (a clone one level under its parent); it plays no
+    /// part in this row's identity or List's own virtualization of it.
     @ViewBuilder
-    private func databaseTreeLeafLabel(_ node: DatabaseTreeNode, filter: DatabaseFilter) -> some View {
-        if node.isTruncationNotice {
-            Text(node.label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else {
-            let isSelected = selectedDatabaseFilter == filter && selectedGameID == node.id
-            // Always the live status from `gameAggregateStatusByName`
-            // (falling back to the node's own cached one only for a game
-            // not found there at all, e.g. a not-yet-scanned catalog
-            // entry) — never the tree's own possibly-stale cached
-            // `node.status` directly. See `gameAggregateStatusByName`'s
-            // own doc comment for the real bug this guards against.
-            let liveStatus = gameAggregateStatusByName[node.machineName] ?? node.status
-            Button {
-                selectedDatabaseFilter = filter
-                selectedRomFolder = nil
-                selectedGameID = node.id
-            } label: {
-                HStack(spacing: 4) {
-                    // Always a real game here — `treeChildren(forCategory:)`
-                    // excludes the synthetic "Unknown game" bucket before
-                    // building tree leaves at all. Its own explicit
-                    // `.foregroundStyle` always wins over the row's ambient
-                    // one set below, so the red/yellow/green status color
-                    // stays visible even while this row is selected and
-                    // tinted with the accent color.
-                    if let status = liveStatus {
-                        Image(systemName: symbolName(for: status)).foregroundStyle(tint(for: status))
-                    } else {
-                        Image(systemName: "circle.dashed").foregroundStyle(.secondary)
-                    }
-                    Text(node.label)
-                        .fontWeight(isSelected ? .semibold : .regular)
+    private func databaseGameRow(_ node: DatabaseTreeNode, filter: DatabaseFilter, depth: Int) -> some View {
+        let isSelected = selectedDatabaseFilter == filter && selectedGameID == node.id
+        // Always the live status from `gameAggregateStatusByName` (falling
+        // back to the node's own cached one only for a game not found
+        // there at all, e.g. a not-yet-scanned catalog entry) — never the
+        // tree's own possibly-stale cached `node.status` directly. See
+        // `gameAggregateStatusByName`'s own doc comment for the real bug
+        // this guards against.
+        let liveStatus = gameAggregateStatusByName[node.machineName] ?? node.status
+        Button {
+            selectedDatabaseFilter = filter
+            selectedRomFolder = nil
+            selectedGameID = node.id
+        } label: {
+            HStack(spacing: 4) {
+                if depth > 0 {
+                    Color.clear.frame(width: CGFloat(depth) * 16)
+                }
+                // Always a real game here — `treeChildren(forCategory:)`
+                // excludes the synthetic "Unknown game" bucket before
+                // building tree leaves at all. Its own explicit
+                // `.foregroundStyle` always wins over the row's ambient
+                // one set below, so the red/yellow/green status color
+                // stays visible even while this row is selected and
+                // tinted with the accent color.
+                if let status = liveStatus {
+                    Image(systemName: symbolName(for: status)).foregroundStyle(tint(for: status))
+                } else {
+                    Image(systemName: "circle.dashed").foregroundStyle(.secondary)
+                }
+                Text(node.label)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    .lineLimit(1)
+                // RomCenter-style manufacturer, trailing — jensyleo's own
+                // request (2026-08-11). Secondary/muted so it never
+                // competes with the game's own name for attention.
+                if let manufacturer = node.manufacturer, !manufacturer.isEmpty {
+                    Text(manufacturer)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    // RomCenter-style manufacturer, trailing — jensyleo's
-                    // own request (2026-08-11). Secondary/muted so it never
-                    // competes with the game's own name for attention.
-                    if let manufacturer = node.manufacturer, !manufacturer.isEmpty {
-                        Text(manufacturer)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
                 }
             }
-            .buttonStyle(.plain)
-            // A real selection background, not just bold text — same
-            // pattern (and same reasoning) as the "ROM folder" section's
-            // own row highlight, see `controlActiveState`'s own doc
-            // comment: accent-tinted while this window is key, dimmed to
-            // gray once it isn't, matching native List/NSTableView
-            // selection instead of a static color.
-            .listRowBackground(
-                isSelected
-                    ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
-                    : Color.clear
-            )
-            .foregroundStyle(isSelected && controlActiveState != .inactive ? Color.white : Color.primary)
         }
+        .buttonStyle(.plain)
+        // A real selection background, not just bold text — same pattern
+        // (and same reasoning) as the "ROM folder" section's own row
+        // highlight, see `controlActiveState`'s own doc comment:
+        // accent-tinted while this window is key, dimmed to gray once it
+        // isn't, matching native List/NSTableView selection instead of a
+        // static color.
+        .listRowBackground(
+            isSelected
+                ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
+                : Color.clear
+        )
+        .foregroundStyle(isSelected && controlActiveState != .inactive ? Color.white : Color.primary)
     }
 
     /// The full, *unfiltered* node list for the current scope — before the
