@@ -189,7 +189,7 @@ public enum ROMMatcher {
         var claimedArchiveURLsByGame: [String: Set<URL>] = [:]
         var gameResults: [GameMatchResult] = []
         gameResults.reserveCapacity(dat.games.count)
-        for (gameIndex, (game, romCandidates)) in zip(dat.games, perGameCandidates).enumerated() {
+        for (game, romCandidates) in zip(dat.games, perGameCandidates) {
             // Runs on this call's own `Task`, unlike phase 1's
             // `DispatchQueue.concurrentPerform` workers above — safe to
             // check here. Checked every single game, not throttled: real
@@ -708,7 +708,14 @@ public enum ROMMatcher {
         // `results` simply stay at their initial empty value, which is
         // fine, since `match()` discards the whole result and throws once
         // it sees the flag set.
-        func isCancelled(_ index: Int) -> Bool {
+        // An explicitly `@Sendable`-typed closure, not a plain local `func`
+        // — `DispatchQueue.concurrentPerform`'s closure below is itself
+        // `@Sendable`, and capturing a local function (never `@Sendable`
+        // by default) inside it is a real Swift 6 strict-concurrency
+        // warning, even though `cancellationFlag` (a lock-backed
+        // `CancellationFlag`) is genuinely safe to read from any thread.
+        // 2026-08-13 cleanup pass, no behavior change.
+        let isCancelled: @Sendable (Int) -> Bool = { _ in
             cancellationFlag?.isCancelled ?? false
         }
 

@@ -49,7 +49,13 @@ public enum RebuildExecutor {
         if !fileManager.fileExists(atPath: parent.path) {
             try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
         }
-        guard let archive = try? Archive(url: destination, accessMode: .create) else {
+        // `Archive(url:accessMode:preferredEncoding:)` (failable, deprecated)
+        // → `Archive(url:accessMode:pathEncoding:)` (throwing) — 2026-08-13
+        // cleanup pass, no behavior change.
+        let archive: Archive
+        do {
+            archive = try Archive(url: destination, accessMode: .create)
+        } catch {
             throw RebuildError.underlying("Could not create ZIP archive at \(destination.path)")
         }
         do {

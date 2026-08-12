@@ -19,6 +19,17 @@ struct AddSystemSheet: View {
     @State private var category = ""
     @State private var datURL: URL?
     @State private var romFolderURLs: [URL] = []
+    /// jensyleo's own request (2026-08-13): "agregar la opción de sacar el
+    /// DAT del binario del MAME instalado" — see `MAMEDATGenerator`'s own
+    /// doc comment for the actual `mame -listxml` process and precedent
+    /// (ClrMamePro's `engine.cfg`, confirmed by research the same day).
+    /// These three drive the button's own progress/error UI while
+    /// generation runs, which can genuinely take tens of seconds to a
+    /// couple of minutes for a full driver list — no known total ahead of
+    /// time, so `generatedDATBytes` is a live counter, not a percentage.
+    @State private var isGeneratingDAT = false
+    @State private var generatedDATBytes = 0
+    @State private var generateDATErrorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -44,8 +55,30 @@ struct AddSystemSheet: View {
 
             HStack {
                 Button("Select DAT…") { chooseDAT() }
-                Text(datURL?.lastPathComponent ?? "No DAT selected")
-                    .foregroundStyle(.secondary)
+                // Only offered once a real MAME executable is configured
+                // (Settings → Systems → MAME) — nothing to generate from
+                // otherwise. Disabled while a generation is already
+                // running, rather than letting a second click start a
+                // second overlapping `mame -listxml` process.
+                if MAMELaunchSettings.executablePath != nil {
+                    Button("Generate from Installed MAME…") { generateDATFromMAME() }
+                        .disabled(isGeneratingDAT)
+                }
+                if isGeneratingDAT {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Running mame -listxml… \(generatedDATBytes / 1024) KB")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(datURL?.lastPathComponent ?? "No DAT selected")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let generateDATErrorMessage {
+                Text(generateDATErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -100,7 +133,7 @@ struct AddSystemSheet: View {
             }
         }
         .padding()
-        .frame(width: 500, height: 420)
+        .frame(width: 520, height: 460)
     }
 
     private func chooseDAT() {
@@ -117,6 +150,32 @@ struct AddSystemSheet: View {
         datURL = url
         if name.isEmpty {
             name = url.deletingPathExtension().lastPathComponent
+        }
+    }
+
+    /// Runs the configured MAME executable's own `-listxml` and uses its
+    /// output directly as this system's DAT — see `MAMEDATGenerator`'s own
+    /// doc comment for the process itself and why this is worth having
+    /// (ClrMamePro has direct precedent for it, per research done the same
+    /// day this was requested). Names the system "MAME" if nothing's been
+    /// typed yet, same convention `chooseDAT()` already uses for a
+    /// manually-picked file.
+    private func generateDATFromMAME() {
+        isGeneratingDAT = true
+        generateDATErrorMessage = nil
+        generatedDATBytes = 0
+        Task {
+            do {
+                let url = try await MAMEDATGenerator.generate { bytes in
+                    Task { @MainActor in generatedDATBytes = bytes }
+                }
+                isGeneratingDAT = false
+                datURL = url
+                if name.isEmpty { name = "MAME" }
+            } catch {
+                isGeneratingDAT = false
+                generateDATErrorMessage = String(describing: error)
+            }
         }
     }
 

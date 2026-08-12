@@ -52,7 +52,18 @@ final class SystemLibraryStore {
         save()
         ScanCacheLocation.remove(for: system)
         DATCacheLocation.remove(for: system)
-        try? AuditDatabaseLocation.open().removeSystem(system.id.uuidString)
+        // `removeSystem` is a full SQLite `DELETE` of every row belonging
+        // to this one system — for a real, large MAME system that can be
+        // hundreds of thousands of rows. Found live (2026-08-13, same pass
+        // as `LibraryViewModel.removeFolder`/`loadPersistedReport`'s own
+        // cases) running synchronously on `@MainActor` here. The sidebar
+        // itself already reflects the removal the moment `systems` above
+        // changes — nothing here needs to finish before the UI moves on,
+        // so this is fire-and-forget rather than awaited.
+        let systemID = system.id.uuidString
+        Task.detached(priority: .utility) {
+            try? AuditDatabaseLocation.open().removeSystem(systemID)
+        }
     }
 
     private static func defaultStorageURL() -> URL {

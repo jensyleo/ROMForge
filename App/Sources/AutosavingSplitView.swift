@@ -103,6 +103,14 @@ struct AutosavingSplitView: NSViewRepresentable {
         context.coordinator.applyRestoredLayoutIfPossible(to: nsView)
     }
 
+    // `@MainActor` — AppKit's `NSView`/`NSSplitView` are only ever valid to
+    // touch from the main thread anyway (real, standing AppKit constraint,
+    // not new here); without this the compiler saw `Coordinator`'s methods
+    // as `nonisolated` and flagged every `frame`/`setPosition`/
+    // `dividerThickness` access below as a cross-actor reference. 2026-08-13
+    // cleanup pass, no behavior change (an `NSSplitViewDelegate` is always
+    // called back on the main thread by AppKit itself regardless).
+    @MainActor
     final class Coordinator: NSObject, NSSplitViewDelegate {
         let axis: Axis
         let minLengths: [CGFloat]

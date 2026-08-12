@@ -45,11 +45,18 @@ enum SevenZipRunner {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
+        // `SendableBox` instead of a plain captured `var` — Swift 6 strict
+        // concurrency correctly flags a `var` mutated inside a `@Sendable`
+        // `DispatchQueue.async` closure as a real data race on paper, even
+        // though `errorDrain.wait()` below establishes a genuine
+        // happens-before relationship before it's ever read. 2026-08-13
+        // performance/cleanup pass — no behavior change, silences a real
+        // compiler warning (fixed at the audit's own "Ciclo A" step).
         let errorDrain = DispatchGroup()
-        var errorData = Data()
+        let errorBox = SendableBox(Data())
         errorDrain.enter()
         DispatchQueue.global(qos: .utility).async {
-            errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            errorBox.value = errorPipe.fileHandleForReading.readDataToEndOfFile()
             errorDrain.leave()
         }
 
@@ -63,6 +70,20 @@ enum SevenZipRunner {
         process.waitUntilExit()
         errorDrain.wait()
 
-        return (outputData, errorData, process.terminationStatus)
+        return (outputData, errorBox.value, process.terminationStatus)
+    }
+
+    /// Same rationale as `MAMEDATGenerator`/`MAMELauncher`'s own private
+    /// `SendableBox` — a small mutable box so a background closure can
+    /// safely write into shared state under Swift's strict concurrency
+    /// checking. Duplicated rather than shared, same reasoning as those.
+    private final class SendableBox<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _value: Value
+        init(_ value: Value) { _value = value }
+        var value: Value {
+            get { lock.withLock { _value } }
+            set { lock.withLock { _value = newValue } }
+        }
     }
 }

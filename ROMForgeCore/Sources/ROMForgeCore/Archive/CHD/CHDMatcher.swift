@@ -32,6 +32,11 @@ public enum CHDMatcher {
         match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles)
     }
 
+    /// `MAMEDisk` overload of the `headerIndex:`-accepting fast path.
+    public static func match(disk: MAMEDisk, chdFiles: [URL], headerIndex: CHDHeaderIndex) -> CHDDiskStatus {
+        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles, headerIndex: headerIndex)
+    }
+
     /// Same matching logic, for the general-purpose `DATDisk` model
     /// (`DATGame.disks`) that `AuditReporter`'s own scan pipeline actually
     /// works with — `MAMEDisk` only exists on the `-listxml`-parsing side
@@ -40,7 +45,26 @@ public enum CHDMatcher {
         match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles)
     }
 
+    /// `DATDisk` overload of the `headerIndex:`-accepting fast path —
+    /// `DiskAuditor.audit`'s own hot loop.
+    public static func match(disk: DATDisk, chdFiles: [URL], headerIndex: CHDHeaderIndex) -> CHDDiskStatus {
+        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles, headerIndex: headerIndex)
+    }
+
+    /// Builds a `CHDHeaderIndex` from `chdFiles` on every call — fine for a
+    /// one-off lookup (tests, a single disk), but `DiskAuditor.audit` calls
+    /// this once per `<disk>` a whole DAT declares, so it uses the
+    /// `headerIndex:` overload below with one index built up front instead.
     public static func match(diskName: String, diskSHA1: String?, chdFiles: [URL]) -> CHDDiskStatus {
+        match(diskName: diskName, diskSHA1: diskSHA1, chdFiles: chdFiles, headerIndex: CHDHeaderIndex(chdFiles: chdFiles))
+    }
+
+    /// Same matching logic as the `chdFiles`-only overload, but reads every
+    /// candidate's header from a precomputed `CHDHeaderIndex` instead of
+    /// re-opening and re-reading each `.chd` file's header from disk on
+    /// every call — see that type's own doc comment for the real O(disks ×
+    /// CHD files) hot path this fixes.
+    public static func match(diskName: String, diskSHA1: String?, chdFiles: [URL], headerIndex: CHDHeaderIndex) -> CHDDiskStatus {
         guard let expectedSHA1 = diskSHA1 else {
             // Real case found live by jensyleo (2026-08-04): 184 `<disk>`
             // entries in a real MAME 0.288 dump declare no `sha1` at all —
@@ -52,11 +76,8 @@ public enum CHDMatcher {
             return .missing
         }
 
-        for chdURL in chdFiles {
-            guard let header = try? CHDHeaderReader.read(contentsOf: chdURL) else { continue }
-            if header.sha1 == expectedSHA1 {
-                return .correct(chdURL)
-            }
+        if let chdURL = headerIndex.urls(withSHA1: expectedSHA1).first {
+            return .correct(chdURL)
         }
 
         if let chdURL = chdFiles.first(where: { $0.deletingPathExtension().lastPathComponent == diskName }) {

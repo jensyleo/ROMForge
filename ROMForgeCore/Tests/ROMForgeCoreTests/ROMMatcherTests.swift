@@ -766,6 +766,39 @@ struct ROMMatcherTests {
         #expect(surplus.isInKnownArchive == true)
     }
 
+    @Test("a nodump rom with no marker pointing at any clone is still resolved by name from ANY archive in its merged family — the real contra/gryzor case")
+    func nodumpRomResolvedFromCloneArchiveViaMergedFamily() throws {
+        // Real case found live by jensyleo (2026-08-04): `contra` and every
+        // one of its clones (including `gryzor`) all redeclare the
+        // identical undumped PAL `007766.20d.bin` — no per-clone marker at
+        // all pointing at any particular one — yet the user's real dumped
+        // file for it happened to sit in `gryzor.zip`, not `contra.zip`.
+        // `familyNameMatchIndex` (driven by `mergedFamilyMachineNames`,
+        // which Merged mode populates with every archive — parent and
+        // clones alike — a game's family drew roms from) is what lets a
+        // plain by-name search reach across the whole family instead of
+        // just the requested game's own archive.
+        let nodumpRom = DATRom(name: "007766.20d.bin", size: 1, crc: nil, md5: nil, sha1: nil, status: .nodump)
+        let contra = DATGame(name: "contra", description: "Contra", cloneOf: nil, romOf: nil, roms: [nodumpRom], mergedFamilyMachineNames: ["contra", "gryzor"])
+        let familyDAT = DATFile(
+            header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"),
+            games: [contra],
+            mergeMode: .merged,
+            allMachineNames: ["contra", "gryzor"]
+        )
+
+        let realDumpInClone = zipEntryHashedFile(archiveName: "gryzor", entryName: "007766.20d.bin", size: 1, crc: "12345678", sha1: "1111111111111111111111111111111111111111")
+        let report = try ROMMatcher.match(dat: familyDAT, hashedFiles: [realDumpInClone])
+
+        let match = try #require(report.games.first?.matches.first)
+        guard case .nodump(let hashedFile) = match.status else {
+            Issue.record("expected .nodump, got \(match.status)")
+            return
+        }
+        #expect(hashedFile.file.url.lastPathComponent == "gryzor.zip")
+        #expect(report.surplusFiles.isEmpty, "the file was claimed by the nodump rom, not left over as an unrelated surplus")
+    }
+
     @Test("a surplus file inside an archive whose name matches no DAT machine at all is never marked isInKnownArchive")
     func surplusInGenuinelyUnknownArchiveIsNotMarkedKnown() throws {
         // "TEST 1.zip" — jensyleo's own real, live case (2026-08-06): a

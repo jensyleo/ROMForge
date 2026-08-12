@@ -62,6 +62,13 @@ final class LibraryViewModel {
     /// rather than a determinate bar, but it's real feedback where before
     /// there was total silence for however long the folder walk itself took.
     var folderScanFilesFound: Int?
+    /// Which of the system's ROM folders (or single forced-rescan file) the
+    /// walk is currently inside — jensyleo's own request (2026-08-12): with
+    /// several folders (especially via "Scan All Folders"), the running
+    /// `folderScanFilesFound` count alone gave no way to tell *which*
+    /// folder that count was even coming from. `nil` once the walk phase
+    /// ends (hashing/matching progress takes over instead) or when idle.
+    var currentlyScanningFolder: URL?
     /// (archivesRead, totalArchives) while `CollectionHasher` reads each
     /// zip's central directory, before any hashing progress exists — `nil`
     /// once hashing starts or when idle. Fills what used to be a silent gap
@@ -284,22 +291,64 @@ final class LibraryViewModel {
         logLines.append("[\(timestamp)] \(message)")
     }
 
+    /// Drops every in-memory trace of the last scan — jensyleo's own report
+    /// (2026-08-12): "Purge Database View" (`ViewOptionsSettingsView`)
+    /// cleared the on-disk `AuditReportDatabase` row and `ScanCache` file,
+    /// but a `LibraryDetailView` already open at the time kept showing its
+    /// existing in-memory `auditReport` regardless — "esto no debería
+    /// pasar", correctly, since the whole point of purging was to force a
+    /// fresh scan before anything shows again, not just for the *next*
+    /// launch. Called from `LibraryDetailView` in response to
+    /// `SavedViewStatePurger.scanResultsPurgedNotification` (see that
+    /// notification's own doc comment) so an already-open window reflects
+    /// the purge immediately, not only once relaunched. `loadPersistedReport`
+    /// only ever loads when `auditReport == nil` — clearing it here (not
+    /// just leaving the disk row gone) is what lets that guard actually
+    /// re-fire usefully if this same session ever calls it again.
+    func clearScanResults() {
+        auditReport = nil
+        datHeader = nil
+        matchReport = nil
+        cachedDATKey = nil
+        cachedDATFile = nil
+    }
+
     /// Loads the last persisted audit for `system`, if any, so opening a
     /// previously-scanned system shows its last results immediately instead
     /// of an empty view until the user hits Scan again. A real Scan always
     /// re-derives the truth from disk and overwrites this.
+    /// Real slowness found live (2026-08-13, same pass that found
+    /// `removeFolder`'s): this read `AuditReportDatabase`'s entire
+    /// persisted report for a system — hundreds of thousands of rows for a
+    /// real MAME collection, same scale `removeFolder` was fixed for —
+    /// synchronously on `@MainActor`, from `LibraryDetailView`'s own
+    /// `.onAppear`. That's the single most common path in the whole app:
+    /// it fires every time a system is opened/reselected in the sidebar.
+    /// Moved onto a detached task, `[weak self]`, same pattern as
+    /// `removeFolder`/`loadDAT`'s own progress handlers — the `auditReport
+    /// == nil` guard is re-checked once more on the main actor before
+    /// assigning, so a scan that finishes (or another call to this same
+    /// function) while the read was in flight can never be stomped by a
+    /// stale result arriving late.
     func loadPersistedReport(system: RomSystem) {
         guard auditReport == nil else { return }
-        do {
-            let db = try AuditDatabaseLocation.open()
-            guard let report = try db.loadReport(systemID: system.id.uuidString) else { return }
-            auditReport = report
-            if let meta = try db.loadScanMeta(systemID: system.id.uuidString), let name = meta.datName {
-                datHeader = DATHeader(name: name, description: "", version: meta.datVersion ?? "", author: "")
+        let systemID = system.id.uuidString
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let db = try AuditDatabaseLocation.open()
+                guard let report = try db.loadReport(systemID: systemID) else { return }
+                let meta = try? db.loadScanMeta(systemID: systemID)
+                Task { @MainActor in
+                    guard let self, self.auditReport == nil else { return }
+                    self.auditReport = report
+                    if let meta, let name = meta.datName {
+                        self.datHeader = DATHeader(name: name, description: "", version: meta.datVersion ?? "", author: "")
+                    }
+                }
+            } catch {
+                // A missing/corrupt database just means no cached results to
+                // show yet — not worth surfacing as a user-facing error.
             }
-        } catch {
-            // A missing/corrupt database just means no cached results to
-            // show yet — not worth surfacing as a user-facing error.
         }
     }
 
@@ -321,10 +370,45 @@ final class LibraryViewModel {
     ///   cheap prefix-removal, and losing the cache benefit for the
     ///   system's *other*, unaffected folders until the next scan is a
     ///   fair trade for correctness on what's an infrequent action.
+    /// Real slowness reported live by jensyleo (2026-08-13, testing with a
+    /// larger real collection, twice in a row):
+    /// 1. First found doing the in-memory filter AND a full
+    ///    `saveReport` rewrite (`DELETE`+re-`INSERT` of every SURVIVING
+    ///    row too, not just the removed ones — hundreds of thousands of
+    ///    them for a real MAME system) synchronously on `@MainActor`,
+    ///    directly from the button click.
+    /// 2. Moving that whole thing into a background task ("eliminar los
+    ///    folders sigue igual" [de lento], reported right after) didn't
+    ///    actually fix the *feel* of it — the total wall-clock work was
+    ///    unchanged, just no longer freezing the main thread, so the visible
+    ///    list still took just as long to update.
+    ///
+    /// Real fix, in two parts:
+    /// - The in-memory filter+recount is genuinely cheap (a single O(n)
+    ///   pass over already-in-memory structs, no I/O) — kept synchronous,
+    ///   right here, so `auditReport` updates and the UI reflects the
+    ///   removal *instantly*, the same way it did before any of this was
+    ///   ever a problem.
+    /// - The actually-slow part was never the filter — it was
+    ///   `saveReport` rewriting every unrelated surviving row just to drop
+    ///   one folder's worth. `AuditReportDatabase.removeEntries(systemID:
+    ///   pathPrefix:)` (new) deletes only the rows that need to go and
+    ///   touches nothing else — genuinely fast regardless of how large the
+    ///   rest of the system's report is. That part still runs in the
+    ///   background (it's real disk I/O, and its own result — whether it
+    ///   succeeded — has no bearing on what the UI already shows), but it
+    ///   no longer needs to finish before the visible list updates.
     func removeFolder(_ folderURL: URL, system: RomSystem) {
         ScanCacheLocation.remove(for: system)
         guard let previous = auditReport else { return }
-        let folderPath = folderURL.path
+        // Trailing slash added deliberately — a bare `hasPrefix` on
+        // `URL.path` (no trailing slash) would also match a *sibling*
+        // folder whose name happens to start with this one's, e.g.
+        // removing "CPS1" would wrongly sweep up "CPS10"'s entries too.
+        // Pre-existing edge case, spotted while touching this exact
+        // comparison for the I/O fix below — fixed here since it's the
+        // same line.
+        let folderPath = folderURL.path.hasSuffix("/") ? folderURL.path : folderURL.path + "/"
         let prunedEntries = previous.entries.filter { entry in
             guard let path = entry.path else { return true }
             return !path.path.hasPrefix(folderPath)
@@ -341,14 +425,17 @@ final class LibraryViewModel {
             case .unverifiable: unverifiable += 1
             }
         }
-        let pruned = AuditReport(entries: prunedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
-        auditReport = pruned
-        do {
-            try AuditDatabaseLocation.open().saveReport(
-                pruned, systemID: system.id.uuidString, datName: datHeader?.name, datVersion: datHeader?.version, scannedAt: Date()
-            )
-        } catch {
-            log("Warning: couldn't persist the folder removal: \(error)")
+        auditReport = AuditReport(entries: prunedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
+
+        let systemID = system.id.uuidString
+        Task.detached(priority: .utility) { [weak self] in
+            do {
+                try AuditDatabaseLocation.open().removeEntries(systemID: systemID, pathPrefix: folderPath)
+            } catch {
+                Task { @MainActor in
+                    self?.log("Warning: couldn't persist the folder removal: \(error)")
+                }
+            }
         }
     }
 
@@ -526,6 +613,7 @@ final class LibraryViewModel {
         isMatching = false
         matchProgress = nil
         folderScanFilesFound = nil
+        currentlyScanningFolder = nil
         archiveListingProgress = nil
         let cancellationFlag = CancellationFlag()
         matchCancellationFlag = cancellationFlag
@@ -622,6 +710,22 @@ final class LibraryViewModel {
             let folderProgressHandler: @Sendable (Int) -> Void = { [weak self] count in
                 Task { @MainActor in self?.folderScanFilesFound = count }
             }
+            let folderStartedHandler: @Sendable (URL) -> Void = { [weak self] url in
+                Task { @MainActor in
+                    self?.currentlyScanningFolder = url
+                    // jensyleo's own report (2026-08-12): the overlay's own
+                    // "Scanning <folder>…" text flashed by too fast to
+                    // read — walking a folder tree (just listing files, no
+                    // hashing yet) is fast enough on most collections that
+                    // the phase can be over before a human eye catches it,
+                    // especially for a small/already-cached folder. The Log
+                    // panel doesn't have that problem: every line stays put
+                    // once written, so this is where the per-folder record
+                    // actually survives to be read, even for a folder whose
+                    // own walk took under a second.
+                    self?.log("Scanning \(url.lastPathComponent)…")
+                }
+            }
             // jensyleo's own request (2026-08-05): a subfolder nested past
             // `FolderScanner.maxSubfolderDepth` is skipped, not fatal to the
             // whole scan — logged so it's still visible (rather than
@@ -639,6 +743,7 @@ final class LibraryViewModel {
                     // listing pass are both done — clear their live counts
                     // so the overlay/log switch phases.
                     self?.folderScanFilesFound = nil
+                    self?.currentlyScanningFolder = nil
                     self?.archiveListingProgress = nil
                     self?.scanProgress = progress
                 }
@@ -705,7 +810,7 @@ final class LibraryViewModel {
                 // above for why the selected scope no longer limits this.
                 // `paths` (not `folders`) since `FolderScanner.scan(paths:)`
                 // handles a whole folder or an individual file per entry.
-                let scannedFiles = try FolderScanner.scan(paths: allFolders, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler)
+                let scannedFiles = try FolderScanner.scan(paths: allFolders, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler, onFolderStarted: folderStartedHandler)
                 walkLogHandler(scannedFiles.count, Date().timeIntervalSince(walkStart))
                 // A file whose size/mtime match a previous scan's cache
                 // entry is served from there instead of rehashed — a real
@@ -769,6 +874,7 @@ final class LibraryViewModel {
             auditReport = mergedAudit
             scanProgress = nil
             folderScanFilesFound = nil
+            currentlyScanningFolder = nil
             archiveListingProgress = nil
             let totalDuration = Date().timeIntervalSince(scanStart)
             log(String(format: "Done in %.1fs: %d correct, %d incorrect, %d missing, %d surplus.", totalDuration, mergedAudit.correct, mergedAudit.incorrect, mergedAudit.missing, mergedAudit.surplus))
@@ -786,6 +892,7 @@ final class LibraryViewModel {
             datCountingProgress = nil
             datLoadProgress = nil
             folderScanFilesFound = nil
+            currentlyScanningFolder = nil
             archiveListingProgress = nil
             scanProgress = nil
             isMatching = false
@@ -798,6 +905,7 @@ final class LibraryViewModel {
             datCountingProgress = nil
             datLoadProgress = nil
             folderScanFilesFound = nil
+            currentlyScanningFolder = nil
             archiveListingProgress = nil
             scanProgress = nil
             isMatching = false
@@ -858,63 +966,6 @@ final class LibraryViewModel {
         return (eligible, skipped)
     }
 
-    func exportReport() {
-        guard let auditReport else {
-            errorMessage = "Scan first."
-            return
-        }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.commaSeparatedText]
-        panel.nameFieldStringValue = "ROMForge Report.csv"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            try Self.csv(for: auditReport).write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            errorMessage = String(describing: error)
-        }
-    }
-
-    /// Exports a "fixdat" — a normal DAT containing only the missing/
-    /// incorrect entries from the last scan — handleable by any Logiqx-
-    /// compatible tool to source exactly the gap. Uses the loaded DAT's own
-    /// name so the fixdat is traceable back to its source.
-    func exportFixdat(system: RomSystem) {
-        guard let auditReport else {
-            errorMessage = "Scan first."
-            return
-        }
-        let datName = datHeader?.name ?? system.name
-        let panel = NSSavePanel()
-        // No content-type restriction: a ".dat" file's UTI doesn't conform
-        // to public.xml even though its content is XML, so restricting to
-        // .xml here would silently append ".xml" onto the ".dat" name
-        // instead of respecting it — the exact same picker pitfall already
-        // fixed once for the DAT-open panel in AddSystemSheet.
-        panel.allowedContentTypes = []
-        panel.nameFieldStringValue = "fixDat_\(datName).dat"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            try FixDatExporter.generate(from: auditReport, datName: datName).write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            errorMessage = String(describing: error)
-        }
-    }
-
-    private static func csv(for report: AuditReport) -> String {
-        var lines = ["status,game,name,path"]
-        for entry in report.entries {
-            let fields = [entry.status.rawValue, entry.game ?? "", entry.name, entry.path?.path ?? ""]
-            lines.append(fields.map(csvField).joined(separator: ","))
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    private static func csvField(_ value: String) -> String {
-        guard value.contains(",") || value.contains("\"") || value.contains("\n") else { return value }
-        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
-    }
 }
 
 private extension DateFormatter {

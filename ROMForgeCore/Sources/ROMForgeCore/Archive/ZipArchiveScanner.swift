@@ -10,7 +10,13 @@ import ZIPFoundation
 /// Lists the file entries inside a ZIP archive, without decompressing them.
 public enum ZipArchiveScanner {
     public static func scan(archive archiveURL: URL) throws -> [ArchivedFile] {
-        guard let archive = try? Archive(url: archiveURL, accessMode: .read) else {
+        // `Archive(url:accessMode:preferredEncoding:)` (failable, deprecated)
+        // → `Archive(url:accessMode:pathEncoding:)` (throwing) — 2026-08-13
+        // cleanup pass, no behavior change.
+        let archive: Archive
+        do {
+            archive = try Archive(url: archiveURL, accessMode: .read)
+        } catch {
             throw ZipArchiveError.cannotOpenArchive(archiveURL)
         }
 

@@ -142,9 +142,22 @@ public enum FolderScanner {
     /// via `scanSingleFile`) — lets one rescan mix "this whole folder" and
     /// "just this one archive" scopes together rather than requiring
     /// everything passed in to be a directory.
-    public static func scan(paths urls: [URL], onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil) throws -> [ScannedFile] {
+    ///
+    /// - Parameter onFolderStarted: called once per top-level `url` in
+    ///   `urls`, right before it starts being walked — jensyleo's own
+    ///   request (2026-08-12): a multi-folder scan ("Scan All Folders")
+    ///   used to report only a running file COUNT across every folder
+    ///   combined, with no way to tell which folder that count was even
+    ///   coming from. Fires for a single-file entry too (immediately, since
+    ///   there's nothing to "walk"), so the caller's own progress display
+    ///   can treat every entry in `urls` uniformly.
+    public static func scan(
+        paths urls: [URL], onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil,
+        onFolderStarted: (@Sendable (URL) -> Void)? = nil
+    ) throws -> [ScannedFile] {
         var all: [ScannedFile] = []
         for url in urls {
+            onFolderStarted?(url)
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
                 throw ScannerError.folderNotFound(url)

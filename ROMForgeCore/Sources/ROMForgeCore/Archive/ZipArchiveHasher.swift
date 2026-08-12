@@ -40,7 +40,14 @@ public enum ZipArchiveHasher {
     /// (otherwise wasteful) second extraction pass only happens when one is
     /// actually detected.
     public static func hash(_ file: ArchivedFile, algorithms: HashAlgorithms = .all) throws -> (hash: FileHash, headerStripped: HeaderStrippedHash?) {
-        guard let archive = try? Archive(url: file.archiveURL, accessMode: .read) else {
+        // `Archive(url:accessMode:preferredEncoding:)` (failable, deprecated)
+        // → `Archive(url:accessMode:pathEncoding:)` (throwing) — 2026-08-13
+        // cleanup pass, no behavior change: still surfaces our own
+        // `.cannotOpenArchive` regardless of what ZIPFoundation itself threw.
+        let archive: Archive
+        do {
+            archive = try Archive(url: file.archiveURL, accessMode: .read)
+        } catch {
             throw ZipArchiveError.cannotOpenArchive(file.archiveURL)
         }
         guard let entry = archive[file.entryPath] else {

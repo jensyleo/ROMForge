@@ -4,6 +4,81 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Fixed — a round of real-collection manual testing found several "Database"/"ROM folder" bugs, all fixed
+
+This batch came directly out of testing ROMForge against a real, large
+MAME ROM collection and DAT.
+
+- **Keyboard focus/arrows didn't work in "Database"** — `.focusable()`/
+  `.focused()` were attached to a container that also held the search
+  `TextField` as a sibling, which left the real AX focus target an
+  ambiguous `group` instead of the list itself. Scoped to just the list
+  (a sibling of the search field, not its container) instead.
+- **A category header and one of its own selected leaves could both show
+  the blue "selected" highlight at once** — the header's own highlight
+  now excludes the case where a leaf under it is the real selection.
+- **Keyboard navigation in "Database" felt slow**, worst from "All
+  games" — two causes, both fixed: every arrow step re-ran a full,
+  uncapped recompute (now debounced 80ms), and every sort in the
+  tree/table used `localizedCaseInsensitiveCompare` (full ICU collation,
+  expensive at ~45,000-row scale) — replaced with a precompute-lowercase-
+  once, compare-with-`<` pattern everywhere it mattered.
+- **Clicking anywhere on a "Database" row (leaf or category header) didn't
+  select it** — unlike "ROM folder"'s own rows, these sit inside a
+  `DisclosureGroup`/outline structure, where a plain `.onTapGesture` loses
+  the click to the outline view's own native mouseDown handling. Fixed
+  with `.simultaneousGesture` instead, which doesn't compete for the
+  event. (An intermediate attempt using an overlaid `Button` actually
+  caused a genuine app freeze — `NSOutlineView`'s own mouseDown tracking
+  loop waits for a mouse-up the `Button` had already consumed — confirmed
+  and root-caused via `sample`.)
+- **The "Games" table redrew all ~45,000 rows of "All games" on every
+  selection change** — now capped at 200 with a "Show more" control,
+  same pattern the sidebar tree already used for large categories.
+- **Selecting a game with clones was much slower than one without** — the
+  clone-family filter used to re-run over the full, uncapped game list on
+  every `body` re-evaluation, not just once per click; now cached and
+  only recomputed when the family selection or its inputs actually
+  change.
+- **A category's own highlight/keyboard-position could get "stuck" once a
+  game was picked from the "Games" table** — the header's `isSelected`
+  and the keyboard nav's own "current position" lookup both required no
+  game to be selected at all, which broke the moment a game was chosen
+  from the table on the right rather than a sidebar leaf. Both now only
+  require that *if* a leaf is visible (category expanded), it isn't a
+  double-highlight — a collapsed category with an unrelated table
+  selection no longer loses its own highlight or keyboard position.
+- **A DAT-declared `nodump` rom (no reference hash exists at all) was
+  mislabeled "bad dump in DAT"** — that phrase collapses `baddump` and
+  `nodump` into one (used for the "Games with bad dumps" category), but
+  the actual label now checks the real distinction and says "nodump" when
+  that's what it is. A new, dedicated "Games with nodump" category branch
+  (off by default, same as other opt-in branches) was also added so
+  these aren't only visible mixed in with genuine bad dumps.
+- **Arrow-key navigation never scrolled "ROM folder"** — its rows never
+  carried the `.id(url)` a `ScrollViewProxy` needs to find them; the
+  `scrollTo` call already existed but was silently a no-op.
+- **Opening a category's chevron never scrolled to an already-selected
+  game** (e.g. picked from the "Games" table while the category was still
+  collapsed) — fixed, including a one-run-loop-tick defer for the
+  first-expand/async-cache path, where the target row doesn't exist yet
+  in the same update that requests the scroll.
+- **Settings only closed on Enter, not Escape** — added.
+- **Wildcard search (`*`/`?`) with the wildcard on only one side didn't
+  work as "contains"** — `*street` used to require the text to *end*
+  exactly there (fully anchored `^...$`), so a real game like "Street
+  Fighter II" (which doesn't end with "street") matched nothing. Anchors
+  dropped entirely for any wildcard pattern — `*street`, `street*`, and
+  `*street*` now all behave the same intuitive "contains" way.
+
+Also added, from the same testing pass: a dedicated "ROM folder" search
+field was tried and then removed again at jensyleo's own request (folder
+names are few enough, and it duplicated "Database" search's own by-game-
+name capability without adding real value); a dead, unused
+`scopedEntries` computed property was found and deleted; a full sweep for
+other "recomputes the whole DAT on every `body` pass" bugs of the same
+class turned up none beyond the ones already listed above.
+
 ### Added — CHD (MAME disc) auditing
 
 ROMForge now recognizes and audits `.chd` files (MAME arcade discs — CD

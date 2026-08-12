@@ -93,6 +93,45 @@ struct AuditReportDatabaseTests {
         #expect(try db.loadScanMeta(systemID: "sys-1") == nil)
     }
 
+    @Test("removeEntries deletes only rows whose path falls under the given prefix, leaving everything else untouched")
+    func removeEntriesDeletesOnlyMatchingPrefix() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let report = AuditReport(
+            entries: [
+                AuditEntry(status: .correct, game: "In folder A", name: "a.bin", path: URL(fileURLWithPath: "/roms/folderA/a.bin")),
+                AuditEntry(status: .correct, game: "In folder B", name: "b.bin", path: URL(fileURLWithPath: "/roms/folderB/b.bin")),
+                // A path that merely shares folderA's name as a *prefix*
+                // (e.g. "folderA2") must never be swept up by a naive
+                // string-prefix match — this is exactly why `removeEntries`
+                // matches on the folder's own full path (with its trailing
+                // structure), not a bare substring.
+                AuditEntry(status: .correct, game: "In folder A2", name: "c.bin", path: URL(fileURLWithPath: "/roms/folderA2/c.bin")),
+                AuditEntry(status: .missing, game: "No path at all", name: "d.bin", path: nil),
+            ],
+            correct: 3, incorrect: 0, missing: 1, surplus: 0
+        )
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+
+        let deletedCount = try db.removeEntries(systemID: "sys-1", pathPrefix: "/roms/folderA/")
+
+        #expect(deletedCount == 1)
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+        #expect(Set(loaded.entries.map(\.name)) == ["b.bin", "c.bin", "d.bin"])
+    }
+
+    @Test("removeEntries only touches the requested system, never another system's rows sharing the same path prefix")
+    func removeEntriesKeepsOtherSystemsUntouched() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let entry = AuditEntry(status: .correct, game: "Shared path", name: "a.bin", path: URL(fileURLWithPath: "/roms/shared/a.bin"))
+        try db.saveReport(AuditReport(entries: [entry], correct: 1, incorrect: 0, missing: 0, surplus: 0), systemID: "sys-1", datName: nil, datVersion: nil, scannedAt: Date())
+        try db.saveReport(AuditReport(entries: [entry], correct: 1, incorrect: 0, missing: 0, surplus: 0), systemID: "sys-2", datName: nil, datVersion: nil, scannedAt: Date())
+
+        try db.removeEntries(systemID: "sys-1", pathPrefix: "/roms/shared/")
+
+        #expect(try db.loadReport(systemID: "sys-1")?.entries.isEmpty == true)
+        #expect(try db.loadReport(systemID: "sys-2")?.entries.count == 1)
+    }
+
     @Test("reports for different systems don't interfere with each other")
     func keepsSystemsIndependent() throws {
         let db = try AuditReportDatabase(path: tempDBPath())

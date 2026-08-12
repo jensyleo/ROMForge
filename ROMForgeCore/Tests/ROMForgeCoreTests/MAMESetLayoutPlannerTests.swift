@@ -204,6 +204,42 @@ struct MAMESetLayoutPlannerTests {
         #expect(game.roms.map(\.name).sorted() == ["device.bin", "own.bin"])
     }
 
+    // A clone that is simultaneously BIOS-dependent (via its parent's own
+    // `romOf` chain) AND declares its own `deviceRefs` — the combination
+    // 2026-08-13's coverage-gap analysis found completely untested: every
+    // existing test exercises BIOS, clone, or device concepts in isolation,
+    // never a machine that is all three (clone + BIOS-dependent + device)
+    // at once, across more than one `(mode, biosMode)` pair.
+    private var biosCloneDeviceDataset: MAMEDataset {
+        MAMEDataset(machines: dataset.machines + [
+            machine("deviceX", roms: [rom("devicex.bin")], isDevice: true),
+            machine("clonewithdevice", cloneOf: "parent", romOf: "parent", roms: [
+                rom("clone-own.bin"),
+                rom("parent-only.bin", mergeName: "parent-only.bin"),
+            ], deviceRefs: ["deviceX"]),
+        ])
+    }
+
+    @Test("a clone with its own device ref still gets the device's roms under non-merged mode, independent of biosMode")
+    func cloneWithDeviceRefIncludesDeviceRomsUnderNonMerged() throws {
+        // biosMode: .merged folds BIOS roms only for a ROM-family root
+        // (`cloneOf == nil`) — "clonewithdevice" is a clone, so `shared.bin`
+        // (the BIOS's own rom in this fixture) must NOT appear here; the
+        // device's own rom must, regardless.
+        let game = try MAMESetLayoutPlanner.buildGame(for: "clonewithdevice", mode: .nonMerged, biosMode: .merged, dataset: biosCloneDeviceDataset)
+        #expect(Set(game.roms.map(\.name)) == ["clone-own.bin", "parent-only.bin", "devicex.bin"])
+    }
+
+    @Test("a clone with its own device ref folds in BIOS roms under biosMode .nonMerged, but never the device's roms under rom mode .split")
+    func cloneWithDeviceRefSplitModeExcludesDeviceButFoldsBIOS() throws {
+        // Rom mode `.split` never includes device roms at all (only
+        // `nonMergedGame`'s own chain-walk does) — independent of
+        // `biosMode`. `biosMode: .nonMerged` folds BIOS roms into every
+        // dependent, clone or root alike, regardless of rom mode.
+        let game = try MAMESetLayoutPlanner.buildGame(for: "clonewithdevice", mode: .split, biosMode: .nonMerged, dataset: biosCloneDeviceDataset)
+        #expect(Set(game.roms.map(\.name)) == ["clone-own.bin", "shared.bin"], "own rom + folded BIOS rom, but no device rom under split mode")
+    }
+
     @Test("throws when the requested machine does not exist")
     func throwsWhenMachineNotFound() {
         #expect(throws: BIOSResolutionError.machineNotFound("ghost")) {

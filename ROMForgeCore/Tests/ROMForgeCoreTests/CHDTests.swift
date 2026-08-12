@@ -154,4 +154,69 @@ struct CHDMatcherTests {
         let disk = MAMEDisk(name: "game", sha1: nil)
         #expect(CHDMatcher.match(disk: disk, chdFiles: []) == .missing)
     }
+
+    @Test("matches unverifiable when the disk declares no expected SHA1 but a same-named CHD exists")
+    func matchesUnverifiableWhenNoExpectedHashButFileExists() throws {
+        // The `.unverifiable` branch (`CHDMatcher.swift` lines 44-53) was
+        // previously only ever exercised with `chdFiles: []`, which can
+        // only ever reach `.missing` — never the actual "undumped media,
+        // file present" case this status exists for.
+        let chd = try tempFile(stem: "ghost", sha1: Array(repeating: 0xCC, count: 20))
+        defer { try? FileManager.default.removeItem(at: chd) }
+
+        let disk = MAMEDisk(name: chd.deletingPathExtension().lastPathComponent, sha1: nil)
+        #expect(CHDMatcher.match(disk: disk, chdFiles: [chd]) == .unverifiable(chd))
+    }
+
+    @Test("the headerIndex: overload matches identically to the chdFiles-only one")
+    func headerIndexOverloadMatchesSameAsPlainOverload() throws {
+        let expected: [UInt8] = Array(repeating: 0x77, count: 20)
+        let chd = try tempFile(stem: "game", sha1: expected)
+        defer { try? FileManager.default.removeItem(at: chd) }
+
+        let disk = MAMEDisk(name: chd.deletingPathExtension().lastPathComponent, sha1: hex(expected))
+        let index = CHDHeaderIndex(chdFiles: [chd])
+        #expect(CHDMatcher.match(disk: disk, chdFiles: [chd], headerIndex: index) == .correct(chd))
+    }
+}
+
+@Suite("CHDHeaderIndex")
+struct CHDHeaderIndexTests {
+    private func tempFile(stem: String, sha1: [UInt8]) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(stem)-\(UUID().uuidString).chd")
+        try makeV5Header(sha1: sha1).write(to: url)
+        return url
+    }
+
+    @Test("looks up a header by URL and by its own SHA1")
+    func looksUpByURLAndSHA1() throws {
+        let sha1: [UInt8] = Array(repeating: 0x88, count: 20)
+        let chd = try tempFile(stem: "game", sha1: sha1)
+        defer { try? FileManager.default.removeItem(at: chd) }
+
+        let index = CHDHeaderIndex(chdFiles: [chd])
+        #expect(index.header(for: chd)?.sha1 == hex(sha1))
+        #expect(index.urls(withSHA1: hex(sha1)) == [chd])
+    }
+
+    @Test("returns every URL sharing the same SHA1 — a disk's content can legitimately exist in more than one place")
+    func returnsAllURLsForADuplicatedDisk() throws {
+        let sha1: [UInt8] = Array(repeating: 0x99, count: 20)
+        let first = try tempFile(stem: "a", sha1: sha1)
+        let second = try tempFile(stem: "b", sha1: sha1)
+        defer { try? FileManager.default.removeItem(at: first); try? FileManager.default.removeItem(at: second) }
+
+        let index = CHDHeaderIndex(chdFiles: [first, second])
+        #expect(Set(index.urls(withSHA1: hex(sha1))) == [first, second])
+    }
+
+    @Test("an unreadable file is simply absent from the index, not a crash")
+    func unreadableFileIsAbsent() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".chd")
+        try Data(repeating: 0, count: 4).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let index = CHDHeaderIndex(chdFiles: [url])
+        #expect(index.header(for: url) == nil)
+    }
 }

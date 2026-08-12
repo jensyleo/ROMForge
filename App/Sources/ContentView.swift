@@ -21,7 +21,7 @@ struct ContentView: View {
         NavigationSplitView {
             List(selection: $store.selectedSystemID) {
                 ForEach(groupedSystems, id: \.category) { group in
-                    Section(group.category.isEmpty ? "Uncategorized" : group.category) {
+                    Section(group.category.isEmpty ? "SYSTEM" : group.category) {
                         ForEach(group.systems) { system in
                             HStack(spacing: 6) {
                                 if let status = lastKnownStatus(for: system) {
@@ -89,6 +89,20 @@ struct ContentView: View {
                 )
             }
         }
+        // jensyleo's own request (2026-08-13): "todo lo necesario para que
+        // la app sea lo más rápida posible, transiciones animadas no me
+        // interesan. Los mensajes de carga sí son necesarios" — disables
+        // every *implicit* SwiftUI animation app-wide from this one root
+        // (List row insertion/removal/reorder, DisclosureGroup expand/
+        // collapse, sidebar selection, and any future one that isn't
+        // explicitly opted back in) rather than hunting down each
+        // individual transition one at a time. Deliberately does NOT
+        // touch any loading indicator: every `ProgressView` in this app is
+        // AppKit-backed (`NSProgressIndicator`) and spins via its own
+        // internal animation mechanism, entirely independent of SwiftUI's
+        // `Transaction` system — this can't and doesn't affect it, exactly
+        // as asked ("los mensajes de carga sí son necesarios").
+        .transaction { $0.disablesAnimations = true }
         .onAppear {
             missingDependencies = HomebrewLibraryDependency.all.filter { !HomebrewDylibLoader.isAvailable($0) }
         }
@@ -124,7 +138,7 @@ struct ContentView: View {
         """
     }
 
-    /// Non-categorized systems are grouped under a trailing "Uncategorized"
+    /// Non-categorized systems are grouped under a trailing "SYSTEM"
     /// section instead of a flat list, RomCenter-style. Skipping grouping
     /// entirely when nobody uses categories yet would save a section header,
     /// but keeping it consistent is simpler and one empty-label group reads

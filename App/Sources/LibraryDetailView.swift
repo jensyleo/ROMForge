@@ -15,304 +15,12 @@ private struct RomRow: Identifiable {
     let entry: AuditEntry
 }
 
-private struct GameNode: Identifiable {
-    let id: String
-    let name: String
-    let entries: [AuditEntry]
-    /// `nil` only for a catalog row shown before any scan has ever run —
-    /// see `sourceGame` below. Every other row (real scan result, or the
-    /// synthetic "Surplus files"/"Unknown game" bucket) always has a real
-    /// status.
-    let aggregateStatus: AuditStatus?
-    /// True only for the synthetic "Surplus files" bucket — it has entries
-    /// (the surplus files themselves) but no real DAT game backs it, so it
-    /// needs its own `infoText`/`expectedFileName` rather than the ones
-    /// derived from a real game's rom statuses.
-    var isSurplusBucket: Bool = false
-    /// True only for the separate row `gameNodes(from:)` builds to carry a
-    /// game's CHD disk result — jensyleo's own request (2026-07-30): "si el
-    /// .zip está OK mostrarlo como Correct, pero separado del .chd" / "si
-    /// el .chd está OK mostrarlo como Correct, pero separado del .zip". A
-    /// game with both a rom and a CHD disk now gets *two* `GameNode` rows
-    /// (same `name`, different `id`) instead of one row whose `entries`
-    /// mixed both together — each independently verified and displayed,
-    /// so a correct CHD reads as "Correct" even when that same game's rom
-    /// is entirely missing, and vice versa. `entries` on this row holds
-    /// only that game's disk entry/entries (`isDisk`), never its roms.
-    var isDiskRow: Bool = false
-    /// Set only for a row built directly from the loaded DAT before any
-    /// scan has run (`aggregateStatus == nil`) — lets the "Database"
-    /// catalog show real game metadata (description/year/manufacturer/…)
-    /// with nothing yet to compare it against, instead of just blank
-    /// columns. `entries` is always empty in that case, since there's no
-    /// scan result yet to hold one.
-    var sourceGame: DATGame?
-
-    /// The archive actually found on disk for this game, if any — every
-    /// rom of a split-mode game lives in the same one archive, so any
-    /// entry with a local `path` names it. `nil` when nothing at all was
-    /// found (every rom missing), matching ClrMamePro/RomCenter's own
-    /// scanner view, which leaves this blank rather than guessing.
-    ///
-    /// Real bug found live by jensyleo (2026-08-04, Merged mode): an
-    /// entry's `path` doesn't always mean "this is *my* archive" — a
-    /// `.foundElsewhere` rom's `path` is where its content was *borrowed*
-    /// from (see `foundElsewhereArchiveName`'s own doc comment), and a
-    /// folded-in surplus entry that turned out to belong to another game
-    /// (`requiredByGameDescription`) points at *that* game's archive, not
-    /// this one's. Taking the first `path != nil` entry unconditionally
-    /// picked up one of those borrowed paths whenever a game's every real
-    /// rom was genuinely missing — several completely unrelated bootleg/
-    /// gambling machines (e.g. "Express Card / Top Card", sharing nothing
-    /// with Street Fighter beyond an identical blank/padding rom) all
-    /// showed a misleading "File Name" of `sf2acc.zip`/`sf2accp2.zip`,
-    /// implying they physically live in an archive they've never touched.
-    /// Both borrowed-path cases are excluded — only a path this game
-    /// genuinely, verifiably owns counts.
-    ///
-    /// A third borrowed-path case found live by jensyleo (2026-08-05):
-    /// duplicating an archive under a new name (e.g. `blazstar copy.zip`)
-    /// makes `ROMMatcher.isInClaimedArchive` treat it as an "unclaimed/
-    /// renamed" archive (its base name matches no DAT game), so any of its
-    /// roms that happen to hash-match a *different*, completely unrelated
-    /// game gets legitimately claimed by that game via the same
-    /// rename-tolerant fallback that lets `archiveMisnamed` (below) detect
-    /// a genuinely renamed archive — no `foundElsewhereArchiveName`, no
-    /// `requiredByGameDescription`, so the two checks above don't catch it.
-    /// Dozens of unrelated missing games (Abacus, AN1x, Win Streak, …) all
-    /// showed "blazstar copy.zip" as their File Name, each having grabbed
-    /// just one stray shared/filler rom out of it.
-    ///
-    /// A real renamed archive belongs to one game almost entirely (most or
-    /// all of its expected roms show up under that one path); a stray leak
-    /// like this contributes only a token one or two. Fixed by requiring
-    /// the most-represented candidate path to cover at least half of this
-    /// game's own rom entries before trusting it — high enough to keep
-    /// `archiveMisnamed` working for a truly renamed archive, low enough to
-    /// tolerate a real archive missing a few of its own roms.
-    var actualFileName: String? {
-        let owned = entries.filter { $0.path != nil && $0.foundElsewhereArchiveName == nil && $0.requiredByGameDescription == nil }
-        guard !owned.isEmpty else { return nil }
-        var countsByPath: [URL: Int] = [:]
-        for entry in owned { countsByPath[entry.path!, default: 0] += 1 }
-        guard let (bestPath, bestCount) = countsByPath.max(by: { $0.value < $1.value }) else { return nil }
-        guard bestCount * 2 >= entries.count else { return nil }
-        return bestPath.lastPathComponent
-    }
-
-    /// The DAT's own human-readable name (its `<description>`, e.g.
-    /// "Street Fighter II: The World Warrior (World 910522)") — much more
-    /// descriptive than `name`, which is just the short internal machine
-    /// code the archive is named after (e.g. "sf2"). Falls back to `name`
-    /// if the DAT declared no description (a Logiqx DAT missing one, or
-    /// the synthetic "Surplus files"/unrecognized-archive bucket, which
-    /// has no real DAT game behind it at all).
-    var gameName: String {
-        firstNonEmpty(\.gameDescription) ?? nonEmpty(sourceGame?.description) ?? name
-    }
-
-    /// The archive name the DAT implies for this game — the ".zip per
-    /// machine" convention split-mode sets are built around. Not shown for
-    /// the synthetic "Surplus files" bucket (no game backs it) or a CHD
-    /// disk row (`isDiskRow`) — a disk's own file is never expected to be
-    /// named after the machine plus ".zip", so that comparison doesn't
-    /// apply to it at all (it would otherwise misreport every correctly-
-    /// named `.chd` as "Bad file name").
-    var expectedFileName: String? {
-        (isSurplusBucket || isDiskRow) ? nil : "\(name).zip"
-    }
-
-    /// A one-line ClrMamePro/RomCenter-style summary of this game's status
-    /// — "Ok" only when every rom matched by both name and hash; otherwise
-    /// the most specific thing wrong, checked worst-first. Distinguishes
-    /// two different kinds of "misnamed", which a rename-fix would handle
-    /// completely differently:
-    /// - the **archive itself** has the wrong name (its contents, once
-    ///   matched by hash, are a real known game) — "Bad file name", fixed
-    ///   by renaming the archive to `expectedFileName`;
-    /// - the archive's own name is already correct, but one or more roms
-    ///   **inside** it are misnamed — "Rom need fix", fixed by renaming
-    ///   entries within the archive instead.
-    var infoText: String {
-        guard let aggregateStatus else { return "Not scanned yet" }
-        guard !isSurplusBucket else {
-            // jensyleo's own question (2026-08-04, Merged mode): see
-            // `gameNodes(from:)`'s own `isFullyIdentified` doc comment —
-            // an archive with no `dat.games` entry of its own (a clone
-            // folded into its parent) but whose entire content is
-            // nonetheless fully identified elsewhere reads as its own
-            // distinct message, not the genuinely-unknown default.
-            // This whole archive is one game's set under the wrong filename
-            // (at least half its files are that game's roms, and that game
-            // owns no archive of its own — see
-            // `SurplusFile.misnamedArchiveForGameName` for the full
-            // criterion). Real bug found live by jensyleo (2026-08-06):
-            // renaming `1943.zip` to `1949.zip` reported it as "Duplicated
-            // archive, not needed here", which is actively wrong on both
-            // counts — nothing is duplicated (it's the only copy) and it IS
-            // needed (it's the game's whole set). Checked before the
-            // duplicate message below, since a misnamed archive also has a
-            // `requiredByGameDescription` and would otherwise fall into it.
-            // Scans for the FIRST entry that actually carries the value,
-            // rather than reading `entries.first` — a real bug found live by
-            // jensyleo (2026-08-06): in `1943 copy.zip` the first entry
-            // happened to be a junk file (a stray PDF/screenshot), whose own
-            // `requiredByGameDescription` is nil, so this fell through to
-            // "Unknown game" even though four later entries in the very same
-            // archive were fully identified `1943` roms. Order inside an
-            // archive is arbitrary, so nothing may depend on it.
-            if let expected = entries.compactMap(\.misnamedArchiveForGameName).first {
-                return "Bad file name — rename to \(expected).zip"
-            }
-            guard aggregateStatus == .incorrect,
-                  let requiredBy = entries.compactMap(\.requiredByGameDescription).first
-            else {
-                return "Unknown game"
-            }
-            // jensyleo's own request (2026-08-05): make explicit that this
-            // specifically means "a known duplicate of something already
-            // claimed elsewhere" — not a vague/unknown extra file, which
-            // reads as plain "Unknown game" instead (see the guard just
-            // above). Leads with "Duplicated" rather than the earlier
-            // "Extra archive (duplicated), …" — jensyleo's own wording call
-            // (2026-08-06, while running TESTING.md §9.2 scenario #3): the
-            // duplicate-ness IS the finding, so it belongs at the front of
-            // the sentence where a truncated column still shows it.
-            return "Duplicated archive, not needed here (required by \(requiredBy))"
-        }
-        // Real bug found live by jensyleo (2026-08-04): this used to
-        // re-derive its own answer from raw `entries` independently of
-        // `aggregateStatus` — e.g. unconditionally checking
-        // `entries.contains { $0.status == .missing }` for "Incomplete".
-        // `aggregateStatus` is the authoritative, scope-aware status (in a
-        // "Rom files" folder it's computed from that folder's own entries —
-        // see `gameNodes(from:)`'s own `trueStatus`), so re-deriving
-        // separately here could disagree with the very icon/color sitting
-        // right next to this text — a game showing a green "Ok" checkmark
-        // while the text beside it read "Incomplete…". Switching on
-        // `aggregateStatus` directly keeps the icon and this text in
-        // permanent agreement.
-        //
-        // A disk row's own entries are already disk-only (`isDiskRow`,
-        // never mixed with this game's roms) — a plain status readout is
-        // enough; the rom-oriented checks below (file-naming convention,
-        // "Rom need fix") don't apply to a CHD at all.
-        if isDiskRow {
-            switch aggregateStatus {
-            case .missing: return "Missing"
-            case .incorrect: return "Incorrect"
-            case .badDump: return "Bad"
-            case .correct, .surplus, .surplusInArchive, .unknownFile: return "Correct"
-            // A CHD whose DAT entry declares no sha1 at all — undumped
-            // media (`CHDDiskStatus.unverifiable`'s own doc comment) — with
-            // a same-named file present. Nothing to verify it against, by
-            // design, so never "Correct"; the file existing is the best
-            // this disk can ever report.
-            case .unverifiable: return "Nodump (unverifiable)"
-            }
-        }
-        switch aggregateStatus {
-        case .missing: return "Incomplete (rom missing)"
-        case .badDump: return "Bad (hash mismatch)"
-        case .incorrect:
-            // Three different reasons a game reads "Incorrect" overall,
-            // checked worst/most-actionable first:
-            // - the **archive itself** has the wrong name (its contents,
-            //   once matched by hash, are a real known game) — "Bad file
-            //   name", fixed by renaming the archive to `expectedFileName`;
-            // - the archive's own name is already correct, but one or more
-            //   of this game's OWN roms are misnamed/found-elsewhere
-            //   (`requiredByGameDescription == nil` distinguishes these
-            //   from the case just below) — "Rom need fix", fixed by
-            //   renaming/moving entries within the archive instead;
-            // - every one of this game's own roms is genuinely fine, and
-            //   the only `.incorrect` entry present is a *surplus* file
-            //   folded into this row that turned out to be fully
-            //   identified, just belonging to a different game
-            //   (`requiredByGameDescription != nil` — jensyleo's own
-            //   correction, 2026-08-04: this used to stay `.surplus`/
-            //   "Extra file in archive" below; reclassified because
-            //   "surplus" must mean genuinely unknown, and this file
-            //   isn't) — "Duplicated file, not needed here", fixed by moving
-            //   it to the archive that actually wants it. Leads with
-            //   "Duplicated" for the same reason its whole-archive sibling
-            //   above does (see that message's own comment).
-            let archiveMisnamed = actualFileName != nil && expectedFileName != nil && actualFileName != expectedFileName
-            if archiveMisnamed { return "Bad file name" }
-            // This game owns no archive at all, yet every one of its roms is
-            // visible inside ONE other archive — that archive is this game's
-            // whole set under the wrong filename. Real bug found live by
-            // jensyleo (2026-08-06): renaming `1943.zip` to `1949.zip` left
-            // this row reading the far vaguer "Rom need fix", when the actual
-            // fix is a single rename. `actualFileName` is nil here precisely
-            // because every entry is `.foundElsewhere` (see its own doc
-            // comment), so the check above can't catch this case.
-            if actualFileName == nil, let expected = expectedFileName {
-                let borrowedArchives = Set(entries.compactMap(\.foundElsewhereArchiveName))
-                if borrowedArchives.count == 1, let wrongName = borrowedArchives.first, wrongName != expected {
-                    return "Bad file name — rename \(wrongName) to \(expected)"
-                }
-            }
-            let hasOwnRomProblem = entries.contains { $0.status == .incorrect && $0.requiredByGameDescription == nil }
-            return hasOwnRomProblem ? "Rom need fix" : "Duplicated file, not needed here"
-        case .correct, .surplus, .surplusInArchive, .unknownFile:
-            // A surplus entry can end up here (not in its own "Unknown
-            // game" bucket) when it's an extra file inside an archive that
-            // otherwise matches this exact game — worth calling out
-            // explicitly rather than silently reporting "Ok" and hiding
-            // that the archive has more in it than the DAT expects.
-            // jensyleo's own gray-file split (2026-08-06): distinguishes a
-            // recognized-archive leftover (likely a duplicate — check it)
-            // from a genuinely unrecognized file (e.g. a screenshot
-            // someone zipped up) sitting inside this same otherwise-correct
-            // archive — same UI slot, different actionable text.
-            if entries.contains(where: { $0.status == .unknownFile }) { return "Unknown file in archive" }
-            if entries.contains(where: { $0.status == .surplus || $0.status == .surplusInArchive }) { return "Extra file in archive" }
-            return "Ok"
-        case .unverifiable:
-            return "Ok (contains a nodump rom)"
-        }
-    }
-
-    /// This game's parent, if it's a clone (from the DAT's `cloneof`) —
-    /// empty for a parent/original game and for the surplus bucket. Shown
-    /// as its own column now that the tree no longer nests clones under
-    /// their parent visually.
-    var cloneOf: String {
-        firstNonEmpty(\.cloneOf) ?? sourceGame?.cloneOf ?? ""
-    }
-    var chdNames: String {
-        firstNonEmpty(\.chdNames) ?? sourceGame.map { $0.disks.map(\.name).joined(separator: ", ") } ?? ""
-    }
-    var year: String { firstNonEmpty(\.gameYear) ?? sourceGame?.year ?? "" }
-    var manufacturer: String { firstNonEmpty(\.gameManufacturer) ?? sourceGame?.manufacturer ?? "" }
-    var requiredBiosNames: String {
-        firstNonEmpty(\.requiredBiosNames) ?? sourceGame.map { $0.biosSetNames.joined(separator: ", ") } ?? ""
-    }
-    var deviceRefNames: String {
-        firstNonEmpty(\.deviceRefNames) ?? sourceGame.map { $0.deviceRefs.joined(separator: ", ") } ?? ""
-    }
-    var samplesText: String {
-        if entries.contains(where: \.hasSamples) { return "Yes" }
-        return sourceGame?.hasSamples == true ? "Yes" : ""
-    }
-    var biosText: String {
-        if entries.contains(where: \.isBios) { return "Yes" }
-        return sourceGame?.isBios == true ? "Yes" : ""
-    }
-
-    /// Every rom in a game shares the same game-level metadata (year,
-    /// manufacturer, clone parent, etc.), so the first entry that actually
-    /// has a value speaks for the whole game/archive.
-    private func firstNonEmpty(_ keyPath: KeyPath<AuditEntry, String?>) -> String? {
-        entries.lazy.compactMap { $0[keyPath: keyPath] }.first(where: { !$0.isEmpty })
-    }
-
-    private func nonEmpty(_ string: String?) -> String? {
-        guard let string, !string.isEmpty else { return nil }
-        return string
-    }
-}
+/// `GameNode` itself now lives in ROMForgeCore (2026-08-13, "Grupo B" of
+/// the App-logic extraction) — it never had any SwiftUI dependency, it
+/// was just declared in this View file. This alias keeps every existing
+/// call site below (`GameNode(...)`, `.isSurplusBucket`, `.infoText`, etc.)
+/// unchanged.
+private typealias GameNode = ROMForgeCore.GameNode
 
 /// RomCenter's "Database" tree: predefined categories over the same audit,
 /// shown above the games list. "Games with CHD" and "Games with samples"
@@ -322,7 +30,12 @@ private struct GameNode: Identifiable {
 /// (see ROADMAP.md). "Games with bad dumps" reflects the DAT's own
 /// `status="baddump"/"nodump"` claim about the reference dump, independent
 /// of what's found locally.
-private enum DatabaseFilter: String, CaseIterable, Identifiable {
+/// Not `private` — `DatabaseFilterVisibilitySettings` (in
+/// `GeneralSettingsView.swift`) needs to enumerate every case to build its
+/// per-branch toggle list, and `LibraryDetailView` itself needs to read
+/// that setting back to decide which cases `ForEach(DatabaseFilter.allCases)`
+/// (in `databaseListContent`) actually shows.
+enum DatabaseFilter: String, CaseIterable, Identifiable {
     case allGames = "All games"
     /// Unlike the other categories (which reflect what the DAT itself
     /// declares about a game), this one reflects the *scan result* — only
@@ -335,6 +48,46 @@ private enum DatabaseFilter: String, CaseIterable, Identifiable {
     case gamesWithCHD = "Games with CHD"
     case gamesWithSamples = "Games with samples"
     case gamesWithBadDumps = "Games with bad dumps"
+    /// jensyleo's own report (2026-08-13): "la base de datos no tiene una
+    /// rama para los nodump" — `.gamesWithBadDumps` above collapses BOTH
+    /// `baddump` and `nodump` into one branch, so a real "no reference hash
+    /// exists at all" game had no branch of its own, mixed in with genuine
+    /// bad dumps. See `DatabaseCategory.gamesWithNodump`'s own doc comment
+    /// (ROMForgeCore) for the actual filtering distinction.
+    case gamesWithNodump = "Games with nodump"
+    /// Two RomCenter-style regroupings of the *same* full game list, not a
+    /// new subset — jensyleo's own request (2026-08-11): "fabricante y
+    /// aparte fecha". Clicking either still scopes the Games table to every
+    /// game (same as "All games"), but the tree groups that list by
+    /// `<manufacturer>`/`<year>` instead of nesting clones under parents —
+    /// see `computeTreeChildren(forCategory:...)`'s own dedicated branch
+    /// for these two.
+    case byManufacturer = "By manufacturer"
+    case byYear = "By year"
+    /// Four more branches added the same day, all reusing scan-result
+    /// fields `AuditReporter` already computes — jensyleo's own request
+    /// (2026-08-11): "coloca todas las que se puedan" once the Settings
+    /// visibility toggle existed to make adding more branches safe (each
+    /// one the user doesn't actually want just gets switched off, rather
+    /// than permanently cluttering the tree). Off by default — see
+    /// `DatabaseFilterVisibilitySettings.defaultEnabled`'s own doc comment
+    /// for why only these four start disabled.
+    case missingGames = "Missing games"
+    case incorrectGames = "Incorrect games"
+    case gamesRequiringBIOS = "Games requiring BIOS"
+    case gamesWithDeviceRefs = "Games with device refs"
+    /// RomVault-style set-completeness, one game per bucket — see
+    /// `GameCompletionStatus`'s own doc comment for the exact taxonomy and
+    /// why it's a different axis from `.missingGames`/`.incorrectGames`
+    /// above (those are per-ROM; these are a single verdict per game).
+    /// jensyleo's own request (2026-08-13): distinguish "just rename it"
+    /// (`fixableGames`) from "actually needs new content"
+    /// (`partialGames`/`emptyGames`) at a glance. Scan-result-only, same
+    /// as `.verifiedGames`.
+    case completeGames = "Complete games"
+    case fixableGames = "Fixable games"
+    case partialGames = "Partial games"
+    case emptyGames = "Empty games"
     var id: String { rawValue }
 
     /// Placeholder SF Symbols, one per category, standing in for real
@@ -354,6 +107,49 @@ private enum DatabaseFilter: String, CaseIterable, Identifiable {
         case .gamesWithCHD: return "opticaldiscdrive"
         case .gamesWithSamples: return "waveform"
         case .gamesWithBadDumps: return "exclamationmark.triangle.fill"
+        case .gamesWithNodump: return "questionmark.diamond.fill"
+        case .byManufacturer: return "building.2"
+        case .byYear: return "calendar"
+        case .missingGames: return "questionmark.folder"
+        case .incorrectGames: return "pencil.and.outline"
+        case .gamesRequiringBIOS: return "cpu"
+        case .gamesWithDeviceRefs: return "puzzlepiece"
+        case .completeGames: return "checkmark.circle.fill"
+        case .fixableGames: return "arrow.triangle.2.circlepath"
+        case .partialGames: return "circle.lefthalf.filled"
+        case .emptyGames: return "circle.dashed"
+        }
+    }
+
+    /// Maps 1:1 to `DatabaseCategory` (ROMForgeCore) — the actual
+    /// filtering logic now lives there (`categoryFiltered(_:matching:)`
+    /// below), so `DatabaseFilter` itself only carries this enum's own
+    /// SwiftUI-facing concerns (raw display name, `symbolName`). An
+    /// exhaustive switch rather than `DatabaseCategory(rawValue:
+    /// rawValue)!` — both enums' raw values are kept identical on purpose,
+    /// but a force-unwrap would crash instead of failing to compile if
+    /// they ever drifted apart.
+    var coreCategory: DatabaseCategory {
+        switch self {
+        case .allGames: return .allGames
+        case .verifiedGames: return .verifiedGames
+        case .originals: return .originals
+        case .clones: return .clones
+        case .biosFiles: return .biosFiles
+        case .gamesWithCHD: return .gamesWithCHD
+        case .gamesWithSamples: return .gamesWithSamples
+        case .gamesWithBadDumps: return .gamesWithBadDumps
+        case .gamesWithNodump: return .gamesWithNodump
+        case .byManufacturer: return .byManufacturer
+        case .byYear: return .byYear
+        case .missingGames: return .missingGames
+        case .incorrectGames: return .incorrectGames
+        case .gamesRequiringBIOS: return .gamesRequiringBIOS
+        case .gamesWithDeviceRefs: return .gamesWithDeviceRefs
+        case .completeGames: return .completeGames
+        case .fixableGames: return .fixableGames
+        case .partialGames: return .partialGames
+        case .emptyGames: return .emptyGames
         }
     }
 }
@@ -390,6 +186,12 @@ private struct DatabaseTreeNode: Identifiable {
     /// children get capped with (see `treeChildren(forCategory:)`) — a
     /// plain, non-selectable line, not a real game.
     var isTruncationNotice: Bool = false
+    /// Set only on a "Show N more" row — the interactive replacement for a
+    /// plain `isTruncationNotice` row when no search is active (see
+    /// `databaseCategoryVisibleCap`'s own doc comment). Tapping it bumps
+    /// that one category's own visible cap by `treeLoadMoreIncrement` and
+    /// nothing else — never the whole remaining category at once.
+    var loadMoreFilter: DatabaseFilter?
 }
 
 /// Per-archive cache for `ZipCommentReader`'s result — a plain reference
@@ -422,6 +224,72 @@ struct LibraryDetailView: View {
     /// Settings can warn about "Merged" merge mode not making sense for a
     /// clone-less system (e.g. NEOGEO) without needing its own DAT access.
     var onDATAnalyzed: ((Bool) -> Void)?
+
+    /// jensyleo's own request (2026-08-12): "que la primera vista que tenga
+    /// sea siempre la última antes de cerrar la app" — restores whichever
+    /// "Database" category or "ROM folder" this exact system had selected
+    /// the last time it was open, instead of always starting fresh at
+    /// `.allGames`. Falls back, in order, to this system's first configured
+    /// ROM folder (if it has one) or its first currently-*enabled* "Database"
+    /// branch (see `DatabaseFilterVisibilitySettings`) when there's no saved
+    /// selection yet — a first run, a system whose only saved selection no
+    /// longer exists (a removed folder, a branch since disabled in
+    /// Settings), or a `RomSystem` with zero ROM folders configured at all.
+    /// Set via a custom `init` (not the properties' own inline defaults)
+    /// since restoring needs this specific `system`'s own `id` and
+    /// `romFolderURLs` — unavailable to a plain `= .allGames` default.
+    init(system: RomSystem, onAddFolder: @escaping ([URL]) -> Void, onDATAnalyzed: ((Bool) -> Void)? = nil) {
+        self.system = system
+        self.onAddFolder = onAddFolder
+        self.onDATAnalyzed = onDATAnalyzed
+        let restored = Self.restoreLastSelection(for: system)
+        _selectedDatabaseFilter = State(initialValue: restored.databaseFilter)
+        _selectedRomFolder = State(initialValue: restored.romFolder)
+    }
+
+    private static func lastSelectionKey(for system: RomSystem) -> String {
+        "ROMForge.system.\(system.id.uuidString).lastSelection"
+    }
+
+    /// Encodes either a selected "Database" filter or a selected "ROM
+    /// folder" (never both — see `selectedRomFolder`'s own doc comment on
+    /// why they're mutually exclusive) into one plain string, since
+    /// `UserDefaults` has no native "one of these two types" storage.
+    private static func restoreLastSelection(for system: RomSystem) -> (databaseFilter: DatabaseFilter?, romFolder: URL?) {
+        if let raw = UserDefaults.standard.string(forKey: lastSelectionKey(for: system)) {
+            if raw.hasPrefix("database:") {
+                let name = String(raw.dropFirst("database:".count))
+                if let filter = DatabaseFilter(rawValue: name) { return (filter, nil) }
+            } else if raw.hasPrefix("romfolder:") {
+                let path = String(raw.dropFirst("romfolder:".count))
+                let url = URL(fileURLWithPath: path)
+                // Only trusted if this folder is still actually configured
+                // on this system — one removed since the last launch
+                // shouldn't silently resurrect itself as the selection.
+                if system.romFolderURLs.contains(url) { return (nil, url) }
+            }
+        }
+        if let firstFolder = system.romFolderURLs.first {
+            return (nil, firstFolder)
+        }
+        let enabledRaw = UserDefaults.standard.string(forKey: DatabaseFilterVisibilitySettings.storageKey) ?? DatabaseFilterVisibilitySettings.defaultRawValue
+        return (DatabaseFilterVisibilitySettings.enabledFilters(from: enabledRaw).first ?? .allGames, nil)
+    }
+
+    /// Called from `.onChange(of: selectedDatabaseFilter)`/`.onChange(of:
+    /// selectedRomFolder)` — see `restoreLastSelection(for:)`'s own doc
+    /// comment for the encoding this writes.
+    private func persistLastSelection() {
+        let raw: String?
+        if let selectedRomFolder {
+            raw = "romfolder:\(selectedRomFolder.path)"
+        } else if let selectedDatabaseFilter {
+            raw = "database:\(selectedDatabaseFilter.rawValue)"
+        } else {
+            raw = nil
+        }
+        UserDefaults.standard.set(raw, forKey: Self.lastSelectionKey(for: system))
+    }
 
     /// Drives the selected "Rom files" folder row's highlight color —
     /// jensyleo's own request (2026-08-11): a selected folder only ever
@@ -456,6 +324,20 @@ struct LibraryDetailView: View {
     /// wrapping `gameTreeTable`'s `Table` so type-ahead (and anything else
     /// that jumps the selection) can explicitly scroll to it.
     @State private var gameTableScrollProxy: ScrollViewProxy?
+    /// jensyleo's own request (2026-08-12): "Games" re-draws every row of
+    /// `displayedGameNodes` on every selection change in the sidebar — at
+    /// "All games" scale (~45,000 rows) that's the dominant remaining cost
+    /// once the sidebar's own locale-comparison sort was fixed. Capped the
+    /// same way the sidebar tree already caps a big category
+    /// (`databaseCategoryVisibleCap`/`maxTreeChildrenPerCategory`): only the
+    /// first `gamesTableVisibleCap` rows of `displayedGameNodes` actually
+    /// reach the `Table`, with a "Show more" control below it bumping this
+    /// by `Self.treeLoadMoreIncrement` — reused rather than a new constant,
+    /// since it's already exactly the page size this should grow by.
+    /// Reset to `Self.maxTreeChildrenPerCategory` by `resetGamesTableVisibleCap()`
+    /// on every fresh selection (category/folder/family), so switching
+    /// categories always starts back at the fast, capped first page.
+    @State private var gamesTableVisibleCap: Int = Self.maxTreeChildrenPerCategory
     /// A zip's own archive-level comment never changes without the file
     /// itself changing (a rescan already reloads everything fresh), so it's
     /// worth caching per archive path rather than re-parsing the same
@@ -508,8 +390,49 @@ struct LibraryDetailView: View {
     /// Whether the "Database"/"Rom files" tree sections are expanded or
     /// collapsed — `@AppStorage` rather than plain `@State` so this
     /// survives relaunching the app, not just the current session.
+    /// Whether each of the five main panels shows at all — see
+    /// `PanelVisibilitySettings`'s own doc comment
+    /// (`ViewOptionsSettingsView.swift`) for the storage keys and why this
+    /// reads them directly rather than duplicating the setting.
+    /// Split (2026-08-12) into two independent toggles — what used to be
+    /// one combined "Database / ROM folder sidebar" switch — since
+    /// `databaseList` itself is really two separate trees (see its own doc
+    /// comment: mutually exclusive selection, already their own draggable
+    /// split). `visibleTopPanes` shows the whole `databaseList` pane
+    /// whenever either half is on; `databaseList` itself decides which of
+    /// its own two halves to actually render.
+    @AppStorage(PanelVisibilitySettings.showDatabaseTreeKey) private var showDatabaseTree = true
+    @AppStorage(PanelVisibilitySettings.showRomFolderTreeKey) private var showRomFolderTree = true
+    @AppStorage(PanelVisibilitySettings.showGamesPanelKey) private var showGamesPanel = true
+    @AppStorage(PanelVisibilitySettings.showRomsPanelKey) private var showRomsPanel = true
+    @AppStorage(PanelVisibilitySettings.showDetailPanelKey) private var showDetailPanel = true
+    @AppStorage(PanelVisibilitySettings.showLogPanelKey) private var showLogPanel = true
+    private var visibleTopPanes: [SplitPane] {
+        var panes: [SplitPane] = []
+        if showDatabaseTree || showRomFolderTree { panes.append(SplitPane(minLength: 150) { databaseList }) }
+        if showGamesPanel { panes.append(SplitPane(minLength: 220) { gamesList }) }
+        if showRomsPanel { panes.append(SplitPane(minLength: 260) { romsList }) }
+        return panes
+    }
+    private var visibleBottomPanes: [SplitPane] {
+        var panes: [SplitPane] = []
+        if showDetailPanel { panes.append(SplitPane(minLength: 260) { detailPane }) }
+        if showLogPanel { panes.append(SplitPane(minLength: 220) { logPane }) }
+        return panes
+    }
     @AppStorage("ROMForge.isDatabaseSectionExpanded") private var isDatabaseSectionExpanded = true
     @AppStorage("ROMForge.isRomFilesSectionExpanded") private var isRomFilesSectionExpanded = true
+    /// Which "Database" branches the user has actually left switched on —
+    /// see `DatabaseFilterVisibilitySettings`'s own doc comment
+    /// (`GeneralSettingsView.swift`) for the storage format and default
+    /// split (the 10 pre-existing branches on, the 4 added alongside this
+    /// toggle off). Read here rather than duplicating the setting, so
+    /// General Settings and the tree itself can never disagree about which
+    /// branches are visible.
+    @AppStorage(DatabaseFilterVisibilitySettings.storageKey) private var enabledDatabaseFiltersRaw = DatabaseFilterVisibilitySettings.defaultRawValue
+    private var visibleDatabaseFilters: [DatabaseFilter] {
+        DatabaseFilterVisibilitySettings.enabledFilters(from: enabledDatabaseFiltersRaw)
+    }
     /// Which "Database" categories are currently expanded in the tree —
     /// not persisted (unlike the two section-level toggles above), since
     /// this is finer-grained per-category state that isn't worth
@@ -522,6 +445,110 @@ struct LibraryDetailView: View {
     /// Cleared (not eagerly recomputed) whenever the underlying data it
     /// was built from changes, so the next expand recomputes fresh.
     @State private var databaseCategoryChildrenCache: [DatabaseFilter: [DatabaseTreeNode]] = [:]
+    /// Filters the "Database" tree by game name/manufacturer — jensyleo's
+    /// own alternative proposal (2026-08-11) once a flattened, uncapped
+    /// "All games" (commit `b7a394b`) froze the app solid on a real click:
+    /// rendering thousands of `DisclosureGroup`/`List` rows synchronously is
+    /// what actually costs real time, not which container holds them — so
+    /// the only genuinely safe way to "see the whole category" is to never
+    /// need all its rows on screen at once in the first place. A non-empty
+    /// search narrows a real MAME DAT's ~43,000 "All games" down to however
+    /// many actually match, almost always small, so `treeChildren(forCategory:)`
+    /// skips its normal 500-row cap while this is active (see its own use of
+    /// `databaseSearchText` below) — still bounded by `maxSearchResultsCap`
+    /// as a defensive backstop, never fully unbounded.
+    @State private var databaseSearchText: String = ""
+    /// Per-category "load more" — jensyleo's own request alongside the
+    /// search bar: rather than only ever offering the fixed 500-row preview
+    /// plus "use the Games table for the full list", a plain click grows
+    /// that one category's own inline cap by `treeLoadMoreIncrement` at a
+    /// time. Each click still only ever renders one bounded increment's
+    /// worth of *new* rows — never the whole remaining category at once —
+    /// so this can never reproduce the `b7a394b` freeze, no matter how many
+    /// times a category gets expanded; it just takes that many clicks to
+    /// reach the end of a genuinely huge one. Resets to `nil` (falls back to
+    /// `maxTreeChildrenPerCategory`) whenever the category's own cache is
+    /// dropped (collapsed, or the underlying data changed) — a stale raised
+    /// cap for a category the user isn't even looking at anymore isn't worth
+    /// carrying forward.
+    @State private var databaseCategoryVisibleCap: [DatabaseFilter: Int] = [:]
+    /// Which game rows (parents with clone children, under "All games") are
+    /// currently expanded in the "Database" tree — jensyleo's own request
+    /// (2026-08-11): pressing the right-arrow key while standing on a game
+    /// row should open its own clone disclosure, matching `NSOutlineView`'s
+    /// native keyboard behavior (Finder's list view, System Settings' own
+    /// sidebar, etc.). Needed as its own explicit `@State` (rather than
+    /// each `DisclosureGroup` managing its own internal expansion) because
+    /// a key press has to be able to *set* this from outside the
+    /// `DisclosureGroup` itself — see `gameTreeNodeExpansion(for:)`.
+    @State private var expandedGameTreeNodes: Set<String> = []
+    /// Debounce/cancellation plumbing for
+    /// `refreshExpandedDatabaseCategoryCachesAsync(debounced:)` — same
+    /// generation-counter pattern as `pendingFolderRecompute`/
+    /// `folderRecomputeGeneration`, kept separate since this recompute (the
+    /// "Database" tree specifically) fires independently of, and far more
+    /// often than, that one (every keystroke vs. every click).
+    @State private var pendingDatabaseTreeRecompute: Task<Void, Never>?
+    @State private var databaseTreeRecomputeGeneration = 0
+    /// Captured from the "Database" category tree's own `List`/
+    /// `ScrollViewReader` (`databaseSectionPane`) — jensyleo's own report
+    /// (2026-08-11): pressing ↓ repeatedly past whatever's currently visible
+    /// didn't scroll the list at all; the selection kept moving (tracked
+    /// correctly in `selectedGameID`/`selectedDatabaseFilter`/
+    /// `selectedRomFolder`) but scrolled off-screen with nothing bringing it
+    /// back into view, which read as focus having silently jumped to the
+    /// unrelated Games table on the right. `moveDatabaseSelection(by:)`
+    /// calls `scrollTo` on this right after moving — same pattern already
+    /// used for the Games table itself, see `gameTableScrollProxy`'s own
+    /// doc comment. Split into its own separate proxy (2026-08-12, alongside
+    /// `romFolderListScrollProxy` below) once "Database" and "ROM folder"
+    /// became two independent `List`s/scroll regions in their own right —
+    /// `scrollTo` only ever works within the same `ScrollViewReader` that
+    /// produced a given proxy.
+    @State private var databaseListScrollProxy: ScrollViewProxy?
+    /// Same role as `databaseListScrollProxy`, for the separate "ROM
+    /// folder" `List` (`romFolderSectionPane`) — see that property's own
+    /// doc comment for why one proxy no longer covers both.
+    @State private var romFolderListScrollProxy: ScrollViewProxy?
+    /// jensyleo's own report (2026-08-13): up/down/left/right stopped doing
+    /// anything at all in "Database" — confirmed live with `AXFocusedUIElement`
+    /// pointing at the window itself, not any control inside it. Neither
+    /// pane's `List` uses a `selection:` binding (a category/leaf row needs
+    /// its own click + independent disclosure, see `databaseSectionPane`'s
+    /// own doc comment), so clicking a row's `Button` selects it but never
+    /// makes anything an actual SwiftUI focus target — `.onKeyPress`, which
+    /// only ever fires for a view that's itself focused or an ancestor of
+    /// whatever is, then has nothing to bubble from at all. `.focusable()` +
+    /// `.focused($isDatabasePaneFocused)` on the pane, claimed explicitly
+    /// inside every row-selecting action in it (category headers, tree
+    /// leaves, "Load more"), fixes that at the source instead of hoping a
+    /// click happens to grant focus on its own.
+    @FocusState private var isDatabasePaneFocused: Bool
+    /// Same fix, for the "ROM folder" pane — see `isDatabasePaneFocused`'s
+    /// own doc comment.
+    @FocusState private var isRomFolderPaneFocused: Bool
+    /// A local mirror of `system.romFolderURLs`, rendered by
+    /// `romFolderListContent` instead of `system.romFolderURLs` directly —
+    /// jensyleo's own report (2026-08-13): reordering with the ↑/↓ buttons
+    /// stayed "igual de lenta" (~1s) even after switching to a Release
+    /// build and to position-based `ForEach` identity, ruling out both an
+    /// unoptimized build and a `List` row-move animation as the cause.
+    /// What's actually on the critical path for *any* edit that goes
+    /// through `onAddFolder`: it flows all the way out to `ContentView`,
+    /// into `SystemLibraryStore.update(_:)`, and back down as a changed
+    /// `system` value — and since `system` is a plain stored property (not
+    /// something narrower SwiftUI can diff around), that forces this
+    /// entire `LibraryDetailView`'s `body` — including the Games `Table`,
+    /// which on this system's real MAME DAT holds tens of thousands of
+    /// rows — to fully re-evaluate before the reordered "ROM folder" list
+    /// can even show its new order. Rendering from this local `@State`
+    /// instead means the reorder itself updates instantly, from a diff
+    /// against only 6-ish rows — `onAddFolder` (and whatever it costs
+    /// elsewhere) still happens, just no longer gates what the user
+    /// actually sees change. Kept in sync with `system.romFolderURLs`
+    /// on appear and whenever it changes from somewhere else entirely
+    /// (Settings' "Reset ROM Folder View"/purge actions, another window).
+    @State private var localRomFolderOrder: [URL] = []
     /// A game's *true*, always-current aggregate status, by its DAT name —
     /// real bug found live (2026-07-28): jensyleo rescanned and the Games
     /// table correctly turned a game red, but the "Database" tree still
@@ -551,6 +578,34 @@ struct LibraryDetailView: View {
     /// recomputed only when one of its real inputs (the report, the status
     /// filter, or the database filter) actually changes.
     @State private var cachedGameNodes: [GameNode] = []
+    /// `cachedGameNodes` indexed by `id` — `selectedGameNode` used to
+    /// linear-scan `cachedGameNodes` (tens of thousands of nodes for "All
+    /// games") on every single one of its ~9 call sites, independently,
+    /// every time SwiftUI re-evaluated `body` while a game was selected —
+    /// real, repeated O(9n) work found live (2026-08-13 performance audit,
+    /// "Ciclo A"). Set alongside `cachedGameNodes` itself, at every one of
+    /// its own assignment sites (via `Self.indexByID(_:)`), rather than via
+    /// `.onChange(of: cachedGameNodes)` — `GameNode` isn't `Equatable`, and
+    /// making it so just to detect a change would add its own O(n) full
+    /// field-by-field array comparison on every mutation, defeating the
+    /// point.
+    @State private var cachedGameNodesByID: [String: GameNode] = [:]
+    /// The machine name of a "Database" tree parent currently scoping the
+    /// Games table down to just its own clone family — jensyleo's own
+    /// report (2026-08-13), with a screenshot: landing on a parent game in
+    /// the tree (one with clone children nested under it there) used to
+    /// leave "Games" showing the *whole* category with that one row merely
+    /// scrolled-to/highlighted — confusing next to a category that can
+    /// hold tens of thousands of unrelated rows. `nil` means "no family
+    /// scope active" — the normal, full-category view, still used for any
+    /// leaf with no clone family of its own (a childless game, or a clone
+    /// leaf itself), a "Database" category header, or a "ROM folder"
+    /// selection. Applied as a plain filter over the already-computed
+    /// `cachedGameNodes` (`displayedGameNodes`, below) rather than its own
+    /// separate recompute pipeline — cheap enough (one linear filter pass)
+    /// to not need the background-task machinery `cachedGameNodes` itself
+    /// has for its own, genuinely expensive regroup/sort.
+    @State private var selectedGameFamilyRootMachineName: String?
     /// Debounces the heavy recompute triggered by selecting a "Rom files"
     /// folder — jensyleo's own report (2026-07-30): clicking a folder
     /// sometimes felt "lost"/slow, or needed several attempts, and could
@@ -671,19 +726,27 @@ struct LibraryDetailView: View {
             // `VSplitView`/`HSplitView`: both give a draggable divider for
             // free, but neither remembers where the user leaves it across
             // launches.
+            // jensyleo's own request (2026-08-12): each of the five main
+            // panels below can be switched off entirely from Settings →
+            // View Options (`PanelVisibilitySettings`) — `visibleTopPanes`/
+            // `visibleBottomPanes` build each row's own pane list from
+            // whichever of its panels are still switched on, and the row
+            // itself collapses to nothing (rather than an empty, still-
+            // resizable sliver) if every one of its panels is off.
             AutosavingSplitView(axis: .stacked, autosaveName: "ROMForge.mainRowsSplit", panes: [
-                SplitPane(minLength: 160) {
-                    AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.databaseGamesRomsSplit", panes: [
-                        SplitPane(minLength: 150) { databaseList },
-                        SplitPane(minLength: 220) { gamesList },
-                        SplitPane(minLength: 260) { romsList },
-                    ])
+                SplitPane(minLength: visibleTopPanes.isEmpty ? 0 : 160) {
+                    Group {
+                        if !visibleTopPanes.isEmpty {
+                            AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.databaseGamesRomsSplit", panes: visibleTopPanes)
+                        }
+                    }
                 },
-                SplitPane(minLength: 90) {
-                    AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.detailLogSplit", panes: [
-                        SplitPane(minLength: 260) { detailPane },
-                        SplitPane(minLength: 220) { logPane },
-                    ])
+                SplitPane(minLength: visibleBottomPanes.isEmpty ? 0 : 90) {
+                    Group {
+                        if !visibleBottomPanes.isEmpty {
+                            AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.detailLogSplit", panes: visibleBottomPanes)
+                        }
+                    }
                 },
             ])
             if let errorMessage = viewModel.errorMessage {
@@ -709,6 +772,19 @@ struct LibraryDetailView: View {
                     selectedRomFolder.map { "Scan only \"\($0.lastPathComponent)\" — other folders keep their last known results" }
                         ?? "Select a folder under \"Rom files\" to scan it"
                 )
+                // jensyleo's own request (2026-08-12): a one-click way to
+                // scan every configured "Rom files" folder at once, rather
+                // than selecting and scanning each one individually.
+                // `folders: nil` is `startScan`'s own default — `scan(...)`
+                // already treats that as "every folder this system has".
+                // Disabled with no folders configured at all, same as
+                // "Scan Folder" being disabled with none *selected* — there
+                // would be nothing for it to actually do.
+                Button("Scan All Folders") {
+                    viewModel.startScan(system: system)
+                }
+                .disabled(viewModel.isBusy || system.romFolderURLs.isEmpty)
+                .help("Scan every configured \"Rom files\" folder for this system, one after another")
                 // Scans just the one selected game's own archive — the
                 // same right-click "Rescan This File" action, offered here
                 // too since not every user thinks to right-click first.
@@ -722,11 +798,6 @@ struct LibraryDetailView: View {
                             ? "Rename misnamed ROMs to match the DAT"
                             : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
                     )
-                Button("Export Report") { viewModel.exportReport() }
-                    .disabled(viewModel.auditReport == nil)
-                Button("Export Fixdat") { viewModel.exportFixdat(system: system) }
-                    .disabled(viewModel.auditReport == nil)
-                    .help("Export a DAT containing only the missing/incorrect entries from this scan")
                 // MAME-only for now, and only once a real `mame`
                 // executable is configured (Settings → Systems) — see
                 // `MAMELauncher`.
@@ -764,21 +835,22 @@ struct LibraryDetailView: View {
         .onChange(of: activeStatusFilters) {
             selectedGameID = nil; selectedRomID = nil
             recomputeGameNodes()
-            refreshExpandedDatabaseCategoryCaches()
+            refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
         }
         .onChange(of: showUnknownArchives) {
             selectedGameID = nil; selectedRomID = nil
             recomputeGameNodes()
-            refreshExpandedDatabaseCategoryCaches()
+            refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
         }
         .onChange(of: combineRomAndCHD) {
             selectedGameID = nil; selectedRomID = nil
             recomputeGameNodes()
-            refreshExpandedDatabaseCategoryCaches()
+            refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
         }
         .onChange(of: selectedDatabaseFilter) {
             if selectedDatabaseFilter != nil { selectedRomFolder = nil }
             selectedGameID = nil; selectedRomID = nil
+            selectedGameFamilyRootMachineName = nil
             // Real bug found live by jensyleo (2026-08-11): clicking a
             // "Database" category (All games/Clones/Bios files/…) still
             // called the SYNCHRONOUS `recomputeCachedGameDataSync()` here —
@@ -794,21 +866,27 @@ struct LibraryDetailView: View {
             // same day). Switched to the same detached-with-generation-guard
             // pattern the folder path already uses.
             triggerCachedGameDataRecompute()
+            persistLastSelection()
         }
         .onChange(of: selectedGameID) { selectedRomID = nil }
         .onChange(of: selectedRomFolder) {
             selectedGameID = nil; selectedRomID = nil
+            selectedGameFamilyRootMachineName = nil
             triggerCachedGameDataRecompute()
+            persistLastSelection()
         }
         .onChange(of: viewModel.auditReport) {
-            // Computed first: `gameNodes(from:)` (inside
-            // `recomputeCachedGameDataSync`) reads `gameAggregateStatusByName`
-            // for each row's true badge and for the toggle-independent
-            // surplus-folding check — it must never see a stale/empty
-            // version of it.
-            gameAggregateStatusByName = computeGameAggregateStatusByName()
-            recomputeCachedGameDataSync()
-            refreshExpandedDatabaseCategoryCaches()
+            refreshCachedGameDataAfterAuditReportChangeAsync()
+        }
+        // jensyleo's own report (2026-08-12): "Purge Database View"
+        // (Settings → View Options) cleared the on-disk scan data, but this
+        // exact window — if already open at the time — kept showing its
+        // existing in-memory report regardless, "esto no debería pasar".
+        // `viewModel.clearScanResults()` sets `auditReport = nil`, which
+        // the `.onChange(of: viewModel.auditReport)` right above already
+        // reacts to correctly — no separate recompute needed here.
+        .onReceive(NotificationCenter.default.publisher(for: SavedViewStatePurger.scanResultsPurgedNotification)) { _ in
+            viewModel.clearScanResults()
         }
         .onChange(of: viewModel.cachedDATFile) {
             // Reads `DATFile.hasClones` (computed once from the raw,
@@ -826,9 +904,7 @@ struct LibraryDetailView: View {
         }
         .onAppear {
             viewModel.loadPersistedReport(system: system)
-            gameAggregateStatusByName = computeGameAggregateStatusByName()
-            recomputeCachedGameDataSync()
-            refreshExpandedDatabaseCategoryCaches()
+            refreshCachedGameDataAfterAuditReportChangeAsync()
             // Loads the DAT immediately, independent of scanning any
             // folder — previously the DAT only ever loaded as the first
             // phase of a real Scan, so simply adding/opening a system with
@@ -967,9 +1043,19 @@ struct LibraryDetailView: View {
                 // look identical to a hang for a long stretch.
                 ProgressView()
                     .frame(width: 240)
-                Text("Scanning folders… \(filesFound) files found")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // jensyleo's own request (2026-08-12): "Scan All Folders"
+                // (and "Scan Folder", which — see `LibraryViewModel.scan`'s
+                // own doc comment — always walks every one of the system's
+                // folders regardless of which single one was selected) used
+                // to show only a running file count with no way to tell
+                // *which* folder it was even counting. Named directly now,
+                // via `currentlyScanningFolder`.
+                Text(
+                    viewModel.currentlyScanningFolder.map { "Scanning \($0.lastPathComponent)… \(filesFound) files found" }
+                        ?? "Scanning folders… \(filesFound) files found"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } else {
                 ProgressView()
                 Text("Scanning folders…")
@@ -1138,30 +1224,220 @@ struct LibraryDetailView: View {
     /// instead — mutually exclusive, matching what's shown in the Games
     /// pane at any moment.
     private var databaseList: some View {
-        // No longer uses `List`'s own `selection:` binding for the
-        // "Database" section — a category row now needs both a plain click
-        // (select it, exactly as before) *and* its own independent
-        // expand/collapse disclosure, which doesn't fit a single-value
-        // `List` selection tag. Manual `Button`s + `fontWeight` highlighting
-        // instead, matching the same pattern "Rom files" already used below.
+        // jensyleo's own request (2026-08-12): a real, draggable divider
+        // between "Database" and "ROM folder" — the plain `Divider()` row
+        // (2026-08-11) only ever drew a static line; the two roots stayed
+        // one single `List`/scroll region underneath it, so there was
+        // nothing to actually *resize*. Splitting into two independent
+        // `List`s inside an `AutosavingSplitView` (the same persisting
+        // `NSSplitView` wrapper the app's other panes already use) gives
+        // each its own scroll region and a genuinely draggable divider
+        // between them, sized and remembered exactly like every other
+        // split in this app.
+        //
+        // Each of the two halves has its own independent visibility toggle
+        // now too (`showDatabaseTree`/`showRomFolderTree`, 2026-08-12,
+        // splitting what used to be one combined "Database / ROM folder
+        // sidebar" switch in View Options) — with only one on, there's
+        // nothing left to actually split, so this shows that one pane
+        // directly rather than an `AutosavingSplitView` with just one child
+        // (which would otherwise still reserve room for a divider that has
+        // nothing to divide).
+        Group {
+            if showDatabaseTree, showRomFolderTree {
+                AutosavingSplitView(axis: .stacked, autosaveName: "ROMForge.databaseRomFolderSplit", panes: [
+                    SplitPane(minLength: 80) { databaseSectionPane },
+                    SplitPane(minLength: 60) { romFolderSectionPane },
+                ])
+            } else if showDatabaseTree {
+                databaseSectionPane
+            } else if showRomFolderTree {
+                romFolderSectionPane
+            }
+        }
+    }
+
+    /// The "Database" category tree half of `databaseList` — its own `List`
+    /// (not shared with "ROM folder" anymore, see `databaseList`'s own doc
+    /// comment) plus the search field above it.
+    private var databaseSectionPane: some View {
+        // No longer uses `List`'s own `selection:` binding — a category row
+        // needs both a plain click (select it, exactly as before) *and* its
+        // own independent expand/collapse disclosure, which doesn't fit a
+        // single-value `List` selection tag. Manual `Button`s + `fontWeight`
+        // highlighting instead, matching the same pattern "ROM folder" uses.
+        VStack(spacing: 0) {
+            databaseSearchField
+            ScrollViewReader { proxy in
+                databaseCategoryListContent
+                    .onAppear { databaseListScrollProxy = proxy }
+            }
+            // Scoped to just the list, a sibling of `databaseSearchField`
+            // above — NOT the shared ancestor `VStack` (where `.onKeyPress`
+            // below still lives). Found live (2026-08-13): attaching
+            // `.focusable()`/`.focused()` to the same `VStack` that also
+            // contains the search `TextField` left `AXFocusedUIElement`
+            // pointing at a bare, ambiguous `group` and silently broke
+            // every arrow key in this pane — the `TextField`'s own native
+            // focusability and this VStack-level one seem to fight over
+            // which one SwiftUI/AppKit actually treats as "the" focused
+            // responder. Scoping it to just this list (which has no such
+            // competing sibling) is what `romFolderSectionPane` already
+            // does, and that pane never had this problem.
+            .focusable()
+            .focused($isDatabasePaneFocused)
+        }
+        // jensyleo's own report (2026-08-11): up/down/left/right did
+        // nothing while standing on a "Database" row, and — once fixed by
+        // attaching these directly to the `List` — arrow keys stopped
+        // working again the moment the search field had focus (typing,
+        // then arrowing down into results, is the exact flow the search
+        // bar was built for). Root cause both times: this section
+        // deliberately doesn't use `List`'s own `selection:` binding (a
+        // category row needs both a plain click *and* its own independent
+        // disclosure — see this view's own top doc comment), so `List`
+        // never got native arrow-key handling, and `.onKeyPress` only ever
+        // fires on a view that's *itself* focused or an ancestor of
+        // whatever currently is — attaching it to the `List` alone meant a
+        // key press typed while the search `TextField` (a *sibling* of the
+        // `List`, not a descendant) had focus never reached it at all.
+        // Attached here instead, on the one `VStack` that's a genuine
+        // ancestor of both the search field and the list, so a press
+        // bubbles up to this same handler regardless of which of the two
+        // currently has focus. Kept here (not moved up to `databaseList`
+        // itself) since it now only needs to cover this one pane — scoped
+        // to `.database` (jensyleo's own correction, 2026-08-13: crossing
+        // into "ROM folder" from here "no debe permitirse", reverting the
+        // original cross-section design from 2026-08-11).
+        .onKeyPress(.upArrow) { moveDatabaseSelection(by: -1, scope: .database); return .handled }
+        .onKeyPress(.downArrow) { moveDatabaseSelection(by: 1, scope: .database); return .handled }
+        .onKeyPress(.rightArrow) { expandSelectedDatabaseRow(); return .handled }
+        .onKeyPress(.leftArrow) { collapseSelectedDatabaseRow(); return .handled }
+    }
+
+    /// The "ROM folder" half of `databaseList` — its own `List`, split out
+    /// of what used to be one shared `List` with "Database" (see
+    /// `databaseList`'s own doc comment). Needs the same four arrow-key
+    /// handlers as `databaseSectionPane`: `AutosavingSplitView` gives each
+    /// pane an independent `NSView`, so a key press while this pane (or
+    /// nothing in the "Database" pane) has focus wouldn't otherwise reach a
+    /// handler attached only up in that other pane. Scoped to `.romFolder`
+    /// — see `databaseSectionPane`'s own doc comment for why up/down no
+    /// longer cross into "Database" from here either.
+    private var romFolderSectionPane: some View {
+        ScrollViewReader { proxy in
+            romFolderListContent
+                .onAppear { romFolderListScrollProxy = proxy }
+        }
+        .onKeyPress(.upArrow) { moveDatabaseSelection(by: -1, scope: .romFolder); return .handled }
+        .onKeyPress(.downArrow) { moveDatabaseSelection(by: 1, scope: .romFolder); return .handled }
+        .onKeyPress(.rightArrow) { expandSelectedDatabaseRow(); return .handled }
+        .onKeyPress(.leftArrow) { collapseSelectedDatabaseRow(); return .handled }
+        // See `isDatabasePaneFocused`'s own doc comment.
+        .focusable()
+        .focused($isRomFolderPaneFocused)
+    }
+
+    /// Search bar for the "Database" tree — see `databaseSearchText`'s own
+    /// doc comment for why this, not a bigger cap or a flattened `List`, is
+    /// the actually-safe way to reach every row of a huge category.
+    private var databaseSearchField: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search games… (* ? wildcards)", text: $databaseSearchText)
+                .textFieldStyle(.plain)
+            if !databaseSearchText.isEmpty {
+                Button {
+                    databaseSearchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
+        .padding(6)
+        .onChange(of: databaseSearchText) {
+            // jensyleo's own request (2026-08-13): "si el árbol de la base
+            // de datos está cerrado, pero seleccionado, debería cuando se
+            // hace una búsqueda abrirse automáticamente" — a search only
+            // ever narrowed a category's own *cached* children
+            // (`refreshExpandedDatabaseCategoryCachesAsync` only recomputes
+            // whatever's in `expandedDatabaseCategories`), so typing a
+            // search while the currently-*selected* category happened to
+            // be collapsed silently searched nothing at all — nowhere
+            // visible for a match to even appear. Auto-expanding it the
+            // moment a real search starts means there's always somewhere
+            // for a match to show up, without requiring an extra manual
+            // click first.
+            if !databaseSearchText.isEmpty, let filter = selectedDatabaseFilter, !expandedDatabaseCategories.contains(filter) {
+                expandedDatabaseCategories.insert(filter)
+            }
+            refreshExpandedDatabaseCategoryCachesAsync(debounced: true)
+        }
+    }
+
+    private var databaseCategoryListContent: some View {
         List {
             Section {
                 if isDatabaseSectionExpanded {
-                    ForEach(DatabaseFilter.allCases) { filter in
+                    ForEach(visibleDatabaseFilters) { filter in
+                        // `selectedGameID == nil` too, UNLESS this category
+                        // is collapsed — jensyleo's own report (2026-08-13),
+                        // with a screenshot: without excluding a selected
+                        // leaf, the category header stayed highlighted
+                        // exactly like the real selection whenever one of
+                        // its OWN VISIBLE leaves was also selected (two rows
+                        // both reading as "selected" at once). But that same
+                        // blanket exclusion then broke a completely
+                        // different, later-reported case: picking a game
+                        // from the "Games" table on the right (not a sidebar
+                        // leaf at all) also sets `selectedGameID`, which
+                        // wrongly killed the header's own highlight even
+                        // with the chevron closed — where there's no leaf
+                        // row visible at all to conflict with, so nothing to
+                        // avoid double-highlighting in the first place. Only
+                        // suppress the header's highlight while this
+                        // category's own children are actually on screen.
                         let isSelected = selectedDatabaseFilter == filter
+                            && (selectedGameID == nil || !databaseCategoryExpansion(for: filter).wrappedValue)
                         DisclosureGroup(isExpanded: databaseCategoryExpansion(for: filter)) {
                             ForEach(databaseCategoryChildrenCache[filter] ?? []) { node in
                                 databaseTreeNodeRow(node, filter: filter)
                             }
                         } label: {
-                            Button {
-                                selectedDatabaseFilter = filter
-                                selectedRomFolder = nil
-                            } label: {
+                            // jensyleo's own report (2026-08-13): with the
+                            // chevron collapsed (no children rows visible
+                            // below to "cover" the empty trailing space),
+                            // clicking anywhere on this row except the tight
+                            // `Label` text/icon itself did nothing — the old
+                            // `Button` here only ever covered that tight
+                            // content, same root cause (and same fix) as
+                            // `databaseTreeLeafLabel`'s own leaf rows: an
+                            // `HStack` + `Spacer` + `.contentShape` spanning
+                            // the full row width, with a `.simultaneousGesture`
+                            // (not `.onTapGesture`/a `Button`, which either
+                            // lose the click to or hang against the outline
+                            // view's own native mouseDown handling — see that
+                            // function's own doc comment for why) doing the
+                            // actual selecting.
+                            HStack {
                                 Label(filter.rawValue, systemImage: filter.symbolName)
                                     .fontWeight(isSelected ? .semibold : .regular)
+                                Spacer(minLength: 0)
                             }
-                            .buttonStyle(.plain)
+                            .contentShape(Rectangle())
+                            .simultaneousGesture(
+                                TapGesture().onEnded {
+                                    selectedDatabaseFilter = filter
+                                    selectedRomFolder = nil
+                                    isDatabasePaneFocused = true
+                                }
+                            )
                             .foregroundStyle(isSelected && controlActiveState != .inactive ? Color.white : Color.primary)
                         }
                         // Same real-selection-background treatment as every
@@ -1179,34 +1455,26 @@ struct LibraryDetailView: View {
             } header: {
                 sectionHeaderButton(title: "Database", systemImage: "cylinder.split.1x2.fill", isExpanded: $isDatabaseSectionExpanded)
             }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private var romFolderListContent: some View {
+        List {
             Section {
                 if isRomFilesSectionExpanded {
-                    ForEach(system.romFolderURLs, id: \.self) { url in
-                        Button {
-                            selectedDatabaseFilter = nil
-                            selectedRomFolder = url
-                        } label: {
-                            Label(url.lastPathComponent, systemImage: "externaldrive")
-                                .fontWeight(selectedRomFolder == url ? .semibold : .regular)
-                        }
-                        .buttonStyle(.plain)
-                        .help(url.path)
-                        // A real selection background, not just bold text —
-                        // see `controlActiveState`'s own doc comment for why
-                        // this is blue when the window is key and gray
-                        // otherwise, matching native List/NSTableView
-                        // selection rather than a static color.
-                        .listRowBackground(
-                            selectedRomFolder == url
-                                ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
-                                : Color.clear
-                        )
-                        .foregroundStyle(selectedRomFolder == url && controlActiveState != .inactive ? Color.white : Color.primary)
-                        .contextMenu {
-                            Button("Remove Folder", role: .destructive) {
-                                removeRomFolder(url)
-                            }
-                        }
+                    // Sourced from `localRomFolderOrder`, not
+                    // `system.romFolderURLs` directly — see that
+                    // property's own doc comment for why (the real fix for
+                    // "reordenar es igual de lenta"). Position-based
+                    // `ForEach` identity (`id: \.offset`, not the URL
+                    // itself) was an earlier attempt at the same problem —
+                    // kept regardless since it's still correct and harmless
+                    // (a swap reads as "this row's content changed in
+                    // place" at two indices rather than "a row moved"),
+                    // just not what actually fixed it.
+                    ForEach(Array(localRomFolderOrder.enumerated()), id: \.offset) { _, url in
+                        romFolderRow(for: url)
                     }
                     Button {
                         addRomFolder()
@@ -1229,6 +1497,389 @@ struct LibraryDetailView: View {
             }
         }
         .listStyle(.sidebar)
+        .onAppear { syncLocalRomFolderOrder() }
+        .onChange(of: system.romFolderURLs) { syncLocalRomFolderOrder() }
+    }
+
+    /// jensyleo's own final call (2026-08-12), after three drag-and-drop
+    /// attempts in a row each traded one problem for another (`.onMove`:
+    /// never engaged at all, since a `List` row that's a `Button`
+    /// intercepts the mouse-down it needs; whole-row `.onDrag`: dragging
+    /// itself improved, but competing with the same `Button`'s own tap
+    /// recognizer made a plain click "muy complicado"/unreliable; a
+    /// separate small drag-handle + insertion gaps between every row:
+    /// fixed the click, but the gaps "se separan demasiado" and shrank the
+    /// actual clickable area down to something "muy pequeña"): plain,
+    /// always-visible ↑/↓ buttons instead of any drag gesture at all. No
+    /// gesture-recognizer conflict is possible when reordering is just two
+    /// more `Button`s — this is deliberately the *simple, boring, reliable*
+    /// answer after the more visually elegant ones kept costing real
+    /// usability. `disabled` at each end takes the place of "can I drop
+    /// this last" — moving the last folder down, or the first one up,
+    /// just does nothing, rather than needing a special "drop past the
+    /// end" target the way any drag-based scheme would.
+    @ViewBuilder
+    private func romFolderRow(for url: URL) -> some View {
+        let index = localRomFolderOrder.firstIndex(of: url)
+        HStack(spacing: 4) {
+            // jensyleo's own report (2026-08-13): "en rom folder el folder
+            // se seleccione con dar click en la línea donde está... toca
+            // hacer click en el nombre y es muy incómodo" — the label used
+            // to be its own `Button`, so only its own tight text/icon
+            // bounds (not the row's own empty trailing space) actually
+            // selected anything. A plain `Label` here now, with the whole
+            // row's own `.onTapGesture` (below `.contentShape`) doing the
+            // selecting instead — the ↑/↓ `Button`s alongside it keep
+            // intercepting their own clicks fine, since a tap landing
+            // exactly on one of *those* is still claimed by that more
+            // specific control first.
+            Label(url.lastPathComponent, systemImage: "externaldrive")
+                .fontWeight(selectedRomFolder == url ? .semibold : .regular)
+            Spacer(minLength: 0)
+            // jensyleo's own report (2026-08-13): "el área de click sigue
+            // siendo muy chica" — an SF Symbol at its natural rendered
+            // size is only a handful of points across, and `.borderless`
+            // gives it no extra hit-target padding beyond that glyph's own
+            // tiny bounding box. `.contentShape(Rectangle())` extends the
+            // *tappable* area to the full frame below without changing
+            // what's actually drawn, so the target is comfortably clickable
+            // even though the chevron itself stays small and unobtrusive.
+            // jensyleo's own request (2026-08-13): "por lógica el primero
+            // no debería tener flecha de subida y el último de bajada" —
+            // a disabled-but-still-visible chevron on an edge row implied
+            // there might be somewhere left for it to go; hiding it
+            // outright says so more directly.
+            Group {
+                if let index, index > 0 {
+                    Button {
+                        moveRomFolder(url, by: -1)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Move up")
+                }
+            }
+            Group {
+                if let index, index < localRomFolderOrder.count - 1 {
+                    Button {
+                        moveRomFolder(url, by: 1)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Move down")
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedDatabaseFilter = nil
+            selectedRomFolder = url
+            isRomFolderPaneFocused = true
+        }
+        .help(url.path)
+        // A real selection background, not just bold text — see
+        // `controlActiveState`'s own doc comment for why this is blue
+        // while this window is key and gray otherwise, matching native
+        // List/NSTableView selection rather than a static color.
+        .listRowBackground(
+            selectedRomFolder == url
+                ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
+                : Color.clear
+        )
+        .foregroundStyle(selectedRomFolder == url && controlActiveState != .inactive ? Color.white : Color.primary)
+        .contextMenu {
+            Button("Remove Folder", role: .destructive) {
+                removeRomFolder(url)
+            }
+        }
+        // jensyleo's own report (2026-08-13): arrowing down/up through
+        // "ROM folder" never scrolled the list — `moveDatabaseSelection(by:)`
+        // already calls `romFolderListScrollProxy?.scrollTo(url, ...)` for
+        // this exact case, but a `ScrollViewProxy` can only scroll to a
+        // view that's actually tagged `.id(url)` somewhere in the `List`;
+        // nothing here ever was (the `ForEach` above identifies rows by
+        // `\.offset` for its own diffing, which is a different thing
+        // entirely) — the call was silently a no-op the whole time.
+        .id(url)
+    }
+
+    /// Swaps `url` with its immediate neighbor in the given direction —
+    /// `by: -1` (up) or `by: 1` (down) — a no-op past either end. Mutates
+    /// `localRomFolderOrder` directly (instant, isolated re-render — see
+    /// its own doc comment for why) and *also* calls `onAddFolder` to
+    /// persist the same order back through `system`/the store, but that
+    /// second part is no longer what the user visibly waits on.
+    private func moveRomFolder(_ url: URL, by offset: Int) {
+        var folders = localRomFolderOrder
+        guard let index = folders.firstIndex(of: url) else { return }
+        let newIndex = index + offset
+        guard folders.indices.contains(newIndex) else { return }
+        folders.swapAt(index, newIndex)
+        localRomFolderOrder = folders
+        // jensyleo's own report (2026-08-13): "se siente igual" — moving
+        // the render to `localRomFolderOrder` (above) didn't actually
+        // decouple anything, because `onAddFolder` was still called
+        // *synchronously*, in the same action/render pass as the local
+        // state write. SwiftUI commits a Button action's state changes as
+        // one atomic update — the local write and the expensive
+        // `system`-changed re-render (see `localRomFolderOrder`'s own doc
+        // comment for why that's expensive: the whole `LibraryDetailView`,
+        // Games `Table` included) both had to finish before *anything*
+        // could appear on screen, so the local write's own speed never
+        // mattered. Deferring `onAddFolder` to the next run-loop turn lets
+        // *this* frame commit immediately (just the small local reorder),
+        // with the expensive persistence/re-render happening invisibly
+        // afterward — nothing the user's looking at changes when it does,
+        // since `localRomFolderOrder` already shows the right order.
+        DispatchQueue.main.async {
+            onAddFolder(folders)
+        }
+    }
+
+    /// Keeps `localRomFolderOrder` matching `system.romFolderURLs` whenever
+    /// they'd otherwise disagree — called on appear, and from every site
+    /// that changes `system.romFolderURLs` through some path *other* than
+    /// `moveRomFolder` itself (adding/removing a folder here, or a change
+    /// from somewhere else entirely — Settings' "Reset ROM Folder View"/
+    /// purge actions, another window). A plain equality guard, not an
+    /// unconditional overwrite: after `moveRomFolder`'s own `onAddFolder`
+    /// call eventually flows back around as a new `system` value, both
+    /// sides already agree, so this is a no-op then, not a second write.
+    private func syncLocalRomFolderOrder() {
+        guard localRomFolderOrder != system.romFolderURLs else { return }
+        localRomFolderOrder = system.romFolderURLs
+    }
+
+    /// One flat, top-to-bottom row a keyboard arrow press can land on —
+    /// built fresh from current expansion/cache state each time a key is
+    /// pressed (cheap: only ever as many rows as are *actually rendered*
+    /// right now, never the full unexpanded category), so it always
+    /// matches exactly what's on screen. See `databaseListContent`'s own
+    /// doc comment for why this exists at all.
+    private enum DatabaseSelectableRow {
+        case category(DatabaseFilter)
+        case game(filter: DatabaseFilter, id: String)
+        case romFolder(URL)
+    }
+
+    /// Which of the two independent `List`s (`databaseSectionPane`/
+    /// `romFolderSectionPane`) an arrow press should navigate within —
+    /// jensyleo's own correction (2026-08-13) of the original design: a
+    /// single flattened list spanning *both* sections (2026-08-11) let ↑/↓
+    /// cross from the bottom of "Database" straight into "ROM folder" and
+    /// back — meant, at the time, to match a native sidebar's own
+    /// cross-section arrow-key navigation, but jensyleo's own call is that
+    /// this specific jump "no debe permitirse". Each pane's own
+    /// `.onKeyPress` now passes its own scope, so a press never sees past
+    /// its own section's rows.
+    private enum DatabaseSelectionScope {
+        case database
+        case romFolder
+    }
+
+    private func flattenedVisibleDatabaseRows(scope: DatabaseSelectionScope) -> [DatabaseSelectableRow] {
+        var rows: [DatabaseSelectableRow] = []
+        switch scope {
+        case .database:
+            guard isDatabaseSectionExpanded else { return [] }
+            for filter in visibleDatabaseFilters {
+                rows.append(.category(filter))
+                guard expandedDatabaseCategories.contains(filter) else { continue }
+                rows.append(contentsOf: flattenedVisibleDatabaseNodes(databaseCategoryChildrenCache[filter] ?? [], filter: filter))
+            }
+        case .romFolder:
+            guard isRomFilesSectionExpanded else { return [] }
+            rows.append(contentsOf: localRomFolderOrder.map { .romFolder($0) })
+        }
+        return rows
+    }
+
+    private func flattenedVisibleDatabaseNodes(_ nodes: [DatabaseTreeNode], filter: DatabaseFilter) -> [DatabaseSelectableRow] {
+        var rows: [DatabaseSelectableRow] = []
+        for node in nodes {
+            // Neither a "Show N more" button nor a plain truncation notice
+            // is a real, selectable game — arrow navigation skips both,
+            // same as it would skip any other non-selectable UI chrome.
+            guard node.loadMoreFilter == nil, !node.isTruncationNotice else { continue }
+            rows.append(.game(filter: filter, id: node.id))
+            if let children = node.children, !children.isEmpty, expandedGameTreeNodes.contains(node.id) {
+                rows.append(contentsOf: flattenedVisibleDatabaseNodes(children, filter: filter))
+            }
+        }
+        return rows
+    }
+
+    /// Moves the current "Database" selection to the previous/next visible
+    /// row (`by: -1`/`1`) — wraps to the first/last row if nothing is
+    /// currently selected there at all, matching `NSOutlineView`'s own
+    /// convention of landing on an edge row rather than doing nothing.
+    private func moveDatabaseSelection(by offset: Int, scope: DatabaseSelectionScope) {
+        let rows = flattenedVisibleDatabaseRows(scope: scope)
+        guard !rows.isEmpty else { return }
+        let currentIndex = rows.firstIndex { row in
+            switch row {
+            // Same relaxation as the category header's own `isSelected`
+            // (`databaseCategoryListContent`'s doc comment) and for the
+            // same reason: `selectedGameID` also gets set by clicking a row
+            // in the "Games" table on the right, not only by a sidebar
+            // leaf. Requiring it `== nil` unconditionally meant this lookup
+            // could no longer find "the category" as the current position
+            // once a game was picked that way — jensyleo's own report
+            // (2026-08-13): clicking back into the sidebar and pressing an
+            // arrow then jumped to the first/last row instead of moving
+            // from where the category still visually was. Only still
+            // require `selectedGameID == nil` while this category is
+            // actually expanded — that's the one case where a real leaf row
+            // is also present in `rows` and should legitimately win instead.
+            case .category(let filter):
+                return selectedDatabaseFilter == filter
+                    && (selectedGameID == nil || !databaseCategoryExpansion(for: filter).wrappedValue)
+            case .game(let filter, let id): return selectedDatabaseFilter == filter && selectedGameID == id
+            case .romFolder(let url): return selectedRomFolder == url
+            }
+        }
+        let newIndex: Int
+        if let currentIndex {
+            newIndex = max(0, min(rows.count - 1, currentIndex + offset))
+        } else {
+            newIndex = offset > 0 ? 0 : rows.count - 1
+        }
+        switch rows[newIndex] {
+        case .category(let filter):
+            selectedDatabaseFilter = filter
+            selectedRomFolder = nil
+            selectedGameID = nil
+            selectedGameFamilyRootMachineName = nil
+            databaseListScrollProxy?.scrollTo(filter.id, anchor: .center)
+        case .game(let filter, let id):
+            selectedDatabaseFilter = filter
+            selectedRomFolder = nil
+            selectedGameID = id
+            // jensyleo's own report (2026-08-13), with a screenshot: the
+            // "Games" panel showed the whole category with the selected
+            // row merely scrolled-to/highlighted — landing on a *parent*
+            // game (one with its own clone family nested under it in the
+            // tree) should instead scope "Games" down to just that parent
+            // and its clones, the same way selecting a "ROM folder" scopes
+            // it to that folder's own games. See
+            // `familyRootMachineName(for:)`'s own doc comment for why a
+            // clone *leaf* now gets this same treatment too, scoped to its
+            // own parent's family.
+            let node = findDatabaseTreeNode(id: id, in: databaseCategoryChildrenCache[filter] ?? [])
+            selectedGameFamilyRootMachineName = node.flatMap { familyRootMachineName(for: $0) }
+            databaseListScrollProxy?.scrollTo(id, anchor: .center)
+            // jensyleo's own report (2026-08-13), with a screenshot: after
+            // navigating "Database" (search included), the "Games" panel
+            // "se queda con una visual que no está relacionada" — true:
+            // the tree's own click/arrow-key handlers always set
+            // `selectedGameID` correctly, but never told the Games
+            // `Table` to scroll to it, so it just kept showing whatever
+            // part of a ~45,000-row list happened to be in view already,
+            // unrelated to the row that just got selected off-screen.
+            gameTableScrollProxy?.scrollTo(id, anchor: .center)
+        case .romFolder(let url):
+            selectedDatabaseFilter = nil
+            selectedRomFolder = url
+            selectedGameID = nil
+            selectedGameFamilyRootMachineName = nil
+            romFolderListScrollProxy?.scrollTo(url, anchor: .center)
+        }
+    }
+
+    /// Right arrow: opens whichever row is currently selected — a category
+    /// header (jensyleo's own report, 2026-08-11: this didn't work at all
+    /// at first, only game rows did) or a game's own clone disclosure —
+    /// does nothing for a childless game, same as `NSOutlineView`'s own
+    /// convention of right arrow being a no-op on a row with nothing to
+    /// expand.
+    private func expandSelectedDatabaseRow() {
+        guard let filter = selectedDatabaseFilter else { return }
+        // Same relaxation as `moveDatabaseSelection(by:scope:)`'s own
+        // `currentIndex` lookup, for the same reason: `selectedGameID` can
+        // be set from picking a row in the "Games" table on the right, not
+        // only from a sidebar leaf — while this category is collapsed,
+        // that's still "standing on the category header" as far as the
+        // sidebar's own keyboard focus is concerned, so right arrow should
+        // expand it rather than reach for a (possibly unrelated) game's own
+        // clone disclosure.
+        if selectedGameID == nil || !databaseCategoryExpansion(for: filter).wrappedValue {
+            // Standing on the category header itself — same effect as
+            // clicking its own disclosure triangle: mark it expanded, and
+            // compute its children off the main thread if this is the
+            // first time (see `refreshExpandedDatabaseCategoryCachesAsync`'s
+            // own doc comment for why this can never be synchronous).
+            expandedDatabaseCategories.insert(filter)
+            if databaseCategoryChildrenCache[filter] == nil {
+                refreshExpandedDatabaseCategoryCachesAsync(debounced: false, only: filter)
+            } else {
+                scrollDatabaseListToSelectedGameIfNewlyVisible()
+            }
+            return
+        }
+        guard let id = selectedGameID,
+              let node = findDatabaseTreeNode(id: id, in: databaseCategoryChildrenCache[filter] ?? []),
+              let children = node.children, !children.isEmpty
+        else { return }
+        expandedGameTreeNodes.insert(id)
+    }
+
+    /// Left arrow: closes whichever row is currently selected — a category
+    /// header or a game's own clone disclosure — a harmless no-op when
+    /// there's nothing to close (a childless game, or an already-collapsed
+    /// row).
+    private func collapseSelectedDatabaseRow() {
+        guard let filter = selectedDatabaseFilter else { return }
+        // Same relaxation as `expandSelectedDatabaseRow()`'s own doc
+        // comment — a game selected via the "Games" table shouldn't make
+        // left arrow reach for that game's own clone disclosure instead of
+        // collapsing the (already-collapsed) category header it's
+        // logically standing on.
+        if selectedGameID == nil || !databaseCategoryExpansion(for: filter).wrappedValue {
+            expandedDatabaseCategories.remove(filter)
+            databaseCategoryVisibleCap.removeValue(forKey: filter)
+            return
+        }
+        guard let id = selectedGameID else { return }
+        expandedGameTreeNodes.remove(id)
+    }
+
+    private func findDatabaseTreeNode(id: String, in nodes: [DatabaseTreeNode]) -> DatabaseTreeNode? {
+        for node in nodes {
+            if node.id == id { return node }
+            if let children = node.children, let found = findDatabaseTreeNode(id: id, in: children) { return found }
+        }
+        return nil
+    }
+
+    /// Which parent's clone family a selected "Database" tree node should
+    /// scope the Games table to — a parent (has its own children in the
+    /// tree) scopes to itself; jensyleo's own follow-up report (2026-08-13),
+    /// with a screenshot, extended this to a *clone leaf* too: selecting
+    /// one showed the whole unrelated category instead of that same
+    /// family, since a clone has no children of its own to trigger the
+    /// original check. Looks the clone's own parent up from the DAT's
+    /// `cloneOf` (via a live scan entry first, falling back to the
+    /// preloaded catalog for a game not scanned yet) rather than from the
+    /// tree structure itself — clone nesting only exists in the "All
+    /// games" category tree in the first place, so a clone selected from
+    /// any *other* category (a flat list of siblings there) would
+    /// otherwise have no nearby parent node to find at all. `nil` for a
+    /// genuinely standalone game (no clone family either way).
+    private func familyRootMachineName(for node: DatabaseTreeNode) -> String? {
+        if let children = node.children, !children.isEmpty { return node.machineName }
+        if let entry = viewModel.auditReport?.entries.first(where: { $0.game == node.machineName }), let cloneOf = entry.cloneOf, !cloneOf.isEmpty {
+            return cloneOf
+        }
+        if let game = viewModel.preloadedGames.first(where: { $0.name == node.machineName }), let cloneOf = game.cloneOf, !cloneOf.isEmpty {
+            return cloneOf
+        }
+        return nil
     }
 
     /// A system's ROM folders were only ever set once, at creation time in
@@ -1250,10 +1901,23 @@ struct LibraryDetailView: View {
         var folders = system.romFolderURLs
         var addedFolders: [URL] = []
         for url in panel.urls where !folders.contains(url) {
-            folders.append(url)
             addedFolders.append(url)
         }
-        guard folders != system.romFolderURLs else { return }
+        guard !addedFolders.isEmpty else { return }
+        // jensyleo's own request (2026-08-12): "ROM folder" starts out
+        // alphabetical by default — a newly-added folder slots into its
+        // alphabetically-correct position among the existing ones, rather
+        // than always landing at the end regardless of name. Inserted one
+        // at a time into whatever order `folders` is *already* in (not a
+        // full re-sort of everything) so this never undoes a manual
+        // reorder (the ↑/↓ buttons in `romFolderRow(for:)`) already applied
+        // to the folders already there — only decides where a genuinely
+        // *new* folder starts out.
+        for url in addedFolders.sorted(by: { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }) {
+            let insertIndex = folders.firstIndex { $0.lastPathComponent.localizedCaseInsensitiveCompare(url.lastPathComponent) == .orderedDescending } ?? folders.count
+            folders.insert(url, at: insertIndex)
+        }
+        localRomFolderOrder = folders
         onAddFolder(folders)
         // After adding, focus shifts to the last added folder so the user can
         // proceed directly to scanning it (jensyleo's own call, 2026-07-30).
@@ -1285,6 +1949,7 @@ struct LibraryDetailView: View {
             selectedRomFolder = nil
             selectedDatabaseFilter = .allGames
         }
+        localRomFolderOrder = folders
         onAddFolder(folders)
         // Purges this folder's entries from the persisted report/scan
         // cache right away — see `LibraryViewModel.removeFolder(_:system:)`'s
@@ -1317,12 +1982,34 @@ struct LibraryDetailView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             gameTreeTable
+            // Same "Show N more" idea as the sidebar tree's own truncation
+            // row (`maxTreeChildrenPerCategory`/`treeLoadMoreIncrement`) —
+            // see `gamesTableVisibleCap`'s own doc comment for why this
+            // exists at all. Only shown once there's actually more beyond
+            // the current page.
+            if displayedGameNodes.count > gamesTableVisibleCap {
+                Button {
+                    gamesTableVisibleCap += Self.treeLoadMoreIncrement
+                } label: {
+                    Text("Show \(min(Self.treeLoadMoreIncrement, displayedGameNodes.count - gamesTableVisibleCap)) more (\(displayedGameNodes.count - gamesTableVisibleCap) left)")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 4)
+            }
+        }
+        .onChange(of: selectedDatabaseFilter) { resetGamesTableVisibleCap() }
+        .onChange(of: selectedRomFolder) { resetGamesTableVisibleCap() }
+        .onChange(of: selectedGameFamilyRootMachineName) {
+            resetGamesTableVisibleCap()
+            refreshCachedFamilyGameNodes()
         }
     }
 
     private var gamesListTitle: String {
-        guard let selectedRomFolder else { return "Games (\(cachedGameNodes.count))" }
-        return "\(selectedRomFolder.lastPathComponent) — Games (\(cachedGameNodes.count))"
+        guard let selectedRomFolder else { return "Games (\(displayedGameNodes.count))" }
+        return "\(selectedRomFolder.lastPathComponent) — Games (\(displayedGameNodes.count))"
     }
 
     /// The one audit-driven tree — same columns, same status colors, same
@@ -1343,8 +2030,60 @@ struct LibraryDetailView: View {
         }
     }
 
+    /// `cachedGameNodes`, narrowed to just a selected parent's own clone
+    /// family when `selectedGameFamilyRootMachineName` is set — see that
+    /// property's own doc comment. Just returns `cachedFamilyGameNodes`,
+    /// kept up to date by `refreshCachedFamilyGameNodes()`.
+    ///
+    /// jensyleo's own report (2026-08-13): "pasar entre juegos sin clones es
+    /// mucho más rápido que cuando sí los tiene" — this used to be a plain
+    /// `.filter` over ALL of `cachedGameNodes` (up to ~45,000 rows at "All
+    /// games" scale), re-run on every single `body` re-evaluation while a
+    /// family was selected (a filter's own review comment, at the time,
+    /// judged this "a cost this small" — wrong at that scale: SwiftUI
+    /// re-evaluates `body` far more often than once per click). A game with
+    /// no clones took neither this filter NOR the `Button.overlay`/gesture
+    /// cost at all — `selectedGameFamilyRootMachineName` stays `nil`, so
+    /// this whole property was always just handing back the existing array
+    /// by reference — which is exactly why only the *clone* case felt slow.
+    /// Now a plain, already-computed cache instead, refreshed only when its
+    /// real inputs (the selected family or the category/folder's own game
+    /// list) actually change.
+    private var displayedGameNodes: [GameNode] {
+        guard selectedGameFamilyRootMachineName != nil else { return cachedGameNodes }
+        return cachedFamilyGameNodes
+    }
+
+    /// See `displayedGameNodes`'s own doc comment for why this exists.
+    /// Recomputed by `refreshCachedFamilyGameNodes()`, called from the same
+    /// two `onChange`s that already reset `gamesTableVisibleCap`.
+    @State private var cachedFamilyGameNodes: [GameNode] = []
+
+    private func refreshCachedFamilyGameNodes() {
+        guard let root = selectedGameFamilyRootMachineName else {
+            cachedFamilyGameNodes = []
+            return
+        }
+        cachedFamilyGameNodes = cachedGameNodes.filter { $0.name == root || $0.cloneOf == root }
+    }
+
+    /// `displayedGameNodes`, capped to `gamesTableVisibleCap` — see that
+    /// property's own doc comment for why. What the `Table` itself actually
+    /// renders; `displayedGameNodes.count` (the real, uncapped total) is
+    /// still what `gamesListTitle` shows, so the count in the header never
+    /// lies about how many games are really in scope.
+    private var visibleGameNodes: [GameNode] {
+        let all = displayedGameNodes
+        guard all.count > gamesTableVisibleCap else { return all }
+        return Array(all.prefix(gamesTableVisibleCap))
+    }
+
+    private func resetGamesTableVisibleCap() {
+        gamesTableVisibleCap = Self.maxTreeChildrenPerCategory
+    }
+
     private var gameTreeTableContent: some View {
-        Table(cachedGameNodes, selection: $selectedGameID, columnCustomization: $gameColumnCustomization) {
+        Table(visibleGameNodes, selection: $selectedGameID, columnCustomization: $gameColumnCustomization) {
             TableColumn("") { node in
                 if let status = node.aggregateStatus {
                     Image(systemName: symbolName(for: status)).foregroundStyle(tint(for: status))
@@ -1456,9 +2195,10 @@ struct LibraryDetailView: View {
             return .handled
         }
         selectedGameID = match.id
-        withAnimation {
-            gameTableScrollProxy?.scrollTo(match.id, anchor: .center)
-        }
+        // No `withAnimation` — jensyleo's own request (2026-08-13):
+        // animated transitions aren't wanted anywhere in this app, this
+        // type-ahead scroll included.
+        gameTableScrollProxy?.scrollTo(match.id, anchor: .center)
         return .handled
     }
 
@@ -1685,8 +2425,8 @@ struct LibraryDetailView: View {
         case .unverifiable: base = "Nodump (unverifiable)"
         }
         if entry.isBadDump {
-            // For every other status, a file DID get matched/found, so "(bad
-            // dump in DAT)" reads as an extra fact about that real file. For
+            // For every other status, a file DID get matched/found, so this
+            // suffix reads as an extra fact about that real file. For
             // `.missing`, nothing was found at all — appending the same
             // suffix read as self-contradictory ("Missing (bad dump in
             // DAT)" implies a bad file was found, when actually none was) —
@@ -1695,7 +2435,19 @@ struct LibraryDetailView: View {
             // stays visible (still useful: it tells the user this rom
             // wouldn't have been fixable by re-dumping even if found)
             // without implying presence.
-            base = entry.status == .missing ? "Missing (also a known bad dump in DAT)" : "\(base) (bad dump in DAT)"
+            //
+            // jensyleo's own report (2026-08-13): a screenshot of
+            // "Tecmo TPS System" (`coh1002m`), whose `78081g503.ic655` is
+            // DAT-declared `nodump` (confirmed directly against the real
+            // MAME `-listxml`, no `baddump` anywhere in that machine),
+            // showed "Ok (bad dump in DAT)" here — `entry.isBadDump`
+            // collapses `baddump`/`nodump` into one boolean (that's its own
+            // documented purpose, for the "Games with bad dumps" category
+            // filter), but this label always said "bad dump" regardless of
+            // which one it actually was. `entry.romDumpStatus` keeps the
+            // real distinction — use it to word this correctly instead.
+            let dumpKind = entry.romDumpStatus == .nodump ? "nodump" : "bad dump"
+            base = entry.status == .missing ? "Missing (also a known \(dumpKind) in DAT)" : "\(base) (\(dumpKind) in DAT)"
         }
         // A zip's own archive-level comment (jensyleo's own request,
         // 2026-07-30) — some real romsets carry notes in this field (dump
@@ -1731,43 +2483,19 @@ struct LibraryDetailView: View {
 
     // MARK: - Tree building
 
-    /// The current "Database" category or "Rom files" folder scope, applied
-    /// to *every* status regardless of which of the four toggles are
-    /// currently on — used to size the status buttons themselves (see
-    /// `scopedStatusCount(_:)`), so "Correct: 308" means "308 correct roms
-    /// in what you're looking at right now", not a DAT-wide total that never
-    /// changes no matter where you click.
-    private var scopedEntries: [AuditEntry] {
-        Self.scoped(
-            viewModel.auditReport?.entries ?? [], databaseFilter: selectedDatabaseFilter,
-            romFolder: selectedRomFolder, gamesInFolder: cachedGamesInFolder
-        )
-    }
-
     /// Just the "Database" category half of `scoped(_:)`'s filtering,
     /// parametrized by an explicit category rather than reading
     /// `selectedDatabaseFilter` — lets the expandable "Database" tree
     /// (`treeChildren(forCategory:)`) compute any category's own children,
     /// not only whichever one happens to be currently selected, without
     /// duplicating this switch a second time.
+    ///
+    /// The actual filtering logic moved to `DatabaseCategory.apply(to:)`
+    /// (ROMForgeCore, 2026-08-13, "Grupo A" of the App-logic extraction) so
+    /// it's unit-testable outside the app — this is now a thin delegate via
+    /// `DatabaseFilter.coreCategory`.
     private nonisolated static func categoryFiltered(_ entries: [AuditEntry], matching filter: DatabaseFilter) -> [AuditEntry] {
-        switch filter {
-        case .allGames: return entries
-        case .verifiedGames:
-            // A game counts as verified only if ALL of its roms matched —
-            // filtering individual .correct entries would also surface a
-            // few correct roms from an otherwise-incomplete game, which
-            // isn't what "verified" means.
-            let byGame = Dictionary(grouping: entries.filter { $0.game != nil }, by: { $0.game! })
-            let verifiedGameNames = byGame.filter { _, gameEntries in gameEntries.allSatisfy { $0.status == .correct } }.keys
-            return entries.filter { entry in entry.game.map(verifiedGameNames.contains) ?? false }
-        case .originals: return entries.filter { $0.cloneOf == nil }
-        case .clones: return entries.filter { $0.cloneOf != nil }
-        case .biosFiles: return entries.filter { $0.isBios }
-        case .gamesWithCHD: return entries.filter { $0.hasCHD }
-        case .gamesWithSamples: return entries.filter { $0.hasSamples }
-        case .gamesWithBadDumps: return entries.filter { $0.isBadDump }
-        }
+        filter.coreCategory.apply(to: entries)
     }
 
     /// Applies the "Database" category (or "Rom files" folder) scope to an
@@ -1775,38 +2503,7 @@ struct LibraryDetailView: View {
     /// the status filter (`databaseFilteredEntries`, for the tree) or on
     /// every status at once (`scopedEntries`, for the button counts).
     private nonisolated static func scoped(_ entries: [AuditEntry], databaseFilter: DatabaseFilter?, romFolder: URL?, gamesInFolder: Set<String>) -> [AuditEntry] {
-        let categoryFiltered = categoryFiltered(entries, matching: databaseFilter ?? .allGames)
-
-        // A "Rom files" folder scopes the same audit down to what that
-        // folder actually contributed. A missing rom has no `path` at all
-        // (nothing was found anywhere), so it can't be scoped by path like
-        // everything else — but keeping it regardless of folder meant every
-        // folder's view flooded with the DAT's entire missing list (tens of
-        // thousands of entries belonging to completely unrelated systems),
-        // which drowned out combining Correct+Incorrect+Missing into
-        // anything useful. Scoped instead to games that already have at
-        // least one real file *in this folder* — i.e. incomplete sets this
-        // folder is genuinely part of — computed from the full report
-        // (not `categoryFiltered`) so it doesn't shift just because the
-        // status filter itself changes.
-        guard let romFolder else { return categoryFiltered }
-        return categoryFiltered.filter { entry in
-            // A `.foundElsewhere` entry's own `path` points to whichever
-            // OTHER archive actually has the content (see its own doc
-            // comment) — it's never this entry's own game's real file, so
-            // it must never be trusted to mean "this game is physically in
-            // this folder". Real bug found live by jensyleo (2026-08-04):
-            // an unowned clone/hack (e.g. NEOGEO's `gpilotsp`) sharing BIOS/
-            // inherited content with its real, owned parent (`gpilots.zip`,
-            // genuinely inside this folder) got pulled into this folder's
-            // own game list purely because that *borrowed* path happened
-            // to resolve here — showing a row for a game the user doesn't
-            // actually have anything of in this folder at all. Falls
-            // through to the `gamesInFolder` check below instead, which
-            // only reflects a game's own genuinely-owned files.
-            if let path = entry.path, entry.foundElsewhereArchiveName == nil { return path.path.hasPrefix(romFolder.path) }
-            return entry.game.map(gamesInFolder.contains) ?? false
-        }
+        GameNodeBuilder.scoped(entries, databaseCategory: databaseFilter?.coreCategory, romFolder: romFolder, gamesInFolder: gamesInFolder)
     }
 
     /// Recomputes what `cachedGamesInFolder` should be — call before
@@ -1819,17 +2516,7 @@ struct LibraryDetailView: View {
     /// it, can run off the main thread on a large collection without
     /// touching any `@State` directly.
     private nonisolated static func recomputeGamesInFolder(entries: [AuditEntry], selectedFolder: URL?) -> Set<String> {
-        guard let selectedFolder else { return [] }
-        return Set(
-            entries.compactMap { entry -> String? in
-                // Excludes `.foundElsewhere` entries — see `scoped(_:)`'s
-                // own doc comment for why their `path` never means "this
-                // game's own file", only "where its content was borrowed
-                // from".
-                guard entry.foundElsewhereArchiveName == nil, let path = entry.path, path.path.hasPrefix(selectedFolder.path) else { return nil }
-                return entry.game
-            }
-        )
+        GameNodeBuilder.recomputeGamesInFolder(entries: entries, selectedFolder: selectedFolder)
     }
 
     /// How many *archives* (one ZIP/7z per game/machine, per the split-mode
@@ -1864,77 +2551,17 @@ struct LibraryDetailView: View {
     /// `computeScopedStatusCounts`, `computeGameAggregateStatusByName`) so
     /// they can never drift apart on it again.
     private nonisolated static func surplusArchiveKey(for entry: AuditEntry) -> String {
-        entry.path?.path ?? entry.name
+        SurplusArchiveKey.key(for: entry)
     }
 
     /// The filename to display for a `surplusArchiveKey` — the key itself is
     /// a full path, only ever used for grouping/identity.
     private nonisolated static func surplusDisplayName(forArchiveKey key: String) -> String {
-        key.contains("/") ? (key as NSString).lastPathComponent : key
+        SurplusArchiveKey.displayName(forKey: key)
     }
 
     private nonisolated static func computeScopedStatusCounts(scopedEntries: [AuditEntry], gamesByName: [String: DATGame]) -> [AuditStatus: Int] {
-        var entriesByGame: [String: [AuditEntry]] = [:]
-        var surplusByArchive: [String: [AuditEntry]] = [:]
-        for entry in scopedEntries {
-            if let game = entry.game {
-                entriesByGame[game, default: []].append(entry)
-            } else {
-                surplusByArchive[surplusArchiveKey(for: entry), default: []].append(entry)
-            }
-        }
-        // Same fold as `gameNodes(from:)`/`computeGameAggregateStatusByName()`
-        // — see either's own doc comment, including why this is checked
-        // against the DAT's own real catalog (`gamesByName`) rather than
-        // "does `entriesByGame` already have this key" (a real game with
-        // zero expected roms under the current merge mode, e.g. `qsound_hle`
-        // under Split, never gets a key from real entries at all). Without
-        // this fold, a game whose only problem is a folded-in "Not needed
-        // here" file (now `.incorrect`, see
-        // `AuditEntry.requiredByGameDescription`) would count as "Correct"
-        // here while its own row reads yellow in the tree right next to
-        // this button.
-        // Any archive left over below (no `gamesByName` entry to fold
-        // into — e.g. a clone excluded from `dat.games` entirely under
-        // Merged, see `DATFile.allMachineNames`'s own doc comment) with ANY
-        // identified content in it (the exact same `hasAnyIdentifiedContent`
-        // check `gameNodes(from:)` uses to color its row yellow instead of
-        // gray — must stay identical, or this button's count disagrees with
-        // the very rows it filters) gets counted here too, as one archive
-        // under `.incorrect` — closing the gap jensyleo asked about
-        // (2026-08-04): a row reading yellow "Duplicated archive, not needed
-        // here" that this header's own "Incorrect: N" never reflected.
-        var orphanedIdentifiedArchiveCount = 0
-        for (archiveKey, surplus) in surplusByArchive {
-            let matchingGame = (surplusDisplayName(forArchiveKey: archiveKey) as NSString).deletingPathExtension
-            if gamesByName[matchingGame] != nil {
-                entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
-            } else if surplus.contains(where: { $0.requiredByGameDescription != nil || $0.status == .unverifiable }) {
-                orphanedIdentifiedArchiveCount += 1
-            }
-        }
-        var counts: [AuditStatus: Int] = [:]
-        counts[.incorrect] = orphanedIdentifiedArchiveCount
-        for entries in entriesByGame.values {
-            // No folder-scope special case: "Missing" counts the same way in
-            // a "Rom files" folder as in "Database" — jensyleo's own
-            // correction (2026-08-04), reversing his earlier "Missing is
-            // Database-only" rule after it turned out to be the wrong call.
-            // `scoped(_:)` has already narrowed `scopedEntries` to games that
-            // genuinely own at least one real file *in this folder*, so a
-            // `.missing` rom reaching here always belongs to a set this
-            // folder really is part of — an incomplete set the user can
-            // actually act on, which is exactly when it should read red.
-            counts[romOnlyGameCategory(for: entries), default: 0] += 1
-        }
-        // A genuinely unrecognized archive ("Unknown game") isn't counted
-        // under "Bad" (`.badDump`) at all — "Bad" means *known* games with
-        // a real content problem (a hash-mismatched rom); an unclaimed
-        // archive with no DAT game behind it at all is a different thing
-        // entirely (gray/"Unknown"). It gets its own separate
-        // `showUnknownArchives` toggle/count instead — see
-        // `computeUnknownArchivesCount()`.
-        return counts
+        GameNodeBuilder.computeScopedStatusCounts(scopedEntries: scopedEntries, gamesByName: gamesByName)
     }
 
     /// How many genuinely unrecognized archives ("Unknown game" —
@@ -1949,13 +2576,7 @@ struct LibraryDetailView: View {
     /// count backing that very toggle's label would read 0 the moment the
     /// toggle is off, which is exactly backwards.
     private nonisolated static func computeUnknownArchivesCount(baseNodes: [GameNode]) -> Int {
-        // Excludes a surplus bucket `gameNodes(from:)` reclassified yellow
-        // (`.incorrect`, "Extra archive, not needed here…") — jensyleo's
-        // own question (2026-08-04): counting a *fully identified* archive
-        // under "Unknown" would contradict its own yellow color the moment
-        // it's shown; genuinely unrecognized content (`.surplus`) is the
-        // only thing this count is meant to mean.
-        baseNodes.filter { $0.isSurplusBucket && $0.aggregateStatus == .surplus }.count
+        GameNodeBuilder.computeUnknownArchivesCount(baseNodes: baseNodes)
     }
 
     /// Groups entries by game and buckets game-less (surplus) entries into
@@ -1974,22 +2595,7 @@ struct LibraryDetailView: View {
     /// actually *in* that folder isn't knowable from the DAT), so that
     /// still waits for a real scan, same as before.
     private nonisolated static func unscannedCatalogNodes(matching filter: DatabaseFilter, preloadedGames games: [DATGame]) -> [GameNode] {
-        let categoryFiltered: [DATGame]
-        switch filter {
-        case .allGames: categoryFiltered = games
-        // Both reflect an actual scan result (which roms really matched),
-        // not anything the DAT alone can answer — honestly empty here
-        // rather than showing something misleadingly labeled.
-        case .verifiedGames, .gamesWithBadDumps: categoryFiltered = []
-        case .originals: categoryFiltered = games.filter { $0.cloneOf == nil }
-        case .clones: categoryFiltered = games.filter { $0.cloneOf != nil }
-        case .biosFiles: categoryFiltered = games.filter(\.isBios)
-        case .gamesWithCHD: categoryFiltered = games.filter { !$0.disks.isEmpty }
-        case .gamesWithSamples: categoryFiltered = games.filter(\.hasSamples)
-        }
-        return categoryFiltered.map { game in
-            GameNode(id: "game-\(game.name)", name: game.name, entries: [], aggregateStatus: nil, sourceGame: game)
-        }
+        GameNodeBuilder.unscannedCatalogNodes(matching: filter.coreCategory, preloadedGames: games)
     }
 
     /// `computeGameNodes()`'s real grouping work, factored out so the
@@ -1997,239 +2603,15 @@ struct LibraryDetailView: View {
     /// below) can reuse the exact same game/surplus-archive grouping for an
     /// arbitrary category — not just whichever one happens to be currently
     /// selected — without duplicating this logic a second time.
+    /// Body moved to `GameNodeBuilder.gameNodes(from:...)` (ROMForgeCore,
+    /// 2026-08-13, "Grupo B" of the App-logic extraction) so it's
+    /// unit-testable — thin delegate, every real bug this logic was built
+    /// to fix is documented on the Core function itself now.
     private nonisolated static func gameNodes(from entries: [AuditEntry], gamesByName: [String: DATGame], gameAggregateStatusByName: [String: AuditStatus], combineRomAndCHD: Bool, isFolderScoped: Bool) -> [GameNode] {
-        var entriesByGame: [String: [AuditEntry]] = [:]
-        var gameOrder: [String] = []
-        var surplusEntries: [AuditEntry] = []
-
-        for entry in entries {
-            guard let game = entry.game else {
-                surplusEntries.append(entry)
-                continue
-            }
-            if entriesByGame[game] == nil {
-                gameOrder.append(game)
-            }
-            entriesByGame[game, default: []].append(entry)
-        }
-
-        // Each unrecognized physical archive gets its own row ("Unknown
-        // game", per ClrMamePro/RomCenter convention) instead of being
-        // dumped into one combined "Surplus files" bucket — a scan with
-        // several stray archives showed them all as one opaque row with no
-        // way to tell which archive was which without opening the ROMs
-        // pane. Several surplus entries can share one archive (more than
-        // one stray file inside the same unrecognized zip), so they're
-        // grouped by their containing archive name first.
-        // Keyed by each archive's FULL path, not just its filename —
-        // jensyleo's own question (2026-08-06): what if the same archive sits
-        // in several ROM folders? Keying by `lastPathComponent` alone
-        // collapsed every physically-distinct copy into ONE row (three real
-        // `TEST 1.zip` files across three folders showing as a single
-        // "Unknown game"), which is exactly the Finder-style "a folder shows
-        // what is physically in it" rule this view is supposed to follow.
-        // A DAT-recognized name is unaffected either way (those buckets get
-        // folded into their real game's own row just below), so this
-        // specifically fixes the unrecognized-archive case.
-        var surplusByArchive: [String: [AuditEntry]] = [:]
-        var surplusOrder: [String] = []
-        for entry in surplusEntries {
-            let archiveKey = surplusArchiveKey(for: entry)
-            if surplusByArchive[archiveKey] == nil { surplusOrder.append(archiveKey) }
-            surplusByArchive[archiveKey, default: []].append(entry)
-        }
-
-        // A surplus file living *inside* an archive that also fully/
-        // partially matches a real known game (its own archive is named
-        // after that exact game, per the ".zip per machine" convention) is
-        // an extra/unexpected file in an otherwise-recognized set — e.g. a
-        // stray rom the DAT doesn't call for — not a second, unrelated
-        // "Unknown game". Folding it into that same game's own entries
-        // instead of a separate phantom row avoids exactly that: two rows
-        // both named "dino.zip", one matched and one "Unknown", reading as
-        // if the same game were detected twice.
-        // Whether an archive name is a *real* known game must never depend
-        // on which statuses happen to be toggled visible right now — real
-        // bug found live by jensyleo (2026-07-30): with Correct/Incorrect
-        // toggled off and only Surplus on, `entriesByGame` (built from this
-        // same toggle-filtered `entries` param) has no entry for a
-        // perfectly well-matched game at all, so a stray extra file inside
-        // its otherwise-fine archive wrongly showed as a separate "Unknown
-        // game" instead of folding into that game's own row.
-        //
-        // Checked against `gamesByName` (the loaded DAT's own real game
-        // catalog), not `gameAggregateStatusByName`'s keys — real bug found
-        // live by jensyleo (2026-08-04, `qsound_hle` under Split): a real
-        // DAT game whose entire expected rom list is empty under the
-        // current merge mode (its only rom is `merge=`-tagged, stripped
-        // entirely — see `AuditEntry.requiredByGameDescription`'s own
-        // Split-mode case) never produces a single `entry.game != nil` row,
-        // so it never gets a key in `gameAggregateStatusByName` either
-        // (that dict is built purely from scan results). A stray/misplaced
-        // file physically inside `qsound_hle.zip` then failed this
-        // existence check and became its own "Unknown game" bucket — wrong,
-        // since "QSound (HLE)" is a perfectly real, known machine, just one
-        // with nothing of its own to expect right now. `gamesByName` is the
-        // DAT's own catalog, independent of any scan result at all, so a
-        // real game with zero expected roms is still recognized as real.
-        for archiveKey in surplusOrder {
-            // `archiveKey` is now a full path (see `surplusByArchive`'s own
-            // comment above), so the game name comes from its filename.
-            let matchingGame = (surplusDisplayName(forArchiveKey: archiveKey) as NSString).deletingPathExtension
-            guard gamesByName[matchingGame] != nil else { continue }
-            if entriesByGame[matchingGame] == nil { gameOrder.append(matchingGame) }
-            entriesByGame[matchingGame, default: []].append(contentsOf: surplusByArchive[archiveKey] ?? [])
-            surplusByArchive.removeValue(forKey: archiveKey)
-        }
-        surplusOrder.removeAll { surplusByArchive[$0] == nil }
-
-
-        var roots = gameOrder.flatMap { name -> [GameNode] in
-            let entries = entriesByGame[name] ?? []
-            let romEntries = entries.filter { !$0.isDisk }
-            let diskEntries = entries.filter(\.isDisk)
-
-            // `combineRomAndCHD`'s own toggle (off by default): the old,
-            // pre-split behavior — one row, rom+CHD entries folded
-            // together, for a quick side-by-side comparison against the
-            // new default. Bypasses `gameAggregateStatusByName` (which is
-            // deliberately rom-only now) since the whole point here is to
-            // reproduce how it used to look, mixed status and all.
-            if combineRomAndCHD {
-                return [GameNode(id: "game-\(name)", name: name, entries: entries, aggregateStatus: gameCategory(for: entries), sourceGame: gamesByName[name])]
-            }
-
-            // Split into up to two independent rows — jensyleo's own
-            // request (2026-07-30): a game's rom and its CHD disk must
-            // each show its own real "Correct"/"Missing"/"Incorrect" as a
-            // *separate* row, not folded into one combined row whose text
-            // ("Incomplete (rom missing)") drowned out a perfectly correct
-            // CHD just because that same game's rom happened to be
-            // missing (or vice versa). Most games have only roms (no
-            // `isDisk` entries at all) and still get exactly one row, same
-            // as before.
-            let diskStatus = diskEntries.isEmpty ? nil : gameCategory(for: diskEntries)
-
-            var nodes: [GameNode] = []
-            // A missing rom row is skipped entirely when this same game has
-            // a CHD that isn't itself also fully missing — jensyleo's own
-            // request (2026-07-30: "está el CHD, pero si no está la ROM, no
-            // importa, no debe aparecer ese rojo"), reconfirmed after
-            // briefly trying the opposite live (2026-08-04, `sfiii3jr1`):
-            // showing the missing rom as its own separate red row, right
-            // next to that same game's correct green disk row, read as more
-            // confusing than helpful for a ROM+CHD game specifically — see
-            // `STATES.md` for the full reasoning and the states/messages
-            // table this rule is part of. Only applies to a genuinely
-            // `.missing` rom (nothing at all found) — an `.incorrect`/
-            // misnamed rom still shows, since that's a real, fixable
-            // problem worth surfacing regardless of the CHD.
-            let romIsMissing = romEntries.allSatisfy { $0.status == .missing }
-            let skipMissingRom = romIsMissing && diskStatus != nil && diskStatus != .missing
-            if !romEntries.isEmpty, !skipMissingRom {
-                // The row's own badge always reflects the game's *true*
-                // status — real bug found live by jensyleo (2026-07-28): with
-                // the "Missing" status toggle off, `entries` here has already
-                // had every missing rom filtered out before this function
-                // ever sees it, so a game that's genuinely incomplete (e.g.
-                // `gng`, missing 3 real roms) computed as green/"Ok" here,
-                // simply because none of its missing rows were still in the
-                // (status-toggle-filtered) list to notice. The status toggles
-                // are meant to control which *individual rom rows* show in
-                // the detail pane on the right (`entries`, unchanged below) —
-                // not to make an incomplete game's own row lie about its
-                // aggregate status. `gameAggregateStatusByName` (see its own
-                // doc comment) is exactly the toggle-independent source of
-                // truth already built for this same reason on the "Database"
-                // tree side; reused here so the tree and this table can never
-                // disagree again — it's already rom-only, matching `romEntries`.
-                //
-                // In a "Rom files" folder the aggregate comes from this
-                // folder's own `romEntries` instead of `gameAggregateStatusByName`
-                // (the DAT-wide truth) — NOT to suppress "Missing" (jensyleo
-                // corrected that rule on 2026-08-04: Missing must show red in
-                // a folder view too, whenever it genuinely applies), but
-                // because a system can have several "Rom files" folders and
-                // `scoped(_:)` has already dropped the roms this game keeps in
-                // a *different* one. Consulting the DAT-wide aggregate here
-                // would paint a game red in folder A purely because part of
-                // its set legitimately lives in folder B. What survives
-                // scoping is exactly the right input: roms genuinely here,
-                // plus roms genuinely missing everywhere — so an incomplete
-                // set this folder really is part of does read red, and a set
-                // merely split across folders doesn't.
-                let trueStatus = isFolderScoped
-                    ? gameCategory(for: romEntries)
-                    : gameAggregateStatusByName[name] ?? gameCategory(for: romEntries)
-                nodes.append(GameNode(id: "game-\(name)", name: name, entries: romEntries, aggregateStatus: trueStatus, sourceGame: gamesByName[name]))
-            }
-            if let diskStatus {
-                nodes.append(GameNode(id: "game-\(name)-chd", name: name, entries: diskEntries, aggregateStatus: diskStatus, isDiskRow: true, sourceGame: gamesByName[name]))
-            }
-            return nodes
-        }
-        for archiveKey in surplusOrder {
-            let bucketEntries = surplusByArchive[archiveKey] ?? []
-            // jensyleo's own question (2026-08-04, Merged mode): a clone
-            // excluded from `dat.games` entirely (folded into its parent —
-            // e.g. `sf2acca.zip`, a real archive `allMachineNames` now
-            // correctly protects from cross-game theft, but which still
-            // has no `dat.games` entry of its own to fold this bucket
-            // into) reads as gray "Unknown game" even when every single
-            // one of its own entries is fully identified as belonging to
-            // a real game elsewhere (`requiredByGameDescription` — see its
-            // own doc comment). Gray/"Unknown" should mean genuinely no
-            // idea what this is; this archive's content is the opposite
-            // of that, so it reads yellow/`.incorrect` instead, same as
-            // the individual per-file rows already do — never both a
-            // gray game-level row and yellow file-level rows for the
-            // identical, fully-known content.
-            // `.unverifiable` counts as identified too, alongside a real
-            // `requiredByGameDescription` — real case found live by jensyleo
-            // (2026-08-04): `gryzor.zip` under Merged has every one of its
-            // roms accounted for either way (most "not needed here", one a
-            // recognized nodump placeholder duplicate — see
-            // `SurplusFile.matchesNodumpRomName`'s own doc comment), with
-            // nothing genuinely unknown left in it at all.
-            //
-            // ANY identified entry is enough, not all of them — jensyleo's
-            // own rule (2026-08-06, from a live case: `1943 copy.zip` holding
-            // 4 real `1943` roms alongside 2 junk files). Requiring *every*
-            // entry to be identified let those 2 strays drag the whole row to
-            // gray "Unknown game", hiding the 4 genuine roms sitting in it.
-            // Once even one real rom is recognized, this archive is not
-            // "genuinely no idea what this is" — so it reads yellow. The junk
-            // entries inside keep their own gray "Unrecognized" rows, which
-            // is exactly the distinction jensyleo asked to preserve: the
-            // archive-level row says "there's something real here", the
-            // file-level rows say precisely which parts aren't.
-            let hasAnyIdentifiedContent = bucketEntries.contains { $0.requiredByGameDescription != nil || $0.status == .unverifiable }
-            roots.append(
-                GameNode(
-                    // `id` is the archive's full path, so two same-named
-                    // archives in different ROM folders stay two distinct,
-                    // separately-selectable rows; `name` is just the filename
-                    // for display (the "Rom files" folder view already tells
-                    // the user which folder they're looking at, and the
-                    // all-folders view shows each copy's own real path in its
-                    // detail pane).
-                    id: "surplus-\(archiveKey)",
-                    name: surplusDisplayName(forArchiveKey: archiveKey),
-                    entries: bucketEntries,
-                    aggregateStatus: hasAnyIdentifiedContent ? .incorrect : .unknownFile,
-                    isSurplusBucket: true
-                )
-            )
-        }
-
-        // MAME's own `-listxml` output (and a real DAT generally) already
-        // lists machines/games in roughly alphabetical order, but unknown
-        // archives were only ever appended at the end — sorting the
-        // combined list interleaves them where they'd actually sit
-        // alphabetically, matching the reference scanner view.
-        return roots.sorted {
-            ($0.actualFileName ?? $0.name).localizedCaseInsensitiveCompare($1.actualFileName ?? $1.name) == .orderedAscending
-        }
+        GameNodeBuilder.gameNodes(
+            from: entries, gamesByName: gamesByName, gameAggregateStatusByName: gameAggregateStatusByName,
+            combineRomAndCHD: combineRomAndCHD, isFolderScoped: isFolderScoped
+        )
     }
 
     /// Builds a "Database" category's real tree children — lazily,
@@ -2252,18 +2634,133 @@ struct LibraryDetailView: View {
     /// wouldn't make sense.
     /// Drops every category's cached tree children and recomputes only the
     /// ones actually expanded right now — called whenever the underlying
-    /// audit data changes (status filters, a new scan). A *collapsed*
-    /// category's cache just clears and stays empty until next expanded
-    /// (cheap, correct); a category the user is actively looking at gets
-    /// refreshed immediately instead of silently going blank until they
-    /// collapse and re-expand it by hand.
-    private func refreshExpandedDatabaseCategoryCaches() {
-        var refreshed: [DatabaseFilter: [DatabaseTreeNode]] = [:]
-        for filter in expandedDatabaseCategories {
-            refreshed[filter] = treeChildren(forCategory: filter)
+    /// audit data changes (status filters, a new scan) or the search text
+    /// changes. A *collapsed* category's cache just clears and stays empty
+    /// until next expanded (cheap, correct); a category the user is
+    /// actively looking at gets refreshed instead of silently going blank
+    /// until they collapse and re-expand it by hand. Debounced and
+    /// off-main-thread — jensyleo's own report
+    /// (2026-08-11): typing in the new "Database" search field made the
+    /// whole app "muy lenta". Two causes stacked: every single keystroke
+    /// triggered a fresh recompute (no debounce at all), and each one ran
+    /// `computeTreeChildren(...)`'s full O(entries) regroup/sort
+    /// synchronously on the main thread — exactly the class of bug already
+    /// fixed for folder/category clicks by `triggerCachedGameDataRecompute()`,
+    /// just never applied to this call site. Waits `searchDebounceDelay`
+    /// after the *last* keystroke before doing any real work (so a fast
+    /// typist's intermediate states never get computed at all, only the
+    /// final one), then does that work in `Task.detached`, guarded by
+    /// `databaseTreeRecomputeGeneration` against a slower, older request
+    /// finishing after a newer one and stomping its result — same
+    /// generation-counter pattern `triggerCachedGameDataRecompute()` already
+    /// uses, for the same reason (see its own doc comment).
+    /// `only`, when set, recomputes just that one category and merges the
+    /// result into the existing cache instead of rebuilding every expanded
+    /// category from scratch — jensyleo's own report (2026-08-11): the app
+    /// still felt slow even after this whole path moved off the main
+    /// thread. Root cause of *that*: a first-expand or a "Show N more"
+    /// click affects exactly one category, but this used to recompute
+    /// *every* currently-expanded one regardless — with several categories
+    /// expanded at once, opening or paging just one of them paid for
+    /// redoing all the others too, for no reason. Left `nil` (recompute
+    /// every expanded category) only for the two triggers that genuinely
+    /// affect all of them at once: the search text changing, and a status/
+    /// visibility toggle flipping.
+    private func refreshExpandedDatabaseCategoryCachesAsync(debounced: Bool, only: DatabaseFilter? = nil) {
+        pendingDatabaseTreeRecompute?.cancel()
+        databaseTreeRecomputeGeneration += 1
+        let generation = databaseTreeRecomputeGeneration
+        let expanded = expandedDatabaseCategories
+        let filtersToRecompute = only.map { [$0] } ?? Array(expanded)
+        let hasAuditReport = viewModel.auditReport != nil
+        let entries = viewModel.auditReport?.entries ?? []
+        let folder = selectedRomFolder
+        let preloadedGames = viewModel.preloadedGames
+        let aggStatus = gameAggregateStatusByName
+        let combine = combineRomAndCHD
+        let showUnknown = showUnknownArchives
+        let statusFilters = activeStatusFilters
+        let searchText = databaseSearchText
+        let visibleCaps = databaseCategoryVisibleCap
+        let existingCache = databaseCategoryChildrenCache
+        pendingDatabaseTreeRecompute = Task.detached(priority: .userInitiated) {
+            if debounced {
+                // A fast typist's every keystroke lands here — only the
+                // *last* one within this window should ever pay for a real
+                // recompute; `Task.sleep` (not a blocking main-thread timer)
+                // so this costs nothing while waiting, and `Task.isCancelled`
+                // (checked right after) means an earlier keystroke's own
+                // sleep, once superseded, never runs the expensive part at
+                // all once cancelled.
+                try? await Task.sleep(for: Self.searchDebounceDelay)
+                guard !Task.isCancelled else { return }
+            }
+            var refreshed = existingCache
+            for filter in filtersToRecompute {
+                refreshed[filter] = Self.computeTreeChildren(
+                    forCategory: filter,
+                    hasAuditReport: hasAuditReport, auditEntries: entries, selectedRomFolder: folder, preloadedGames: preloadedGames,
+                    gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters,
+                    searchText: searchText, visibleCap: visibleCaps[filter] ?? Self.maxTreeChildrenPerCategory
+                )
+            }
+            // Anything no longer expanded (collapsed since this task was
+            // kicked off) shouldn't linger in the merged result — matches
+            // the old always-rebuild-from-scratch behavior for every
+            // filter not in `filtersToRecompute` too.
+            refreshed = refreshed.filter { expanded.contains($0.key) }
+            await MainActor.run {
+                // Same out-of-order guard as `triggerCachedGameDataRecompute()`
+                // — see its own doc comment for why `Task.isCancelled` alone
+                // isn't enough once this genuinely runs concurrently.
+                guard generation == databaseTreeRecomputeGeneration else { return }
+                databaseCategoryChildrenCache = refreshed
+                databaseCategoryVisibleCap = visibleCaps.filter { expanded.contains($0.key) }
+                scrollDatabaseListToSelectedGameIfNewlyVisible()
+            }
         }
-        databaseCategoryChildrenCache = refreshed
     }
+
+    /// jensyleo's own request (2026-08-13): opening a category's chevron
+    /// when a game is already selected (e.g. picked from the "Games" table
+    /// on the right while the category itself was still collapsed — see
+    /// the category header's own `isSelected`/`moveDatabaseSelection`'s
+    /// `currentIndex` doc comments for that whole story) should scroll the
+    /// sidebar to reveal it, not leave the newly-expanded list sitting at
+    /// the top with the real selection buried off-screen somewhere below.
+    /// Called both here (the async/first-expand path) and from
+    /// `databaseCategoryExpansion(for:)`'s own setter (the already-cached
+    /// path, where there's no async gap to wait out).
+    private func scrollDatabaseListToSelectedGameIfNewlyVisible() {
+        guard let filter = selectedDatabaseFilter, let id = selectedGameID,
+              expandedDatabaseCategories.contains(filter),
+              findDatabaseTreeNode(id: id, in: databaseCategoryChildrenCache[filter] ?? []) != nil
+        else { return }
+        // jensyleo's own report (2026-08-13): calling this synchronously
+        // right after the category's own children just got inserted into
+        // `databaseCategoryChildrenCache` — same SwiftUI update/frame the
+        // new leaf rows are only just now being mounted in — a classic
+        // `ScrollViewReader.scrollTo` timing gap: the target `id` doesn't
+        // exist in the rendered `List` yet, so there's nothing to scroll
+        // to and the call is silently a no-op. Deferring one run-loop tick
+        // gives SwiftUI time to actually lay the new rows out first.
+        DispatchQueue.main.async {
+            databaseListScrollProxy?.scrollTo(id, anchor: .center)
+        }
+    }
+
+    /// How long to wait after the last keystroke before actually recomputing
+    /// the "Database" search results — long enough that normal typing speed
+    /// (a character every ~100-150ms) never triggers an intermediate
+    /// recompute, short enough that pausing mid-word still feels responsive.
+    private static let searchDebounceDelay: Duration = .milliseconds(300)
+    /// Short enough that one deliberate click/keypress still feels
+    /// instant, long enough that holding/repeating an arrow key in
+    /// "Database" (typical OS key-repeat is a step every ~30-50ms) folds
+    /// several intermediate selections into just the one the user
+    /// actually settles on — see `triggerCachedGameDataRecompute()`'s own
+    /// doc comment.
+    private static let keyboardNavigationDebounceDelay: Duration = .milliseconds(80)
 
     /// Synchronous convenience for the sites where only the *display*
     /// filter (`activeStatusFilters`/`showUnknownArchives`/`combineRomAndCHD`)
@@ -2279,27 +2776,13 @@ struct LibraryDetailView: View {
             gamesInFolder: cachedGamesInFolder, gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD
         )
         cachedGameNodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: gameAggregateStatusByName, showUnknownArchives: showUnknownArchives, activeStatusFilters: activeStatusFilters)
+        refreshCachedFamilyGameNodes()
+        cachedGameNodesByID = Self.indexByID(cachedGameNodes)
     }
 
-    /// Synchronous convenience for the sites where the underlying scope
-    /// itself just changed (a fresh `viewModel.auditReport`, first
-    /// appearance) — recomputes everything `recomputeGameNodes()` does,
-    /// plus `cachedGamesInFolder`, `cachedScopedStatusCounts`, and
-    /// `cachedUnknownArchivesCount`. Kept synchronous (unlike
-    /// `triggerCachedGameDataRecompute()`'s own `Task.detached` path) since
-    /// these two remaining sites (a scan just finished; the view just
-    /// appeared) each run once per real event, not once per user click —
-    /// jensyleo's own report (2026-08-11): a THIRD call site used to exist
-    /// here, `.onChange(of: selectedDatabaseFilter)`, which very much IS a
-    /// per-click trigger — moved to `triggerCachedGameDataRecompute()`
-    /// instead, the same fix `.onChange(of: selectedRomFolder)` already
-    /// had since 2026-08-03. This function's own doc comment used to claim
-    /// "none of these three sites were the one jensyleo actually reported
-    /// freezing" — true when written, but the Database-filter site was
-    /// exactly that once it got added later, and nobody revisited this
-    /// claim when it did.
-    /// The async, off-main-thread path for recomputing everything
-    /// `recomputeCachedGameDataSync()` does, guarded against out-of-order
+    /// The async, off-main-thread path for recomputing all of
+    /// `cachedGameNodes`/`cachedGamesInFolder`/`cachedScopedStatusCounts`/
+    /// `cachedUnknownArchivesCount`, guarded against out-of-order
     /// completion by `folderRecomputeGeneration` — shared by both
     /// `.onChange(of: selectedRomFolder)` and `.onChange(of:
     /// selectedDatabaseFilter)` (added 2026-08-11; originally only the
@@ -2324,6 +2807,22 @@ struct LibraryDetailView: View {
     /// `@State` directly (only plain value-type parameters), specifically
     /// so it's safe to run inside `Task.detached`, with only the final
     /// assignment back on `@MainActor`.
+    /// jensyleo's own report (2026-08-13): moving through "Database" with
+    /// the arrow keys — without ever opening a chevron, so
+    /// `flattenedVisibleDatabaseRows` itself is cheap (a couple dozen
+    /// collapsed top-level rows at most) — still felt slow. Root cause:
+    /// each step selects a different category exactly like a mouse click
+    /// would (`.onChange(of: selectedDatabaseFilter)` →
+    /// `triggerCachedGameDataRecompute()`), and holding/repeating an arrow
+    /// key fires that far faster than anyone clicks — each intermediate
+    /// step (even one immediately superseded by the next) still kicked off
+    /// its own real rebuild of `cachedGameNodes` for whichever category it
+    /// briefly landed on, some of which (e.g. "All games") can be tens of
+    /// thousands of rows. `Task.sleep` first, same debounce shape already
+    /// used for the search field's own keystroke storm — short enough
+    /// (`keyboardNavigationDebounceDelay`) that a single deliberate click
+    /// or keypress still feels instant, long enough that a fast run of
+    /// repeats collapses into just the row the user actually settles on.
     private func triggerCachedGameDataRecompute() {
         pendingFolderRecompute?.cancel()
         folderRecomputeGeneration += 1
@@ -2338,6 +2837,8 @@ struct LibraryDetailView: View {
         let showUnknown = showUnknownArchives
         let statusFilters = activeStatusFilters
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
+            try? await Task.sleep(for: Self.keyboardNavigationDebounceDelay)
+            guard !Task.isCancelled else { return }
             let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
             let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
             let baseNodes = Self.computeBaseGameNodes(
@@ -2346,6 +2847,7 @@ struct LibraryDetailView: View {
                 gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
             )
             let nodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters)
+            let nodesByID = Self.indexByID(nodes)
             let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
             await MainActor.run {
@@ -2363,22 +2865,75 @@ struct LibraryDetailView: View {
                 guard generation == folderRecomputeGeneration else { return }
                 cachedGamesInFolder = gamesInFolder
                 cachedGameNodes = nodes
+                refreshCachedFamilyGameNodes()
+                cachedGameNodesByID = nodesByID
                 cachedScopedStatusCounts = counts
                 cachedUnknownArchivesCount = unknownCount
             }
         }
     }
 
-    private func recomputeCachedGameDataSync() {
-        cachedGamesInFolder = Self.recomputeGamesInFolder(entries: viewModel.auditReport?.entries ?? [], selectedFolder: selectedRomFolder)
-        let baseNodes = Self.computeBaseGameNodes(
-            hasAuditReport: viewModel.auditReport != nil, auditEntries: viewModel.auditReport?.entries ?? [],
-            selectedRomFolder: selectedRomFolder, preloadedGames: viewModel.preloadedGames, selectedDatabaseFilter: selectedDatabaseFilter,
-            gamesInFolder: cachedGamesInFolder, gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD
-        )
-        cachedGameNodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: gameAggregateStatusByName, showUnknownArchives: showUnknownArchives, activeStatusFilters: activeStatusFilters)
-        cachedScopedStatusCounts = Self.computeScopedStatusCounts(scopedEntries: scopedEntries, gamesByName: Self.gamesByName(viewModel.preloadedGames))
-        cachedUnknownArchivesCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
+    /// Was `recomputeCachedGameDataSync()` — called synchronously (blocking
+    /// the main thread) from `.onAppear` and `.onChange(of: viewModel
+    /// .auditReport)`, i.e. every time this view first appears for a system
+    /// or a scan just finished. Real cost found live (2026-08-13 performance
+    /// audit, "Ciclo A"): switching between two or three already-scanned,
+    /// large-DAT systems in the sidebar in quick succession visibly
+    /// stuttered on each switch, since both this function AND
+    /// `computeGameAggregateStatusByName()` (also called synchronously right
+    /// before it, at both sites) are full O(entries) passes over up to
+    /// ~188k `AuditEntry`s.
+    ///
+    /// Folded into one `Task.detached`, same generation-guarded pattern as
+    /// `triggerCachedGameDataRecompute()` — the two were never combined into
+    /// that existing function because `gameAggregateStatusByName` is itself
+    /// one of `triggerCachedGameDataRecompute()`'s *inputs* (folder/category
+    /// clicks read the already-correct cached value, they don't need to
+    /// recompute it) — only an audit-report change needs to recompute it
+    /// too, so this is its own function rather than a flag added to that one.
+    /// `refreshExpandedDatabaseCategoryCachesAsync(debounced: false)` is
+    /// still called from inside, AFTER `gameAggregateStatusByName` is
+    /// updated on the main actor — it captures that value synchronously at
+    /// its own call time (same as before), so calling it any earlier would
+    /// have it read the stale, pre-update value.
+    private func refreshCachedGameDataAfterAuditReportChangeAsync() {
+        pendingFolderRecompute?.cancel()
+        folderRecomputeGeneration += 1
+        let generation = folderRecomputeGeneration
+        let hasAuditReport = viewModel.auditReport != nil
+        let entries = viewModel.auditReport?.entries ?? []
+        let folder = selectedRomFolder
+        let preloadedGames = viewModel.preloadedGames
+        let databaseFilter = selectedDatabaseFilter
+        let combine = combineRomAndCHD
+        let showUnknown = showUnknownArchives
+        let statusFilters = activeStatusFilters
+        pendingFolderRecompute = Task.detached(priority: .userInitiated) {
+            let aggStatus = Self.computeGameAggregateStatusByName(entries: entries, preloadedGames: preloadedGames)
+            let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
+            let baseNodes = Self.computeBaseGameNodes(
+                hasAuditReport: hasAuditReport, auditEntries: entries,
+                selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
+                gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
+            )
+            let nodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters)
+            let nodesByID = Self.indexByID(nodes)
+            let counts = Self.computeScopedStatusCounts(scopedEntries: Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder), gamesByName: Self.gamesByName(preloadedGames))
+            let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
+            await MainActor.run {
+                // Same out-of-order guard as `triggerCachedGameDataRecompute()`
+                // — see its own doc comment.
+                guard generation == folderRecomputeGeneration else { return }
+                gameAggregateStatusByName = aggStatus
+                cachedGamesInFolder = gamesInFolder
+                cachedGameNodes = nodes
+                refreshCachedFamilyGameNodes()
+                cachedGameNodesByID = nodesByID
+                cachedScopedStatusCounts = counts
+                cachedUnknownArchivesCount = unknownCount
+                refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
+            }
+        }
     }
 
     /// Hard cap on how many top-level rows a single category ever renders
@@ -2397,24 +2952,103 @@ struct LibraryDetailView: View {
     /// counts) is still there for the full list.
     ///
     /// Raised from 200 → 500 (jensyleo's own request, 2026-08-11, "liberar
-    /// la vista All"). Deliberately NOT removed outright, and raised
-    /// cautiously rather than to some large/unbounded number: the original
-    /// bug this cap fixed took *minutes* at ~43,000 rows, and this view's
-    /// per-row cost (icon + name + manufacturer + a Button) scales roughly
-    /// linearly with row count — a rough linear estimate from that same
-    /// data point puts even a few thousand rows back in "visibly slow"
-    /// territory, not the instant feel a disclosure expand should have.
-    /// 500 is a genuinely untested first step (this session's own GUI
-    /// automation proved unreliable for measuring it live), not a number
-    /// verified safe by profiling — **please tell me if expanding "All
-    /// games" at 500 still feels instant, or if it now stutters**, so this
-    /// gets tuned against real, felt performance instead of a guess.
-    private static let maxTreeChildrenPerCategory = 500
+    /// la vista All"), then back down to 200 the same day: jensyleo's own
+    /// live report at 500 was "la app se está poniendo lenta", confirming
+    /// the linear per-row-cost estimate above — 500 rows of (icon + name +
+    /// manufacturer + a `Button`, now also arrow-key-navigable) genuinely
+    /// wasn't instant. 200 is back to the last size this same feature was
+    /// confirmed comfortable at, before either the manufacturer column or
+    /// arrow-key navigation added their own per-row cost on top. The "Show
+    /// N more"/search-bar affordances added since (2026-08-11) mean 200 is
+    /// no longer a hard ceiling on what's reachable, just the size of the
+    /// first, always-fast page.
+    // `nonisolated` on these three: plain, immutable `Int` constants, read
+    // from both ordinary (main-actor) code and the `nonisolated static`
+    // background functions (`computeTreeChildren`, `capped`, etc.) that do
+    // the actual heavy lifting off the main thread — without this, Swift 6
+    // strict concurrency correctly flags each of those reads as "main
+    // actor-isolated property referenced from a nonisolated context",
+    // since a plain `static let` defaults to the enclosing (main-actor)
+    // type's own isolation. Harmless in practice (an immutable `Int` can
+    // never actually race), but `nonisolated` says so to the compiler
+    // directly instead of leaving warnings that look like real concurrency
+    // bugs on every build.
+    private nonisolated static let maxTreeChildrenPerCategory = 200
+    /// How many more rows each "Show N more" click reveals — kept equal to
+    /// `maxTreeChildrenPerCategory` so every increment costs the same as
+    /// the first page did. See `databaseCategoryVisibleCap`'s own doc
+    /// comment.
+    private nonisolated static let treeLoadMoreIncrement = 200
+    /// Defensive backstop for a search whose match count still turns out to
+    /// be huge (e.g. a single common substring like "the") — search is
+    /// expected to almost always narrow things down far below this, but
+    /// nothing here may ever render fully unbounded, on principle, after
+    /// `b7a394b`'s freeze.
+    private nonisolated static let maxSearchResultsCap = 2000
 
+    /// Thin instance wrapper — snapshots current `@State` into
+    /// `Self.computeTreeChildren(...)`'s plain parameters. Only ever called
+    /// synchronously from the one remaining site that needs an *immediate*
+    /// result (`databaseCategoryExpansion`'s first-expand branch and the
+    /// "Show N more" button), never from a rapid-fire trigger like typing —
+    /// see `refreshExpandedDatabaseCategoryCachesAsync()`'s own doc comment
+    /// for why every other site goes through that instead.
     private func treeChildren(forCategory filter: DatabaseFilter) -> [DatabaseTreeNode] {
+        Self.computeTreeChildren(
+            forCategory: filter,
+            hasAuditReport: viewModel.auditReport != nil, auditEntries: viewModel.auditReport?.entries ?? [],
+            selectedRomFolder: selectedRomFolder, preloadedGames: viewModel.preloadedGames,
+            gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD,
+            showUnknownArchives: showUnknownArchives, activeStatusFilters: activeStatusFilters,
+            searchText: databaseSearchText, visibleCap: databaseCategoryVisibleCap[filter] ?? Self.maxTreeChildrenPerCategory
+        )
+    }
+
+    /// Whether `text` matches a "Database" search `pattern` — jensyleo's
+    /// own request (2026-08-13): "permite usar los comodines * e ? y que
+    /// la búsqueda sea más exacta... escribo street y me sale... 64
+    /// street. Quiero que la búsqueda sea exacta". Two modes:
+    /// - **No wildcard** in `pattern`: a plain case-insensitive *prefix*
+    ///   match (`text` must genuinely *start with* `pattern`) — this is
+    ///   the "más exacta" half: the old behavior (`localizedCaseInsensitiveContains`)
+    ///   matched a substring *anywhere*, so searching "street" also
+    ///   matched "64 Street" (the match starts mid-string); a prefix
+    ///   match only matches something like "Street Fighter", where the
+    ///   query is genuinely how the name begins.
+    /// - **`*`/`?` present** in `pattern`: classic shell-glob wildcards —
+    ///   `*` matches any run of characters (including none), `?` matches
+    ///   exactly one — matched against the *whole* string (implicitly
+    ///   anchored at both ends), so a search like `*street*` recovers the
+    ///   old "contains anywhere" behavior deliberately, on request, rather
+    ///   than by default; `street*` matches only a *leading* "street" (the
+    ///   same as the no-wildcard case, spelled explicitly); `*64` matches
+    ///   anything *ending* in "64", not reachable at all under plain
+    ///   prefix matching.
+    private nonisolated static func matchesDatabaseSearch(_ text: String, pattern: String) -> Bool {
+        DatabaseSearchMatcher.matches(text, pattern: pattern)
+    }
+
+    /// Everything `treeChildren(forCategory:)` used to do directly against
+    /// `@State`, now a plain, `nonisolated static` function — jensyleo's own
+    /// report (2026-08-11): typing into the new search field made the whole
+    /// app "muy lenta". Root cause: every keystroke re-ran this exact
+    /// O(entries) regroup/sort/filter *synchronously on the main thread*,
+    /// same class of bug as the folder/category-click freezes already fixed
+    /// by `triggerCachedGameDataRecompute()` — just never applied here when
+    /// the search field was added, and typing fires far more often than a
+    /// click ever did. Being `static`/parameter-only (no direct `@State`
+    /// access) is what makes it safe to run inside `Task.detached` from
+    /// `refreshExpandedDatabaseCategoryCachesAsync()`.
+    private nonisolated static func computeTreeChildren(
+        forCategory filter: DatabaseFilter,
+        hasAuditReport: Bool, auditEntries: [AuditEntry], selectedRomFolder: URL?, preloadedGames: [DATGame],
+        gameAggregateStatusByName: [String: AuditStatus], combineRomAndCHD: Bool, showUnknownArchives: Bool, activeStatusFilters: Set<AuditStatus>,
+        searchText: String, visibleCap: Int
+    ) -> [DatabaseTreeNode] {
+        let effectiveCap = searchText.isEmpty ? visibleCap : Self.maxSearchResultsCap
         let nodes: [GameNode]
-        if viewModel.auditReport == nil, selectedRomFolder == nil, !viewModel.preloadedGames.isEmpty {
-            nodes = Self.unscannedCatalogNodes(matching: filter, preloadedGames: viewModel.preloadedGames)
+        if !hasAuditReport, selectedRomFolder == nil, !preloadedGames.isEmpty {
+            nodes = Self.unscannedCatalogNodes(matching: filter, preloadedGames: preloadedGames)
         } else {
             // Grouped from every entry in this category (not status-
             // filtered — a game's real category must never depend on
@@ -2423,8 +3057,8 @@ struct LibraryDetailView: View {
             // See `statusSummary`'s own doc comment for exactly what each
             // of the four means.
             nodes = Self.gameNodes(
-                from: Self.categoryFiltered(viewModel.auditReport?.entries ?? [], matching: filter),
-                gamesByName: Self.gamesByName(viewModel.preloadedGames),
+                from: Self.categoryFiltered(auditEntries, matching: filter),
+                gamesByName: Self.gamesByName(preloadedGames),
                 gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD,
                 // This is the "Database" sidebar tree specifically — always
                 // the database-wide view, regardless of whatever "Rom
@@ -2447,11 +3081,28 @@ struct LibraryDetailView: View {
                     return activeStatusFilters.contains(category)
                 }
         }
-        let realGames = nodes.filter { !$0.isSurplusBucket }
+        var realGames = nodes.filter { !$0.isSurplusBucket }
+        // Search narrows the category down before any capping happens at
+        // all — see `databaseSearchText`'s own doc comment for why this,
+        // not a bigger cap, is the actually-safe way to reach any row of a
+        // huge category. Matches either the game's own display name or its
+        // manufacturer — see `matchesDatabaseSearch(_:pattern:)`'s own doc
+        // comment for exactly what counts as a match; a game with no
+        // manufacturer just never matches on that half.
+        if !searchText.isEmpty {
+            realGames = realGames.filter { node in
+                Self.matchesDatabaseSearch(node.gameName, pattern: searchText)
+                    || Self.matchesDatabaseSearch((node.entries.first?.gameManufacturer ?? node.sourceGame?.manufacturer) ?? "", pattern: searchText)
+            }
+        }
+
+        if filter == .byManufacturer || filter == .byYear {
+            return groupedTreeChildren(realGames, by: filter, effectiveCap: effectiveCap, searchActive: !searchText.isEmpty)
+        }
 
         guard filter == .allGames else {
-            let sorted = realGames.sorted { $0.gameName.localizedCaseInsensitiveCompare($1.gameName) == .orderedAscending }
-            return capped(sorted.map { leafNode(for: $0) })
+            let sorted = sortedByLowercasedKey(realGames, key: \.gameName)
+            return capped(sorted.map { leafNode(for: $0) }, to: effectiveCap, filter: filter, searchActive: !searchText.isEmpty)
         }
 
         var clonesByParent: [String: [GameNode]] = [:]
@@ -2470,34 +3121,102 @@ struct LibraryDetailView: View {
             }
         }
 
-        let sortedRoots = roots.sorted { $0.gameName.localizedCaseInsensitiveCompare($1.gameName) == .orderedAscending }
-        let cappedRoots = Array(sortedRoots.prefix(Self.maxTreeChildrenPerCategory))
+        let sortedRoots = sortedByLowercasedKey(roots, key: \.gameName)
+        let cappedRoots = Array(sortedRoots.prefix(effectiveCap))
         var result = cappedRoots.map { root -> DatabaseTreeNode in
-            let clones = (clonesByParent[root.name] ?? [])
-                .sorted { $0.gameName.localizedCaseInsensitiveCompare($1.gameName) == .orderedAscending }
-            // Clone children are capped too — a parent with an unusually
-            // large clone family (rare, but the same runaway-row risk
-            // applies) shouldn't be able to bypass the cap either.
-            return leafNode(for: root, children: capped(clones.map { leafNode(for: $0) }))
+            let clones = sortedByLowercasedKey(clonesByParent[root.name] ?? [], key: \.gameName)
+            // Clone children are still capped at the fixed default, not
+            // `effectiveCap` — a parent with an unusually large clone
+            // family (rare, but the same runaway-row risk applies)
+            // shouldn't be able to bypass a cap either, and nesting the
+            // same "Show more" affordance one level down isn't worth the
+            // complexity for what's normally a handful of clones.
+            return leafNode(for: root, children: capped(clones.map { leafNode(for: $0) }, to: Self.maxTreeChildrenPerCategory, filter: nil, searchActive: !searchText.isEmpty))
         }
         if sortedRoots.count > cappedRoots.count {
-            result.append(truncationNotice(shown: cappedRoots.count, total: sortedRoots.count))
+            result.append(loadMoreOrTruncationNotice(shown: cappedRoots.count, total: sortedRoots.count, filter: filter, searchActive: !searchText.isEmpty))
         }
         return result
     }
 
-    /// Truncates to `maxTreeChildrenPerCategory`, appending a plain,
-    /// non-selectable notice row when anything was actually cut — an empty
-    /// `children` array here (rather than this whole function returning
-    /// early) is the correct "nothing to show" case, not an error.
-    private func capped(_ nodes: [DatabaseTreeNode]) -> [DatabaseTreeNode] {
-        guard nodes.count > Self.maxTreeChildrenPerCategory else { return nodes }
-        var result = Array(nodes.prefix(Self.maxTreeChildrenPerCategory))
-        result.append(truncationNotice(shown: result.count, total: nodes.count))
+    /// Groups the full game list by manufacturer or year — jensyleo's own
+    /// request (2026-08-11): "Fabricante y aparte fecha", two more
+    /// RomCenter-style regroupings of the exact same "All games" list, not
+    /// a new subset (see `DatabaseFilter.byManufacturer`/`.byYear`'s own
+    /// doc comment). Top-level rows are the distinct manufacturer/year
+    /// values themselves (sorted, a game with no declared value falling
+    /// into one final "Unknown …" bucket); each one's own children are the
+    /// games sharing it, plain leaves — no clone nesting one level further
+    /// down, unlike "All games": the whole point here is to regroup by
+    /// manufacturer/year, and re-introducing clone-vs-parent structure on
+    /// top of that would just be confusing.
+    ///
+    /// Capped the same two-level way "All games" already is: `effectiveCap`
+    /// (governed by search/"Show more" like every other category) bounds
+    /// the group count itself; each individual group's own children are
+    /// separately capped at the fixed default with a plain, non-interactive
+    /// notice (not a nested "Show more" — one group rarely holds more than
+    /// a handful of games in practice, so the added complexity of paginating
+    /// *within* a group isn't worth it the way paginating the *group list*
+    /// clearly is).
+    private nonisolated static func groupedTreeChildren(_ games: [GameNode], by filter: DatabaseFilter, effectiveCap: Int, searchActive: Bool) -> [DatabaseTreeNode] {
+        let unknownLabel = filter == .byManufacturer ? "Unknown manufacturer" : "Unknown year"
+        var gamesByGroup: [String: [GameNode]] = [:]
+        for game in games {
+            let value = filter == .byManufacturer ? game.manufacturer : game.year
+            let key = value.isEmpty ? unknownLabel : value
+            gamesByGroup[key, default: []].append(game)
+        }
+        // The "Unknown …" bucket always sorts last — everything else in
+        // plain ascending order (numeric year strings sort correctly as
+        // plain strings for any realistic 4-digit range; a stray non-numeric
+        // year value just falls back to alphabetical, which is still a
+        // reasonable place for it to land).
+        let sortedKeys = gamesByGroup.keys.sorted { lhs, rhs in
+            if lhs == unknownLabel { return false }
+            if rhs == unknownLabel { return true }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
+        let cappedKeys = Array(sortedKeys.prefix(effectiveCap))
+        var result = cappedKeys.map { key -> DatabaseTreeNode in
+            let groupGames = sortedByLowercasedKey(gamesByGroup[key] ?? [], key: \.gameName)
+            let children = capped(groupGames.map { leafNode(for: $0) }, to: Self.maxTreeChildrenPerCategory, filter: nil, searchActive: searchActive)
+            return DatabaseTreeNode(id: "group-\(filter.rawValue)-\(key)", machineName: "", label: "\(key) (\(groupGames.count))", status: nil, children: children)
+        }
+        if sortedKeys.count > cappedKeys.count {
+            result.append(loadMoreOrTruncationNotice(shown: cappedKeys.count, total: sortedKeys.count, filter: filter, searchActive: searchActive))
+        }
         return result
     }
 
-    private func truncationNotice(shown: Int, total: Int) -> DatabaseTreeNode {
+    /// Truncates to `cap`, appending either an interactive "Show N more" row
+    /// (when `filter` is non-nil and no search is active — a category-level
+    /// cap the user can raise a bounded step at a time) or a plain,
+    /// non-selectable notice (a clone sub-list, or a search whose match
+    /// count still hit the defensive `maxSearchResultsCap` backstop) — an
+    /// empty `children` array here (rather than this whole function
+    /// returning early) is the correct "nothing to show" case, not an error.
+    private nonisolated static func capped(_ nodes: [DatabaseTreeNode], to cap: Int, filter: DatabaseFilter?, searchActive: Bool) -> [DatabaseTreeNode] {
+        guard nodes.count > cap else { return nodes }
+        var result = Array(nodes.prefix(cap))
+        result.append(loadMoreOrTruncationNotice(shown: result.count, total: nodes.count, filter: filter, searchActive: searchActive))
+        return result
+    }
+
+    private nonisolated static func loadMoreOrTruncationNotice(shown: Int, total: Int, filter: DatabaseFilter?, searchActive: Bool) -> DatabaseTreeNode {
+        guard let filter, !searchActive else { return truncationNotice(shown: shown, total: total) }
+        return DatabaseTreeNode(
+            id: "loadmore-\(filter.rawValue)-\(shown)-of-\(total)",
+            machineName: "",
+            label: "Show \(min(Self.treeLoadMoreIncrement, total - shown)) more (\(total - shown) left) — or use the Games table for the full list",
+            status: nil,
+            children: nil,
+            isTruncationNotice: false,
+            loadMoreFilter: filter
+        )
+    }
+
+    private nonisolated static func truncationNotice(shown: Int, total: Int) -> DatabaseTreeNode {
         DatabaseTreeNode(
             id: "truncated-\(shown)-of-\(total)",
             machineName: "",
@@ -2508,7 +3227,7 @@ struct LibraryDetailView: View {
         )
     }
 
-    private func leafNode(for game: GameNode, children: [DatabaseTreeNode]? = nil) -> DatabaseTreeNode {
+    private nonisolated static func leafNode(for game: GameNode, children: [DatabaseTreeNode]? = nil) -> DatabaseTreeNode {
         // Any entry carries the same game-level `gameManufacturer` (see
         // `AuditReporter.generate`'s own doc comment: computed once per
         // game, shared by every rom row it produces) — the first one found
@@ -2531,10 +3250,18 @@ struct LibraryDetailView: View {
                 if isExpanded {
                     expandedDatabaseCategories.insert(filter)
                     if databaseCategoryChildrenCache[filter] == nil {
-                        databaseCategoryChildrenCache[filter] = treeChildren(forCategory: filter)
+                        refreshExpandedDatabaseCategoryCachesAsync(debounced: false, only: filter)
+                    } else {
+                        // Already cached from a previous expand — no async
+                        // gap to wait out, so this can scroll immediately
+                        // instead of relying on the async path's own
+                        // completion call. See `scrollDatabaseListToSelectedGameIfNewlyVisible()`'s
+                        // own doc comment.
+                        scrollDatabaseListToSelectedGameIfNewlyVisible()
                     }
                 } else {
                     expandedDatabaseCategories.remove(filter)
+                    databaseCategoryVisibleCap.removeValue(forKey: filter)
                 }
             }
         )
@@ -2556,7 +3283,11 @@ struct LibraryDetailView: View {
             return AnyView(databaseTreeLeafLabel(node, filter: filter))
         }
         return AnyView(
-            DisclosureGroup {
+            // Arrow-key expand/collapse is handled centrally on the
+            // enclosing `List` itself, not per-row here — see
+            // `databaseListContent`'s own doc comment for why a per-row
+            // `.onKeyPress` (the first attempt) never reliably fired.
+            DisclosureGroup(isExpanded: gameTreeNodeExpansion(for: node.id)) {
                 ForEach(children) { child in databaseTreeNodeRow(child, filter: filter) }
             } label: {
                 databaseTreeLeafLabel(node, filter: filter)
@@ -2564,9 +3295,33 @@ struct LibraryDetailView: View {
         )
     }
 
+    /// Explicit, externally-settable expansion for one game row's own clone
+    /// disclosure — see `expandedGameTreeNodes`'s own doc comment for why
+    /// this can't just be the `DisclosureGroup`'s usual internal state.
+    private func gameTreeNodeExpansion(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedGameTreeNodes.contains(id) },
+            set: { isExpanded in
+                if isExpanded { expandedGameTreeNodes.insert(id) } else { expandedGameTreeNodes.remove(id) }
+            }
+        )
+    }
+
     @ViewBuilder
     private func databaseTreeLeafLabel(_ node: DatabaseTreeNode, filter: DatabaseFilter) -> some View {
-        if node.isTruncationNotice {
+        if let loadMoreFilter = node.loadMoreFilter {
+            Button {
+                let current = databaseCategoryVisibleCap[loadMoreFilter] ?? Self.maxTreeChildrenPerCategory
+                databaseCategoryVisibleCap[loadMoreFilter] = current + Self.treeLoadMoreIncrement
+                refreshExpandedDatabaseCategoryCachesAsync(debounced: false, only: loadMoreFilter)
+                isDatabasePaneFocused = true
+            } label: {
+                Text(node.label)
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+        } else if node.isTruncationNotice {
             Text(node.label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -2579,39 +3334,80 @@ struct LibraryDetailView: View {
             // `node.status` directly. See `gameAggregateStatusByName`'s
             // own doc comment for the real bug this guards against.
             let liveStatus = gameAggregateStatusByName[node.machineName] ?? node.status
-            Button {
-                selectedDatabaseFilter = filter
-                selectedRomFolder = nil
-                selectedGameID = node.id
-            } label: {
-                HStack(spacing: 4) {
-                    // Always a real game here — `treeChildren(forCategory:)`
-                    // excludes the synthetic "Unknown game" bucket before
-                    // building tree leaves at all. Its own explicit
-                    // `.foregroundStyle` always wins over the row's ambient
-                    // one set below, so the red/yellow/green status color
-                    // stays visible even while this row is selected and
-                    // tinted with the accent color.
-                    if let status = liveStatus {
-                        Image(systemName: symbolName(for: status)).foregroundStyle(tint(for: status))
-                    } else {
-                        Image(systemName: "circle.dashed").foregroundStyle(.secondary)
-                    }
-                    Text(node.label)
-                        .fontWeight(isSelected ? .semibold : .regular)
-                        .lineLimit(1)
-                    // RomCenter-style manufacturer, trailing — jensyleo's
-                    // own request (2026-08-11). Secondary/muted so it never
-                    // competes with the game's own name for attention.
-                    if let manufacturer = node.manufacturer, !manufacturer.isEmpty {
-                        Text(manufacturer)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+            HStack(spacing: 4) {
+                // Always a real game here — `treeChildren(forCategory:)`
+                // excludes the synthetic "Unknown game" bucket before
+                // building tree leaves at all. Its own explicit
+                // `.foregroundStyle` always wins over the row's ambient
+                // one set below, so the red/yellow/green status color
+                // stays visible even while this row is selected and
+                // tinted with the accent color.
+                if let status = liveStatus {
+                    Image(systemName: symbolName(for: status)).foregroundStyle(tint(for: status))
+                } else {
+                    Image(systemName: "circle.dashed").foregroundStyle(.secondary)
                 }
+                Text(node.label)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    .lineLimit(1)
+                // RomCenter-style manufacturer, trailing — jensyleo's
+                // own request (2026-08-11). Secondary/muted so it never
+                // competes with the game's own name for attention.
+                if let manufacturer = node.manufacturer, !manufacturer.isEmpty {
+                    Text(manufacturer)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                // jensyleo's own report (2026-08-13): "haz que seleccionar
+                // la fila... sea suficiente... igual que en ROM Folder" —
+                // this used to be a `Button` whose label was just the
+                // icon+text+manufacturer `HStack`, so only THAT tight
+                // content actually caught a click; the row's own
+                // `.listRowBackground` highlight already spanned the full
+                // row width, misleadingly implying the whole row was
+                // clickable when it wasn't.
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            // A plain `.onTapGesture` here (first attempt, same pattern as
+            // `romFolderRow(for:)`) never fired: unlike that row, this one
+            // is a *child of a `DisclosureGroup`* inside the List — macOS's
+            // outline-backed List claims the mouse-down on disclosure child
+            // rows for its own row-selection tracking, and `.onTapGesture`
+            // is an EXCLUSIVE gesture that competes with it for the click.
+            // A second attempt overlaid a real `Button` instead — that
+            // avoided losing the click, but caused something worse: a
+            // genuine app freeze (confirmed with `sample`), because
+            // `NSOutlineView.mouseDown(_:)` runs its own nested tracking
+            // loop (`trackEventsMatchingMask:timeout:mode:handler:`) that
+            // waits for the matching mouse-up, and SwiftUI's `Button`
+            // consumed that mouse-up for its own action before the
+            // outline's loop ever saw it, leaving that inner loop stuck
+            // waiting forever. `.simultaneousGesture` fixes both: it does
+            // NOT claim exclusivity, so it doesn't lose to the outline's
+            // own mouseDown, and it doesn't consume the mouse-up either —
+            // the outline's tracking loop still completes normally.
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    selectedDatabaseFilter = filter
+                    selectedRomFolder = nil
+                    selectedGameID = node.id
+                    isDatabasePaneFocused = true
+                    // jensyleo's own report (2026-08-13): landing on a parent
+                    // game (one with its own clone family nested under it), OR
+                    // on one of its own clones, should scope "Games" to that
+                    // same family either way — see `familyRootMachineName(for:)`'s
+                    // own doc comment.
+                    selectedGameFamilyRootMachineName = familyRootMachineName(for: node)
+                    // jensyleo's own report (2026-08-13): clicking a leaf here
+                    // (search results included) never scrolled the Games
+                    // table to reveal the row it just selected — see
+                    // `moveDatabaseSelection(by:)`'s own doc comment for the
+                    // same fix on the arrow-key path.
+                    gameTableScrollProxy?.scrollTo(node.id, anchor: .center)
+                }
+            )
             // A real selection background, not just bold text — same
             // pattern (and same reasoning) as the "ROM folder" section's
             // own row highlight, see `controlActiveState`'s own doc
@@ -2641,8 +3437,7 @@ struct LibraryDetailView: View {
         gamesInFolder: Set<String>, gameAggregateStatusByName: [String: AuditStatus], combineRomAndCHD: Bool
     ) -> [GameNode] {
         if !hasAuditReport, selectedRomFolder == nil, !preloadedGames.isEmpty {
-            return unscannedCatalogNodes(matching: selectedDatabaseFilter ?? .allGames, preloadedGames: preloadedGames)
-                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return sortedByLowercasedKey(unscannedCatalogNodes(matching: selectedDatabaseFilter ?? .allGames, preloadedGames: preloadedGames), key: \.name)
         }
         return gameNodes(
             from: scoped(auditEntries, databaseFilter: selectedDatabaseFilter, romFolder: selectedRomFolder, gamesInFolder: gamesInFolder),
@@ -2660,6 +3455,22 @@ struct LibraryDetailView: View {
     /// primary key) — a plain loop rather than `Dictionary(uniqueKeysWithValues:)`
     /// only so a malformed DAT can never crash this instead of just picking
     /// one arbitrarily.
+    /// Real slowness found live (2026-08-13, jensyleo: keyboard navigation
+    /// starting from/through "All games" — up to ~45,000 rows — felt
+    /// slow). `localizedCaseInsensitiveCompare` is locale-aware (full ICU
+    /// collation), and every one of these "Database" tree-building call
+    /// sites used to call it once per comparison during a sort — for a
+    /// large category, that's on the order of `n log n` locale-aware
+    /// string comparisons on every single rebuild. Display ordering here
+    /// has no real dependence on locale-specific collation rules, so the
+    /// sort key is computed once per element up front (`n` calls to
+    /// `lowercased()`) and compared with the plain `<` operator (a fast
+    /// ordinal comparison, no ICU tables) instead — same fix as
+    /// `GameNodeBuilder`'s own equivalent sort in ROMForgeCore.
+    private nonisolated static func sortedByLowercasedKey<T>(_ items: [T], key: (T) -> String) -> [T] {
+        items.map { ($0, key($0).lowercased()) }.sorted { $0.1 < $1.1 }.map(\.0)
+    }
+
     private nonisolated static func gamesByName(_ games: [DATGame]) -> [String: DATGame] {
         var result: [String: DATGame] = [:]
         for game in games where result[game.name.lowercased()] == nil {
@@ -2715,33 +3526,12 @@ struct LibraryDetailView: View {
     /// this at all — informational only (see `infoText(for:)`'s "Extra
     /// file in archive"), never severe enough to outrank a real rom
     /// status.
+    /// Body moved to `GameStatusRollup.gameCategory(for:)` (ROMForgeCore,
+    /// 2026-08-13, "Grupo A" of the App-logic extraction) so it's
+    /// unit-testable — this stays as a thin delegate rather than being
+    /// removed, so every existing call site above needs no change.
     private nonisolated static func gameCategory(for entries: [AuditEntry]) -> AuditStatus {
-        // `isOptional` excluded from this check — the DAT's own
-        // `optional="yes"` attribute (MAME's own DTD) means MAME can run
-        // the machine without this specific rom/disk at all, so its
-        // absence shouldn't force the whole game red the way a genuinely
-        // required absence does. Real case found live by jensyleo
-        // (2026-08-05): none of the 3 real optional `<disk>` entries in a
-        // real MAME 0.288 dump are missing/badDump otherwise, so this
-        // hasn't been exercised against real absence yet — the reasoning
-        // mirrors `.unverifiable`'s own non-severe tier below.
-        if entries.contains(where: { $0.status == .missing && !$0.isOptional }) { return .missing }
-        if entries.contains(where: { $0.status == .badDump }) { return .badDump }
-        if entries.contains(where: { $0.status == .incorrect }) { return .incorrect }
-        if entries.contains(where: { $0.status == .correct }) { return .correct }
-        // Real case found live by jensyleo (2026-08-04): a game whose ONLY
-        // disk is a `<disk>` the DAT declares with no sha1 at all (undumped
-        // media — `CHDDiskStatus.unverifiable`'s own doc comment) has no
-        // `.correct` entry to fall back on the way a rom aggregate almost
-        // always does (a stray `.unverifiable` rom sitting alongside dozens
-        // of genuinely `.correct` ones). Silently reporting "Correct" here
-        // would claim something was actually verified when nothing was —
-        // surfaced as its own status instead, same non-severe tier as
-        // `.surplus` (never outranks missing/badDump/incorrect above), just
-        // not silently swallowed into a false "Correct" when it's all
-        // there is.
-        if entries.contains(where: { $0.status == .unverifiable }) { return .unverifiable }
-        return .correct
+        GameStatusRollup.gameCategory(for: entries)
     }
 
     /// A game's headline status reflects its own roms, not its CHD disk —
@@ -2756,8 +3546,7 @@ struct LibraryDetailView: View {
     /// declares a CHD but no roms at all — there's nothing else to report
     /// a status from in that case.
     private nonisolated static func romOnlyGameCategory(for entries: [AuditEntry]) -> AuditStatus {
-        let romEntries = entries.filter { !$0.isDisk }
-        return romEntries.isEmpty ? gameCategory(for: entries) : gameCategory(for: romEntries)
+        GameStatusRollup.romOnlyGameCategory(for: entries)
     }
 
     /// Every real game's current true category, by name — see
@@ -2765,8 +3554,7 @@ struct LibraryDetailView: View {
     /// Deliberately built from *every* entry in the report, not
     /// `filteredEntries` — a game's real category shouldn't change just
     /// because the user hid, say, "Missing" rows from view elsewhere.
-    private func computeGameAggregateStatusByName() -> [String: AuditStatus] {
-        guard let entries = viewModel.auditReport?.entries else { return [:] }
+    private nonisolated static func computeGameAggregateStatusByName(entries: [AuditEntry], preloadedGames: [DATGame]) -> [String: AuditStatus] {
         var byGame: [String: [AuditEntry]] = [:]
         var surplusByArchive: [String: [AuditEntry]] = [:]
         for entry in entries {
@@ -2802,7 +3590,7 @@ struct LibraryDetailView: View {
         // either — see `gameNodes(from:)`'s own doc comment for the fuller
         // story (this must fold identically to there, or "Database" and a
         // "Rom files" folder view disagree on this exact game).
-        let gamesByName = Self.gamesByName(viewModel.preloadedGames)
+        let gamesByName = Self.gamesByName(preloadedGames)
         for (archiveKey, surplus) in surplusByArchive {
             let matchingGame = (Self.surplusDisplayName(forArchiveKey: archiveKey) as NSString).deletingPathExtension
             guard gamesByName[matchingGame] != nil else { continue }
@@ -2813,7 +3601,13 @@ struct LibraryDetailView: View {
 
     private var selectedGameNode: GameNode? {
         guard let selectedGameID else { return nil }
-        return cachedGameNodes.first { $0.id == selectedGameID }
+        return cachedGameNodesByID[selectedGameID]
+    }
+
+    /// `uniquingKeysWith` keeps the first match, same first-wins semantics
+    /// the old `cachedGameNodes.first { $0.id == ... }` linear scan had.
+    private nonisolated static func indexByID(_ nodes: [GameNode]) -> [String: GameNode] {
+        Dictionary(nodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     // MARK: - "Play in MAME"

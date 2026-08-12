@@ -115,6 +115,41 @@ struct SoftwareListParserTests {
         #expect(dataset.software.first?.allRoms.first?.status == .baddump)
     }
 
+    @Test("flattens roms across multiple <dataarea> elements within a single <part> — e.g. cartridge ROM plus battery-backed nvram")
+    func flattensMultipleDataareasWithinOnePart() throws {
+        let xml = """
+        <softwarelist name="test">
+            <software name="game1">
+                <description>Game</description>
+                <year>1990</year>
+                <publisher>Pub</publisher>
+                <part name="cart" interface="test_cart">
+                    <dataarea name="rom" size="2">
+                        <rom name="game1.bin" size="2" crc="00000000"/>
+                    </dataarea>
+                    <dataarea name="nvram" size="1">
+                        <rom name="game1.nv" size="1" crc="11111111"/>
+                    </dataarea>
+                </part>
+            </software>
+        </softwarelist>
+        """
+        let dataset = try SoftwareListParser.parse(data: Data(xml.utf8))
+        let software = try #require(dataset.software.first)
+
+        #expect(software.parts.count == 1)
+        #expect(software.allRoms.count == 2, "roms from both <dataarea> siblings should be flattened, not just the first")
+        #expect(Set(software.allRoms.map(\.name)) == ["game1.bin", "game1.nv"])
+    }
+
+    @Test("a well-formed <softwarelist> with zero <software> entries parses successfully to an empty list")
+    func parsesEmptySoftwareListSuccessfully() throws {
+        let xml = "<softwarelist name=\"empty\" description=\"Nothing here\"></softwarelist>"
+        let dataset = try SoftwareListParser.parse(data: Data(xml.utf8))
+        #expect(dataset.name == "empty")
+        #expect(dataset.software.isEmpty)
+    }
+
     @Test("throws when the root <softwarelist> element is missing")
     func throwsWhenRootElementMissing() {
         #expect(throws: SoftwareListParsingError.missingRootElement) {

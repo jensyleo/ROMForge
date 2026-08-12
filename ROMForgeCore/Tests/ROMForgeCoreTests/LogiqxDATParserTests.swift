@@ -103,4 +103,48 @@ struct LogiqxDATParserTests {
         #expect(game.disks[0].sha1 == "da39a3ee5e6b4b0d3255bfef95601890afd80709")
         #expect(game.hasSamples == true)
     }
+
+    @Test("throws missingHeader when <datafile> has a game but no <header> at all")
+    func throwsMissingHeaderWhenHeaderAbsent() {
+        let xml = """
+        <datafile>
+            <game name="G"><description>G</description><rom name="g.bin" size="1" crc="00000000"/></game>
+        </datafile>
+        """
+        #expect(throws: DATParsingError.missingHeader) {
+            try LogiqxDATParser.parse(data: Data(xml.utf8))
+        }
+    }
+
+    @Test("a well-formed DAT with a header but zero games parses successfully to an empty game list")
+    func parsesEmptyDATSuccessfully() throws {
+        let xml = """
+        <datafile>
+            <header><name>Empty</name><description>Empty</description><version>1</version><author>A</author></header>
+        </datafile>
+        """
+        let dat = try LogiqxDATParser.parse(data: Data(xml.utf8))
+        #expect(dat.header.name == "Empty")
+        #expect(dat.games.isEmpty)
+    }
+
+    @Test("fast-rejects real MAME -listxml (<mame> root) instead of parsing the whole document")
+    func fastRejectsRealMAMEListXMLRoot() {
+        // `throwsWhenRootElementMissing` above proves the general
+        // `missingRootElement` error fires for garbage XML — this proves
+        // the SPECIFIC fast-abort-on-first-element path (added to avoid a
+        // multi-minute full parse-then-discard of a real, huge MAME DAT)
+        // actually fires for genuine MAME `-listxml` structure, not just
+        // any wrong root name.
+        let xml = """
+        <mame build="0.288">
+            <machine name="foo">
+                <rom name="a.bin" size="1" crc="00000000"/>
+            </machine>
+        </mame>
+        """
+        #expect(throws: DATParsingError.missingRootElement) {
+            try LogiqxDATParser.parse(data: Data(xml.utf8))
+        }
+    }
 }

@@ -37,6 +37,13 @@ public enum DiskAuditor {
     /// meaningful everywhere in this loop.
     public static func audit(dat: DATFile, chdFiles: [URL]) throws -> [AuditEntry] {
         try Task.checkCancellation()
+        // Reads every CHD's header exactly once, up front, instead of the
+        // per-disk linear-scan-and-reread `CHDMatcher.match` used to do —
+        // see `CHDHeaderIndex`'s own doc comment for the real O(disks × CHD
+        // files) hot path this fixes (2026-08-13 performance audit, "Ciclo
+        // A"). Also reused below for `actualSize`/`actualSHA1` instead of
+        // re-reading the same file's header a second/third time.
+        let headerIndex = CHDHeaderIndex(chdFiles: chdFiles)
         var entries: [AuditEntry] = []
         // Every `.chd` file that ends up claimed by some disk's `.correct`/
         // `.incorrect`/`.unverifiable` match below — whatever's left over
@@ -71,11 +78,11 @@ public enum DiskAuditor {
             for disk in game.disks {
                 let diskKey = "\(disk.name)::\(disk.sha1 ?? "")"
                 guard seenDisks.insert(diskKey).inserted else { continue }
-                let status = CHDMatcher.match(disk: disk, chdFiles: chdFiles)
+                let status = CHDMatcher.match(disk: disk, chdFiles: chdFiles, headerIndex: headerIndex)
                 switch status {
                 case .correct(let url):
                     consumedCHDs.insert(url)
-                    let header = try? CHDHeaderReader.read(contentsOf: url)
+                    let header = headerIndex.header(for: url)
                     entries.append(AuditEntry(
                         status: .correct, game: game.name, gameDescription: game.description,
                         cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, isOptional: disk.optional, chdNames: chdNames,
@@ -86,7 +93,7 @@ public enum DiskAuditor {
                     ))
                 case .incorrect(let url):
                     consumedCHDs.insert(url)
-                    let header = try? CHDHeaderReader.read(contentsOf: url)
+                    let header = headerIndex.header(for: url)
                     entries.append(AuditEntry(
                         status: .incorrect, game: game.name, gameDescription: game.description,
                         cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, isOptional: disk.optional, chdNames: chdNames,
@@ -108,7 +115,7 @@ public enum DiskAuditor {
                     // the DAT declares no sha1 to verify this disk against
                     // at all, so `actualSHA1` is whatever the real header
                     // happens to say, purely informational (never compared).
-                    let header = try? CHDHeaderReader.read(contentsOf: url)
+                    let header = headerIndex.header(for: url)
                     entries.append(AuditEntry(
                         status: .unverifiable, game: game.name, gameDescription: game.description,
                         cloneOf: game.cloneOf, isBios: game.isBios, hasCHD: true, isOptional: disk.optional, chdNames: chdNames,
@@ -155,7 +162,7 @@ public enum DiskAuditor {
         // for a duplicate rom, no App-layer change needed here either).
         for url in chdFiles where !consumedCHDs.contains(url) {
             try Task.checkCancellation()
-            let header = try? CHDHeaderReader.read(contentsOf: url)
+            let header = headerIndex.header(for: url)
             let sha1 = header?.sha1
             let requiredBy = sha1.flatMap { diskSHA1ToGameDescription[$0] }
             entries.append(AuditEntry(

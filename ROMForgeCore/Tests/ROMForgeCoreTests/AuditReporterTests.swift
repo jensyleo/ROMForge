@@ -200,4 +200,34 @@ struct AuditReporterTests {
         #expect(report.surplus == 2)
         #expect(report.unverifiable == 1)
     }
+
+    @Test("threads isOptional, mergeName, requiredBiosNames, deviceRefNames, and matchedViaHeaderStrip all together onto one real entry")
+    func propagatesEveryGameAndRomLevelFieldTogether() throws {
+        // Each of these fields is individually plumbed by `makeEntry` in
+        // `AuditReporter.generate`, but no test ever exercised more than
+        // one at a time — the "displays correctly across all app modes"
+        // goal needs proof they land correctly together, since UI logic
+        // downstream branches on combinations of these, not each alone.
+        let rom = DATRom(name: "game.bin", size: 1, crc: nil, md5: nil, sha1: nil, mergeName: "parent-rom.bin", optional: true)
+        let game = DATGame(
+            name: "clonewithbios", description: "Clone With BIOS", cloneOf: "parent", romOf: "biosset", roms: [rom],
+            biosSetNames: ["bios0", "bios1"], deviceRefs: ["shared_cpu"]
+        )
+        let local = hashedFile(name: "renamed.bin", size: 1)
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(local, viaHeaderStrip: true))])],
+            surplusFiles: []
+        )
+        let report = try AuditReporter.generate(from: matchReport)
+
+        let entry = try #require(report.entries.first)
+        #expect(entry.isOptional == true)
+        #expect(entry.mergeName == "parent-rom.bin")
+        #expect(entry.requiredBiosNames == "bios0, bios1")
+        #expect(entry.deviceRefNames == "shared_cpu")
+        #expect(entry.matchedViaHeaderStrip == true)
+        #expect(entry.cloneOf == "parent")
+        #expect(entry.status == .correct)
+    }
 }

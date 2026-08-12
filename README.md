@@ -48,6 +48,55 @@ collection yet; every test uses synthetic fixtures. See
 [TESTING.md](TESTING.md) for the manual checklist (needs real dumps Claude
 can't source — run it yourself).
 
+## Using the app
+
+The same basics are also available inside the app itself (Help menu →
+"ROMForge Help", and the "About ROMForge" window) — this section covers the
+same ground for anyone reading the repo instead.
+
+- **"Database" and "ROM folder" sidebar.** "Database" browses the loaded
+  DAT's own catalog (All games, Clones, By manufacturer, By year, and
+  more — see Settings → General for which branches show at all); "ROM
+  folder" lists the actual folders on disk configured for this system.
+  Clicking either scopes the Games table to match; the two are mutually
+  exclusive. Both support arrow-key navigation (↑/↓ move between rows,
+  including across the "Database"/"ROM folder" boundary; →/← expand/
+  collapse a category or clone family).
+- **Reordering "ROM folder".** Newly-added folders slot into alphabetical
+  order automatically. To reorder them by hand, use the ↑/↓ chevrons that
+  appear on the right of each row — drag-to-reorder was tried and dropped
+  (see `CHANGELOG.md`): on macOS, a `List` row that's also a click target
+  fights a drag gesture attached to the same row, which kept making a
+  plain click unreliable no matter how the drag was implemented. Plain
+  buttons have no such conflict.
+- **Searching a large "Database" category.** A category like "All games"
+  can hold tens of thousands of rows — the search field above the tree
+  narrows it down instantly. Without a search, a very large category shows
+  only its first page, with a "Show N more" row to reveal more in bounded
+  steps rather than rendering everything at once (the fix for a real
+  freeze this same design once caused — see `CHANGELOG.md`).
+- **Adding a system without a separate DAT.** "Generate from Installed
+  MAME…" (next to "Select DAT…" in "Add System", once a real `mame`
+  executable is configured in Settings → Systems) runs that executable's
+  own `-listxml` and uses its output directly — no need to separately
+  track down a `-listxml` dump matching whichever MAME version is actually
+  installed. Precedent: ClrMamePro supports the same idea via its
+  `engine.cfg` "datfile engines".
+- **Scanning.** "Scan Folder" rescans just the selected "ROM folder"
+  (forcing a fresh re-read of that one) while still matching against every
+  other configured folder; "Scan All Folders" does the same for every
+  folder at once, genuinely re-reading only what's actually changed. Both
+  report which folder they're currently walking, in the progress overlay
+  and in the Log panel.
+- **Settings → View Options.** Toggle any of the six main panels (Database,
+  ROM folder, Games, Roms, Detail, Log) off to declutter the window.
+  "Purge Saved Views" resets remembered window layout only (which
+  "Database"/"ROM folder" view was last selected per system, and every
+  split-panel's size) — it never touches any scan result. "Purge Database
+  View" clears every system's last scan result instead (cached file hashes
+  and the saved audit report) — it never touches remembered layout/
+  selection. The two are deliberately separate actions.
+
 ## DAT sources
 
 ROMForge doesn't bundle or generate DAT files — bring your own from a

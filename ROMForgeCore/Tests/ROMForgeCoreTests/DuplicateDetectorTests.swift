@@ -37,4 +37,37 @@ struct DuplicateDetectorTests {
 
         #expect(DuplicateDetector.find(in: [a, b]).isEmpty)
     }
+
+    @Test("groups the same archive-entry name sharing a hash across two physically distinct archives — the real BATOCERA-subfolder duplicate case")
+    func groupsSameEntryAcrossDifferentArchives() {
+        // Real case documented in `ROMMatcher.swift`'s own doc comments: two
+        // whole copies of a set (e.g. a second `BATOCERA` mirror folder)
+        // sharing the same archive/entry name at different physical paths.
+        let main = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/main/sfiii2.zip"), name: "sfiii2.bin", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "shared")
+        )
+        let mirrored = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/BATOCERA/sfiii2.zip"), name: "sfiii2.bin", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "shared")
+        )
+
+        let groups = DuplicateDetector.find(in: [main, mirrored])
+
+        #expect(groups.count == 1)
+        #expect(groups[0].files == [main, mirrored])
+    }
+
+    @Test("falls back to CRC32 when SHA1 and MD5 were never computed")
+    func fallsBackToCRC32WhenNoStrongerHashAvailable() {
+        // `HashAlgorithms` may have skipped SHA1/MD5 for speed — grouping
+        // must still work off whichever hash a scan actually computed.
+        let a = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/roms/a.bin"), name: "a.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: nil, sha1: nil))
+        let b = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/roms/b.bin"), name: "b.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: nil, sha1: nil))
+
+        let groups = DuplicateDetector.find(in: [a, b])
+
+        #expect(groups.count == 1)
+        #expect(groups[0].sha1 == "deadbeef")
+    }
 }

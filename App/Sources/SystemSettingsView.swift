@@ -53,6 +53,7 @@ struct SystemSettingsView: View {
 private enum SettingsTab: Hashable {
     case systems
     case general
+    case viewOptions
 }
 
 /// Hosts both Settings tabs at a shared window size — `SystemSettingsView`
@@ -75,6 +76,12 @@ struct AppSettingsView: View {
                 GeneralSettingsView()
                     .tabItem { Label("General", systemImage: "gearshape") }
                     .tag(SettingsTab.general)
+                // jensyleo's own request (2026-08-12): a dedicated tab for
+                // layout/visibility toggles — see `ViewOptionsSettingsView`'s
+                // own doc comment for why this is separate from "General".
+                ViewOptionsSettingsView(store: store)
+                    .tabItem { Label("View Options", systemImage: "sidebar.squares.leading") }
+                    .tag(SettingsTab.viewOptions)
                 SystemSettingsView(store: store)
                     .tabItem { Label("Systems", systemImage: "list.bullet") }
                     .tag(SettingsTab.systems)
@@ -90,6 +97,19 @@ struct AppSettingsView: View {
                     .keyboardShortcut(.defaultAction)
             }
             .padding()
+            // jensyleo's own request (2026-08-13): Escape should close this
+            // window too, same as Enter already does via "Done"'s own
+            // `.defaultAction` shortcut above — this settings window has no
+            // actual "Cancel" (every toggle/setting here applies live, there's
+            // nothing to discard), so `.cancelAction` here just means "the
+            // same close" as `.defaultAction`, not a separate revert. Hidden
+            // (`.opacity(0)` + zero frame) rather than a second visible
+            // button — there's genuinely only one action to offer, this just
+            // gives it a second key that triggers it.
+            Button("Close") { dismissWindow() }
+                .keyboardShortcut(.cancelAction)
+                .opacity(0)
+                .frame(width: 0, height: 0)
         }
         // Enlarged (was 620×460) and made resizable with a floor rather
         // than a hard fixed size — jensyleo's own request (2026-07-30):
@@ -106,6 +126,19 @@ private struct MAMEMergeSettingsForm: View {
     @AppStorage(MAMEMergeModeSettings.mergeModeKey) private var mergeModeRaw = MAMEMergeModeSettings.defaultMergeMode.rawValue
     @AppStorage(MAMEMergeModeSettings.biosMergeModeKey) private var biosMergeModeRaw = MAMEMergeModeSettings.defaultBiosMergeMode.rawValue
     @AppStorage(MAMELaunchSettings.executablePathKey) private var mamePath = ""
+    /// jensyleo's own request (2026-08-13): "esas View Options llévalas a
+    /// la sección MAME de System, tiene más sentido" — moved here from
+    /// `ViewOptionsSettingsView` (itself moved there from `GeneralSettingsView`
+    /// just before that, in the same conversation) after realizing every
+    /// `DatabaseFilter` branch is a MAME-shaped concept, and "Systems" →
+    /// "MAME" is where every other MAME-specific setting already lives
+    /// (the executable path, both merge modes) — not "View Options",
+    /// which is about panel layout in general, not any one system's own
+    /// configuration. See `DatabaseFilterVisibilitySettings`'s own doc
+    /// comment (`ViewOptionsSettingsView.swift`, where the storage/logic
+    /// itself still lives — only this Form's own UI moved) for the
+    /// storage format.
+    @AppStorage(DatabaseFilterVisibilitySettings.storageKey) private var enabledDatabaseFiltersRaw = DatabaseFilterVisibilitySettings.defaultRawValue
     /// Snapshot of both merge-mode values from the moment this form
     /// appeared — jensyleo's own request (2026-07-30): warn that a
     /// changed merge/BIOS mode needs every system's folders rescanned to
@@ -309,6 +342,45 @@ private struct MAMEMergeSettingsForm: View {
                 .help("Resets MAME's Rom/Bios merge mode back to ROMForge's own defaults")
                 Spacer()
             }
+            Section("Database tree branches") {
+                // jensyleo's own request (2026-08-11): let the user pick
+                // which branches show at all in the "Database" sidebar tree
+                // — the tree grew from 8 categories to 14 the same day
+                // (manufacturer/year regroupings, plus four more reusing
+                // existing scan-result fields), and not every one of those
+                // will be useful to every collection. One `Toggle` per
+                // `DatabaseFilter` case, in declaration order, so this list
+                // and the tree's own top-to-bottom order always match.
+                ForEach(DatabaseFilter.allCases) { filter in
+                    Toggle(filter.rawValue, isOn: Binding(
+                        get: { DatabaseFilterVisibilitySettings.isEnabled(filter, in: enabledDatabaseFiltersRaw) },
+                        set: { enabledDatabaseFiltersRaw = DatabaseFilterVisibilitySettings.setEnabled($0, for: filter, in: enabledDatabaseFiltersRaw) }
+                    ))
+                }
+                HStack {
+                    Button("Reset to Defaults") {
+                        enabledDatabaseFiltersRaw = DatabaseFilterVisibilitySettings.defaultRawValue
+                    }
+                    // jensyleo's own request (2026-08-12): a quick way to
+                    // the two extremes, alongside "Reset to Defaults" —
+                    // "Select Minimum" leaves only "All games" on (the one
+                    // branch every other unscanned/empty-state code path
+                    // already assumes exists, see `minimumEnabled`'s own
+                    // doc comment), "Select None" empties the tree
+                    // entirely. Neither touches `defaultRawValue` itself,
+                    // so "Reset to Defaults" still returns to whatever the
+                    // user's own real setup was, not to either extreme.
+                    Button("Select Minimum") {
+                        enabledDatabaseFiltersRaw = DatabaseFilterVisibilitySettings.minimumRawValue
+                    }
+                    Button("Select None") {
+                        enabledDatabaseFiltersRaw = DatabaseFilterVisibilitySettings.noneRawValue
+                    }
+                }
+            }
+            Text("Controls which branches appear under \"Database\" in the library view's sidebar. Unchecking one just hides it — it never deletes anything, and re-checking it (or Reset to Defaults) brings it straight back. MAME-specific for now — a future console system will get its own equivalent section here, not this same list.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
         .onAppear {

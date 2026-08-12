@@ -216,11 +216,11 @@ public final class AuditReportDatabase {
             )
         }
 
-        let correct = entries.filter { $0.status == .correct }.count
-        let incorrect = entries.filter { $0.status == .incorrect }.count
-        let badDump = entries.filter { $0.status == .badDump }.count
-        let missing = entries.filter { $0.status == .missing }.count
-        let surplus = entries.filter { $0.status == .surplus }.count
+        // One pass instead of 5 separate `filter{}.count` scans over up to
+        // ~188k entries — same "count in one pass" pattern already used by
+        // `AuditReporter.generate`/`.merging` (2026-08-13 performance pass,
+        // "Ciclo A"), just never applied here.
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0
         // Real bug found live by jensyleo (2026-08-05): missing here ever
         // since `.unverifiable` was added — a freshly-scanned `AuditReport`
         // always got a correct `unverifiable` count from `AuditReporter`,
@@ -230,7 +230,18 @@ public final class AuditReportDatabase {
         // UI that trusted `report.unverifiable` directly (rather than
         // recomputing from `entries`) would show a stale `0` after every
         // app relaunch.
-        let unverifiable = entries.filter { $0.status == .unverifiable }.count
+        var unverifiable = 0
+        for entry in entries {
+            switch entry.status {
+            case .correct: correct += 1
+            case .incorrect: incorrect += 1
+            case .badDump: badDump += 1
+            case .missing: missing += 1
+            case .surplus: surplus += 1
+            case .unverifiable: unverifiable += 1
+            case .surplusInArchive, .unknownFile: break
+            }
+        }
         return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
     }
 
@@ -255,6 +266,36 @@ public final class AuditReportDatabase {
         defer { sqlite3_close(db) }
         try Self.bindAndExec(db, "DELETE FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
         try Self.bindAndExec(db, "DELETE FROM scans WHERE system_id = ?;", [.text(systemID)])
+    }
+
+    /// Deletes only the rows whose `path` falls under `pathPrefix`, for one
+    /// system — added 2026-08-13, jensyleo's own report ("eliminar los
+    /// folders sigue igual" [de lento], even after moving the previous
+    /// full-report rewrite off the main thread): `LibraryViewModel
+    /// .removeFolder` used to call `saveReport` after filtering out one
+    /// folder's entries, which is a full `DELETE`+re-`INSERT` of every
+    /// SURVIVING row too — for a real MAME system that's still hundreds of
+    /// thousands of unrelated rows rewritten just to drop one folder's
+    /// worth. This touches only the rows that actually need to go,
+    /// leaving every other row (and the `scans` metadata) completely
+    /// untouched — no rewrite of anything that didn't change.
+    ///
+    /// `substr(path, 1, ?) = ?` instead of `LIKE ? || '%'` — a real ROM
+    /// folder path can legitimately contain `%`/`_` (SQL `LIKE` wildcard
+    /// characters), which would need escaping to match literally; a plain
+    /// prefix-length substring comparison has no such wildcard semantics
+    /// to escape in the first place.
+    @discardableResult
+    public func removeEntries(systemID: String, pathPrefix: String) throws -> Int {
+        let db = try Self.open(path)
+        defer { sqlite3_close(db) }
+        let prefixLength = Int32((pathPrefix as NSString).length)
+        try Self.bindAndExec(
+            db,
+            "DELETE FROM audit_entries WHERE system_id = ? AND path IS NOT NULL AND substr(path, 1, ?) = ?;",
+            [.text(systemID), .int(prefixLength), .text(pathPrefix)]
+        )
+        return Int(sqlite3_changes(db))
     }
 
     // MARK: - Low-level SQLite plumbing
