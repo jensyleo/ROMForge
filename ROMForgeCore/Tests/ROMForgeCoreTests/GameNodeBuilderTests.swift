@@ -63,16 +63,52 @@ struct GameNodeBuilderTests {
         #expect(nodes[0].isDiskRow)
     }
 
-    @Test("a surplus file inside a known game's own archive folds into that game's row, not a separate Unknown bucket")
-    func surplusFoldsIntoKnownGame() {
+    @Test("a surplus entry from a DIFFERENT physical archive than a same-named real game stays its own separate row")
+    func surplusFromDifferentArchiveStaysSeparate() {
+        // jensyleo's own report (2026-08-13): folding a surplus archive
+        // into a real game's own node used to be decided by NAME alone
+        // (the archive's filename, minus extension, equal to some real
+        // DAT game's name) — but that's just a coincidence, not proof it's
+        // the same file: a real `nss.7z` (a genuinely separate, different
+        // physical file from the real `nss` BIOS's own `nss.zip`) got
+        // folded into "nss"'s row purely because "nss.7z" minus its
+        // extension is the string "nss", and that name-based lookup
+        // proved non-deterministic across identical scans (confirmed live
+        // via `DebugTrace`). Fixed to fold only by matching physical
+        // archive *path* — here the surplus entry's path ("/roms/g1.zip")
+        // never appears among "g1"'s own entries (which have no path at
+        // all in this test), so it correctly stays its own row.
         let entries = [
             entry(status: .correct, game: "g1"),
             entry(status: .unknownFile, game: nil, path: URL(fileURLWithPath: "/roms/g1.zip"), name: "extra.txt"),
         ]
         let gamesByName = ["g1": DATGame(name: "g1", description: "g1", cloneOf: nil, romOf: nil, roms: [])]
         let nodes = GameNodeBuilder.gameNodes(from: entries, gamesByName: gamesByName, gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+        #expect(nodes.count == 2)
+        #expect(nodes.first { $0.isSurplusBucket }?.entries.count == 1)
+    }
+
+    @Test("a surplus entry from the SAME physical archive as a real game's own matched roms folds into that game's row")
+    func surplusFromSameArchiveFoldsIntoRealGame() {
+        // The real live case (jensyleo, 2026-08-13): a single physical
+        // `gng.zip` partially matches "Ghosts'n Goblins (World? set 1)"
+        // (most of its roms), but a couple of its roms are ALSO a
+        // byte-for-byte duplicate of "set 2"'s own roms, becoming
+        // game-less surplus entries with the exact same containing
+        // archive path as "set 1"'s own matched roms. Those must fold
+        // into "set 1"'s row — otherwise "gng.zip" shows up twice, once
+        // matched and once "Duplicate", reading as if the file itself
+        // were duplicated on disk when it's really one file serving
+        // double duty.
+        let archive = URL(fileURLWithPath: "/roms/gng.zip")
+        let entries = [
+            entry(status: .correct, game: "gng", path: archive, name: "gng.bin"),
+            entry(status: .unknownFile, game: nil, path: archive, requiredByGameDescription: "Ghosts'n Goblins (World? set 2)", name: "extra.bin"),
+        ]
+        let nodes = GameNodeBuilder.gameNodes(from: entries, gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
         #expect(nodes.count == 1)
         #expect(nodes[0].entries.count == 2)
+        #expect(!nodes[0].isSurplusBucket)
     }
 
     @Test("a surplus archive matching no known game becomes its own Unknown game row")

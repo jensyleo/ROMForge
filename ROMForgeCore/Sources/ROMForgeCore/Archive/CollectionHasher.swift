@@ -28,6 +28,15 @@ public enum CollectionHasher {
         let archivedFile: ArchivedFile
     }
 
+    /// Same shape as `PendingZipEntry`, for a `.7z` entry — kept as its own
+    /// type rather than reused because it's hashed by a different backend
+    /// (`SevenZipArchiveHasher`, shelling out to the system's 7-Zip) with a
+    /// different signature (no `algorithms`/header-strip support yet).
+    private struct PendingSevenZipEntry: Sendable {
+        let entryFile: ScannedFile
+        let archivedFile: ArchivedFile
+    }
+
     /// A `cache` hit — unchanged size/mtime since a previous scan, for a
     /// loose file, or an unchanged containing archive for a zip entry —
     /// skips re-hashing/re-extracting that file entirely.
@@ -43,6 +52,7 @@ public enum CollectionHasher {
     ///   progress update.
     public static func hash(scannedFiles: [ScannedFile], cache: ScanCache = ScanCache(), algorithms: HashAlgorithms = .all, onProgress: (@Sendable (ScanProgress) -> Void)? = nil, onArchiveListed: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [HashedFile] {
         let zipFiles = scannedFiles.filter { $0.url.pathExtension.lowercased() == "zip" }
+        let sevenZipFiles = scannedFiles.filter { $0.url.pathExtension.lowercased() == "7z" }
         // `.chd` files are excluded here, not just from "surplus" reporting
         // downstream — a CHD's own whole-file hash has no relationship to
         // any `DATRom`'s CRC/MD5/SHA1 (it's compressed hunks of raw disk
@@ -51,21 +61,28 @@ public enum CollectionHasher {
         // these separately, by each CHD's own *header* SHA1 (`CHDMatcher`).
         let looseFiles = scannedFiles.filter {
             let ext = $0.url.pathExtension.lowercased()
-            return ext != "zip" && ext != "chd"
+            return ext != "zip" && ext != "chd" && ext != "7z"
         }
 
-        // Scanning each zip's central directory is cheap (no decompression
-        // yet) and stays sequential; only the actual per-entry
+        // Scanning each archive's own listing (central directory for a
+        // zip, `7zz l -slt` for a 7z) is cheap — no decompression yet —
+        // and stays sequential; only the actual per-entry
         // decompression+hashing below is worth parallelizing. Doing this
         // pass before hashing anything also lets the total (for `onProgress`)
-        // include every zip entry up front, not just loose files.
+        // include every archive entry up front, not just loose files.
         var hashedFiles: [HashedFile] = []
-        var pending: [PendingZipEntry] = []
+        var pendingZip: [PendingZipEntry] = []
+        var pendingSevenZip: [PendingSevenZipEntry] = []
         var zipEntryCount = 0
-        for (archiveIndex, zipFile) in zipFiles.enumerated() {
+        var sevenZipEntryCount = 0
+        let totalArchives = zipFiles.count + sevenZipFiles.count
+        var archivesRead = 0
+
+        for zipFile in zipFiles {
             try Task.checkCancellation()
             let entries = try ZipArchiveScanner.scan(archive: zipFile.url)
-            onArchiveListed?(archiveIndex + 1, zipFiles.count)
+            archivesRead += 1
+            onArchiveListed?(archivesRead, totalArchives)
             for entry in entries {
                 zipEntryCount += 1
                 let entryFile = ScannedFile(url: zipFile.url, name: entry.name, size: entry.size, modificationDate: zipFile.modificationDate)
@@ -73,19 +90,62 @@ public enum CollectionHasher {
                     hashedFiles.append(cached)
                     continue
                 }
-                pending.append(PendingZipEntry(entryFile: entryFile, archivedFile: entry))
+                pendingZip.append(PendingZipEntry(entryFile: entryFile, archivedFile: entry))
             }
         }
 
-        let total = max(looseFiles.count + zipEntryCount, 1)
-        let progress = onProgress.map { ScanProgressCounter(total: total, onProgress: $0) }
-        // Zip entries already served from cache above were never routed
-        // through the counter — report them as already-done now, so the
-        // total the caller sees still adds up to `total`.
-        for _ in 0..<(zipEntryCount - pending.count) { progress?.increment() }
+        // A `.7z` whose own listing can't even be read (almost always:
+        // the official 7-Zip isn't installed — `SevenZipError
+        // .binaryNotFound`) falls back to being hashed as one opaque loose
+        // file instead of vanishing from the scan outright — jensyleo's
+        // own report (2026-08-13): a real `.7z` sitting in a ROM folder
+        // never appeared anywhere in the result, not even as "surplus",
+        // because `.7z` support (`SevenZipArchiveScanner`/`Hasher`, fully
+        // built and tested already) was never actually wired into this
+        // function — every `.7z` silently fell into `looseFiles` above and
+        // got whole-file-hashed as if it were some random unknown file
+        // type, which happens to never match a DAT rom's own name, so it
+        // read as neither correct NOR surplus depending on downstream
+        // archive-name grouping. The whole-archive hash this fallback
+        // computes can never match a DAT rom's own CRC/MD5/SHA1 either,
+        // but it does still surface the file, correctly, as unrecognized.
+        var sevenZipFallbackFiles: [ScannedFile] = []
+        for sevenZipFile in sevenZipFiles {
+            try Task.checkCancellation()
+            let entries: [ArchivedFile]
+            do {
+                entries = try SevenZipArchiveScanner.scan(archive: sevenZipFile.url)
+            } catch {
+                sevenZipFallbackFiles.append(sevenZipFile)
+                archivesRead += 1
+                onArchiveListed?(archivesRead, totalArchives)
+                continue
+            }
+            archivesRead += 1
+            onArchiveListed?(archivesRead, totalArchives)
+            for entry in entries {
+                sevenZipEntryCount += 1
+                let entryFile = ScannedFile(url: sevenZipFile.url, name: entry.name, size: entry.size, modificationDate: sevenZipFile.modificationDate)
+                if let cached = cache.lookup(for: entryFile, algorithms: algorithms) {
+                    hashedFiles.append(cached)
+                    continue
+                }
+                pendingSevenZip.append(PendingSevenZipEntry(entryFile: entryFile, archivedFile: entry))
+            }
+        }
 
-        hashedFiles.append(contentsOf: try await FileHasher.hash(files: looseFiles, cache: cache, algorithms: algorithms, progress: progress))
-        hashedFiles.append(contentsOf: try await hashPending(pending, algorithms: algorithms, progress: progress))
+        let allLooseFiles = looseFiles + sevenZipFallbackFiles
+        let total = max(allLooseFiles.count + zipEntryCount + sevenZipEntryCount, 1)
+        let progress = onProgress.map { ScanProgressCounter(total: total, onProgress: $0) }
+        // Archive entries already served from cache above were never
+        // routed through the counter — report them as already-done now, so
+        // the total the caller sees still adds up to `total`.
+        for _ in 0..<(zipEntryCount - pendingZip.count) { progress?.increment() }
+        for _ in 0..<(sevenZipEntryCount - pendingSevenZip.count) { progress?.increment() }
+
+        hashedFiles.append(contentsOf: try await FileHasher.hash(files: allLooseFiles, cache: cache, algorithms: algorithms, progress: progress))
+        hashedFiles.append(contentsOf: try await hashPending(pendingZip, algorithms: algorithms, progress: progress))
+        hashedFiles.append(contentsOf: try await hashPendingSevenZip(pendingSevenZip, progress: progress))
         return hashedFiles
     }
 
@@ -131,7 +191,50 @@ public enum CollectionHasher {
         return chunkResults.flatMap { $0 }
     }
 
-    private static func chunked(_ items: [PendingZipEntry], into count: Int) -> [[PendingZipEntry]] {
+    /// Hashes 7z entries concurrently — same reasoning/pattern as
+    /// `hashPending` above for zip entries, just against
+    /// `SevenZipArchiveHasher` (which shells out to the system's 7-Zip)
+    /// instead of `ZIPFoundation`. No `algorithms`/header-strip support yet
+    /// (`SevenZipArchiveHasher.hash` always computes every checksum and
+    /// never attempts a header-stripped match) — a real, documented gap,
+    /// not an oversight, left for a future pass.
+    private static func hashPendingSevenZip(_ pending: [PendingSevenZipEntry], progress: ScanProgressCounter?) async throws -> [HashedFile] {
+        guard pending.count > 1 else {
+            return try pending.map { item in
+                try Task.checkCancellation()
+                let hash = try SevenZipArchiveHasher.hash(item.archivedFile)
+                progress?.increment()
+                return HashedFile(file: item.entryFile, hash: hash, headerStripped: nil)
+            }
+        }
+
+        let workerCount = HashingConcurrency.workerCount(for: pending.count)
+        let chunks = chunked(pending, into: workerCount)
+
+        let chunkResults = try await withThrowingTaskGroup(of: (Int, [HashedFile]).self) { group in
+            for (index, chunk) in chunks.enumerated() {
+                group.addTask {
+                    var hashed: [HashedFile] = []
+                    hashed.reserveCapacity(chunk.count)
+                    for item in chunk {
+                        try Task.checkCancellation()
+                        let hash = try SevenZipArchiveHasher.hash(item.archivedFile)
+                        hashed.append(HashedFile(file: item.entryFile, hash: hash, headerStripped: nil))
+                        progress?.increment()
+                    }
+                    return (index, hashed)
+                }
+            }
+            var ordered = [[HashedFile]](repeating: [], count: chunks.count)
+            for try await (index, hashed) in group {
+                ordered[index] = hashed
+            }
+            return ordered
+        }
+        return chunkResults.flatMap { $0 }
+    }
+
+    private static func chunked<T>(_ items: [T], into count: Int) -> [[T]] {
         guard count > 1 else { return [items] }
         let size = (items.count + count - 1) / count
         return stride(from: 0, to: items.count, by: size).map {

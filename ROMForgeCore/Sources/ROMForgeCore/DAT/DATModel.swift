@@ -177,6 +177,42 @@ public struct DATGame: Equatable, Sendable, Codable {
     }
 }
 
+extension DATGame {
+    /// The real BIOS machine this game actually needs at runtime, found by
+    /// following `romOf` up to whichever ancestor is DAT-declared
+    /// `isBios == true` — e.g. `nss` for a Triforce/NSS game like "Mario
+    /// Kart Arcade GP". Distinct from `biosSetNames` (this machine's OWN
+    /// `<biosset>` variants, e.g. "single"/"multi"/"single3" — a PCB
+    /// region/revision selector with no relation to any *other* machine at
+    /// all). jensyleo's own report (2026-08-13): the "Required BIOS" column
+    /// was showing `biosSetNames` — real DAT data, but the wrong field —
+    /// making a game that simply declares its own biosset variants read as
+    /// if it required a totally unrelated-looking "BIOS". `nil` for a BIOS
+    /// machine itself, for a game with no `romOf` at all, and for a
+    /// `romOf` chain that never reaches an `isBios` ancestor (e.g. a plain
+    /// clone's `romOf` pointing at its own non-BIOS parent).
+    ///
+    /// `gamesByName` must key every `DATGame` in the same DAT by its own
+    /// `name` — the same lookup `GameNodeBuilder` already builds to group
+    /// entries by game.
+    public func resolvedBiosMachineName(gamesByName: [String: DATGame]) -> String? {
+        guard !isBios else { return nil }
+        var current = self
+        // Cycle guard: a real DAT's `romOf` chain is always a finite tree
+        // up to a root machine, but a hand-edited/corrupt DAT could in
+        // principle declare a cycle — `visited` makes that terminate
+        // instead of looping forever.
+        var visited: Set<String> = [name]
+        while let parentName = current.romOf, !visited.contains(parentName) {
+            visited.insert(parentName)
+            guard let parent = gamesByName[parentName] else { return nil }
+            if parent.isBios { return parent.name }
+            current = parent
+        }
+        return nil
+    }
+}
+
 /// The parsed representation of a Logiqx/ClrMamePro-style XML DAT.
 public struct DATFile: Equatable, Sendable, Codable {
     public let header: DATHeader

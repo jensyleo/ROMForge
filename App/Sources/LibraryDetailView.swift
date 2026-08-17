@@ -2335,6 +2335,11 @@ struct LibraryDetailView: View {
                     }
                     .customizationID("mergeName")
                     .defaultVisibility(.hidden)
+                    TableColumn("Type") { (row: RomRow) in
+                        romCell(Text(entryKindText(for: row.entry)), status: row.entry.status)
+                    }
+                    .customizationID("entryKind")
+                    .defaultVisibility(.hidden)
                 }
             }
             .onChange(of: romColumnCustomization) { Self.persist(romColumnCustomization, key: Self.romColumnCustomizationKey) }
@@ -2479,6 +2484,23 @@ struct LibraryDetailView: View {
         case .baddump: return "Bad dump"
         case .nodump: return "No dump"
         }
+    }
+
+    /// `isDisk` is per-entry (a real CHD row); `isBios` is per-game (this
+    /// row's own game is a MAME BIOS set, so every one of its rom rows is a
+    /// BIOS file) — no per-entry "this individual rom is a BIOS file within
+    /// a normal game" case exists, because MAME's own `-listxml` convention
+    /// never lists a BIOS's roms inside the machine that requires it (see
+    /// `AuditReporter`/`GameNodeBuilder`'s own grouping by `entry.game`) —
+    /// there's simply no row here to label that way. Samples (`<sample>`)
+    /// never get their own `AuditEntry` at all (`hasSamples` is
+    /// presence-only, no name/hash to audit), so there's no "Sample" case
+    /// either — every row reaching this function is either a disk, a BIOS
+    /// set's own rom, or a plain rom.
+    private func entryKindText(for entry: AuditEntry) -> String {
+        if entry.isDisk { return "CHD" }
+        if entry.isBios { return "BIOS" }
+        return "ROM"
     }
 
     // MARK: - Tree building
@@ -3072,10 +3094,26 @@ struct LibraryDetailView: View {
                     // controlled by that color's own "Incorrect" toggle,
                     // same as every other yellow row — jensyleo's own
                     // question (2026-08-04): only a *genuinely*
-                    // unrecognized bucket (`.surplus`) belongs to the
-                    // separate "Unknown" toggle at all.
+                    // unrecognized bucket belongs to the separate "Unknown"
+                    // toggle at all.
+                    //
+                    // jensyleo's own report (2026-08-13): checking
+                    // `aggregateStatus == .surplus` here never actually
+                    // matched anything real — `GameNodeBuilder
+                    // .gameNodes(from:)` only ever assigns `.unknownFile`
+                    // (or `.incorrect`) to a surplus bucket, `.surplus`
+                    // itself is legacy/decode-only (see `AuditStatus
+                    // .surplus`'s own doc comment) — so a genuinely
+                    // unrecognized file (e.g. a real `.7z` with no
+                    // matching DAT rom) silently fell into the `else`
+                    // branch and was gated by the four status buttons
+                    // instead of this dedicated toggle, reading as if it
+                    // had vanished entirely. See the same fix in
+                    // `computeGameNodes`'s own doc comment for the full
+                    // reasoning.
                     if node.isSurplusBucket {
-                        return node.aggregateStatus == .surplus ? showUnknownArchives : activeStatusFilters.contains(node.aggregateStatus ?? .surplus)
+                        return node.aggregateStatus == .unknownFile || node.aggregateStatus == .surplus
+                            ? showUnknownArchives : activeStatusFilters.contains(node.aggregateStatus ?? .unknownFile)
                     }
                     guard let category = gameAggregateStatusByName[node.name] ?? node.aggregateStatus else { return true }
                     return activeStatusFilters.contains(category)
@@ -3492,17 +3530,31 @@ struct LibraryDetailView: View {
         // for exactly what each of the four means.
         baseNodes.filter { node in
             // A genuinely unrecognized archive ("Unknown game") isn't one
-            // of the four real categories at all — it always shows,
-            // independent of any toggle (see `computeScopedStatusCounts()`'s
-            // own doc comment for why it isn't counted under "Bad" either).
-            // A surplus bucket `gameNodes(from:)` reclassified yellow
-            // instead (`.incorrect`, fully identified elsewhere — see its
-            // own `isFullyIdentified` doc comment) is controlled by that
-            // color's own "Incorrect" toggle — jensyleo's own question
-            // (2026-08-04): only a genuinely unrecognized bucket belongs
-            // to the separate "Unknown" toggle at all.
+            // of the four real categories at all — it's gated by its own
+            // separate "Unknown" toggle instead. A surplus bucket
+            // `gameNodes(from:)` reclassified yellow instead (`.incorrect`,
+            // fully identified elsewhere — see its own `isFullyIdentified`
+            // doc comment) is controlled by that color's own "Incorrect"
+            // toggle — jensyleo's own question (2026-08-04): only a
+            // genuinely unrecognized bucket belongs to the separate
+            // "Unknown" toggle at all.
+            //
+            // jensyleo's own report (2026-08-13): this used to check
+            // `node.aggregateStatus == .surplus` — but `GameNodeBuilder
+            // .gameNodes(from:)` never actually assigns `.surplus` to a
+            // surplus bucket (`.surplus` is legacy/decode-only — see
+            // `AuditStatus.surplus`'s own doc comment); a real surplus
+            // bucket gets `.unknownFile` (or `.incorrect`, handled by the
+            // `else` branch already). That made the condition always
+            // false, so a genuinely unrecognized file (e.g. a real `.7z`
+            // with no matching DAT rom) fell through to the `else` branch
+            // and was gated by the four status buttons instead of the
+            // dedicated "Unknown" toggle — reading as if it had vanished
+            // entirely whenever `.unknownFile` wasn't part of whatever the
+            // status buttons happened to leave in `activeStatusFilters`.
             if node.isSurplusBucket {
-                return node.aggregateStatus == .surplus ? showUnknownArchives : activeStatusFilters.contains(node.aggregateStatus ?? .surplus)
+                return node.aggregateStatus == .unknownFile || node.aggregateStatus == .surplus
+                    ? showUnknownArchives : activeStatusFilters.contains(node.aggregateStatus ?? .unknownFile)
             }
             guard let category = gameAggregateStatusByName[node.name] ?? node.aggregateStatus else { return true }
             return activeStatusFilters.contains(category)

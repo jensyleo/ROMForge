@@ -48,16 +48,30 @@ public struct GameNode: Identifiable, Sendable {
     /// columns. `entries` is always empty in that case, since there's no
     /// scan result yet to hold one.
     public var sourceGame: DATGame?
+    /// `sourceGame`'s real BIOS machine (via `romOf` — see `DATGame
+    /// .resolvedBiosMachineName`'s own doc comment), precomputed by
+    /// `GameNodeBuilder.unscannedCatalogNodes` while it still has every
+    /// other `DATGame` in the DAT on hand to resolve the chain against.
+    /// `requiredBiosNames` below only ever needs this as its catalog-view
+    /// fallback (`entries` is always empty pre-scan, so `firstNonEmpty`
+    /// never has anything to find), and a lone `GameNode` has no such
+    /// lookup of its own to resolve it lazily. `nil` for every scanned row
+    /// (its real `AuditEntry.requiredBiosNames`, already resolved the same
+    /// way by `AuditReporter`, covers it instead) and for a game with no
+    /// BIOS dependency.
+    public var resolvedBiosMachineName: String?
 
     public init(
         id: String, name: String, entries: [AuditEntry], aggregateStatus: AuditStatus?,
-        isSurplusBucket: Bool = false, isDiskRow: Bool = false, sourceGame: DATGame? = nil
+        isSurplusBucket: Bool = false, isDiskRow: Bool = false, sourceGame: DATGame? = nil,
+        resolvedBiosMachineName: String? = nil
     ) {
         self.id = id
         self.name = name
         self.entries = entries
         self.aggregateStatus = aggregateStatus
         self.isSurplusBucket = isSurplusBucket
+        self.resolvedBiosMachineName = resolvedBiosMachineName
         self.isDiskRow = isDiskRow
         self.sourceGame = sourceGame
     }
@@ -236,7 +250,7 @@ public struct GameNode: Identifiable, Sendable {
     public var year: String { firstNonEmpty(\.gameYear) ?? sourceGame?.year ?? "" }
     public var manufacturer: String { firstNonEmpty(\.gameManufacturer) ?? sourceGame?.manufacturer ?? "" }
     public var requiredBiosNames: String {
-        firstNonEmpty(\.requiredBiosNames) ?? sourceGame.map { $0.biosSetNames.joined(separator: ", ") } ?? ""
+        firstNonEmpty(\.requiredBiosNames) ?? resolvedBiosMachineName ?? ""
     }
     public var deviceRefNames: String {
         firstNonEmpty(\.deviceRefNames) ?? sourceGame.map { $0.deviceRefs.joined(separator: ", ") } ?? ""

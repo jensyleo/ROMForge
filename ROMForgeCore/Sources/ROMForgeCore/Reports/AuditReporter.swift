@@ -23,6 +23,12 @@ public enum AuditReporter {
         try Task.checkCancellation()
         var entries: [AuditEntry] = []
 
+        // Built once for the whole report, not per-game — `romOf`-chain
+        // resolution (`resolvedBiosMachineName`) needs to look up arbitrary
+        // ancestor machines by name, and every one of them is some other
+        // game already in this same DAT/scan.
+        let gamesByName = Dictionary(uniqueKeysWithValues: matchReport.games.map { ($0.game.name, $0.game) })
+
         for gameResult in matchReport.games {
             // Checked every game, not throttled — a lock-free `Task`
             // cancellation read is negligible next to any real per-game
@@ -35,7 +41,12 @@ public enum AuditReporter {
             // Computed once per game rather than per rom — every rom in a
             // game shares the same game-level metadata.
             let chdNames = game.disks.isEmpty ? nil : game.disks.map(\.name).joined(separator: ", ")
-            let requiredBiosNames = game.biosSetNames.isEmpty ? nil : game.biosSetNames.joined(separator: ", ")
+            // The real BIOS machine this game needs (via `romOf`), not this
+            // machine's OWN `<biosset>` variants — see
+            // `resolvedBiosMachineName`'s own doc comment for the real,
+            // confusing report (Mario Kart Arcade GP showing
+            // "single, multi, single3") this fixes.
+            let requiredBiosNames = game.resolvedBiosMachineName(gamesByName: gamesByName)
             let deviceRefNames = game.deviceRefs.isEmpty ? nil : game.deviceRefs.joined(separator: ", ")
             for romMatch in gameResult.matches {
                 let rom = romMatch.rom

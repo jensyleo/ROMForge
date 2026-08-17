@@ -209,22 +209,32 @@ struct AuditReporterTests {
         // goal needs proof they land correctly together, since UI logic
         // downstream branches on combinations of these, not each alone.
         let rom = DATRom(name: "game.bin", size: 1, crc: nil, md5: nil, sha1: nil, mergeName: "parent-rom.bin", optional: true)
+        // `romOf: "biosset"` points at a real BIOS machine also present in
+        // this same scan — `biosSetNames` here is deliberately this
+        // machine's OWN (unrelated) PCB variant list, proving
+        // `requiredBiosNames` below resolves via `romOf`/`isBios`, not
+        // `biosSetNames` (see `DATGame.resolvedBiosMachineName`'s own doc
+        // comment for the real, confusing bug this distinction fixes).
         let game = DATGame(
             name: "clonewithbios", description: "Clone With BIOS", cloneOf: "parent", romOf: "biosset", roms: [rom],
-            biosSetNames: ["bios0", "bios1"], deviceRefs: ["shared_cpu"]
+            biosSetNames: ["single", "multi"], deviceRefs: ["shared_cpu"]
         )
+        let biosGame = DATGame(name: "biosset", description: "Bios Set", cloneOf: nil, romOf: nil, roms: [], isBios: true)
         let local = hashedFile(name: "renamed.bin", size: 1)
 
         let matchReport = MatchReport(
-            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(local, viaHeaderStrip: true))])],
+            games: [
+                GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(local, viaHeaderStrip: true))]),
+                GameMatchResult(game: biosGame, matches: []),
+            ],
             surplusFiles: []
         )
         let report = try AuditReporter.generate(from: matchReport)
 
-        let entry = try #require(report.entries.first)
+        let entry = try #require(report.entries.first { $0.game == "clonewithbios" })
         #expect(entry.isOptional == true)
         #expect(entry.mergeName == "parent-rom.bin")
-        #expect(entry.requiredBiosNames == "bios0, bios1")
+        #expect(entry.requiredBiosNames == "biosset")
         #expect(entry.deviceRefNames == "shared_cpu")
         #expect(entry.matchedViaHeaderStrip == true)
         #expect(entry.cloneOf == "parent")

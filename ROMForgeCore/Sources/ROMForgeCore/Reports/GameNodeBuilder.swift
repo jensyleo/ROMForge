@@ -125,6 +125,11 @@ public enum GameNodeBuilder {
     /// scanned first. Used only for "Database" categories — a "Rom files"
     /// folder inherently needs real scan data.
     public static func unscannedCatalogNodes(matching category: DatabaseCategory, preloadedGames games: [DATGame]) -> [GameNode] {
+        // Needed either way: `.gamesRequiringBIOS` filters by it directly,
+        // and every returned node's own `resolvedBiosMachineName` (for the
+        // "Required BIOS" column, pre-scan) needs it too — built once for
+        // the whole DAT rather than per game.
+        let gamesByName = Dictionary(uniqueKeysWithValues: games.map { ($0.name, $0) })
         let categoryFiltered: [DATGame]
         switch category {
         case .allGames, .byManufacturer, .byYear: categoryFiltered = games
@@ -139,11 +144,20 @@ public enum GameNodeBuilder {
         case .biosFiles: categoryFiltered = games.filter(\.isBios)
         case .gamesWithCHD: categoryFiltered = games.filter { !$0.disks.isEmpty }
         case .gamesWithSamples: categoryFiltered = games.filter(\.hasSamples)
-        case .gamesRequiringBIOS: categoryFiltered = games.filter { !$0.biosSetNames.isEmpty }
+        // jensyleo's own report (2026-08-13): this used to filter by
+        // `!$0.biosSetNames.isEmpty` — a machine's OWN `<biosset>` PCB
+        // variants (e.g. "single"/"multi"/"single3"), which says nothing
+        // about needing another machine's BIOS at all. See `DATGame
+        // .resolvedBiosMachineName`'s own doc comment for the real,
+        // confusing case (Mario Kart Arcade GP) this fixes.
+        case .gamesRequiringBIOS: categoryFiltered = games.filter { $0.resolvedBiosMachineName(gamesByName: gamesByName) != nil }
         case .gamesWithDeviceRefs: categoryFiltered = games.filter { !$0.deviceRefs.isEmpty }
         }
         return categoryFiltered.map { game in
-            GameNode(id: "game-\(game.name)", name: game.name, entries: [], aggregateStatus: nil, sourceGame: game)
+            GameNode(
+                id: "game-\(game.name)", name: game.name, entries: [], aggregateStatus: nil, sourceGame: game,
+                resolvedBiosMachineName: game.resolvedBiosMachineName(gamesByName: gamesByName)
+            )
         }
     }
 
@@ -185,21 +199,45 @@ public enum GameNodeBuilder {
             surplusByArchive[archiveKey, default: []].append(entry)
         }
 
-        // A surplus file living *inside* an archive that also fully/
-        // partially matches a real known game is an extra/unexpected file
-        // in an otherwise-recognized set, not a second, unrelated "Unknown
-        // game" — folding it into that same game's own entries avoids two
-        // rows both named after the same archive, one matched and one
-        // "Unknown". Checked against `gamesByName` (the loaded DAT's own
-        // real game catalog), not `gameAggregateStatusByName`'s keys — a
-        // real DAT game whose entire expected rom list is empty under the
-        // current merge mode never produces a single `entry.game != nil`
-        // row, so it never gets a key in `gameAggregateStatusByName`
-        // either, but `gamesByName` still recognizes it as real.
+        // A surplus entry sharing the exact same *physical archive path* as
+        // an already-matched game's own entries (both come from literally
+        // the same zip: e.g. `gng.zip` matches most of "Ghosts'n Goblins
+        // (World? set 1)" but a couple of its roms are *also* an identical
+        // byte-for-byte duplicate of "set 2"'s own roms) folds into that
+        // same game's row — otherwise the exact same archive filename
+        // would show up twice, once matched and once "Duplicate", which
+        // reads as if the file itself were duplicated on disk when it's
+        // really one file serving double duty.
+        //
+        // jensyleo's own report (2026-08-13): the OLD version of this
+        // fold matched by *name* alone (the archive's filename, minus
+        // extension, equal to some OTHER real DAT game's name) rather than
+        // by actual physical path — meant to catch the same "avoid two
+        // rows for one archive" case, but caught it far too broadly: a
+        // real `nss.7z` (a genuinely separate, different physical file
+        // from the real `nss` BIOS's own `nss.zip`) got folded into "nss"'s
+        // row purely because "nss.7z" minus its extension is the string
+        // "nss" — and that name-based lookup, sourced from a differently-
+        // constructed `gamesByName` than this function's own entries,
+        // proved non-deterministic across identical scans (confirmed live
+        // via `DebugTrace`: the same lookup returned `found`/`not found`
+        // on consecutive scans of the same unchanged collection). Matching
+        // by physical path instead — sourced from this function's own
+        // `entriesByGame`, not any outside lookup — only ever folds a
+        // surplus entry into a game row that entry's own archive file
+        // ACTUALLY contributed real matches to, which is both the
+        // correct semantics and fully deterministic (it depends only on
+        // this call's own inputs, never on a second, separately-built
+        // dictionary that could disagree with it).
+        var gameNameByArchivePath: [String: String] = [:]
+        for (name, gameEntries) in entriesByGame {
+            for entry in gameEntries {
+                guard let path = entry.path?.path else { continue }
+                gameNameByArchivePath[path] = name
+            }
+        }
         for archiveKey in surplusOrder {
-            let matchingGame = (SurplusArchiveKey.displayName(forKey: archiveKey) as NSString).deletingPathExtension
-            guard gamesByName[matchingGame] != nil else { continue }
-            if entriesByGame[matchingGame] == nil { gameOrder.append(matchingGame) }
+            guard let matchingGame = gameNameByArchivePath[archiveKey] else { continue }
             entriesByGame[matchingGame, default: []].append(contentsOf: surplusByArchive[archiveKey] ?? [])
             surplusByArchive.removeValue(forKey: archiveKey)
         }
