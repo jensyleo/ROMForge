@@ -22,6 +22,11 @@ private struct FakeValidator: SevenZipBinaryValidating {
     }
 }
 
+private struct FakeBundleLocator: BundledSevenZipLocating {
+    let url: URL?
+    func bundledExecutableURL() -> URL? { url }
+}
+
 @Suite("SevenZipLocator")
 struct SevenZipLocatorTests {
     @Test("finds 7zz at the first known Homebrew path when it identifies as official")
@@ -61,5 +66,27 @@ struct SevenZipLocatorTests {
         let message = SevenZipError.binaryNotFound.description
         #expect(message.contains("brew install sevenzip"))
         #expect(message.contains("https://www.7-zip.org"))
+    }
+
+    @Test("prefers the app's own bundled engine over any system install, when it validates as official")
+    func prefersBundledEngineOverSystemInstall() throws {
+        let bundled = URL(fileURLWithPath: "/Applications/ROMForge.app/Contents/Resources/Engine/7zz")
+        let checker = FakeExecutableChecker(executablePaths: [bundled.path, "/opt/homebrew/bin/7zz"])
+        let validator = FakeValidator(officialPaths: [bundled.path, "/opt/homebrew/bin/7zz"])
+        let bundleLocator = FakeBundleLocator(url: bundled)
+        let url = try SevenZipLocator.locate(checker: checker, validator: validator, bundleLocator: bundleLocator)
+        #expect(url.path == bundled.path)
+    }
+
+    @Test("falls back to a system install when the bundled engine doesn't validate as official")
+    func fallsBackWhenBundledEngineIsNotOfficial() throws {
+        // e.g. a corrupted or tampered bundled binary — must not be trusted
+        // just because it's the one shipped inside the app.
+        let bundled = URL(fileURLWithPath: "/Applications/ROMForge.app/Contents/Resources/Engine/7zz")
+        let checker = FakeExecutableChecker(executablePaths: [bundled.path, "/opt/homebrew/bin/7zz"])
+        let validator = FakeValidator(officialPaths: ["/opt/homebrew/bin/7zz"])
+        let bundleLocator = FakeBundleLocator(url: bundled)
+        let url = try SevenZipLocator.locate(checker: checker, validator: validator, bundleLocator: bundleLocator)
+        #expect(url.path == "/opt/homebrew/bin/7zz")
     }
 }

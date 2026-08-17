@@ -18,7 +18,9 @@ EmulationStation). It targets arcade, consoles and other systems alike.
 76 automated unit tests against synthetic fixtures: Logiqx/ClrMamePro DAT
 parsing (No-Intro, Redump, TOSEC, FBNeo) and MAME `-listxml` parsing (BIOS
 sets, `device_ref`, disks, parent/clone); scanning loose files, ZIP
-archives, 7z archives (via the system's own `7zz`/`7z`) and CHD v5 headers;
+archives, 7z archives (via a bundled copy of the official 7-Zip engine,
+falling back to a system install if the bundled one is ever missing) and
+CHD v5 headers;
 CRC32/MD5/SHA1 hashing; matching by size and hash — never by filename
 alone; reporting correct/incorrect/missing/surplus plus duplicate-by-hash
 groups; repairing (rename/move/copy) and rebuilding sets (loose, ZIP,
@@ -38,10 +40,11 @@ a CSV. **The app is currently view-only, at the user's request**: repairing
 (renaming a misnamed ROM) is implemented in `ROMForgeCore` and covered by
 tests, but disabled in the app behind a single switch
 (`LibraryViewModel.modificationsEnabled`) — it never touches a ROM file.
-7z/CHD scanning, duplicate detection, and standalone BIOS/parent-clone
-dependency resolution are implemented and tested in `ROMForgeCore` but
-**not yet wired into the app's scan pipeline** — see
-[ROADMAP.md](ROADMAP.md) for what connecting them looks like.
+7z scanning is wired into the app's scan pipeline. CHD scanning, duplicate
+detection, and standalone BIOS/parent-clone dependency resolution are
+implemented and tested in `ROMForgeCore` but **not yet wired into the app's
+scan pipeline** — see [ROADMAP.md](ROADMAP.md) for what connecting them
+looks like.
 
 None of this — Core or app — has been run against a real ROM/BIOS/CHD
 collection yet; every test uses synthetic fixtures. See
@@ -336,6 +339,20 @@ was wired in ahead of implementing CHD's "cdfl" (CD+FLAC) codec, which
 remains unimplemented (see ROADMAP.md). Safe to leave installed; nothing
 regresses if it's ever dropped once cdfl support lands or is abandoned.
 
+### Bundled 7-Zip engine
+
+The official `7zz` binary (universal, x86_64 + arm64) is bundled verbatim at
+`Contents/Resources/Engine/7zz`, same layout and same binary as ROMForge's
+sibling app 7ZIP4MAC. It is never modified. Its license is included
+alongside it (`App/Resources/Engine/License.txt`). No install step is
+needed for `.7z` scanning to work — a system install (e.g. Homebrew's
+`sevenzip` formula) is only ever used as a fallback, if the bundled copy is
+ever missing (`SevenZipLocator.swift`).
+
 ## License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).
+
+Bundled 7-Zip engine: GNU LGPL (with the unRAR restriction on commercial
+use of the unRAR code), by Igor Pavlov — see
+`App/Resources/Engine/License.txt`.

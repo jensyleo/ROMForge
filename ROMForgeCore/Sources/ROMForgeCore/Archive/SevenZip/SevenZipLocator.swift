@@ -35,10 +35,32 @@ struct RealSevenZipBinaryValidator: SevenZipBinaryValidating {
     }
 }
 
-/// Finds the system's `7zz`/`7z` binary. ROMForge does not bundle 7-Zip —
-/// unlike ZIP (handled entirely in-process via ZIPFoundation), 7z support
-/// depends on the user having the official 7-Zip (https://www.7-zip.org)
-/// installed, and only the official build is accepted.
+/// Abstracts "where does the app's own bundled 7zz engine live, if any" so
+/// tests can fake it without depending on `Bundle.main`, which has no
+/// "Engine" resource at all when running under `swift test`/xctest.
+protocol BundledSevenZipLocating {
+    func bundledExecutableURL() -> URL?
+}
+
+/// The official `7zz` binary (universal x86_64+arm64), shipped verbatim at
+/// `Contents/Resources/Engine/7zz` — same layout, same binary, as ROMForge's
+/// sibling app 7ZIP4MAC (`App/Resources/Engine/`), which already carries this
+/// exact engine in production. `Bundle.main` here resolves to whichever
+/// executable is actually running (the App, not this package), so this
+/// works correctly even though the lookup is written in ROMForgeCore.
+struct RealBundledSevenZipLocator: BundledSevenZipLocating {
+    func bundledExecutableURL() -> URL? {
+        Bundle.main.url(forResource: "7zz", withExtension: nil, subdirectory: "Engine")
+    }
+}
+
+/// Finds the `7zz`/`7z` binary to use. First choice is the copy ROMForge
+/// ships inside its own `.app` (see `RealBundledSevenZipLocator`) — no
+/// install step, works out of the box, same as ZIP (handled entirely
+/// in-process via ZIPFoundation). Only falls back to a system-installed copy
+/// (Homebrew's `sevenzip` formula, or any other install on `PATH`) when the
+/// bundled engine is missing for some reason (e.g. `romforge-cli`, the SPM
+/// executable target, has no app bundle to carry one).
 public enum SevenZipLocator {
     private static let candidatePaths = [
         "/opt/homebrew/bin/7zz",
@@ -48,10 +70,15 @@ public enum SevenZipLocator {
     ]
 
     public static func locate(fileManager: FileManager = .default) throws -> URL {
-        try locate(checker: fileManager, validator: RealSevenZipBinaryValidator())
+        try locate(checker: fileManager, validator: RealSevenZipBinaryValidator(), bundleLocator: RealBundledSevenZipLocator())
     }
 
-    static func locate(checker: ExecutableFileChecking, validator: SevenZipBinaryValidating) throws -> URL {
+    static func locate(checker: ExecutableFileChecking, validator: SevenZipBinaryValidating, bundleLocator: BundledSevenZipLocating = RealBundledSevenZipLocator()) throws -> URL {
+        if let bundled = bundleLocator.bundledExecutableURL(),
+           checker.isExecutableFile(atPath: bundled.path),
+           validator.isOfficial7Zip(at: bundled) {
+            return bundled
+        }
         for path in candidatePaths where checker.isExecutableFile(atPath: path) {
             let url = URL(fileURLWithPath: path)
             if validator.isOfficial7Zip(at: url) {

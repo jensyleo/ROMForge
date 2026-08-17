@@ -4,6 +4,38 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added — bundled 7-Zip engine, no install step needed for `.7z` scanning
+
+The official `7zz` binary (universal, x86_64 + arm64) now ships inside the
+app at `Contents/Resources/Engine/7zz` — same binary, same layout, as
+ROMForge's sibling app 7ZIP4MAC. `.7z` archives scan and match correctly
+with nothing installed on the host system; a Homebrew install (the
+`sevenzip` formula) is only ever used as a fallback if the bundled copy is
+somehow missing.
+
+### Fixed — a round of real-collection manual testing found several bugs, all fixed
+
+- **`.7z` files were never actually scanned at all** — `CollectionHasher`
+  had no dispatch for the `.7z` extension, so every one silently fell into
+  the loose-file path and got whole-file-hashed, which can never match a
+  DAT rom's own CRC/MD5/SHA1. Wired in properly (`CollectionHasher.hash`
+  now expands `.7z` entries via `SevenZipArchiveScanner`/`Hasher`, same
+  shape as the existing ZIP path), with a graceful whole-file fallback if
+  7-Zip somehow can't be located at all.
+- **"Required BIOS" column showed the wrong thing** — it displayed a
+  game's own `<biosset>` PCB variant names (e.g. "single"/"multi") instead
+  of the actual BIOS machine it depends on. Now resolves the real BIOS
+  machine via the DAT's `romOf` chain.
+- **A surplus archive could non-deterministically fold into an unrelated
+  game's row** (or not) across identical scans, when its filename minus
+  extension happened to match some other real DAT game's name (e.g. a
+  `.7z` named after a BIOS machine it has nothing to do with). Fixed to
+  fold only when it's literally the same physical archive path as that
+  game's own matched entries.
+- **The "Unknown" archive toggle was a no-op** for genuinely unrecognized
+  archives — the filter checked for a legacy status value the code never
+  actually assigns anymore.
+
 ### Fixed — a round of real-collection manual testing found several "Database"/"ROM folder" bugs, all fixed
 
 This batch came directly out of testing ROMForge against a real, large

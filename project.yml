@@ -30,6 +30,14 @@ targets:
         buildPhase: resources
         excludes:
           - Info.plist
+          - Engine
+      # Folder reference: the official 7zz engine (bundled verbatim, same
+      # binary as ROMForge's sibling app 7ZIP4MAC) is copied as one opaque
+      # directory into Contents/Resources/Engine/, preserving the
+      # executable bit — excluded from the glob above so it isn't also
+      # picked up file-by-file there.
+      - path: App/Resources/Engine
+        type: folder
     dependencies:
       - package: ROMForgeCore
         product: ROMForgeCore
