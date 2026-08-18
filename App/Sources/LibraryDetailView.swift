@@ -703,6 +703,62 @@ struct LibraryDetailView: View {
         UserDefaults.standard.set(data, forKey: key)
     }
 
+    /// A named snapshot of both tables' column customization together (show/
+    /// hide, order, width) — jensyleo's own request (2026-08-18): "Compacta"
+    /// vs "Detallada"-style saved view presets, on top of the show/hide/
+    /// reorder that already existed. Stored pre-encoded (`Data`, not the
+    /// generic `TableColumnCustomization<RowValue>` itself) since `GameNode`/
+    /// `RomRow` are two different row types and a single dictionary value
+    /// type can't hold both generically — round-tripping through `Data` is
+    /// exactly what `gameColumnCustomization`/`romColumnCustomization`
+    /// themselves already do for their own single-table persistence above.
+    private struct ColumnPreset: Codable {
+        let gameData: Data
+        let romData: Data
+    }
+
+    @State private var columnPresets: [String: ColumnPreset] = Self.loadColumnPresets()
+    @State private var isShowingColumnPresetsSheet = false
+    private static let columnPresetsKey = "ROMForge.columnPresets"
+
+    private static func loadColumnPresets() -> [String: ColumnPreset] {
+        guard let data = UserDefaults.standard.data(forKey: columnPresetsKey),
+              let decoded = try? JSONDecoder().decode([String: ColumnPreset].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    private static func persistColumnPresets(_ presets: [String: ColumnPreset]) {
+        guard let data = try? JSONEncoder().encode(presets) else { return }
+        UserDefaults.standard.set(data, forKey: columnPresetsKey)
+    }
+
+    private func saveColumnPreset(named name: String) {
+        guard !name.isEmpty,
+              let gameData = try? JSONEncoder().encode(gameColumnCustomization),
+              let romData = try? JSONEncoder().encode(romColumnCustomization)
+        else { return }
+        columnPresets[name] = ColumnPreset(gameData: gameData, romData: romData)
+        Self.persistColumnPresets(columnPresets)
+    }
+
+    private func applyColumnPreset(named name: String) {
+        guard let preset = columnPresets[name] else { return }
+        if let decoded = try? JSONDecoder().decode(TableColumnCustomization<GameNode>.self, from: preset.gameData) {
+            gameColumnCustomization = decoded
+            Self.persist(decoded, key: Self.gameColumnCustomizationKey)
+        }
+        if let decoded = try? JSONDecoder().decode(TableColumnCustomization<RomRow>.self, from: preset.romData) {
+            romColumnCustomization = decoded
+            Self.persist(decoded, key: Self.romColumnCustomizationKey)
+        }
+    }
+
+    private func deleteColumnPreset(named name: String) {
+        columnPresets.removeValue(forKey: name)
+        Self.persistColumnPresets(columnPresets)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -842,6 +898,11 @@ struct LibraryDetailView: View {
                             ? "Rename misnamed ROMs to match the DAT"
                             : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
                     )
+                // jensyleo's own request (2026-08-18): named presets on top
+                // of the show/hide/reorder/resize that already existed —
+                // "Compacta" vs "Detallada", saved and switchable by name.
+                Button("Column Presets…") { isShowingColumnPresetsSheet = true }
+                    .help("Save or switch between named column layouts for both tables")
                 // jensyleo's own request (2026-08-18) — ClrMamePro/RomVault's
                 // own "Fix-DatFiles": a small DAT holding only the missing/
                 // incorrect entries from the last scan, so another DAT-aware
@@ -987,6 +1048,17 @@ struct LibraryDetailView: View {
             romColumnCustomization = TableColumnCustomization<RomRow>()
             UserDefaults.standard.removeObject(forKey: Self.gameColumnCustomizationKey)
             UserDefaults.standard.removeObject(forKey: Self.romColumnCustomizationKey)
+        }
+        .sheet(isPresented: $isShowingColumnPresetsSheet) {
+            ColumnPresetsSheet(
+                presetNames: columnPresets.keys.sorted(),
+                onApply: { name in
+                    applyColumnPreset(named: name)
+                    isShowingColumnPresetsSheet = false
+                },
+                onSave: { name in saveColumnPreset(named: name) },
+                onDelete: { name in deleteColumnPreset(named: name) }
+            )
         }
     }
 
