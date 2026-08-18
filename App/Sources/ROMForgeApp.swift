@@ -11,6 +11,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
+import AppKit
 import SwiftUI
 
 /// Posted by the "View" menu's reset commands below — `LibraryDetailView`
@@ -48,6 +49,17 @@ struct ROMForgeApp: App {
         }
         .commands {
             CommandGroup(after: .toolbar) {
+                // jensyleo's own report (2026-08-18): right-clicking the
+                // toolbar itself never showed "Customize Toolbar…" —
+                // SwiftUI's `.toolbar(id:)` doesn't reliably wire up that
+                // contextual menu on its own. `runToolbarCustomizationPalette`
+                // is the same real AppKit entry point Finder's own "View →
+                // Customize Toolbar…" menu item calls; putting it here
+                // guarantees the feature is reachable regardless of
+                // whether right-click ever starts working for this window.
+                Button("Customize Toolbar…") {
+                    NSApp.keyWindow?.runToolbarCustomizationPalette(nil)
+                }
                 Divider()
                 Button("Reset Column Sizes") {
                     NotificationCenter.default.post(name: .romForgeResetColumnSizes, object: nil)
