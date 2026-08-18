@@ -77,6 +77,32 @@ enum MAMELauncher {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = [machineName, "-rompath", rompath]
+        // MAME writes its own auxiliary files (`cfg`/`nvram`/`snap`, and —
+        // the real case that surfaced this — a "DIFF CHD" scratch overlay
+        // for a machine whose hard disk MAME treats as writable, e.g.
+        // Killer Instinct) relative to its OWN process's current working
+        // directory, not anywhere ROMForge controls otherwise. Left unset,
+        // `Process` gets whatever the OS hands a GUI-launched app (often
+        // `/`, not writable), and MAME fails outright with e.g. "kinst.chd
+        // DIFF CHD ERROR: No such file or directory" — jensyleo's own
+        // report (2026-08-18): ROMForge said a scan was correct, but MAME
+        // itself refused to run the exact same, genuinely-good romset,
+        // confirmed live by running MAME's own `-verifyroms` (passed) and
+        // then the identical launch command by hand from a normal writable
+        // shell directory (worked) — the only difference was ROMForge's
+        // own unset working directory. Pointed at the same
+        // `Application Support/ROMForge/` directory every other
+        // ROMForge-owned file already lives under, created if it doesn't
+        // exist yet, so MAME's own auxiliary files land somewhere
+        // findable and persist across launches instead of scattering
+        // wherever the OS happened to default to.
+        let mameWorkingDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("ROMForge", isDirectory: true)
+            .appendingPathComponent("MAME", isDirectory: true)
+        if let mameWorkingDirectory {
+            try? FileManager.default.createDirectory(at: mameWorkingDirectory, withIntermediateDirectories: true)
+            process.currentDirectoryURL = mameWorkingDirectory
+        }
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
         let stderrData = SendableBox(Data())
