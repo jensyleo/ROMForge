@@ -225,6 +225,16 @@ struct LibraryDetailView: View {
     /// Settings can warn about "Merged" merge mode not making sense for a
     /// clone-less system (e.g. NEOGEO) without needing its own DAT access.
     var onDATAnalyzed: ((Bool) -> Void)?
+    /// jensyleo's own request (2026-08-18): "junta todos los export en un
+    /// mismo lado" — `ContentView`'s own "Export Report…" (a whole-collection
+    /// HTML report, not scoped to this one system) used to live in the
+    /// sidebar's toolbar, visually separated from "Export Fix DAT…"/"Export
+    /// List to CSV…" here. Rather than duplicate `ContentView`'s access to
+    /// `SystemLibraryStore` (which this view has no business needing just
+    /// to render one more button), the action itself stays owned by
+    /// `ContentView` and is simply invoked from a button placed next to
+    /// this view's own exports instead.
+    var onExportCollectionReport: (() -> Void)?
 
     /// jensyleo's own request (2026-08-12): "que la primera vista que tenga
     /// sea siempre la última antes de cerrar la app" — restores whichever
@@ -239,10 +249,11 @@ struct LibraryDetailView: View {
     /// Set via a custom `init` (not the properties' own inline defaults)
     /// since restoring needs this specific `system`'s own `id` and
     /// `romFolderURLs` — unavailable to a plain `= .allGames` default.
-    init(system: RomSystem, onAddFolder: @escaping ([URL]) -> Void, onDATAnalyzed: ((Bool) -> Void)? = nil) {
+    init(system: RomSystem, onAddFolder: @escaping ([URL]) -> Void, onDATAnalyzed: ((Bool) -> Void)? = nil, onExportCollectionReport: (() -> Void)? = nil) {
         self.system = system
         self.onAddFolder = onAddFolder
         self.onDATAnalyzed = onDATAnalyzed
+        self.onExportCollectionReport = onExportCollectionReport
         let restored = Self.restoreLastSelection(for: system)
         _selectedDatabaseFilter = State(initialValue: restored.databaseFilter)
         _selectedRomFolder = State(initialValue: restored.romFolder)
@@ -849,6 +860,14 @@ struct LibraryDetailView: View {
                 Button("Export List to CSV…") { exportGameListCSV() }
                     .disabled(cachedGameNodes.isEmpty || viewModel.isBusy)
                     .help("Save the currently displayed games list as a CSV file")
+                // jensyleo's own request (2026-08-18): grouped with the two
+                // exports above instead of sitting apart in the sidebar —
+                // see `onExportCollectionReport`'s own doc comment for why
+                // the actual data access still lives in `ContentView`.
+                if let onExportCollectionReport {
+                    Button("Export Report…") { onExportCollectionReport() }
+                        .help("Save a printable HTML report combining every configured system's last scan")
+                }
                 // MAME-only for now, and only once a real `mame`
                 // executable is configured (Settings → Systems) — see
                 // `MAMELauncher`.
