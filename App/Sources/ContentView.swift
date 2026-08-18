@@ -1,5 +1,7 @@
+import AppKit
 import ROMForgeCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Bindable var store: SystemLibraryStore
@@ -61,6 +63,20 @@ struct ContentView: View {
                     }
                     .labelStyle(.titleAndIcon)
                     .help("Add a new system (DAT + ROM folders)")
+                }
+                // jensyleo's own request (2026-08-18) — RomVault's own
+                // "Collection Report": combined totals across every
+                // configured system plus a per-system breakdown, as one
+                // self-contained HTML file the default browser can print
+                // (⌘P) directly — no separate print pipeline needed.
+                ToolbarItem {
+                    Button {
+                        exportCollectionReport()
+                    } label: {
+                        Label("Export Report…", systemImage: "doc.richtext")
+                    }
+                    .disabled(store.systems.isEmpty)
+                    .help("Save a printable HTML report combining every configured system's last scan")
                 }
             }
             .sheet(isPresented: $isShowingAddSheet) {
@@ -162,6 +178,28 @@ struct ContentView: View {
     private func lastKnownStatus(for system: RomSystem) -> AuditStatus? {
         guard let db = try? AuditDatabaseLocation.open() else { return nil }
         return (try? db.loadReport(systemID: system.id.uuidString))?.worstStatus
+    }
+
+    /// Saves `CollectionReportExporter`'s HTML and opens it in the default
+    /// browser right after — printing it is then just the browser's own
+    /// ⌘P, which is the entire point of generating plain HTML for this
+    /// instead of building a separate print pipeline.
+    private func exportCollectionReport() {
+        let html = CollectionReportExporter.generate(systems: store.systems)
+
+        let panel = NSSavePanel()
+        panel.title = "Export Collection Report"
+        panel.message = "A printable HTML report combining every configured system's last scan."
+        panel.nameFieldStringValue = "ROMForge Collection Report.html"
+        panel.allowedContentTypes = [.html]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try html.write(to: url, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.open(url)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
     }
 
     /// Same status→color mapping `LibraryDetailView` uses, so a system's
