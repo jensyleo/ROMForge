@@ -759,6 +759,23 @@ struct LibraryDetailView: View {
         Self.persistColumnPresets(columnPresets)
     }
 
+    /// jensyleo's own report (2026-08-18): the sheet only let you create a
+    /// new preset or delete one — no way to rename an existing one, or to
+    /// overwrite it with the layout as it stands right now without
+    /// retyping its exact name into the "new preset" field. Renaming keeps
+    /// the preset's own saved data untouched (just moves it to a new
+    /// dictionary key); a no-op if `newName` is empty, already taken by a
+    /// different preset, or identical to `oldName`.
+    private func renameColumnPreset(from oldName: String, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed != oldName, columnPresets[trimmed] == nil,
+              let preset = columnPresets[oldName]
+        else { return }
+        columnPresets.removeValue(forKey: oldName)
+        columnPresets[trimmed] = preset
+        Self.persistColumnPresets(columnPresets)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -1057,6 +1074,8 @@ struct LibraryDetailView: View {
                     isShowingColumnPresetsSheet = false
                 },
                 onSave: { name in saveColumnPreset(named: name) },
+                onUpdate: { name in saveColumnPreset(named: name) },
+                onRename: { oldName, newName in renameColumnPreset(from: oldName, to: newName) },
                 onDelete: { name in deleteColumnPreset(named: name) }
             )
         }
