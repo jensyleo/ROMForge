@@ -1,6 +1,7 @@
 import AppKit
 import ROMForgeCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// One row of the games tree: a game (parent or clone — clones nest under
 /// their parent) or the synthetic "Surplus files" bucket. RomCenter shows a
@@ -793,6 +794,16 @@ struct LibraryDetailView: View {
                             ? "Rename misnamed ROMs to match the DAT"
                             : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
                     )
+                // jensyleo's own request (2026-08-18) — ClrMamePro/RomVault's
+                // own "Fix-DatFiles": a small DAT holding only the missing/
+                // incorrect entries from the last scan, so another DAT-aware
+                // tool (or a manual search) can target exactly the gap
+                // instead of the whole collection. `FixDatExporter` itself
+                // was already built and tested in Core; this just wires a
+                // save panel to it.
+                Button("Export Fix DAT…") { exportFixDat() }
+                    .disabled(viewModel.auditReport == nil || viewModel.isBusy)
+                    .help("Save a DAT containing only this scan's missing/incorrect entries")
                 // MAME-only for now, and only once a real `mame`
                 // executable is configured (Settings → Systems) — see
                 // `MAMELauncher`.
@@ -3736,6 +3747,33 @@ struct LibraryDetailView: View {
             viewModel.logError(error.description)
         } catch {
             viewModel.logError("Failed to launch MAME: \(error.localizedDescription)")
+        }
+    }
+
+    /// Saves `FixDatExporter`'s own output for the current `auditReport` —
+    /// jensyleo's own request (2026-08-18): ClrMamePro/RomVault's own
+    /// "Fix-DatFiles", a small DAT holding only what this scan found
+    /// missing/incorrect, for another DAT-aware tool (or a plain search)
+    /// to target instead of the whole collection. Named after the loaded
+    /// DAT itself (falling back to the system's own name) so several
+    /// systems' exports don't all collide on one generic filename.
+    private func exportFixDat() {
+        guard let report = viewModel.auditReport else { return }
+        let datName = viewModel.datHeader?.name ?? system.name
+        let xml = FixDatExporter.generate(from: report, datName: datName)
+
+        let panel = NSSavePanel()
+        panel.title = "Export Fix DAT"
+        panel.message = "Contains only this scan's missing/incorrect entries — hand it to another DAT-aware tool to find exactly the gap."
+        panel.nameFieldStringValue = "fixDat_\(datName).dat"
+        panel.allowedContentTypes = [.xml]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try xml.write(to: url, atomically: true, encoding: .utf8)
+            viewModel.log("Exported Fix DAT to \(url.path)")
+        } catch {
+            viewModel.logError("Failed to export Fix DAT: \(error.localizedDescription)")
         }
     }
 
