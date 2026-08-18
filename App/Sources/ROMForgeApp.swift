@@ -64,6 +64,11 @@ struct ROMForgeApp: App {
             }
             CommandGroup(replacing: .help) {
                 HelpMenuButton()
+                // jensyleo's own request (2026-08-18): a quick-reference
+                // cheat sheet for the app's real shortcuts (database/ROM
+                // folder arrow-key navigation, type-ahead, ⌘-drag reorder)
+                // — ⌘? is the conventional key for this across macOS apps.
+                ShortcutsMenuButton()
             }
         }
         // A real "Settings…" window (⌘,), the conventional macOS place for
@@ -85,6 +90,10 @@ struct ROMForgeApp: App {
         Window("ROMForge Help", id: "help") {
             HelpView()
         }
+        Window("Keyboard Shortcuts", id: "shortcuts") {
+            KeyboardShortcutsView()
+        }
+        .windowResizability(.contentSize)
     }
 }
 
@@ -104,5 +113,13 @@ private struct HelpMenuButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("ROMForge Help") { openWindow(id: "help") }
+    }
+}
+
+private struct ShortcutsMenuButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Keyboard Shortcuts") { openWindow(id: "shortcuts") }
+            .keyboardShortcut("?", modifiers: .command)
     }
 }
