@@ -2131,6 +2131,14 @@ struct LibraryDetailView: View {
                 TableColumn("Device refs") { (node: GameNode) in Text(node.deviceRefNames) }
                     .customizationID("deviceRefs")
                     .defaultVisibility(.hidden)
+                // jensyleo's own request (2026-08-17): "Clone of" now shows
+                // the parent's readable description, not its raw internal
+                // machine name — this hidden-by-default column keeps the
+                // raw name available for anyone who wants it, same
+                // convention as every other column here.
+                TableColumn("Clone of (internal name)") { (node: GameNode) in Text(node.cloneOf) }
+                    .customizationID("cloneOfInternalName")
+                    .defaultVisibility(.hidden)
             }
         }
         .onChange(of: gameColumnCustomization) { Self.persist(gameColumnCustomization, key: Self.gameColumnCustomizationKey) }
