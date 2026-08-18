@@ -192,4 +192,79 @@ public enum AuditReporter {
         }
         return AuditReport(entries: report.entries + diskEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
     }
+
+    /// Builds the report to actually *display* after a targeted rescan
+    /// ("Rescan This File", or "Scan Folder" on one folder) — every other
+    /// entry keeps the exact value it had in `previousReport`, byte-for-byte
+    /// unchanged, even though `newReport` is always a complete, freshly
+    /// re-matched report across the whole system (see
+    /// `LibraryViewModel.scan`'s own doc comment for why matching always
+    /// covers everything, regardless of what actually got re-read from
+    /// disk). jensyleo's own request (2026-08-17): after a targeted rescan
+    /// (e.g. changing BIOS merge mode, then rescanning just one archive to
+    /// check it), only that file's own row should visually update — every
+    /// other row should look exactly as it did a moment ago, with no
+    /// whole-table flicker for a spot check on one file.
+    ///
+    /// This only ever affects what's *displayed this session*; the caller
+    /// still persists `newReport` itself (the complete, correct one) to the
+    /// on-disk database — reopening this system fresh always shows the full
+    /// truth, never anything artificially held back by this function.
+    ///
+    /// `rescannedPaths` empty, or no `previousReport` to preserve anything
+    /// from (e.g. the system's very first scan), returns `newReport`
+    /// unchanged — a full "Scan Folder"/"Scan All Folders" is untouched by
+    /// this at all.
+    public static func replacingRescannedEntries(in previousReport: AuditReport?, with newReport: AuditReport, rescannedPaths: [URL]) -> AuditReport {
+        guard let previousReport, !rescannedPaths.isEmpty else { return newReport }
+        let prefixes = rescannedPaths.map(\.path)
+        func pathIsRescanned(_ entry: AuditEntry) -> Bool {
+            guard let path = entry.path?.path else { return false }
+            return prefixes.contains { path.hasPrefix($0) }
+        }
+
+        // A rescanned archive can change ANY of a game's own entries —
+        // including one that had no path at all before (a `.missing` rom
+        // this rescan just found) or has none now (a rom this rescan just
+        // lost). Path alone can't catch either direction — matching only
+        // by path would leave a stale `.missing` old entry sitting
+        // alongside a fresh `.correct` new one for the same rom, showing it
+        // twice. So instead, every entry belonging to a game that shows up
+        // under the rescanned path(s) in EITHER report gets fully replaced
+        // together, not just the individual entries whose own path happens
+        // to match.
+        var refreshedGames: Set<String> = []
+        for entry in previousReport.entries where pathIsRescanned(entry) {
+            if let game = entry.game { refreshedGames.insert(game) }
+        }
+        for entry in newReport.entries where pathIsRescanned(entry) {
+            if let game = entry.game { refreshedGames.insert(game) }
+        }
+
+        func isRefreshed(_ entry: AuditEntry) -> Bool {
+            if let game = entry.game { return refreshedGames.contains(game) }
+            // Game-less (surplus) entries have no grouping to fall back
+            // on — but always carry a real path (a surplus row only ever
+            // exists for a file actually found on disk), so path alone is
+            // enough here.
+            return pathIsRescanned(entry)
+        }
+
+        let untouchedEntries = previousReport.entries.filter { !isRefreshed($0) }
+        let refreshedEntries = newReport.entries.filter(isRefreshed)
+        let mergedEntries = untouchedEntries + refreshedEntries
+
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0
+        for entry in mergedEntries {
+            switch entry.status {
+            case .correct: correct += 1
+            case .incorrect: incorrect += 1
+            case .badDump: badDump += 1
+            case .missing: missing += 1
+            case .surplus, .surplusInArchive, .unknownFile: surplus += 1
+            case .unverifiable: unverifiable += 1
+            }
+        }
+        return AuditReport(entries: mergedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
+    }
 }

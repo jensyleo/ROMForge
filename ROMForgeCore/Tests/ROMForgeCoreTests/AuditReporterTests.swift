@@ -240,4 +240,93 @@ struct AuditReporterTests {
         #expect(entry.cloneOf == "parent")
         #expect(entry.status == .correct)
     }
+
+    private func plainEntry(status: AuditStatus, game: String?, name: String, path: URL? = nil) -> AuditEntry {
+        AuditEntry(status: status, game: game, name: name, path: path)
+    }
+
+    @Test("replacingRescannedEntries only replaces the rescanned game's own entries, leaving every other game untouched")
+    func replacingRescannedEntriesOnlyTouchesTheRescannedGame() {
+        let rescannedArchive = URL(fileURLWithPath: "/roms/game1.zip")
+        let untouchedArchive = URL(fileURLWithPath: "/roms/game2.zip")
+        let previous = AuditReport(
+            entries: [
+                plainEntry(status: .missing, game: "game1", name: "rom1.bin"),
+                plainEntry(status: .correct, game: "game2", name: "rom2.bin", path: untouchedArchive),
+            ],
+            correct: 1, incorrect: 0, missing: 1, surplus: 0
+        )
+        // The rescan of game1.zip found the rom that used to be missing —
+        // jensyleo's own real scenario (2026-08-17): a BIOS merge mode
+        // change, then rescanning just game1's archive.
+        let fresh = AuditReport(
+            entries: [
+                plainEntry(status: .correct, game: "game1", name: "rom1.bin", path: rescannedArchive),
+                // A full rescan always re-matches everything (see
+                // `LibraryViewModel.scan`'s own doc comment) — game2's own
+                // entry comes back unchanged, proving the merge doesn't
+                // depend on the fresh report happening to omit it.
+                plainEntry(status: .correct, game: "game2", name: "rom2.bin", path: untouchedArchive),
+            ],
+            correct: 2, incorrect: 0, missing: 0, surplus: 0
+        )
+        let merged = AuditReporter.replacingRescannedEntries(in: previous, with: fresh, rescannedPaths: [rescannedArchive])
+        #expect(merged.entries.count == 2)
+        #expect(merged.entries.first { $0.game == "game1" }?.status == .correct)
+        #expect(merged.entries.first { $0.game == "game1" }?.path == rescannedArchive)
+        // game2 wasn't rescanned — its entry must be the exact same value
+        // untouched, not merely "still correct" by coincidence.
+        #expect(merged.entries.first { $0.game == "game2" } == previous.entries.first { $0.game == "game2" })
+        #expect(merged.correct == 2)
+        #expect(merged.missing == 0)
+    }
+
+    @Test("replacingRescannedEntries doesn't duplicate a rom that was missing before and is found after rescanning")
+    func replacingRescannedEntriesDoesNotDuplicateAMissingRomThatWasFound() {
+        // The exact bug a naive path-only merge would hit: the OLD entry
+        // has no path at all (nothing was found), so a merge that only
+        // matches by path would never remove it, leaving it sitting
+        // alongside the NEW, now-`.correct` entry for the same rom.
+        let archive = URL(fileURLWithPath: "/roms/game1.zip")
+        let previous = AuditReport(entries: [plainEntry(status: .missing, game: "game1", name: "rom1.bin")], correct: 0, incorrect: 0, missing: 1, surplus: 0)
+        let fresh = AuditReport(entries: [plainEntry(status: .correct, game: "game1", name: "rom1.bin", path: archive)], correct: 1, incorrect: 0, missing: 0, surplus: 0)
+        let merged = AuditReporter.replacingRescannedEntries(in: previous, with: fresh, rescannedPaths: [archive])
+        #expect(merged.entries.count == 1)
+        #expect(merged.entries[0].status == .correct)
+        #expect(merged.correct == 1)
+        #expect(merged.missing == 0)
+    }
+
+    @Test("replacingRescannedEntries returns the fresh report as-is when there's no previous report or no rescanned paths")
+    func replacingRescannedEntriesPassesThroughWithoutAPreviousReport() {
+        let fresh = AuditReport(entries: [plainEntry(status: .correct, game: "game1", name: "rom1.bin")], correct: 1, incorrect: 0, missing: 0, surplus: 0)
+        #expect(AuditReporter.replacingRescannedEntries(in: nil, with: fresh, rescannedPaths: [URL(fileURLWithPath: "/roms/game1.zip")]) == fresh)
+        #expect(AuditReporter.replacingRescannedEntries(in: fresh, with: fresh, rescannedPaths: []) == fresh)
+    }
+
+    @Test("replacingRescannedEntries also replaces a surplus (game-less) entry whose archive was rescanned")
+    func replacingRescannedEntriesHandlesSurplusEntries() {
+        let archive = URL(fileURLWithPath: "/roms/mystery.zip")
+        let untouchedArchive = URL(fileURLWithPath: "/roms/other.zip")
+        let previous = AuditReport(
+            entries: [
+                plainEntry(status: .unknownFile, game: nil, name: "junk.txt", path: archive),
+                plainEntry(status: .unknownFile, game: nil, name: "other-junk.txt", path: untouchedArchive),
+            ],
+            correct: 0, incorrect: 0, missing: 0, surplus: 2
+        )
+        // Rescanning identified it — same file, now recognized as belonging
+        // to a real game elsewhere.
+        let fresh = AuditReport(
+            entries: [
+                plainEntry(status: .incorrect, game: nil, name: "junk.txt", path: archive),
+                plainEntry(status: .unknownFile, game: nil, name: "other-junk.txt", path: untouchedArchive),
+            ],
+            correct: 0, incorrect: 1, missing: 0, surplus: 1
+        )
+        let merged = AuditReporter.replacingRescannedEntries(in: previous, with: fresh, rescannedPaths: [archive])
+        #expect(merged.entries.count == 2)
+        #expect(merged.entries.first { $0.name == "junk.txt" }?.status == .incorrect)
+        #expect(merged.entries.first { $0.name == "other-junk.txt" } == previous.entries.first { $0.name == "other-junk.txt" })
+    }
 }

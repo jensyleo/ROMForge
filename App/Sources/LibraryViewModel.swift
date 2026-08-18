@@ -861,26 +861,41 @@ final class LibraryViewModel {
             cachedDATKey = datCacheKey
             cachedDATFile = dat
             datHeader = header
-            // Used verbatim, with no reconciliation against any previous
-            // report — every scan now matches every folder (see this
-            // function's own doc comment above), so this result is already
-            // the complete truth for the whole system. The merge step this
-            // replaced was the source of four separate live-found bugs, the
-            // last of which (a game vanishing from whichever folder wasn't
-            // just scanned) is what prompted removing the partial-scan
-            // design outright rather than patching it a fifth time.
-            let mergedAudit = audit
+            // `audit` itself is used verbatim for persistence — every scan
+            // now matches every folder (see this function's own doc comment
+            // above), so it's already the complete truth for the whole
+            // system, with no reconciliation against any previous report.
+            // The merge step this replaced was the source of four separate
+            // live-found bugs, the last of which (a game vanishing from
+            // whichever folder wasn't just scanned) is what prompted
+            // removing the partial-scan design outright rather than
+            // patching it a fifth time.
+            //
+            // What actually gets *displayed*, though, is narrower for a
+            // targeted rescan ("Rescan This File", or "Scan Folder" on one
+            // folder): jensyleo's own request (2026-08-17) is that only the
+            // rescanned file's own row visually updates — every other row
+            // should look exactly as it did a moment ago, with no
+            // whole-table flicker for a spot check on one file (e.g. after
+            // changing BIOS merge mode). `replacingRescannedEntries` folds
+            // `audit`'s fresh, complete result down to just the rescanned
+            // game(s)' own entries, keeping every other entry as the exact
+            // value it already had. This only affects this session's live
+            // display — the database below always gets the full, correct
+            // `audit`, so reopening this system fresh never shows anything
+            // artificially held back by this.
+            let displayedAudit = AuditReporter.replacingRescannedEntries(in: auditReport, with: audit, rescannedPaths: forcedRescanPaths)
             matchReport = report
-            auditReport = mergedAudit
+            auditReport = displayedAudit
             scanProgress = nil
             folderScanFilesFound = nil
             currentlyScanningFolder = nil
             archiveListingProgress = nil
             let totalDuration = Date().timeIntervalSince(scanStart)
-            log(String(format: "Done in %.1fs: %d correct, %d incorrect, %d missing, %d surplus.", totalDuration, mergedAudit.correct, mergedAudit.incorrect, mergedAudit.missing, mergedAudit.surplus))
+            log(String(format: "Done in %.1fs: %d correct, %d incorrect, %d missing, %d surplus.", totalDuration, audit.correct, audit.incorrect, audit.missing, audit.surplus))
             do {
                 try AuditDatabaseLocation.open().saveReport(
-                    mergedAudit, systemID: system.id.uuidString, datName: header.name, datVersion: header.version, scannedAt: Date()
+                    audit, systemID: system.id.uuidString, datName: header.name, datVersion: header.version, scannedAt: Date()
                 )
             } catch {
                 log("Warning: couldn't persist this scan's results: \(error)")
