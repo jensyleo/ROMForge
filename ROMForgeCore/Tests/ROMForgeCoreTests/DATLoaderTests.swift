@@ -270,10 +270,17 @@ struct DATLoaderTests {
         let splitMslug = try #require(split.games.first { $0.name == "mslug" })
         #expect(splitMslug.roms.map(\.name) == ["038-p1.p1"])
 
-        // Merged: BIOS's own entry is dropped — its roms now live folded
-        // into the dependent's (root) archive instead.
+        // Merged: the BIOS's own entry stays visible (jensyleo's own
+        // report, 2026-08-17 — a real NeoGeo collection, a flat structure
+        // with no clone relationships between titles at all, made every
+        // single dependent qualify as its own "family root," so Merged
+        // folded the BIOS into every game just like Non-Merged, while ALSO
+        // dropping the BIOS's own row — the one thing that used to still
+        // distinguish it from Non-Merged. Always keeping it is simpler and
+        // strictly more informative), *and* its roms are still folded into
+        // the dependent that qualifies as this family's own root.
         let merged = try DATLoader.load(data: Data(xml.utf8), biosMergeMode: .merged)
-        #expect(merged.games.map(\.name) == ["mslug"], "the BIOS no longer gets its own top-level entry — its roms are folded into the dependent instead")
+        #expect(merged.games.map(\.name).sorted() == ["mslug", "neogeo"])
         let mergedMslug = try #require(merged.games.first { $0.name == "mslug" })
         #expect(Set(mergedMslug.roms.map(\.name)) == ["038-p1.p1", "sp-s2.sp1"])
 

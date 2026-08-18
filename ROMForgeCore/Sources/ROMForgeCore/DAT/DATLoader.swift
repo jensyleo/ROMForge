@@ -319,7 +319,24 @@ public enum DATLoader {
             // the existing `deviceRoms`-folding-into-dependents behavior
             // (`MAMESetLayoutPlanner`) is unaffected either way, this just
             // *also* lets the device's own archive be matched.
-            guard biosMode != .merged || !machine.isBios else { continue }
+            // A BIOS's own standalone entry used to be dropped entirely
+            // under `biosMode == .merged` — correct for a genuine
+            // multi-clone family (the root absorbs the BIOS, clones rely on
+            // it), but for a *flat* system where every dependent is its own
+            // clone-less title (no clone relationships between titles at
+            // all — every real NeoGeo game, each only `romof="neogeo"`),
+            // `MAMESetLayoutPlanner.foldBiosRoms`'s own "family root" test
+            // (`cloneOf == nil`) is satisfied by literally every single
+            // title, so Merged ended up folding the BIOS into every game
+            // (indistinguishable from Non-Merged) while ALSO hiding the
+            // BIOS's own row — the one thing Non-Merged still showed.
+            // jensyleo's own report (2026-08-17), confirmed live against a
+            // real NeoGeo collection: switching Bios merge mode made
+            // "neogeo" vanish from the games list entirely, reading as
+            // data loss rather than a deliberate display choice. Always
+            // keeping the BIOS's own entry, in all three modes, is simpler
+            // and strictly more informative — it never conflicts with
+            // whatever else also folds a copy of its roms in.
             guard mode != .merged || machine.cloneOf == nil else { continue }
             guard let layout = try? MAMESetLayoutPlanner.buildGame(for: machine.name, mode: mode, biosMode: biosMode, dataset: dataset) else {
                 continue

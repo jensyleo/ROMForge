@@ -274,8 +274,16 @@ public enum MAMESetLayoutPlanner {
     ///   (`cloneOf == nil` — a true parent, or a standalone machine) — a
     ///   clone still relies on its own parent for anything shared,
     ///   including (now) the BIOS, matching a real Merged BIOS file's
-    ///   placement. `DATLoader` excludes the BIOS's own standalone entry
-    ///   entirely in this mode (its roms now only live inside dependents).
+    ///   placement. `DATLoader` used to also exclude the BIOS's own
+    ///   standalone entry entirely in this mode — dropped (2026-08-17,
+    ///   jensyleo's own report against a real NeoGeo collection): a flat
+    ///   system with no clone relationships between titles at all makes
+    ///   every dependent independently qualify as its own "root," so
+    ///   Merged folded the BIOS into every game just like Non-Merged
+    ///   already did, while *also* hiding the one thing that still told
+    ///   them apart (the BIOS's own visible row) — reading as the row
+    ///   vanishing for no reason, not a deliberate display choice. The
+    ///   BIOS's own entry stays visible in every mode now.
     /// - `.nonMerged`: BIOS roms are folded into *every* machine that
     ///   depends on it, root or clone alike — maximally self-contained.
     ///   The BIOS's own standalone entry still exists alongside this (it's
