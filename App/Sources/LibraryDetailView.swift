@@ -804,6 +804,14 @@ struct LibraryDetailView: View {
                 Button("Export Fix DAT…") { exportFixDat() }
                     .disabled(viewModel.auditReport == nil || viewModel.isBusy)
                     .help("Save a DAT containing only this scan's missing/incorrect entries")
+                // jensyleo's own request (2026-08-18) — RomCenter/ClrMamePro's
+                // own "Save results as text file": a CSV of exactly what's
+                // currently on screen in the games table, respecting
+                // whatever filter/category is active — not the whole
+                // collection regardless of what's shown.
+                Button("Export List to CSV…") { exportGameListCSV() }
+                    .disabled(cachedGameNodes.isEmpty || viewModel.isBusy)
+                    .help("Save the currently displayed games list as a CSV file")
                 // MAME-only for now, and only once a real `mame`
                 // executable is configured (Settings → Systems) — see
                 // `MAMELauncher`.
@@ -3789,6 +3797,56 @@ struct LibraryDetailView: View {
         } catch {
             viewModel.logError("Failed to export Fix DAT: \(error.localizedDescription)")
         }
+    }
+
+    /// Saves `cachedGameNodes` — the games table exactly as currently
+    /// rendered, filters/category already applied — as a CSV file.
+    /// jensyleo's own request (2026-08-18): RomCenter/ClrMamePro's own
+    /// "Save results as text file". Deliberately reads `cachedGameNodes`
+    /// rather than re-deriving from `viewModel.auditReport` — the two can
+    /// disagree whenever a status filter or "show unknown" toggle is
+    /// active, and the point of this export is "what I'm looking at right
+    /// now", not the raw underlying report.
+    private func exportGameListCSV() {
+        guard !cachedGameNodes.isEmpty else { return }
+        let header = ["Status", "Game name", "File name", "Info", "Expected file name", "Clone of", "Year", "Manufacturer"]
+        let rows = cachedGameNodes.map { node -> [String] in
+            [
+                node.aggregateStatus.map(String.init(describing:)) ?? "",
+                node.gameName,
+                node.actualFileName ?? node.name,
+                node.infoText,
+                node.expectedFileName ?? "",
+                node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf),
+                node.year,
+                node.manufacturer,
+            ]
+        }
+        let csv = ([header] + rows)
+            .map { $0.map(Self.csvField).joined(separator: ",") }
+            .joined(separator: "\r\n")
+
+        let panel = NSSavePanel()
+        panel.title = "Export List to CSV"
+        panel.message = "Saves the games list exactly as currently displayed (filters included)."
+        panel.nameFieldStringValue = "\(system.name).csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try csv.write(to: url, atomically: true, encoding: .utf8)
+            viewModel.log("Exported game list to \(url.path)")
+        } catch {
+            viewModel.logError("Failed to export CSV: \(error.localizedDescription)")
+        }
+    }
+
+    /// Quotes `field` only when it actually needs it (contains a comma,
+    /// quote, or newline) — RFC 4180's own minimal-quoting convention,
+    /// keeps plain values (the vast majority here) readable unquoted.
+    private static func csvField(_ field: String) -> String {
+        guard field.contains(",") || field.contains("\"") || field.contains("\n") else { return field }
+        return "\"\(field.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
 
     private var selectedRomRows: [RomRow] {
