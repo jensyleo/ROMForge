@@ -753,13 +753,22 @@ struct LibraryDetailView: View {
         }
         .padding()
         .frame(minWidth: 760, minHeight: 480)
-        .toolbar {
-            ToolbarItemGroup {
-                // Scanning only makes sense with a "Rom files" folder in
-                // hand — a "Database" category is just a lens on the last
-                // report, not a place to scan from — so the button is
-                // disabled outright until one is selected, rather than
-                // offering a whole-system scan that doesn't fit this view.
+        // jensyleo's own request (2026-08-18): a standard macOS
+        // right-click → "Customize Toolbar…" — every item below is its own
+        // `ToolbarItem(id:)` (rather than one plain `ToolbarItemGroup`)
+        // specifically because that customization palette only exists for
+        // `.toolbar(id:)` content; individually-hidable/reorderable items
+        // are what unlocks it, not an extra modifier bolted on top.
+        // `id: "ROMForge.mainToolbar"` is persisted by AppKit itself
+        // (keyed off the window's own identity) — no extra `@AppStorage`
+        // of our own needed for the customization to survive relaunch.
+        .toolbar(id: "ROMForge.mainToolbar") {
+            // Scanning only makes sense with a "Rom files" folder in
+            // hand — a "Database" category is just a lens on the last
+            // report, not a place to scan from — so the button is
+            // disabled outright until one is selected, rather than
+            // offering a whole-system scan that doesn't fit this view.
+            ToolbarItem(id: "scanFolder") {
                 Button("Scan Folder") {
                     viewModel.startScan(system: system, folders: selectedRomFolder.map { [$0] })
                 }
@@ -768,25 +777,31 @@ struct LibraryDetailView: View {
                     selectedRomFolder.map { "Scan only \"\($0.lastPathComponent)\" — other folders keep their last known results" }
                         ?? "Select a folder under \"Rom files\" to scan it"
                 )
-                // jensyleo's own request (2026-08-12): a one-click way to
-                // scan every configured "Rom files" folder at once, rather
-                // than selecting and scanning each one individually.
-                // `folders: nil` is `startScan`'s own default — `scan(...)`
-                // already treats that as "every folder this system has".
-                // Disabled with no folders configured at all, same as
-                // "Scan Folder" being disabled with none *selected* — there
-                // would be nothing for it to actually do.
+            }
+            // jensyleo's own request (2026-08-12): a one-click way to
+            // scan every configured "Rom files" folder at once, rather
+            // than selecting and scanning each one individually.
+            // `folders: nil` is `startScan`'s own default — `scan(...)`
+            // already treats that as "every folder this system has".
+            // Disabled with no folders configured at all, same as
+            // "Scan Folder" being disabled with none *selected* — there
+            // would be nothing for it to actually do.
+            ToolbarItem(id: "scanAllFolders") {
                 Button("Scan All Folders") {
                     viewModel.startScan(system: system)
                 }
                 .disabled(viewModel.isBusy || system.romFolderURLs.isEmpty)
                 .help("Scan every configured \"Rom files\" folder for this system, one after another")
-                // Scans just the one selected game's own archive — the
-                // same right-click "Rescan This File" action, offered here
-                // too since not every user thinks to right-click first.
+            }
+            // Scans just the one selected game's own archive — the
+            // same right-click "Rescan This File" action, offered here
+            // too since not every user thinks to right-click first.
+            ToolbarItem(id: "scanFile") {
                 Button("Scan File") { scanSelectedFile() }
                     .disabled(!canScanSelectedFile)
                     .help(scanFileButtonHelpText)
+            }
+            ToolbarItem(id: "fix") {
                 Button("Fix") { Task { await viewModel.fix(system: system) } }
                     .disabled(!LibraryViewModel.modificationsEnabled || viewModel.auditReport == nil || viewModel.isBusy)
                     .help(
@@ -794,27 +809,33 @@ struct LibraryDetailView: View {
                             ? "Rename misnamed ROMs to match the DAT"
                             : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
                     )
-                // jensyleo's own request (2026-08-18) — ClrMamePro/RomVault's
-                // own "Fix-DatFiles": a small DAT holding only the missing/
-                // incorrect entries from the last scan, so another DAT-aware
-                // tool (or a manual search) can target exactly the gap
-                // instead of the whole collection. `FixDatExporter` itself
-                // was already built and tested in Core; this just wires a
-                // save panel to it.
+            }
+            // jensyleo's own request (2026-08-18) — ClrMamePro/RomVault's
+            // own "Fix-DatFiles": a small DAT holding only the missing/
+            // incorrect entries from the last scan, so another DAT-aware
+            // tool (or a manual search) can target exactly the gap
+            // instead of the whole collection. `FixDatExporter` itself
+            // was already built and tested in Core; this just wires a
+            // save panel to it.
+            ToolbarItem(id: "exportFixDat") {
                 Button("Export Fix DAT…") { exportFixDat() }
                     .disabled(viewModel.auditReport == nil || viewModel.isBusy)
                     .help("Save a DAT containing only this scan's missing/incorrect entries")
-                // jensyleo's own request (2026-08-18) — RomCenter/ClrMamePro's
-                // own "Save results as text file": a CSV of exactly what's
-                // currently on screen in the games table, respecting
-                // whatever filter/category is active — not the whole
-                // collection regardless of what's shown.
+            }
+            // jensyleo's own request (2026-08-18) — RomCenter/ClrMamePro's
+            // own "Save results as text file": a CSV of exactly what's
+            // currently on screen in the games table, respecting
+            // whatever filter/category is active — not the whole
+            // collection regardless of what's shown.
+            ToolbarItem(id: "exportListCSV") {
                 Button("Export List to CSV…") { exportGameListCSV() }
                     .disabled(cachedGameNodes.isEmpty || viewModel.isBusy)
                     .help("Save the currently displayed games list as a CSV file")
-                // MAME-only for now, and only once a real `mame`
-                // executable is configured (Settings → Systems) — see
-                // `MAMELauncher`.
+            }
+            // MAME-only for now, and only once a real `mame`
+            // executable is configured (Settings → Systems) — see
+            // `MAMELauncher`.
+            ToolbarItem(id: "play") {
                 Button {
                     launchSelectedGameInMAME()
                 } label: {
