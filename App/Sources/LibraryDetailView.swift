@@ -752,9 +752,6 @@ struct LibraryDetailView: View {
         }
         .padding()
         .frame(minWidth: 760, minHeight: 480)
-        .sheet(isPresented: errorSheetIsPresented) {
-            errorSheet
-        }
         .toolbar {
             ToolbarItemGroup {
                 // Scanning only makes sense with a "Rom files" folder in
@@ -1097,8 +1094,9 @@ struct LibraryDetailView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(viewModel.logLines.enumerated()), id: \.offset) { index, line in
-                            Text(line)
+                            Text(line.text)
                                 .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(line.isError ? Color.red : Color.primary)
                                 .textSelection(.enabled)
                                 .id(index)
                         }
@@ -3694,59 +3692,28 @@ struct LibraryDetailView: View {
         launchInMAME(node)
     }
 
-    /// `viewModel.errorMessage` used to render as a plain, unbounded
-    /// `Text` sitting directly in the main window's own layout — fine for
-    /// a short one-liner like "Scan first.", but MAME's own launch-failure
-    /// diagnostics can be dozens of lines long (a full "did you mean"
-    /// candidate list for an unknown sub-system) — jensyleo's own report
-    /// (2026-08-17): that pushed the whole `AutosavingSplitView` layout
-    /// out of shape and left it visibly broken even after the message
-    /// went away, since the split's persisted pane sizes got squeezed by
-    /// however much room the runaway text demanded. A `.sheet` is properly
-    /// bounded and scrollable regardless of how long the message is, and
-    /// never touches the main window's own layout at all.
-    private var errorSheetIsPresented: Binding<Bool> {
-        Binding(
-            get: { viewModel.errorMessage != nil },
-            set: { isPresented in if !isPresented { viewModel.errorMessage = nil } }
-        )
-    }
-
-    private var errorSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Error")
-                .font(.headline)
-            ScrollView {
-                Text(viewModel.errorMessage ?? "")
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HStack {
-                Spacer()
-                Button("OK") { viewModel.errorMessage = nil }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding()
-        .frame(minWidth: 420, idealWidth: 520, maxWidth: 700, minHeight: 160, idealHeight: 280, maxHeight: 500)
-    }
-
+    /// jensyleo's own request (2026-08-17): a MAME launch failure — which
+    /// used to show in its own separate `errorMessage` sheet — belongs in
+    /// the Log panel like everything else this view reports, in red so it
+    /// still reads as an error at a glance ("mantén el color rojo del
+    /// error"). No bespoke presentation to maintain, and no risk of a long
+    /// diagnostic (a full "did you mean" candidate list for an unknown
+    /// MAME sub-system) distorting the main window's own layout the way
+    /// the very first version of this fix (an unbounded inline `Text`) did.
     private func launchInMAME(_ node: GameNode) {
         do {
             try MAMELauncher.launch(machineName: node.name, romFolders: system.romFolderURLs) { reason in
                 // MAME's own termination handler fires on a background
-                // queue, not the main actor `errorMessage` needs to be
-                // touched from.
+                // queue, not the main actor `logError` needs to be touched
+                // from.
                 Task { @MainActor in
-                    viewModel.errorMessage = "MAME couldn't run \(node.gameName):\n\n\(reason)"
+                    viewModel.logError("MAME couldn't run \(node.gameName):\n\n\(reason)")
                 }
             }
         } catch let error as MAMELauncher.LaunchError {
-            viewModel.errorMessage = error.description
+            viewModel.logError(error.description)
         } catch {
-            viewModel.errorMessage = "Failed to launch MAME: \(error.localizedDescription)"
+            viewModel.logError("Failed to launch MAME: \(error.localizedDescription)")
         }
     }
 

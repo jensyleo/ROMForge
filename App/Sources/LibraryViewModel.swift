@@ -15,6 +15,17 @@ import UniformTypeIdentifiers
 /// disabled at the user's request — ROMForge only scans and reports for
 /// now, it never touches a ROM file. Re-enable by flipping
 /// `modificationsEnabled`.
+/// One line of the Log panel — `isError` picks red instead of the default
+/// text color, jensyleo's own request (2026-08-17) after a MAME
+/// launch-failure message (previously its own separate `errorMessage`
+/// sheet) moved into this same log instead: "esto debería salir en la
+/// ventana de log... mantén el color rojo del error."
+struct LogLine: Identifiable, Sendable {
+    let id = UUID()
+    let text: String
+    let isError: Bool
+}
+
 @Observable
 @MainActor
 final class LibraryViewModel {
@@ -26,7 +37,6 @@ final class LibraryViewModel {
     var datHeader: DATHeader?
     var auditReport: AuditReport?
     var isBusy = false
-    var errorMessage: String?
     /// True from the start of a scan until the DAT finishes parsing — a
     /// large MAME DAT can take a noticeable while to load in an unoptimized
     /// build, and without this the overlay/log would misleadingly say
@@ -92,7 +102,7 @@ final class LibraryViewModel {
     /// overlay show a real determinate bar instead of just a spinner for
     /// however long this phase takes on a large DAT.
     var matchProgress: (completed: Int, total: Int)?
-    private(set) var logLines: [String] = []
+    private(set) var logLines: [LogLine] = []
 
     /// Which long-running phase the user cancelled, if any — drives a
     /// one-time alert explaining the consequence of stopping partway
@@ -286,9 +296,21 @@ final class LibraryViewModel {
     /// loaded but no scan has run yet.
     var preloadedGames: [DATGame] { cachedDATFile?.games ?? [] }
 
-    private func log(_ message: String) {
+    func log(_ message: String, isError: Bool = false) {
         let timestamp = DateFormatter.logTimestamp.string(from: Date())
-        logLines.append("[\(timestamp)] \(message)")
+        logLines.append(LogLine(text: "[\(timestamp)] \(message)", isError: isError))
+    }
+
+    /// Convenience for the (much rarer) error case — same timestamped
+    /// format as `log(_:)`, just flagged so the Log panel can render it in
+    /// red. jensyleo's own request (2026-08-17): an error (e.g. MAME
+    /// failing to launch a game) belongs in the Log panel like everything
+    /// else this view model reports, not in a separate modal — the Log
+    /// panel is "where by logic it should appear." Not `private` — the App
+    /// layer (`LibraryDetailView`) reports MAME's own launch failures
+    /// through this too, not just this file's own scan/fix code.
+    func logError(_ message: String) {
+        log(message, isError: true)
     }
 
     /// Drops every in-memory trace of the last scan — jensyleo's own report
@@ -513,7 +535,6 @@ final class LibraryViewModel {
             return
         }
         isBusy = true
-        errorMessage = nil
         isLoadingDAT = true
         datLoadProgress = nil
         logLines.removeAll()
@@ -582,8 +603,7 @@ final class LibraryViewModel {
             isCountingDATMachines = false
             datCountingProgress = nil
             datLoadProgress = nil
-            log("Failed to load DAT: \(String(describing: error))")
-            errorMessage = String(describing: error)
+            logError("Failed to load DAT: \(String(describing: error))")
         }
     }
 
@@ -599,7 +619,6 @@ final class LibraryViewModel {
     /// didn't look at them.
     func scan(system: RomSystem, folders: [URL]? = nil) async {
         isBusy = true
-        errorMessage = nil
         // A cache hit skips the whole "Loading DAT" phase outright — there's
         // nothing to show progress for, and no point pretending otherwise.
         let datCacheKey = DATCacheKey(url: system.datURL, mergeMode: MAMEMergeModeSettings.current, biosMergeMode: MAMEMergeModeSettings.currentBios)
@@ -925,24 +944,20 @@ final class LibraryViewModel {
             scanProgress = nil
             isMatching = false
             matchProgress = nil
-            log("Failed: \(String(describing: error))")
-            errorMessage = String(describing: error)
+            logError("Failed: \(String(describing: error))")
         }
     }
 
-
-
     func fix(system: RomSystem) async {
         guard Self.modificationsEnabled else {
-            errorMessage = "Repairing ROMs is disabled for now — ROMForge only scans and reports, it won't touch your files."
+            logError("Repairing ROMs is disabled for now — ROMForge only scans and reports, it won't touch your files.")
             return
         }
         guard let matchReport else {
-            errorMessage = "Scan first."
+            logError("Scan first.")
             return
         }
         isBusy = true
-        errorMessage = nil
         defer { isBusy = false }
 
         do {
@@ -959,10 +974,10 @@ final class LibraryViewModel {
 
             await scan(system: system)
             if skippedCount > 0 {
-                errorMessage = "Fixed what it could; \(skippedCount) misnamed ROM(s) inside .zip/.7z archives were left as-is (not supported yet)."
+                logError("Fixed what it could; \(skippedCount) misnamed ROM(s) inside .zip/.7z archives were left as-is (not supported yet).")
             }
         } catch {
-            errorMessage = String(describing: error)
+            logError(String(describing: error))
         }
     }
 
