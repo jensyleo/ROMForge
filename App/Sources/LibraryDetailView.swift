@@ -2104,7 +2104,7 @@ struct LibraryDetailView: View {
             TableColumn("Size") { node in Text(totalSizeText(for: node)) }
                 .customizationID("size")
                 .defaultVisibility(.hidden)
-            TableColumn("Clone of") { node in Text(node.cloneOf) }
+            TableColumn("Clone of") { node in Text(node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf)) }
                 .customizationID("cloneOf")
             TableColumn("CHD") { node in Text(node.chdNames) }
                 .customizationID("chd")
@@ -3513,6 +3513,20 @@ struct LibraryDetailView: View {
         return result
     }
 
+    /// Resolves a raw internal machine name (e.g. the DAT's own `cloneof`
+    /// attribute, "dlair") to that game's own human-readable `description`
+    /// ("Dragon's Lair (US Rev. F2)") — jensyleo's own report (2026-08-17):
+    /// the "Clone of" column/detail row used to show the raw name verbatim,
+    /// reading exactly like a "File name" value (they're often identical
+    /// strings) right next to "Game name"/"Internal name" rows that make
+    /// the real distinction, which reads as confusing/inconsistent. Falls
+    /// back to the raw name itself only if no game by that name is found in
+    /// the loaded DAT at all (shouldn't normally happen — `cloneof` always
+    /// names a real machine in the same DAT).
+    private func gameDescription(forMachineName name: String) -> String {
+        Self.gamesByName(viewModel.preloadedGames)[name.lowercased()]?.description ?? name
+    }
+
     /// Applies the `showUnknownArchives`/`activeStatusFilters` toggles to
     /// `computeBaseGameNodes(...)`'s result — a separate step (not fused
     /// into it) for the same reason as `computeUnknownArchivesCount(baseNodes:)`
@@ -3770,7 +3784,7 @@ struct LibraryDetailView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(node.gameName).font(.headline)
             infoRow("Internal name", node.name)
-            infoRow("Clone of", node.cloneOf)
+            infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
             infoRow("Year", node.year)
             infoRow("Manufacturer", node.manufacturer)
             infoRow("BIOS set", node.biosText)
@@ -3789,7 +3803,7 @@ struct LibraryDetailView: View {
                 Text("Game: \(game)")
             }
             if let cloneOf = entry.cloneOf {
-                Text("Clone of: \(cloneOf)")
+                Text("Clone of: \(gameDescription(forMachineName: cloneOf))")
                     .foregroundStyle(.secondary)
             }
             Text("DAT: \(viewModel.datHeader?.name ?? system.name)")
