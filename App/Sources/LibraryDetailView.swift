@@ -749,14 +749,12 @@ struct LibraryDetailView: View {
                     }
                 },
             ])
-            if let errorMessage = viewModel.errorMessage {
-                Text(errorMessage)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-            }
         }
         .padding()
         .frame(minWidth: 760, minHeight: 480)
+        .sheet(isPresented: errorSheetIsPresented) {
+            errorSheet
+        }
         .toolbar {
             ToolbarItemGroup {
                 // Scanning only makes sense with a "Rom files" folder in
@@ -3694,6 +3692,45 @@ struct LibraryDetailView: View {
     private func launchSelectedGameInMAME() {
         guard let node = selectedGameNode else { return }
         launchInMAME(node)
+    }
+
+    /// `viewModel.errorMessage` used to render as a plain, unbounded
+    /// `Text` sitting directly in the main window's own layout — fine for
+    /// a short one-liner like "Scan first.", but MAME's own launch-failure
+    /// diagnostics can be dozens of lines long (a full "did you mean"
+    /// candidate list for an unknown sub-system) — jensyleo's own report
+    /// (2026-08-17): that pushed the whole `AutosavingSplitView` layout
+    /// out of shape and left it visibly broken even after the message
+    /// went away, since the split's persisted pane sizes got squeezed by
+    /// however much room the runaway text demanded. A `.sheet` is properly
+    /// bounded and scrollable regardless of how long the message is, and
+    /// never touches the main window's own layout at all.
+    private var errorSheetIsPresented: Binding<Bool> {
+        Binding(
+            get: { viewModel.errorMessage != nil },
+            set: { isPresented in if !isPresented { viewModel.errorMessage = nil } }
+        )
+    }
+
+    private var errorSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Error")
+                .font(.headline)
+            ScrollView {
+                Text(viewModel.errorMessage ?? "")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Spacer()
+                Button("OK") { viewModel.errorMessage = nil }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding()
+        .frame(minWidth: 420, idealWidth: 520, maxWidth: 700, minHeight: 160, idealHeight: 280, maxHeight: 500)
     }
 
     private func launchInMAME(_ node: GameNode) {
