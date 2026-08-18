@@ -2358,7 +2358,56 @@ struct LibraryDetailView: View {
                 }
             }
             .onChange(of: romColumnCustomization) { Self.persist(romColumnCustomization, key: Self.romColumnCustomizationKey) }
+            // jensyleo's own request (2026-08-18): standard macOS "copy the
+            // useful bits of this row" affordances, plus a Finder handoff —
+            // right-click was previously plain selection-only here.
+            .contextMenu(forSelectionType: RomRow.ID.self) { selection in
+                if let id = selection.first, let entry = selectedRomRows.first(where: { $0.id == id })?.entry {
+                    Button("Copy Rom Name") {
+                        copyToClipboard(entry.name)
+                    }
+                    Button("Copy CRC") {
+                        copyToClipboard(entry.actualCRC ?? entry.expectedCRC ?? "")
+                    }
+                    .disabled((entry.actualCRC ?? entry.expectedCRC ?? "").isEmpty)
+                    Button("Copy MD5") {
+                        copyToClipboard(entry.actualMD5 ?? entry.expectedMD5 ?? "")
+                    }
+                    .disabled((entry.actualMD5 ?? entry.expectedMD5 ?? "").isEmpty)
+                    Button("Copy SHA-1") {
+                        copyToClipboard(entry.actualSHA1 ?? entry.expectedSHA1 ?? "")
+                    }
+                    .disabled((entry.actualSHA1 ?? entry.expectedSHA1 ?? "").isEmpty)
+                    Divider()
+                    Button("Copy Path") {
+                        copyToClipboard(entry.path?.path ?? "")
+                    }
+                    .disabled(entry.path == nil)
+                    Button("Reveal in Finder") {
+                        revealInFinder(entry.path)
+                    }
+                    .disabled(entry.path == nil)
+                }
+            }
         }
+    }
+
+    /// Puts plain text on the general pasteboard — used by every "Copy …"
+    /// context-menu action below instead of hand-rolling the same three
+    /// `NSPasteboard` calls at each call site.
+    private func copyToClipboard(_ text: String) {
+        guard !text.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    /// Selects `url` in a new Finder window — `NSWorkspace`'s own
+    /// convention for "show me exactly this file", same as Finder's own
+    /// "Reveal in Finder" menu item.
+    private func revealInFinder(_ url: URL?) {
+        guard let url else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Wraps a cell in the row's status tint (a lighter background than the
