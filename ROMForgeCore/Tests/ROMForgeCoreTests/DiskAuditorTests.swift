@@ -152,6 +152,59 @@ struct DiskAuditorTests {
         #expect(entries[0].path == chd)
     }
 
+    @Test("a real dump and a nodump clone sharing the same disk name produce only ONE .correct entry, not a contradictory pair")
+    func realDumpAndNodumpCloneWithSameNameProduceOneCorrectEntry() throws {
+        // The real live case (jensyleo, 2026-08-17): Dragon's Lair (US Rev.
+        // F2) declares `<disk name="dlair" sha1="...">` (a real dump); its
+        // beta clone, Dragon's Lair (US Beta 1, Pioneer PR-7820), declares
+        // `<disk name="dlair">` with NO sha1 at all (MAME's own nodump —
+        // nobody's ever hashed *this* set's copy). Same disk name, so same
+        // physical media under MAME's own convention — with only one real
+        // `dlair.chd` on disk, this used to produce TWO rows for it: one
+        // "Correct" (the parent) and one contradictory "Nodump
+        // (unverifiable)" (the beta), instead of one unified verdict.
+        let sha1: [UInt8] = Array(repeating: 0x55, count: 20)
+        let chd = try tempCHD(stem: "dlair", sha1: sha1)
+        defer { try? FileManager.default.removeItem(at: chd) }
+        let diskName = chd.deletingPathExtension().lastPathComponent
+
+        let dat = DATFile(
+            header: header(),
+            games: [
+                DATGame(name: "dlair", description: "Dragon's Lair (US Rev. F2)", cloneOf: nil, romOf: nil, roms: [], disks: [DATDisk(name: diskName, sha1: diskAuditorTestHex(sha1))]),
+                DATGame(name: "dlair_1", description: "Dragon's Lair (US Beta 1, Pioneer PR-7820)", cloneOf: "dlair", romOf: "dlair", roms: [], disks: [DATDisk(name: diskName, sha1: nil)]),
+            ]
+        )
+
+        let entries = try DiskAuditor.audit(dat: dat, chdFiles: [chd])
+        #expect(entries.count == 1)
+        #expect(entries[0].status == .correct)
+        #expect(entries[0].path == chd)
+        #expect(entries[0].game == "dlair")
+    }
+
+    @Test("a real dump declared AFTER a nodump clone in DAT order still wins — the real sha1 isn't shadowed by iteration order")
+    func realDumpDeclaredAfterNodumpCloneStillWins() throws {
+        let sha1: [UInt8] = Array(repeating: 0x66, count: 20)
+        let chd = try tempCHD(stem: "dlair-reverse", sha1: sha1)
+        defer { try? FileManager.default.removeItem(at: chd) }
+        let diskName = chd.deletingPathExtension().lastPathComponent
+
+        let dat = DATFile(
+            header: header(),
+            games: [
+                // Nodump clone declared FIRST in DAT order this time.
+                DATGame(name: "dlair_1", description: "Dragon's Lair (US Beta 1, Pioneer PR-7820)", cloneOf: "dlair", romOf: "dlair", roms: [], disks: [DATDisk(name: diskName, sha1: nil)]),
+                DATGame(name: "dlair", description: "Dragon's Lair (US Rev. F2)", cloneOf: nil, romOf: nil, roms: [], disks: [DATDisk(name: diskName, sha1: diskAuditorTestHex(sha1))]),
+            ]
+        )
+
+        let entries = try DiskAuditor.audit(dat: dat, chdFiles: [chd])
+        #expect(entries.count == 1)
+        #expect(entries[0].status == .correct)
+        #expect(entries[0].game == "dlair")
+    }
+
     @Test("a .chd matching no declared disk at all is a genuinely unknown surplus entry")
     func unmatchedCHDIsGenuinelySurplus() throws {
         let chd = try tempCHD(stem: "mystery", sha1: Array(repeating: 0x44, count: 20))
