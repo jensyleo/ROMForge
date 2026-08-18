@@ -36,6 +36,25 @@ struct ColumnPresetsSheet: View {
     @State private var renamingName: String?
     @State private var renameText = ""
 
+    /// jensyleo's own report (2026-08-18): "Apply"/"Update" fired the
+    /// instant they were clicked — Apply silently discards whatever
+    /// column layout is on screen right now, Update silently overwrites a
+    /// saved preset's own data, and a stray click in a list of several
+    /// presets is an easy, hard-to-notice mistake either way. Routed
+    /// through one confirmation dialog rather than two separate ones so
+    /// both read consistently and share the same dismiss/cancel handling.
+    private enum PendingAction: Identifiable {
+        case apply(String)
+        case update(String)
+        var id: String {
+            switch self {
+            case .apply(let name): return "apply:\(name)"
+            case .update(let name): return "update:\(name)"
+            }
+        }
+    }
+    @State private var pendingAction: PendingAction?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Column Presets")
@@ -58,8 +77,8 @@ struct ColumnPresetsSheet: View {
                         HStack {
                             Text(name)
                             Spacer()
-                            Button("Apply") { onApply(name) }
-                            Button("Update") { onUpdate(name) }
+                            Button("Apply") { pendingAction = .apply(name) }
+                            Button("Update") { pendingAction = .update(name) }
                                 .help("Overwrite this preset with the column layout as it stands right now")
                             Button {
                                 renamingName = name
@@ -101,10 +120,56 @@ struct ColumnPresetsSheet: View {
         }
         .padding(20)
         .frame(width: 460)
+        .confirmationDialog(
+            confirmationTitle,
+            isPresented: Binding(get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(confirmationActionTitle) { confirmPendingAction() }
+            Button("Cancel", role: .cancel) { pendingAction = nil }
+        } message: {
+            Text(confirmationMessage)
+        }
     }
 
     private func commitRename(from oldName: String) {
         onRename(oldName, renameText)
         renamingName = nil
+    }
+
+    private func confirmPendingAction() {
+        switch pendingAction {
+        case .apply(let name):
+            onApply(name)
+        case .update(let name):
+            onUpdate(name)
+        case nil:
+            break
+        }
+        pendingAction = nil
+    }
+
+    private var confirmationTitle: String {
+        switch pendingAction {
+        case .apply(let name): return "Apply \"\(name)\"?"
+        case .update(let name): return "Update \"\(name)\"?"
+        case nil: return ""
+        }
+    }
+
+    private var confirmationActionTitle: String {
+        switch pendingAction {
+        case .apply: return "Apply"
+        case .update: return "Update"
+        case nil: return ""
+        }
+    }
+
+    private var confirmationMessage: String {
+        switch pendingAction {
+        case .apply(let name): return "This replaces the current column layout for both tables with \"\(name)\"."
+        case .update(let name): return "This overwrites \"\(name)\" with the column layout as it stands right now."
+        case nil: return ""
+        }
     }
 }

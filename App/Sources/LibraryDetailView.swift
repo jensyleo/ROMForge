@@ -2506,11 +2506,6 @@ struct LibraryDetailView: View {
                     }
                     .customizationID("dumpStatus")
                     .defaultVisibility(.hidden)
-                    TableColumn("Merge name") { (row: RomRow) in
-                        romCell(Text(row.entry.mergeName ?? ""), status: row.entry.status)
-                    }
-                    .customizationID("mergeName")
-                    .defaultVisibility(.hidden)
                     TableColumn("Type") { (row: RomRow) in
                         romCell(Text(entryKindText(for: row.entry)), status: row.entry.status)
                     }

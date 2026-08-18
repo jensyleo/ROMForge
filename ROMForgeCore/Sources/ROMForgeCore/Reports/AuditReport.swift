@@ -125,6 +125,22 @@ public struct AuditEntry: Equatable, Sendable {
     /// identical to, i.e. "don't expect this file here, it's already in
     /// the parent's archive". `nil` when the DAT declares none (Logiqx has
     /// no such concept; also nil for surplus files).
+    ///
+    /// jensyleo's own report (2026-08-18): a "Merge name" column in the
+    /// Roms table (removed the same day) never showed anything for any
+    /// rom, in any merge mode. Root cause, confirmed by reading
+    /// `MAMESetLayoutPlanner`: every one of `splitGame`/`nonMergedGame`/
+    /// `mergedGame` filters its own output down to `mergeName == nil`
+    /// roms only — a merge-tagged rom is, by definition, resolved to (and
+    /// replaced by) its ancestor's own un-tagged declaration before ever
+    /// reaching an `AuditEntry`, or dropped entirely when it turns out to
+    /// be BIOS content (`foldBiosRoms`'s job instead). So this field is
+    /// architecturally always `nil` by the time `AuditReporter` ever sees
+    /// it — not a bug in `AuditReporter` itself, just a display column
+    /// with no real data to show given how the expected romset is built.
+    /// Kept on the model (still meaningful pre-resolution, inside
+    /// `MAMESetLayoutPlanner`'s own intermediate `DATRom` values) — only
+    /// the dead UI column was removed.
     public let mergeName: String?
     /// Comma-joined names of the CHD disk(s) `game` declares, when any —
     /// `hasCHD` above is presence-only; this is the actual disk name(s) a
