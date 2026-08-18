@@ -69,12 +69,19 @@ struct ContentView: View {
                 // configured system plus a per-system breakdown, as one
                 // self-contained HTML file the default browser can print
                 // (⌘P) directly — no separate print pipeline needed.
-                ToolbarItem {
+                // Same `.navigation` placement + `.titleAndIcon` treatment
+                // as "Add System" right above, for the same reason (see
+                // that item's own doc comment): an unplaced `ToolbarItem`
+                // is exactly what macOS collapses into the "»" overflow
+                // menu first on anything less than a very wide window —
+                // jensyleo's own report (2026-08-18) confirmed this one did.
+                ToolbarItem(placement: .navigation) {
                     Button {
                         exportCollectionReport()
                     } label: {
                         Label("Export Report…", systemImage: "doc.richtext")
                     }
+                    .labelStyle(.titleAndIcon)
                     .disabled(store.systems.isEmpty)
                     .help("Save a printable HTML report combining every configured system's last scan")
                 }
