@@ -240,6 +240,35 @@ struct MAMESetLayoutPlannerTests {
         #expect(Set(game.roms.map(\.name)) == ["clone-own.bin", "shared.bin"], "own rom + folded BIOS rom, but no device rom under split mode")
     }
 
+    // jensyleo's own request (2026-08-17): review Split/Merged/Non-merged
+    // handling of BIOS for a real inconsistency — none found in the actual
+    // logic (mode/biosMode really are independent, matching the reference
+    // tool this was built against), but `mode: .split, biosMode: .merged`
+    // itself had no test locking it in at all, for either a family root or
+    // one of its clones. Added here to close that real gap.
+    @Test("rom mode split + bios mode merged: the family ROOT gets the BIOS's roms folded in (own override still wins on a name collision)")
+    func splitRomModeMergedBiosModeFoldsIntoRoot() throws {
+        // "parent" (romOf: "bios", cloneOf: nil — the ROM family's own
+        // root) already declares its own "shared.bin" (size 2), which the
+        // real BIOS's version (size 1, unmarked in the fixture) would
+        // otherwise collide with by name — the root's own copy must win,
+        // not be silently overwritten by the BIOS's.
+        let game = try MAMESetLayoutPlanner.buildGame(for: "parent", mode: .split, biosMode: .merged, dataset: dataset)
+        #expect(Set(game.roms.map(\.name)) == ["parent-only.bin", "shared.bin"])
+        #expect(game.roms.first { $0.name == "shared.bin" }?.size == 2)
+    }
+
+    @Test("rom mode split + bios mode merged: a CLONE gets none of the BIOS's roms — it relies on the root's own archive for those, same as it already does for shared family content")
+    func splitRomModeMergedBiosModeExcludesClone() throws {
+        // "clone" (cloneOf/romOf: "parent") is not itself a ROM-family
+        // root, so `biosMode: .merged` folds nothing into it — matching
+        // the same "clone relies on its parent's own archive" philosophy
+        // `mode: .split` already applies to ordinary shared/inherited
+        // roms (via `merge=`), just extended to the BIOS too.
+        let game = try MAMESetLayoutPlanner.buildGame(for: "clone", mode: .split, biosMode: .merged, dataset: dataset)
+        #expect(Set(game.roms.map(\.name)) == ["clone-only.bin"])
+    }
+
     @Test("throws when the requested machine does not exist")
     func throwsWhenMachineNotFound() {
         #expect(throws: BIOSResolutionError.machineNotFound("ghost")) {
