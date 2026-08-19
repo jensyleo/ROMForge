@@ -40,6 +40,14 @@ struct ContentView: View {
     // Applying a preset with a saved `sidebarVisible` still overrides this
     // afterward, same as any other preference here.
     @AppStorage("ROMForge.isSidebarVisible") private var isSidebarVisible = true
+    /// jensyleo's own report (2026-08-19): the app "se pone lenta por
+    /// momentos" — traced to `lastKnownStatus(for:)` opening/closing a
+    /// real SQLite connection (`AuditDatabaseLocation.open()` +
+    /// `loadReport`, both real disk I/O) for *every* sidebar row, on
+    /// *every* render of `sidebarList` (any selection change, any system
+    /// added/removed). Cached here instead, refreshed only at the specific
+    /// moments a status could actually have changed — see `refreshStatusCache()`.
+    @State private var statusCache: [RomSystem.ID: AuditStatus?] = [:]
 
     var body: some View {
         Group {
@@ -130,7 +138,14 @@ struct ContentView: View {
         .transaction { $0.disablesAnimations = true }
         .onAppear {
             missingDependencies = HomebrewLibraryDependency.all.filter { !HomebrewDylibLoader.isAvailable($0) }
+            refreshStatusCache()
         }
+        // Covers adding/removing a system, and — the case that actually
+        // matters day to day — switching away from whichever system was
+        // just scanned/fixed, so its sidebar dot reflects the fresh result
+        // without paying the SQLite cost on every single render.
+        .onChange(of: store.systems.count) { refreshStatusCache() }
+        .onChange(of: store.selectedSystemID) { refreshStatusCache() }
         .alert(
             "Missing dependency",
             isPresented: Binding(
@@ -151,7 +166,7 @@ struct ContentView: View {
                 Section(group.category.isEmpty ? "SYSTEM" : group.category) {
                     ForEach(group.systems) { system in
                         HStack(spacing: 6) {
-                            if let status = lastKnownStatus(for: system) {
+                            if let status = statusCache[system.id] ?? nil {
                                 Circle()
                                     .fill(status.tint)
                                     .frame(width: 8, height: 8)
@@ -185,7 +200,9 @@ struct ContentView: View {
                     store.update(updated)
                 }, onExportCollectionReport: {
                     exportCollectionReport()
-                }, toolbarController: toolbarController, isSidebarVisible: $isSidebarVisible)
+                }, toolbarController: toolbarController, isSidebarVisible: $isSidebarVisible, onAuditReportChanged: {
+                    refreshStatus(for: system.id)
+                })
                 .id(system.id)
             } else {
                 ContentUnavailableView(
@@ -244,12 +261,27 @@ struct ContentView: View {
     }
 
     /// The persisted worst status from this system's last real scan, if
-    /// any — read straight from `AuditReportDatabase` rather than kept as
-    /// view state, since it only needs to be current when the sidebar row
-    /// itself redraws (e.g. after navigating back to this list).
+    /// any — one real SQLite open/close per system, so this is only ever
+    /// called from `refreshStatusCache()` (a handful of well-defined
+    /// moments), never straight from `sidebarList`'s own render anymore.
     private func lastKnownStatus(for system: RomSystem) -> AuditStatus? {
         guard let db = try? AuditDatabaseLocation.open() else { return nil }
         return (try? db.loadReport(systemID: system.id.uuidString))?.worstStatus
+    }
+
+    private func refreshStatusCache() {
+        for system in store.systems {
+            statusCache[system.id] = lastKnownStatus(for: system)
+        }
+    }
+
+    /// Called from `LibraryDetailView` right after a scan/fix actually
+    /// changes its `auditReport` — refreshing just the one system that
+    /// could plausibly have a new status, instead of every configured
+    /// system, and only at the moment it's genuinely needed.
+    private func refreshStatus(for systemID: RomSystem.ID) {
+        guard let system = store.systems.first(where: { $0.id == systemID }) else { return }
+        statusCache[systemID] = lastKnownStatus(for: system)
     }
 
     /// Saves `CollectionReportExporter`'s HTML and opens it in the default

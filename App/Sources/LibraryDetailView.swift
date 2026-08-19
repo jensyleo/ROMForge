@@ -247,6 +247,12 @@ struct LibraryDetailView: View {
     /// new preset) and *write* it (to restore a saved one). `nil` only in
     /// previews/tests.
     var isSidebarVisible: Binding<Bool>?
+    /// Called right after a scan/fix actually changes `viewModel.auditReport`
+    /// — lets `ContentView` refresh just this one system's cached sidebar
+    /// status dot instead of re-reading `AuditReportDatabase` for every
+    /// configured system on every render (see `ContentView.statusCache`'s
+    /// own doc comment for the real cost this avoids).
+    var onAuditReportChanged: (() -> Void)?
 
     /// jensyleo's own request (2026-08-12): "que la primera vista que tenga
     /// sea siempre la última antes de cerrar la app" — restores whichever
@@ -264,7 +270,7 @@ struct LibraryDetailView: View {
     init(
         system: RomSystem, onAddFolder: @escaping ([URL]) -> Void, onDATAnalyzed: ((Bool) -> Void)? = nil,
         onExportCollectionReport: (() -> Void)? = nil, toolbarController: ROMForgeToolbarController? = nil,
-        isSidebarVisible: Binding<Bool>? = nil
+        isSidebarVisible: Binding<Bool>? = nil, onAuditReportChanged: (() -> Void)? = nil
     ) {
         self.system = system
         self.onAddFolder = onAddFolder
@@ -272,6 +278,7 @@ struct LibraryDetailView: View {
         self.onExportCollectionReport = onExportCollectionReport
         self.toolbarController = toolbarController
         self.isSidebarVisible = isSidebarVisible
+        self.onAuditReportChanged = onAuditReportChanged
         let restored = Self.restoreLastSelection(for: system)
         _selectedDatabaseFilter = State(initialValue: restored.databaseFilter)
         _selectedRomFolder = State(initialValue: restored.romFolder)
@@ -1068,6 +1075,7 @@ struct LibraryDetailView: View {
             UserDefaults.standard.removeObject(forKey: Self.gameColumnCustomizationKey)
             UserDefaults.standard.removeObject(forKey: Self.romColumnCustomizationKey)
         }
+        .onChange(of: viewModel.auditReport) { onAuditReportChanged?() }
         .sheet(isPresented: $isShowingColumnPresetsSheet) {
             ColumnPresetsSheet(
                 presetNames: columnPresets.keys.sorted(),

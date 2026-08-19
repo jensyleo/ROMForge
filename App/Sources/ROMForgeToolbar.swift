@@ -69,6 +69,29 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     private var actionsByID: [String: ToolbarAction] = [:]
     private var itemsByRegion: [String: [ToolbarAction]] = [:]
     private weak var toolbar: NSToolbar?
+    /// The dynamic bits of `ToolbarAction` that actually get pushed to
+    /// AppKit on a refresh (everything except `action` itself, which
+    /// isn't `Equatable`) — jensyleo's own report (2026-08-19): this
+    /// controller was writing `toolTip`/`label`/`button.title`/`isEnabled`
+    /// on *every* item, on *every* `setRegion` call, even when a render
+    /// recomputed the exact same 9 actions unchanged (which is the common
+    /// case — most SwiftUI re-renders of `LibraryDetailView` don't
+    /// actually change any button's state). Comparing against this cached
+    /// signature first skips that AppKit write/relayout entirely on a
+    /// no-op update.
+    private struct ActionSignature: Equatable {
+        let title: String
+        let isEnabled: Bool
+        let help: String
+        let showsLabel: Bool
+        init(_ action: ToolbarAction) {
+            title = action.title
+            isEnabled = action.isEnabled
+            help = action.help
+            showsLabel = action.showsLabel
+        }
+    }
+    private var lastAppliedSignatureByID: [String: ActionSignature] = [:]
 
     func install(on window: NSWindow) {
         if let existing = window.toolbar, existing.identifier == Self.toolbarIdentifier {
@@ -111,7 +134,11 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         guard let toolbar else { return }
         reconcile(region: region, previousIDs: previousIDs, newIDs: newIDs, toolbar: toolbar)
         for item in toolbar.items {
-            guard let spec = actionsByID[item.itemIdentifier.rawValue] else { continue }
+            let id = item.itemIdentifier.rawValue
+            guard let spec = actionsByID[id] else { continue }
+            let signature = ActionSignature(spec)
+            guard lastAppliedSignatureByID[id] != signature else { continue }
+            lastAppliedSignatureByID[id] = signature
             item.toolTip = spec.help
             item.label = spec.title
             if let button = item.view as? NSButton {
@@ -230,10 +257,38 @@ struct ToolbarHost: NSViewRepresentable {
         // the next run-loop turn so it reads the real window once it's
         // there, same pattern already used elsewhere in this app for
         // AppKit interop that depends on view/window attachment timing.
-        DispatchQueue.main.async {
-            guard let window = nsView.window else { return }
+        //
+        // jensyleo's own report (2026-08-19): a burst of renders (typing
+        // in a search field, dragging a table selection) used to queue one
+        // of these blocks *per* `updateNSView` call, each repeating
+        // `setRegion`'s own work even though only the very last one's
+        // `actions` value is still relevant by the time any of them
+        // actually run. `Coordinator` below coalesces that into a single
+        // pending apply that always uses whichever `actions` was current
+        // when it fires.
+        context.coordinator.pendingRegion = region
+        context.coordinator.pendingActions = actions
+        guard !context.coordinator.isScheduled else { return }
+        context.coordinator.isScheduled = true
+        let coordinator = context.coordinator
+        DispatchQueue.main.async { [weak nsView] in
+            coordinator.isScheduled = false
+            guard let nsView, let window = nsView.window,
+                  let region = coordinator.pendingRegion, let actions = coordinator.pendingActions
+            else { return }
             controller.install(on: window)
             controller.setRegion(region, actions: actions)
         }
+    }
+
+    @MainActor
+    final class Coordinator {
+        var pendingRegion: String?
+        var pendingActions: [ToolbarAction]?
+        var isScheduled = false
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
     }
 }
