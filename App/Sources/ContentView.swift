@@ -32,7 +32,14 @@ struct ContentView: View {
     // the sidebar branch out of the view hierarchy entirely (not just
     // hidden/zero-width) — `detailContent` alone then has the window's
     // full width, matching what the native toggle used to do.
-    @State private var isSidebarVisible = true
+    //
+    // `@AppStorage`, not a plain `@State` — jensyleo's own report
+    // (2026-08-19): hiding the sidebar (even after saving that into a
+    // Column Preset) still came back visible on the next launch, because
+    // a plain `@State` only ever lives in memory for the current run.
+    // Applying a preset with a saved `sidebarVisible` still overrides this
+    // afterward, same as any other preference here.
+    @AppStorage("ROMForge.isSidebarVisible") private var isSidebarVisible = true
 
     var body: some View {
         Group {
