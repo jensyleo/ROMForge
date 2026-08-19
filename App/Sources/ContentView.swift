@@ -79,9 +79,12 @@ struct ContentView: View {
             ToolbarHost(
                 region: "sidebar",
                 actions: [
+                    // jensyleo's own request (2026-08-19): icon-only, no
+                    // visible "Toggle Sidebar" text — matches the
+                    // convention most macOS sidebar-toggle buttons use.
                     ToolbarAction(
                         id: "toggleSidebar", title: "Toggle Sidebar", systemImage: "sidebar.left",
-                        help: "Show or hide the Systems sidebar"
+                        help: "Show or hide the Systems sidebar", showsLabel: false
                     ) {
                         isSidebarVisible.toggle()
                     },
@@ -176,7 +179,7 @@ struct ContentView: View {
                     store.update(updated)
                 }, onExportCollectionReport: {
                     exportCollectionReport()
-                }, toolbarController: toolbarController)
+                }, toolbarController: toolbarController, isSidebarVisible: $isSidebarVisible)
                 .id(system.id)
             } else {
                 ContentUnavailableView(

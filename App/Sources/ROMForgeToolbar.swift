@@ -17,6 +17,11 @@ struct ToolbarAction: Identifiable {
     var systemImage: String?
     var isEnabled: Bool = true
     var help: String = ""
+    /// `false` for an icon-only button (needs `systemImage`) — jensyleo's
+    /// own request (2026-08-19): "Toggle Sidebar" reads better as just its
+    /// icon, same as most macOS sidebar-toggle buttons. `title`/`help`
+    /// still apply everywhere else (tooltip, customization palette).
+    var showsLabel: Bool = true
     let action: () -> Void
 }
 
@@ -110,7 +115,7 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
             item.toolTip = spec.help
             item.label = spec.title
             if let button = item.view as? NSButton {
-                button.title = spec.title
+                button.title = spec.showsLabel ? spec.title : ""
                 button.isEnabled = spec.isEnabled
                 button.toolTip = spec.help
             }
@@ -170,14 +175,14 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         item.paletteLabel = spec.title
         item.toolTip = spec.help
 
-        let button = NSButton(title: spec.title, target: self, action: #selector(performAction(_:)))
+        let button = NSButton(title: spec.showsLabel ? spec.title : "", target: self, action: #selector(performAction(_:)))
         button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
         button.bezelStyle = .texturedRounded
         button.isEnabled = spec.isEnabled
         button.toolTip = spec.help
         if let systemImage = spec.systemImage {
             button.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: spec.title)
-            button.imagePosition = .imageLeading
+            button.imagePosition = spec.showsLabel ? .imageLeading : .imageOnly
         }
         item.view = button
         return item

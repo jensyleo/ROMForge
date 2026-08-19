@@ -241,6 +241,12 @@ struct LibraryDetailView: View {
     /// region of items to it. `nil` only in previews/tests that construct
     /// this view without a real window around it.
     var toolbarController: ROMForgeToolbarController?
+    /// `ContentView`'s own sidebar-visibility toggle — a `Binding` (not a
+    /// plain callback like `onExportCollectionReport`) since Column
+    /// Presets needs to both *read* the current value (to save it into a
+    /// new preset) and *write* it (to restore a saved one). `nil` only in
+    /// previews/tests.
+    var isSidebarVisible: Binding<Bool>?
 
     /// jensyleo's own request (2026-08-12): "que la primera vista que tenga
     /// sea siempre la última antes de cerrar la app" — restores whichever
@@ -257,13 +263,15 @@ struct LibraryDetailView: View {
     /// `romFolderURLs` — unavailable to a plain `= .allGames` default.
     init(
         system: RomSystem, onAddFolder: @escaping ([URL]) -> Void, onDATAnalyzed: ((Bool) -> Void)? = nil,
-        onExportCollectionReport: (() -> Void)? = nil, toolbarController: ROMForgeToolbarController? = nil
+        onExportCollectionReport: (() -> Void)? = nil, toolbarController: ROMForgeToolbarController? = nil,
+        isSidebarVisible: Binding<Bool>? = nil
     ) {
         self.system = system
         self.onAddFolder = onAddFolder
         self.onDATAnalyzed = onDATAnalyzed
         self.onExportCollectionReport = onExportCollectionReport
         self.toolbarController = toolbarController
+        self.isSidebarVisible = isSidebarVisible
         let restored = Self.restoreLastSelection(for: system)
         _selectedDatabaseFilter = State(initialValue: restored.databaseFilter)
         _selectedRomFolder = State(initialValue: restored.romFolder)
@@ -725,6 +733,13 @@ struct LibraryDetailView: View {
     private struct ColumnPreset: Codable {
         let gameData: Data
         let romData: Data
+        /// jensyleo's own request (2026-08-19): "el column preset no tiene
+        /// en cuenta el sidebar" — a preset now also remembers whether the
+        /// Systems sidebar was shown or hidden. `Optional` (not a plain
+        /// `Bool`) so a preset saved before this field existed decodes
+        /// fine (`nil`, meaning "leave the sidebar as it is" — see
+        /// `applyColumnPreset`) instead of failing to decode at all.
+        var sidebarVisible: Bool?
     }
 
     @State private var columnPresets: [String: ColumnPreset] = Self.loadColumnPresets()
@@ -748,7 +763,7 @@ struct LibraryDetailView: View {
               let gameData = try? JSONEncoder().encode(gameColumnCustomization),
               let romData = try? JSONEncoder().encode(romColumnCustomization)
         else { return }
-        columnPresets[name] = ColumnPreset(gameData: gameData, romData: romData)
+        columnPresets[name] = ColumnPreset(gameData: gameData, romData: romData, sidebarVisible: isSidebarVisible?.wrappedValue)
         Self.persistColumnPresets(columnPresets)
     }
 
@@ -761,6 +776,9 @@ struct LibraryDetailView: View {
         if let decoded = try? JSONDecoder().decode(TableColumnCustomization<RomRow>.self, from: preset.romData) {
             romColumnCustomization = decoded
             Self.persist(decoded, key: Self.romColumnCustomizationKey)
+        }
+        if let sidebarVisible = preset.sidebarVisible {
+            isSidebarVisible?.wrappedValue = sidebarVisible
         }
     }
 
@@ -792,8 +810,18 @@ struct LibraryDetailView: View {
     /// every render exactly like that block was, `ToolbarHost` just
     /// forwards the result into `ROMForgeToolbarController` instead of
     /// SwiftUI managing it.
+    // jensyleo's own request (2026-08-19): "revisa como deje el orden de
+    // los botones... y déjalos así por defecto" — this order (checked live
+    // via `System Events` against the app's own real toolbar after ⌘-drag
+    // reordering) is now the app's own default, not just a customization
+    // that happened to stick: Scan File, Scan Folder, Scan All Folders,
+    // Fix, Play, Export Fix DAT…, Export Report…, Export List to CSV…,
+    // Column Presets…
     private var detailToolbarActions: [ToolbarAction] {
         var actions: [ToolbarAction] = [
+            ToolbarAction(id: "scanFile", title: "Scan File", isEnabled: canScanSelectedFile, help: scanFileButtonHelpText) {
+                scanSelectedFile()
+            },
             ToolbarAction(
                 id: "scanFolder", title: "Scan Folder",
                 isEnabled: !viewModel.isBusy && selectedRomFolder != nil,
@@ -809,9 +837,6 @@ struct LibraryDetailView: View {
             ) {
                 viewModel.startScan(system: system)
             },
-            ToolbarAction(id: "scanFile", title: "Scan File", isEnabled: canScanSelectedFile, help: scanFileButtonHelpText) {
-                scanSelectedFile()
-            },
             ToolbarAction(
                 id: "fix", title: "Fix",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
@@ -821,8 +846,8 @@ struct LibraryDetailView: View {
             ) {
                 Task { await viewModel.fix(system: system) }
             },
-            ToolbarAction(id: "columnPresets", title: "Column Presets…", help: "Save or switch between named column layouts for both tables") {
-                isShowingColumnPresetsSheet = true
+            ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
+                launchSelectedGameInMAME()
             },
             ToolbarAction(
                 id: "exportFixDat", title: "Export Fix DAT…",
@@ -830,13 +855,6 @@ struct LibraryDetailView: View {
                 help: "Save a DAT containing only this scan's missing/incorrect entries"
             ) {
                 exportFixDat()
-            },
-            ToolbarAction(
-                id: "exportListCSV", title: "Export List to CSV…",
-                isEnabled: !cachedGameNodes.isEmpty && !viewModel.isBusy,
-                help: "Save the currently displayed games list as a CSV file"
-            ) {
-                exportGameListCSV()
             },
         ]
         if let onExportCollectionReport {
@@ -847,8 +865,17 @@ struct LibraryDetailView: View {
             )
         }
         actions.append(
-            ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
-                launchSelectedGameInMAME()
+            ToolbarAction(
+                id: "exportListCSV", title: "Export List to CSV…",
+                isEnabled: !cachedGameNodes.isEmpty && !viewModel.isBusy,
+                help: "Save the currently displayed games list as a CSV file"
+            ) {
+                exportGameListCSV()
+            }
+        )
+        actions.append(
+            ToolbarAction(id: "columnPresets", title: "Column Presets…", help: "Save or switch between named column layouts for both tables") {
+                isShowingColumnPresetsSheet = true
             }
         )
         return actions
