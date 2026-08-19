@@ -18,79 +18,73 @@ struct ContentView: View {
     // lazily instead means a missing dependency no longer crashes launch —
     // this check is what turns "silently degraded" into "clearly explained".
     @State private var missingDependencies: [HomebrewLibraryDependency] = []
+    // jensyleo's own request (2026-08-19): the real AppKit-backed toolbar
+    // (see `ROMForgeToolbar.swift`'s own doc comment for the full "why").
+    // Owned here since `ContentView` is this window's true root content —
+    // shared with `LibraryDetailView` (passed down through its own init)
+    // so each contributes its own region without either needing to know
+    // about the other's items.
+    @State private var toolbarController = ROMForgeToolbarController()
+    // jensyleo's own request (2026-08-19): "todo debe quedar visualmente
+    // como está" — `NavigationSplitView`'s own sidebar-toggle button is
+    // gone now that it's no longer used at all (see below), so this
+    // reconstructs it by hand as a toolbar action instead. `false` swaps
+    // the sidebar branch out of the view hierarchy entirely (not just
+    // hidden/zero-width) — `detailContent` alone then has the window's
+    // full width, matching what the native toggle used to do.
+    @State private var isSidebarVisible = true
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $store.selectedSystemID) {
-                ForEach(groupedSystems, id: \.category) { group in
-                    Section(group.category.isEmpty ? "SYSTEM" : group.category) {
-                        ForEach(group.systems) { system in
-                            HStack(spacing: 6) {
-                                if let status = lastKnownStatus(for: system) {
-                                    Circle()
-                                        .fill(status.tint)
-                                        .frame(width: 8, height: 8)
-                                        .help("Last scan: \(status.rawValue)")
-                                }
-                                Text(system.name)
-                            }
-                            .tag(system.id)
-                            .contextMenu {
-                                Button("Remove", role: .destructive) {
-                                    store.remove(system)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Systems")
-            .toolbar {
-                // `.navigation` keeps this in its own group next to the
-                // sidebar toggle, separate from the detail view's own
-                // Scan/Fix/Export buttons — with only a generic
-                // (unplaced) `ToolbarItem`, all five ended up competing
-                // for the same space and "Add System" (least visually
-                // weighted, icon-only) was the one macOS collapsed into
-                // the "»" overflow menu on anything less than a very wide
-                // window. `.titleAndIcon` also gives it a visible label
-                // instead of a bare "+", so it doesn't need explaining.
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        isShowingAddSheet = true
-                    } label: {
-                        Label("Add System", systemImage: "plus.circle.fill")
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .help("Add a new system (DAT + ROM folders)")
-                }
-            }
-            .sheet(isPresented: $isShowingAddSheet) {
-                AddSystemSheet(existingCategories: existingCategories) { system in
-                    store.add(system)
-                }
-            }
-        } detail: {
-            if let system = store.selectedSystem {
-                LibraryDetailView(system: system, onAddFolder: { updatedFolders in
-                    var updated = system
-                    updated.romFolderURLs = updatedFolders
-                    store.update(updated)
-                }, onDATAnalyzed: { hasClones in
-                    guard system.hasClones != hasClones else { return }
-                    var updated = system
-                    updated.hasClones = hasClones
-                    store.update(updated)
-                }, onExportCollectionReport: {
-                    exportCollectionReport()
-                })
-                .id(system.id)
+        Group {
+            if isSidebarVisible {
+                // jensyleo's own report (2026-08-19): `NavigationSplitView`
+                // manages its own `NSToolbar` internally (it needs a slot
+                // in it for its own sidebar-toggle button) — assigning
+                // `window.toolbar` directly ourselves (`ROMForgeToolbarController`,
+                // for real "Customize Toolbar…"/⌘-drag reordering) fought
+                // that for ownership and broke the app outright (the
+                // entire sidebar and most toolbar buttons vanished,
+                // confirmed live). `AutosavingSplitView` — already used
+                // elsewhere in this app for exactly this kind of
+                // persisted, resizable split — is a plain `NSSplitView`
+                // wrapper that claims no toolbar of its own, which is
+                // what makes owning `window.toolbar` here safe.
+                AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.sidebarDetailSplit", panes: [
+                    SplitPane(minLength: 180) { sidebarList },
+                    SplitPane(minLength: 400) { detailContent },
+                ])
             } else {
-                ContentUnavailableView(
-                    "No System Selected",
-                    systemImage: "square.stack.3d.up",
-                    description: Text("Add a system with a DAT and a ROM folder to get started.")
-                )
+                detailContent
+            }
+        }
+        .background(
+            ToolbarHost(
+                region: "sidebar",
+                actions: [
+                    ToolbarAction(
+                        id: "toggleSidebar", title: "Toggle Sidebar", systemImage: "sidebar.left",
+                        help: "Show or hide the Systems sidebar"
+                    ) {
+                        isSidebarVisible.toggle()
+                    },
+                    // `.navigation`-equivalent position (right after the
+                    // sidebar toggle): same reasoning as before this
+                    // toolbar became AppKit-managed — kept next to the
+                    // toggle, separate from the detail view's own
+                    // Scan/Fix/Export group.
+                    ToolbarAction(
+                        id: "addSystem", title: "Add System", systemImage: "plus.circle.fill",
+                        help: "Add a new system (DAT + ROM folders)"
+                    ) {
+                        isShowingAddSheet = true
+                    },
+                ],
+                controller: toolbarController
+            )
+        )
+        .sheet(isPresented: $isShowingAddSheet) {
+            AddSystemSheet(existingCategories: existingCategories) { system in
+                store.add(system)
             }
         }
         // jensyleo's own request (2026-08-13): "todo lo necesario para que
@@ -121,6 +115,63 @@ struct ContentView: View {
             Button("OK") { missingDependencies = [] }
         } message: { dependency in
             Text(dependencyAlertMessage(for: dependency))
+        }
+    }
+
+    private var sidebarList: some View {
+        List(selection: $store.selectedSystemID) {
+            ForEach(groupedSystems, id: \.category) { group in
+                Section(group.category.isEmpty ? "SYSTEM" : group.category) {
+                    ForEach(group.systems) { system in
+                        HStack(spacing: 6) {
+                            if let status = lastKnownStatus(for: system) {
+                                Circle()
+                                    .fill(status.tint)
+                                    .frame(width: 8, height: 8)
+                                    .help("Last scan: \(status.rawValue)")
+                            }
+                            Text(system.name)
+                        }
+                        .tag(system.id)
+                        .contextMenu {
+                            Button("Remove", role: .destructive) {
+                                store.remove(system)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var detailContent: some View {
+        Group {
+            if let system = store.selectedSystem {
+                LibraryDetailView(system: system, onAddFolder: { updatedFolders in
+                    var updated = system
+                    updated.romFolderURLs = updatedFolders
+                    store.update(updated)
+                }, onDATAnalyzed: { hasClones in
+                    guard system.hasClones != hasClones else { return }
+                    var updated = system
+                    updated.hasClones = hasClones
+                    store.update(updated)
+                }, onExportCollectionReport: {
+                    exportCollectionReport()
+                }, toolbarController: toolbarController)
+                .id(system.id)
+            } else {
+                ContentUnavailableView(
+                    "No System Selected",
+                    systemImage: "square.stack.3d.up",
+                    description: Text("Add a system with a DAT and a ROM folder to get started.")
+                )
+                // `LibraryDetailView` (which normally owns the "detail"
+                // region) isn't instantiated at all while nothing's
+                // selected — without this, its last set of items would
+                // stay stuck on the toolbar after deselecting a system.
+                .background(ToolbarHost(region: "detail", actions: [], controller: toolbarController))
+            }
         }
     }
 

@@ -235,6 +235,12 @@ struct LibraryDetailView: View {
     /// `ContentView` and is simply invoked from a button placed next to
     /// this view's own exports instead.
     var onExportCollectionReport: (() -> Void)?
+    /// The shared, real AppKit toolbar (see `ROMForgeToolbar.swift`'s own
+    /// doc comment) — `ContentView` owns it since it's this window's true
+    /// root content; this view only ever contributes its own "detail"
+    /// region of items to it. `nil` only in previews/tests that construct
+    /// this view without a real window around it.
+    var toolbarController: ROMForgeToolbarController?
 
     /// jensyleo's own request (2026-08-12): "que la primera vista que tenga
     /// sea siempre la última antes de cerrar la app" — restores whichever
@@ -249,11 +255,15 @@ struct LibraryDetailView: View {
     /// Set via a custom `init` (not the properties' own inline defaults)
     /// since restoring needs this specific `system`'s own `id` and
     /// `romFolderURLs` — unavailable to a plain `= .allGames` default.
-    init(system: RomSystem, onAddFolder: @escaping ([URL]) -> Void, onDATAnalyzed: ((Bool) -> Void)? = nil, onExportCollectionReport: (() -> Void)? = nil) {
+    init(
+        system: RomSystem, onAddFolder: @escaping ([URL]) -> Void, onDATAnalyzed: ((Bool) -> Void)? = nil,
+        onExportCollectionReport: (() -> Void)? = nil, toolbarController: ROMForgeToolbarController? = nil
+    ) {
         self.system = system
         self.onAddFolder = onAddFolder
         self.onDATAnalyzed = onDATAnalyzed
         self.onExportCollectionReport = onExportCollectionReport
+        self.toolbarController = toolbarController
         let restored = Self.restoreLastSelection(for: system)
         _selectedDatabaseFilter = State(initialValue: restored.databaseFilter)
         _selectedRomFolder = State(initialValue: restored.romFolder)
@@ -776,6 +786,74 @@ struct LibraryDetailView: View {
         Self.persistColumnPresets(columnPresets)
     }
 
+    /// This view's own contribution to the shared toolbar's "detail"
+    /// region — same 9 actions (and the same enabled/help logic) the old
+    /// SwiftUI `.toolbar` block used to declare directly; recomputed on
+    /// every render exactly like that block was, `ToolbarHost` just
+    /// forwards the result into `ROMForgeToolbarController` instead of
+    /// SwiftUI managing it.
+    private var detailToolbarActions: [ToolbarAction] {
+        var actions: [ToolbarAction] = [
+            ToolbarAction(
+                id: "scanFolder", title: "Scan Folder",
+                isEnabled: !viewModel.isBusy && selectedRomFolder != nil,
+                help: selectedRomFolder.map { "Scan only \"\($0.lastPathComponent)\" — other folders keep their last known results" }
+                    ?? "Select a folder under \"Rom files\" to scan it"
+            ) {
+                viewModel.startScan(system: system, folders: selectedRomFolder.map { [$0] })
+            },
+            ToolbarAction(
+                id: "scanAllFolders", title: "Scan All Folders",
+                isEnabled: !viewModel.isBusy && !system.romFolderURLs.isEmpty,
+                help: "Scan every configured \"Rom files\" folder for this system, one after another"
+            ) {
+                viewModel.startScan(system: system)
+            },
+            ToolbarAction(id: "scanFile", title: "Scan File", isEnabled: canScanSelectedFile, help: scanFileButtonHelpText) {
+                scanSelectedFile()
+            },
+            ToolbarAction(
+                id: "fix", title: "Fix",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Rename misnamed ROMs to match the DAT"
+                    : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
+            ) {
+                Task { await viewModel.fix(system: system) }
+            },
+            ToolbarAction(id: "columnPresets", title: "Column Presets…", help: "Save or switch between named column layouts for both tables") {
+                isShowingColumnPresetsSheet = true
+            },
+            ToolbarAction(
+                id: "exportFixDat", title: "Export Fix DAT…",
+                isEnabled: viewModel.auditReport != nil && !viewModel.isBusy,
+                help: "Save a DAT containing only this scan's missing/incorrect entries"
+            ) {
+                exportFixDat()
+            },
+            ToolbarAction(
+                id: "exportListCSV", title: "Export List to CSV…",
+                isEnabled: !cachedGameNodes.isEmpty && !viewModel.isBusy,
+                help: "Save the currently displayed games list as a CSV file"
+            ) {
+                exportGameListCSV()
+            },
+        ]
+        if let onExportCollectionReport {
+            actions.append(
+                ToolbarAction(id: "exportReport", title: "Export Report…", help: "Save a printable HTML report combining every configured system's last scan") {
+                    onExportCollectionReport()
+                }
+            )
+        }
+        actions.append(
+            ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
+                launchSelectedGameInMAME()
+            }
+        )
+        return actions
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -837,127 +915,22 @@ struct LibraryDetailView: View {
         }
         .padding()
         .frame(minWidth: 760, minHeight: 480)
-        // jensyleo's own request (2026-08-18): tried making this toolbar
-        // customizable ("Customize Toolbar…", hide/reorder items) via
-        // SwiftUI's `.toolbar(id:)` + per-item `ToolbarItem(id:)`. Reverted
-        // (2026-08-18) after live testing: neither right-click nor a
-        // manual `NSWindow.runToolbarCustomizationPalette` call (added to
-        // the View menu, then removed again) ever opened the palette —
-        // confirmed with a debug `print` inside that action that it never
-        // even fired when the menu item was clicked (both by hand and via
-        // `System Events` UI scripting), meaning the underlying `NSToolbar`
-        // AppKit actually created never had `allowsUserCustomization` set,
-        // regardless of the `id:` on every item. Root cause, as far as
-        // this investigation went: `.toolbar(id:)` sits here, inside
-        // `LibraryDetailView` — itself the *detail* pane of a
-        // `NavigationSplitView` inside `ContentView`, several levels below
-        // the `WindowGroup`'s own root content — not on the window's own
-        // top-level view. SwiftUI's real toolbar-customization wiring is
-        // known (as of this Xcode/SDK) to only reliably engage when
-        // `.toolbar(id:)` sits at/near scene root; nested placement like
-        // this silently produces a toolbar that looks identical but was
-        // never actually registered as customizable with AppKit.
-        //
-        // Real fix, if this is worth revisiting later: stop going through
-        // SwiftUI's `.toolbar` API for this at all, and instead build the
-        // toolbar directly in AppKit — an `NSToolbarDelegate` (supplying
-        // `toolbarDefaultItemIdentifiers`/`toolbarAllowedItemIdentifiers`/
-        // `toolbar(_:itemForItemIdentifier:willBeInsertedIntoToolbar:)`)
-        // attached to the window's own `NSWindow.toolbar` from an
-        // `NSViewRepresentable`/`NSWindow` access point (e.g. reading
-        // `NSApp.keyWindow` once the SwiftUI window has appeared, the same
-        // access pattern already used for the abandoned View-menu
-        // workaround), with `allowsUserCustomization = true` set explicitly
-        // on that toolbar. That guarantees a real, customizable NSToolbar
-        // regardless of where SwiftUI's own view hierarchy happens to sit
-        // — but it's a genuinely separate, bigger effort (hand-building
-        // every toolbar item as an `NSToolbarItem` wrapping the same
-        // actions below) than this list item's own scope, so it's left
-        // undone for now rather than half-built.
-        .toolbar {
-            ToolbarItemGroup {
-                // Scanning only makes sense with a "Rom files" folder in
-                // hand — a "Database" category is just a lens on the last
-                // report, not a place to scan from — so the button is
-                // disabled outright until one is selected, rather than
-                // offering a whole-system scan that doesn't fit this view.
-                Button("Scan Folder") {
-                    viewModel.startScan(system: system, folders: selectedRomFolder.map { [$0] })
+        // jensyleo's own request (2026-08-19): the real, hand-built AppKit
+        // toolbar (see `ROMForgeToolbar.swift`'s own doc comment for the
+        // full "why" — SwiftUI's own `.toolbar(id:)` never got AppKit to
+        // set `allowsUserCustomization` from this nested a view, and a
+        // first attempt at going straight to AppKit broke the app outright
+        // while `ContentView` still used `NavigationSplitView`; see that
+        // controller's own doc comment for the full story). This view only
+        // ever contributes its own "detail" region's current action list;
+        // `ContentView` owns installing/updating the toolbar itself.
+        .background(
+            Group {
+                if let toolbarController {
+                    ToolbarHost(region: "detail", actions: detailToolbarActions, controller: toolbarController)
                 }
-                .disabled(viewModel.isBusy || selectedRomFolder == nil)
-                .help(
-                    selectedRomFolder.map { "Scan only \"\($0.lastPathComponent)\" — other folders keep their last known results" }
-                        ?? "Select a folder under \"Rom files\" to scan it"
-                )
-                // jensyleo's own request (2026-08-12): a one-click way to
-                // scan every configured "Rom files" folder at once, rather
-                // than selecting and scanning each one individually.
-                // `folders: nil` is `startScan`'s own default — `scan(...)`
-                // already treats that as "every folder this system has".
-                // Disabled with no folders configured at all, same as
-                // "Scan Folder" being disabled with none *selected* — there
-                // would be nothing for it to actually do.
-                Button("Scan All Folders") {
-                    viewModel.startScan(system: system)
-                }
-                .disabled(viewModel.isBusy || system.romFolderURLs.isEmpty)
-                .help("Scan every configured \"Rom files\" folder for this system, one after another")
-                // Scans just the one selected game's own archive — the
-                // same right-click "Rescan This File" action, offered here
-                // too since not every user thinks to right-click first.
-                Button("Scan File") { scanSelectedFile() }
-                    .disabled(!canScanSelectedFile)
-                    .help(scanFileButtonHelpText)
-                Button("Fix") { Task { await viewModel.fix(system: system) } }
-                    .disabled(!LibraryViewModel.modificationsEnabled || viewModel.auditReport == nil || viewModel.isBusy)
-                    .help(
-                        LibraryViewModel.modificationsEnabled
-                            ? "Rename misnamed ROMs to match the DAT"
-                            : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
-                    )
-                // jensyleo's own request (2026-08-18): named presets on top
-                // of the show/hide/reorder/resize that already existed —
-                // "Compacta" vs "Detallada", saved and switchable by name.
-                Button("Column Presets…") { isShowingColumnPresetsSheet = true }
-                    .help("Save or switch between named column layouts for both tables")
-                // jensyleo's own request (2026-08-18) — ClrMamePro/RomVault's
-                // own "Fix-DatFiles": a small DAT holding only the missing/
-                // incorrect entries from the last scan, so another DAT-aware
-                // tool (or a manual search) can target exactly the gap
-                // instead of the whole collection. `FixDatExporter` itself
-                // was already built and tested in Core; this just wires a
-                // save panel to it.
-                Button("Export Fix DAT…") { exportFixDat() }
-                    .disabled(viewModel.auditReport == nil || viewModel.isBusy)
-                    .help("Save a DAT containing only this scan's missing/incorrect entries")
-                // jensyleo's own request (2026-08-18) — RomCenter/ClrMamePro's
-                // own "Save results as text file": a CSV of exactly what's
-                // currently on screen in the games table, respecting
-                // whatever filter/category is active — not the whole
-                // collection regardless of what's shown.
-                Button("Export List to CSV…") { exportGameListCSV() }
-                    .disabled(cachedGameNodes.isEmpty || viewModel.isBusy)
-                    .help("Save the currently displayed games list as a CSV file")
-                // jensyleo's own request (2026-08-18): grouped with the two
-                // exports above instead of sitting apart in the sidebar —
-                // see `onExportCollectionReport`'s own doc comment for why
-                // the actual data access still lives in `ContentView`.
-                if let onExportCollectionReport {
-                    Button("Export Report…") { onExportCollectionReport() }
-                        .help("Save a printable HTML report combining every configured system's last scan")
-                }
-                // MAME-only for now, and only once a real `mame`
-                // executable is configured (Settings → Systems) — see
-                // `MAMELauncher`.
-                Button {
-                    launchSelectedGameInMAME()
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                }
-                .disabled(!canLaunchSelectedGameInMAME)
-                .help(playButtonHelpText)
             }
-        }
+        )
         .overlay {
             // Covers `isLoadingDAT` too now (2026-08-11) — `scanProgressOverlay`
             // already has its own DAT-loading branch with the same progress
