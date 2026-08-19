@@ -6,8 +6,7 @@
 
 import Foundation
 
-/// Shared `$PATH`-scanning logic used by both `SevenZipLocator` and
-/// `BrewLocator`.
+/// Shared `$PATH`-scanning logic used by `SevenZipLocator`.
 enum PathEnvironmentResolver {
     static func resolve(name: String, checker: ExecutableFileChecking) -> URL? {
         guard let pathVariable = ProcessInfo.processInfo.environment["PATH"] else { return nil }

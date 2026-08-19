@@ -17,9 +17,6 @@ public enum SevenZipError: Error, Equatable, CustomStringConvertible {
     case entryNotFound(entryPath: String, archiveURL: URL)
     case processFailed(String)
     case malformedListing(String)
-    /// Homebrew itself isn't installed, so `SevenZipInstaller` can't use it.
-    case homebrewNotFound
-    case installationFailed(String)
 
     public var description: String {
         switch self {
@@ -48,18 +45,6 @@ public enum SevenZipError: Error, Equatable, CustomStringConvertible {
             return "7-Zip failed: \(message)"
         case .malformedListing(let message):
             return "Could not parse 7-Zip listing output: \(message)"
-        case .homebrewNotFound:
-            return """
-            Homebrew is not installed, so ROMForge can't use it to install \
-            7-Zip automatically.
-
-            Either install Homebrew first (https://brew.sh), then try again, \
-            or download the official 7-Zip directly:
-                https://www.7-zip.org/download.html
-            ("7-Zip for MacOS: console version")
-            """
-        case .installationFailed(let message):
-            return "Failed to install 7-Zip via Homebrew: \(message)"
         }
     }
 }
