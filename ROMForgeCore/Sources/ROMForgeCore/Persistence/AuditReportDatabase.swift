@@ -289,7 +289,14 @@ public final class AuditReportDatabase {
     public func removeEntries(systemID: String, pathPrefix: String) throws -> Int {
         let db = try Self.open(path)
         defer { sqlite3_close(db) }
-        let prefixLength = Int32((pathPrefix as NSString).length)
+        // `unicodeScalars.count`, not `NSString.length` — SQLite's own
+        // `substr()` counts Unicode codepoints, while `NSString.length`
+        // counts UTF-16 code *units*. Those diverge for any path containing
+        // a character outside the Basic Multilingual Plane (surrogate
+        // pairs count as 2 in UTF-16 but 1 codepoint in SQLite), which
+        // would silently mismatch the prefix comparison below for e.g. a
+        // ROM folder path with an emoji in its name.
+        let prefixLength = Int32(pathPrefix.unicodeScalars.count)
         try Self.bindAndExec(
             db,
             "DELETE FROM audit_entries WHERE system_id = ? AND path IS NOT NULL AND substr(path, 1, ?) = ?;",

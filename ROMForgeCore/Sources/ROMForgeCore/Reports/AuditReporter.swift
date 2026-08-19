@@ -218,9 +218,14 @@ public enum AuditReporter {
     public static func replacingRescannedEntries(in previousReport: AuditReport?, with newReport: AuditReport, rescannedPaths: [URL]) -> AuditReport {
         guard let previousReport, !rescannedPaths.isEmpty else { return newReport }
         let prefixes = rescannedPaths.map(\.path)
+        // A bare `hasPrefix` here would also match an unrelated sibling
+        // whose name happens to start with a rescanned folder's own (e.g.
+        // "CPS1" wrongly sweeping up "CPS10") — the same bug already found
+        // and fixed once for `LibraryViewModel.removeFolder`'s identical
+        // comparison, missed at this separate call site until now.
         func pathIsRescanned(_ entry: AuditEntry) -> Bool {
             guard let path = entry.path?.path else { return false }
-            return prefixes.contains { path.hasPrefix($0) }
+            return prefixes.contains { ScanCache.key(path, isUnder: $0) }
         }
 
         // A rescanned archive can change ANY of a game's own entries —

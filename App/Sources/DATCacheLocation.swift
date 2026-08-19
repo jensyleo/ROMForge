@@ -12,14 +12,10 @@ import Foundation
 /// path/URL coincidence.
 enum DATCacheLocation {
     static func url(for system: RomSystem) -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let directory = base.appendingPathComponent("ROMForge", isDirectory: true).appendingPathComponent("DATCaches", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("\(system.id.uuidString).json")
+        PerSystemCacheLocation.url(for: system, subdirectory: "DATCaches")
     }
 
     static func remove(for system: RomSystem) {
-        try? FileManager.default.removeItem(at: url(for: system))
+        PerSystemCacheLocation.remove(for: system, subdirectory: "DATCaches")
     }
 }

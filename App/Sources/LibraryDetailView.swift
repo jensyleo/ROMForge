@@ -1093,7 +1093,7 @@ struct LibraryDetailView: View {
                 .font(.headline)
             if !viewModel.isLoadingDAT, let worst = viewModel.auditReport?.worstStatus {
                 Image(systemName: symbolName(for: worst))
-                    .foregroundStyle(tint(for: worst))
+                    .foregroundStyle(worst.tint)
                     .help(worst == .correct ? "Everything scanned is correct" : "This system has \(worst.rawValue) items")
             }
         }
@@ -2054,17 +2054,8 @@ struct LibraryDetailView: View {
     /// contents — adding a folder doesn't retroactively rewrite the last
     /// persisted report.
     private func addRomFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.message = "Select one or more additional folders containing this system's ROMs"
-        guard panel.runModal() == .OK else { return }
         var folders = system.romFolderURLs
-        var addedFolders: [URL] = []
-        for url in panel.urls where !folders.contains(url) {
-            addedFolders.append(url)
-        }
+        let addedFolders = ROMFolderPicker.pickFolders(existing: folders)
         guard !addedFolders.isEmpty else { return }
         // jensyleo's own request (2026-08-12): "ROM folder" starts out
         // alphabetical by default — a newly-added folder slots into its
@@ -2248,7 +2239,7 @@ struct LibraryDetailView: View {
         Table(visibleGameNodes, selection: $selectedGameID, columnCustomization: $gameColumnCustomization) {
             TableColumn("") { node in
                 if let status = node.aggregateStatus {
-                    Image(systemName: symbolName(for: status)).foregroundStyle(tint(for: status))
+                    Image(systemName: symbolName(for: status)).foregroundStyle(status.tint)
                 } else {
                     // Not scanned yet — a real, DAT-backed game, just with
                     // nothing yet to compare it against.
@@ -2440,7 +2431,7 @@ struct LibraryDetailView: View {
                 .foregroundStyle(.secondary)
             Table(selectedRomRows, selection: $selectedRomID, columnCustomization: $romColumnCustomization) {
                 TableColumn("") { row in
-                    romCell(Image(systemName: symbolName(for: row.entry.status)).foregroundStyle(tint(for: row.entry.status)), status: row.entry.status)
+                    romCell(Image(systemName: symbolName(for: row.entry.status)).foregroundStyle(row.entry.status.tint), status: row.entry.status)
                 }
                 .width(20)
                 .customizationID("status")
@@ -2532,7 +2523,7 @@ struct LibraryDetailView: View {
         content
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
-            .background(tint(for: status).opacity(0.18))
+            .background(status.tint.opacity(0.18))
     }
 
     private func infoText(for entry: AuditEntry) -> String {
@@ -3560,7 +3551,7 @@ struct LibraryDetailView: View {
                 // stays visible even while this row is selected and
                 // tinted with the accent color.
                 if let status = liveStatus {
-                    Image(systemName: symbolName(for: status)).foregroundStyle(tint(for: status))
+                    Image(systemName: symbolName(for: status)).foregroundStyle(status.tint)
                 } else {
                     Image(systemName: "circle.dashed").foregroundStyle(.secondary)
                 }
@@ -4132,18 +4123,4 @@ struct LibraryDetailView: View {
         }
     }
 
-    private func tint(for status: AuditStatus) -> Color {
-        switch status {
-        case .correct: return .green
-        case .incorrect: return .yellow
-        case .badDump: return .orange
-        case .missing: return .red
-        // jensyleo's own gray-file split (2026-08-06): the "check me,
-        // might be junk" tier reads as a fuller gray than the "correct by
-        // definition, just unverifiable" tier — see `AuditStatus`'s own
-        // doc comment for the full reasoning behind the split.
-        case .surplus, .surplusInArchive, .unknownFile: return .gray
-        case .unverifiable: return .gray.opacity(0.5)
-        }
-    }
 }

@@ -28,7 +28,7 @@ struct ContentView: View {
                             HStack(spacing: 6) {
                                 if let status = lastKnownStatus(for: system) {
                                     Circle()
-                                        .fill(tint(for: status))
+                                        .fill(status.tint)
                                         .frame(width: 8, height: 8)
                                         .help("Last scan: \(status.rawValue)")
                                 }
@@ -190,23 +190,6 @@ struct ContentView: View {
         }
     }
 
-    /// Same status→color mapping `LibraryDetailView` uses, so a system's
-    /// sidebar dot means the same thing its own detail view would show.
-    private func tint(for status: AuditStatus) -> Color {
-        switch status {
-        case .correct: return .green
-        case .incorrect: return .yellow
-        case .badDump: return .orange
-        case .missing: return .red
-        // jensyleo's own gray-file split (2026-08-06): the "check me,
-        // might be junk" tier (surplusInArchive/unknownFile/legacy surplus)
-        // renders as a fuller, more attention-grabbing gray than the
-        // "this is correct by definition" tier (unverifiable/nodump) — see
-        // `AuditStatus`'s own doc comment for the full reasoning.
-        case .surplus, .surplusInArchive, .unknownFile: return .gray
-        case .unverifiable: return .gray.opacity(0.5)
-        }
-    }
 }
 
 #Preview {

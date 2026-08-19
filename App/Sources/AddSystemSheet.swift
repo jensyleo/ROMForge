@@ -180,15 +180,7 @@ struct AddSystemSheet: View {
     }
 
     private func addROMFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.message = "Select one or more folders containing this system's ROMs"
-        guard panel.runModal() == .OK else { return }
-        for url in panel.urls where !romFolderURLs.contains(url) {
-            romFolderURLs.append(url)
-        }
+        romFolderURLs.append(contentsOf: ROMFolderPicker.pickFolders(existing: romFolderURLs))
     }
 
     private func add() {

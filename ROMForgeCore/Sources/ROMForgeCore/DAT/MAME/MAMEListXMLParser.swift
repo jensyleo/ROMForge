@@ -41,11 +41,7 @@ public enum MAMEListXMLParser {
             delegate.onProgress = { count in onProgress(count, total) }
         }
         let parser = XMLParser(data: data)
-        // XXE hardening: never fetch/resolve an external DTD or entity a
-        // malicious/corrupt DAT might declare.
-        parser.shouldResolveExternalEntities = false
-        parser.shouldProcessNamespaces = false
-        parser.externalEntityResolvingPolicy = .never
+        XMLParserHardening.harden(parser)
         parser.delegate = delegate
 
         guard parser.parse() else {

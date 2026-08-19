@@ -680,18 +680,16 @@ public enum ROMMatcher {
             }
         }
 
-        // Throttled to ~200 updates across the whole run regardless of DAT
-        // size — reporting every single game (tens of thousands on a full
-        // MAME DAT) would flood a UI observer with far more updates than a
-        // progress bar can usefully redraw.
-        let progressStep = max(1, games.count / 200)
-        let progressCounter = onProgress != nil ? ProgressCounter() : nil
+        // Reuses `ScanProgressCounter` (already shared by `FileHasher`/
+        // `CollectionHasher`) instead of a second, hand-rolled lock+throttle
+        // counter — found duplicated during a 2026-08-18 code audit; same
+        // ~200-updates-across-the-whole-run throttling this used to
+        // reimplement locally.
+        let progressCounter = onProgress.map { callback in
+            ScanProgressCounter(total: games.count) { progress in callback(progress.completed, progress.total) }
+        }
         @Sendable func reportProgress() {
-            guard let onProgress, let progressCounter else { return }
-            let completed = progressCounter.increment()
-            if completed % progressStep == 0 || completed == games.count {
-                onProgress(completed, games.count)
-            }
+            progressCounter?.increment()
         }
 
         // Checked before *every* game, not throttled — real bug found live
@@ -755,20 +753,6 @@ public enum ROMMatcher {
             }
         }
         return results
-    }
-
-    /// A thread-safe counter `computePerGameCandidates` increments from
-    /// however many concurrent workers `HashingConcurrency` spun up —
-    /// `Int` itself isn't safe to mutate from multiple threads without one.
-    private final class ProgressCounter: @unchecked Sendable {
-        private let lock = NSLock()
-        private var count = 0
-        func increment() -> Int {
-            lock.lock()
-            defer { lock.unlock() }
-            count += 1
-            return count
-        }
     }
 
     /// Wraps a value that's actually safe to share across threads in this

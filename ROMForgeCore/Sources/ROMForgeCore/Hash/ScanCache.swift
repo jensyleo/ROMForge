@@ -117,8 +117,21 @@ public struct ScanCache: Sendable, Codable, Equatable {
         guard !paths.isEmpty else { return self }
         let prefixes = paths.map(\.path)
         return ScanCache(entries: entries.filter { key, _ in
-            !prefixes.contains { key.hasPrefix($0) }
+            !prefixes.contains { Self.key(key, isUnder: $0) }
         })
+    }
+
+    /// A cache `key` (a loose file's own path, or `"<archivePath>::<entry
+    /// name>"`) is "under" `path` only if `key` names that exact file/
+    /// archive, or genuinely lives inside it as a folder — never merely
+    /// because `path` is a string prefix of `key`. A bare `key.hasPrefix`
+    /// check would also match an unrelated *sibling* whose name happens to
+    /// start with `path`'s (e.g. a folder named "CPS1" wrongly sweeping up
+    /// "CPS10"'s entries too) — the exact bug already found and fixed once
+    /// for this same comparison in `LibraryViewModel.removeFolder`, but
+    /// missed here since this is a different call site.
+    static func key(_ key: String, isUnder path: String) -> Bool {
+        key == path || key.hasPrefix(path + "/") || key.hasPrefix(path + "::")
     }
 
     public static func load(contentsOf url: URL) throws -> ScanCache {

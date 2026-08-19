@@ -11,14 +11,10 @@ import Foundation
 /// rather than inheriting a stale cache by folder-path coincidence.
 enum ScanCacheLocation {
     static func url(for system: RomSystem) -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let directory = base.appendingPathComponent("ROMForge", isDirectory: true).appendingPathComponent("ScanCaches", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("\(system.id.uuidString).json")
+        PerSystemCacheLocation.url(for: system, subdirectory: "ScanCaches")
     }
 
     static func remove(for system: RomSystem) {
-        try? FileManager.default.removeItem(at: url(for: system))
+        PerSystemCacheLocation.remove(for: system, subdirectory: "ScanCaches")
     }
 }
