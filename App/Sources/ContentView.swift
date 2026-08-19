@@ -49,10 +49,28 @@ struct ContentView: View {
                 // persisted, resizable split — is a plain `NSSplitView`
                 // wrapper that claims no toolbar of its own, which is
                 // what makes owning `window.toolbar` here safe.
-                AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.sidebarDetailSplit", panes: [
-                    SplitPane(minLength: 180) { sidebarList },
-                    SplitPane(minLength: 400) { detailContent },
-                ])
+                // jensyleo's own report (2026-08-19): this view's default
+                // (nothing saved yet) split used to be a plain even 1/N —
+                // fine for panes that genuinely trade off screen space
+                // evenly, wrong here, where the sidebar is just a short
+                // list of configured systems. Shrunk as far as
+                // `sidebarMinLength` below allows on jensyleo's own
+                // explicit follow-up request ("achícalo al máximo
+                // posible") — a user's own drag still overrides this and
+                // persists from then on, exactly like every other
+                // `AutosavingSplitView` in this app.
+                AutosavingSplitView(
+                    axis: .sideBySide, autosaveName: "ROMForge.sidebarDetailSplit",
+                    panes: [
+                        SplitPane(minLength: Self.sidebarMinLength) { sidebarList },
+                        SplitPane(minLength: 400) { detailContent },
+                    ],
+                    // A deliberately tiny target (well below `sidebarMinLength`
+                    // in absolute pixels on any real window) — the divider's
+                    // own min-coordinate clamp is what actually determines
+                    // the floor from here, not this fraction's precision.
+                    defaultFractions: [0.01, 0.99]
+                )
             } else {
                 detailContent
             }
@@ -192,6 +210,12 @@ struct ContentView: View {
         3. Quit and reopen ROMForge.
         """
     }
+
+    /// The narrowest the sidebar is ever allowed to shrink to (by drag or
+    /// by default) — small enough to still show a short system name
+    /// without truncating too aggressively, per jensyleo's own request
+    /// (2026-08-19) to shrink the default as far as practical.
+    private static let sidebarMinLength: CGFloat = 90
 
     /// Non-categorized systems are grouped under a trailing "SYSTEM"
     /// section instead of a flat list, RomCenter-style. Skipping grouping

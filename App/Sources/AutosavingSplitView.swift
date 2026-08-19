@@ -58,13 +58,31 @@ struct AutosavingSplitView: NSViewRepresentable {
     let axis: Axis
     let autosaveName: String
     let panes: [SplitPane]
+    /// The split used before anything's ever been saved for `autosaveName`
+    /// — defaults to an even split across every pane (this view's original,
+    /// only behavior). jensyleo's own report (2026-08-19): an even split is
+    /// wrong for a sidebar-style pane that only ever needs a fraction of a
+    /// window's width (a plain list of configured systems ended up taking
+    /// literal half the window on first launch) — pass explicit fractions
+    /// for that case instead of leaving every caller stuck with 1/N.
+    var defaultFractions: [Double]?
+
+    init(axis: Axis, autosaveName: String, panes: [SplitPane], defaultFractions: [Double]? = nil) {
+        self.axis = axis
+        self.autosaveName = autosaveName
+        self.panes = panes
+        self.defaultFractions = defaultFractions
+    }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(axis: axis, minLengths: panes.map(\.minLength), defaultsKey: "ROMForge.splitFractions.\(autosaveName)")
+        Coordinator(
+            axis: axis, minLengths: panes.map(\.minLength), defaultsKey: "ROMForge.splitFractions.\(autosaveName)",
+            defaultFractions: defaultFractions
+        )
     }
 
     func makeNSView(context: Context) -> NSSplitView {
-        let splitView = NSSplitView()
+        let splitView = ObservingSplitView()
         // NSSplitView's own `isVertical` names the divider's orientation,
         // not the panes' layout direction — `true` means a vertical
         // divider line, i.e. panes arranged side by side.
@@ -78,6 +96,23 @@ struct AutosavingSplitView: NSViewRepresentable {
         // of its arranged subviews' constraints, snapping panes back
         // toward their minimum on almost every SwiftUI-driven re-render.
         splitView.delegate = context.coordinator
+        // jensyleo's own report (2026-08-19): `updateNSView` (SwiftUI's own
+        // update cadence) is what `applyRestoredLayoutIfPossible` used to
+        // rely on being called repeatedly until a non-zero frame showed up
+        // — true for a split nested inside a view that re-renders often
+        // (`LibraryDetailView`'s own internal splits), but a split at
+        // `ContentView`'s own root barely re-renders at all once launched.
+        // Measured directly (not just visually) via `System Events`:
+        // `updateNSView` fired exactly once, at `total == 0`, and never
+        // again — so the restore never got a real size to apply against.
+        // `ObservingSplitView.onLayout` calls back on *every* real AppKit
+        // layout pass instead, which happens whenever this view actually
+        // gets its final size, entirely independent of how often SwiftUI
+        // itself re-renders the surrounding view.
+        splitView.onLayout = { [weak splitView] in
+            guard let splitView else { return }
+            context.coordinator.applyRestoredLayoutIfPossible(to: splitView)
+        }
         for pane in panes {
             let hosting = NSHostingView(rootView: pane.view)
             // Frame-based, not Auto Layout — sizing here is driven
@@ -87,6 +122,17 @@ struct AutosavingSplitView: NSViewRepresentable {
             splitView.addArrangedSubview(hosting)
         }
         return splitView
+    }
+
+    /// A plain `NSSplitView` whose only addition is a hook into AppKit's
+    /// own `layout()` pass — see `makeNSView`'s own doc comment for why
+    /// this exists instead of relying on SwiftUI's `updateNSView` alone.
+    final class ObservingSplitView: NSSplitView {
+        var onLayout: (() -> Void)?
+        override func layout() {
+            super.layout()
+            onLayout?()
+        }
     }
 
     func updateNSView(_ nsView: NSSplitView, context: Context) {
@@ -115,12 +161,14 @@ struct AutosavingSplitView: NSViewRepresentable {
         let axis: Axis
         let minLengths: [CGFloat]
         let defaultsKey: String
+        let defaultFractions: [Double]?
         private var didApplyRestore = false
 
-        init(axis: Axis, minLengths: [CGFloat], defaultsKey: String) {
+        init(axis: Axis, minLengths: [CGFloat], defaultsKey: String, defaultFractions: [Double]? = nil) {
             self.axis = axis
             self.minLengths = minLengths
             self.defaultsKey = defaultsKey
+            self.defaultFractions = defaultFractions
         }
 
         private func length(of view: NSView, in splitView: NSSplitView) -> CGFloat {
@@ -153,9 +201,16 @@ struct AutosavingSplitView: NSViewRepresentable {
             let fractions: [Double]
             if let saved = UserDefaults.standard.array(forKey: defaultsKey) as? [Double], saved.count == minLengths.count {
                 fractions = saved
+            } else if let defaultFractions, defaultFractions.count == minLengths.count {
+                fractions = defaultFractions
             } else {
                 fractions = Array(repeating: 1.0 / Double(minLengths.count), count: minLengths.count)
             }
+            apply(fractions: fractions, to: splitView)
+        }
+
+        private func apply(fractions: [Double], to splitView: NSSplitView) {
+            let total = totalLength(of: splitView)
             var position: CGFloat = 0
             for index in 0..<(fractions.count - 1) {
                 position += CGFloat(fractions[index]) * total
