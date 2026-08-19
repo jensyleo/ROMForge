@@ -79,25 +79,24 @@ struct ContentView: View {
             ToolbarHost(
                 region: "sidebar",
                 actions: [
-                    // jensyleo's own request (2026-08-19): icon-only, no
-                    // visible "Toggle Sidebar" text — matches the
-                    // convention most macOS sidebar-toggle buttons use.
-                    ToolbarAction(
-                        id: "toggleSidebar", title: "Toggle Sidebar", systemImage: "sidebar.left",
-                        help: "Show or hide the Systems sidebar", showsLabel: false
-                    ) {
-                        isSidebarVisible.toggle()
-                    },
-                    // `.navigation`-equivalent position (right after the
-                    // sidebar toggle): same reasoning as before this
-                    // toolbar became AppKit-managed — kept next to the
-                    // toggle, separate from the detail view's own
-                    // Scan/Fix/Export group.
+                    // jensyleo's own request (2026-08-19): checked live
+                    // (screenshot of the app's own real toolbar) — "Add
+                    // System" comes first, then the icon-only sidebar
+                    // toggle.
                     ToolbarAction(
                         id: "addSystem", title: "Add System", systemImage: "plus.circle.fill",
                         help: "Add a new system (DAT + ROM folders)"
                     ) {
                         isShowingAddSheet = true
+                    },
+                    // Icon-only, no visible "Toggle Sidebar" text —
+                    // matches the convention most macOS sidebar-toggle
+                    // buttons use.
+                    ToolbarAction(
+                        id: "toggleSidebar", title: "Toggle Sidebar", systemImage: "sidebar.left",
+                        help: "Show or hide the Systems sidebar", showsLabel: false
+                    ) {
+                        isSidebarVisible.toggle()
                     },
                 ],
                 controller: toolbarController

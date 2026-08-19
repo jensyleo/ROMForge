@@ -812,10 +812,10 @@ struct LibraryDetailView: View {
     /// SwiftUI managing it.
     // jensyleo's own request (2026-08-19): "revisa como deje el orden de
     // los botones... y déjalos así por defecto" — this order (checked live
-    // via `System Events` against the app's own real toolbar after ⌘-drag
+    // against a screenshot of the app's own real toolbar after ⌘-drag
     // reordering) is now the app's own default, not just a customization
     // that happened to stick: Scan File, Scan Folder, Scan All Folders,
-    // Fix, Play, Export Fix DAT…, Export Report…, Export List to CSV…,
+    // Fix, Play, Export Report…, Export Fix DAT…, Export List to CSV…,
     // Column Presets…
     private var detailToolbarActions: [ToolbarAction] {
         var actions: [ToolbarAction] = [
@@ -849,13 +849,6 @@ struct LibraryDetailView: View {
             ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
                 launchSelectedGameInMAME()
             },
-            ToolbarAction(
-                id: "exportFixDat", title: "Export Fix DAT…",
-                isEnabled: viewModel.auditReport != nil && !viewModel.isBusy,
-                help: "Save a DAT containing only this scan's missing/incorrect entries"
-            ) {
-                exportFixDat()
-            },
         ]
         if let onExportCollectionReport {
             actions.append(
@@ -864,6 +857,15 @@ struct LibraryDetailView: View {
                 }
             )
         }
+        actions.append(
+            ToolbarAction(
+                id: "exportFixDat", title: "Export Fix DAT…",
+                isEnabled: viewModel.auditReport != nil && !viewModel.isBusy,
+                help: "Save a DAT containing only this scan's missing/incorrect entries"
+            ) {
+                exportFixDat()
+            }
+        )
         actions.append(
             ToolbarAction(
                 id: "exportListCSV", title: "Export List to CSV…",
