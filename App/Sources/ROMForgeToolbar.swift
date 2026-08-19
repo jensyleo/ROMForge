@@ -109,7 +109,7 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         for action in newActions { actionsByID[action.id] = action }
 
         guard let toolbar else { return }
-        reconcile(region: region, previousIDs: previousIDs, newIDs: Set(newIDs), toolbar: toolbar)
+        reconcile(region: region, previousIDs: previousIDs, newIDs: newIDs, toolbar: toolbar)
         for item in toolbar.items {
             guard let spec = actionsByID[item.itemIdentifier.rawValue] else { continue }
             item.toolTip = spec.help
@@ -122,14 +122,29 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         }
     }
 
-    private func reconcile(region: String, previousIDs: Set<String>, newIDs: Set<String>, toolbar: NSToolbar) {
-        guard previousIDs != newIDs else { return }
-        for id in previousIDs.subtracting(newIDs) {
+    // jensyleo's own report (2026-08-19): the button order came out
+    // scrambled, differently on every single launch — traced to this
+    // method iterating `Set<String>`s (`previousIDs.subtracting(newIDs)`,
+    // `newIDs.subtracting(previousIDs)`) to decide *which* ids to
+    // remove/insert. A `Set`'s iteration order is unspecified and, for
+    // `String` specifically, actively randomized per process launch
+    // (Swift's own hash-seed-per-run security measure) — harmless for
+    // *which* ids end up present, but this method also used that same
+    // unordered iteration to decide the *sequence* of `insertItem` calls,
+    // so the final on-screen order came out different, at random, every
+    // launch. Fixed by only ever using sets to decide membership
+    // (removed/added), while the actual insertion loop below walks
+    // `newIDs` — a plain, order-preserving `[String]` — in its real,
+    // declared sequence.
+    private func reconcile(region: String, previousIDs: Set<String>, newIDs: [String], toolbar: NSToolbar) {
+        let newIDSet = Set(newIDs)
+        guard previousIDs != newIDSet else { return }
+        for id in previousIDs.subtracting(newIDSet) {
             if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier.rawValue == id }) {
                 toolbar.removeItem(at: index)
             }
         }
-        for id in newIDs.subtracting(previousIDs) {
+        for id in newIDs where !previousIDs.contains(id) {
             guard !toolbar.items.contains(where: { $0.itemIdentifier.rawValue == id }) else { continue }
             toolbar.insertItem(withItemIdentifier: NSToolbarItem.Identifier(rawValue: id), at: insertionIndex(forRegion: region, toolbar: toolbar))
         }
