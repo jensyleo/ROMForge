@@ -672,6 +672,17 @@ struct LibraryDetailView: View {
     /// a write whose `generation` still matches this counter's *current*
     /// value is actually the most recent request and allowed through.
     @State private var folderRecomputeGeneration = 0
+    /// When the *previous* `triggerCachedGameDataRecompute()` call
+    /// happened — jensyleo's own report (2026-08-19): a single, isolated
+    /// "Rom folder" click still paid `keyboardNavigationDebounceDelay`'s
+    /// own fixed 80ms before the recompute even started, on top of however
+    /// long the recompute itself takes, because the debounce ran
+    /// unconditionally. That delay only ever earns its keep during an
+    /// actual burst (arrow-key repeat, rapid clicks) — a click landing
+    /// more than `keyboardNavigationDebounceDelay` after the previous one
+    /// isn't part of any burst, so it now skips the artificial wait
+    /// entirely and starts the real work immediately.
+    @State private var lastFolderRecomputeTriggerAt: ContinuousClock.Instant?
     /// Same caching rationale as `cachedGameNodes`, for the status button
     /// counts: computing all four together once (one scope pass, one
     /// game-grouping pass) instead of `scopedStatusCount(_:)` redoing both
@@ -3025,10 +3036,20 @@ struct LibraryDetailView: View {
     /// (`keyboardNavigationDebounceDelay`) that a single deliberate click
     /// or keypress still feels instant, long enough that a fast run of
     /// repeats collapses into just the row the user actually settles on.
+    /// jensyleo's own follow-up report (2026-08-19): even "instant" here
+    /// still meant paying the full 80ms before the real work even started,
+    /// on top of however long that work itself takes — noticeable for a
+    /// single, isolated click. `lastFolderRecomputeTriggerAt`/`isBurst`
+    /// (below) now skip the wait entirely unless this call actually
+    /// followed another one within the debounce window — i.e. the delay
+    /// only applies when a burst is genuinely happening.
     private func triggerCachedGameDataRecompute() {
         pendingFolderRecompute?.cancel()
         folderRecomputeGeneration += 1
         let generation = folderRecomputeGeneration
+        let now = ContinuousClock.now
+        let isBurst = lastFolderRecomputeTriggerAt.map { now - $0 < Self.keyboardNavigationDebounceDelay } ?? false
+        lastFolderRecomputeTriggerAt = now
         let hasAuditReport = viewModel.auditReport != nil
         let entries = viewModel.auditReport?.entries ?? []
         let folder = selectedRomFolder
@@ -3039,8 +3060,10 @@ struct LibraryDetailView: View {
         let showUnknown = showUnknownArchives
         let statusFilters = activeStatusFilters
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
-            try? await Task.sleep(for: Self.keyboardNavigationDebounceDelay)
-            guard !Task.isCancelled else { return }
+            if isBurst {
+                try? await Task.sleep(for: Self.keyboardNavigationDebounceDelay)
+                guard !Task.isCancelled else { return }
+            }
             let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
             let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
             let baseNodes = Self.computeBaseGameNodes(
