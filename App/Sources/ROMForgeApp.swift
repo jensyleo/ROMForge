@@ -46,6 +46,15 @@ struct ROMForgeApp: App {
         WindowGroup {
             ContentView(store: store)
         }
+        // jensyleo's own request (2026-08-18): the window's own title
+        // ("ROMForge") showed up inline in the toolbar, between "Add
+        // System" and "Scan Folder" — redundant next to the Dock icon/menu
+        // bar already naming the app, and visually competing with the
+        // actual action buttons. Scene-level modifier (not on
+        // `ContentView(store: store)` itself, see that content's own doc
+        // comment above on why nothing gets attached directly to it) —
+        // keeps the window-frame-restoration key intact.
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             CommandGroup(after: .toolbar) {
                 Divider()
