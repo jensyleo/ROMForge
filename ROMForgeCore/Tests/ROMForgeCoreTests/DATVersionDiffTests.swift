@@ -108,4 +108,13 @@ struct DATVersionDiffTests {
         #expect(diff.renamed.count == 1)
         #expect(diff.renamed.first?.oldName == "oldname")
     }
+
+    @Test("two machine names differing only by case don't crash the comparison (malformed/hand-edited DAT)")
+    func caseCollidingNamesDontCrash() {
+        let old = file([game("Foo"), game("foo")])
+        let new = file([game("Foo")])
+        let diff = DATVersionDiff.compare(oldFile: old, newFile: new)
+        #expect(diff.added.isEmpty)
+        #expect(diff.removed.isEmpty)
+    }
 }

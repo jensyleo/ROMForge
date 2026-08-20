@@ -373,6 +373,144 @@ reported all three OK.**
 
 ---
 
+## 10. Duplicate sets, parent/clone family, 1G1R, DAT compare, BIOS/CRC audits (added 2026-08-20)
+
+Covers the read-only audit features added in the session behind commits
+`59e38c9`, `ef8b1ec`, `8e604bd`, `6975fae` (`git log --oneline` in the repo
+shows the exact messages). None of this has been run against a real
+collection yet — everything below needs your own MAME set.
+
+### 10.1 Cross-folder duplicate set detection
+- [ ] In Settings → your MAME system's page, confirm it has **at least 2 ROM
+      folders** configured under "Rom files" (add a second one temporarily
+      if needed).
+- [ ] Copy one game's own archive (e.g. `mslug.zip`), unchanged, into the
+      **second** folder as well — so the exact same set exists physically in
+      both configured folders.
+- [ ] Run **Scan All Folders**.
+- [ ] Confirm the copy in the second folder shows the blue `.duplicateSet`
+      tint and its File Name column reads "Duplicate set (also in
+      `mslug.zip`)" (the exact wording appears in the entry's info text —
+      check the detail panel or hover).
+- [ ] Confirm the header's status summary now includes a nonzero duplicate-
+      set count, and that BOTH copies still individually appear (this must
+      never make one of the two silently vanish — this is the same class of
+      bug §9.2 row 4 above already guards against, just now flagged as its
+      own distinct status rather than folded into "incorrect").
+- [ ] Remove the extra copy and rescan; confirm the duplicate-set count
+      returns to 0.
+
+### 10.2 Parent/clone family indicator ("Family" column)
+- [ ] In the Games table, right-click any column header → confirm a
+      **"Family"** column exists (it ships visible by default — no need to
+      enable it via the column picker, though you can still hide it there if
+      you want).
+- [ ] Pick a real MAME parent/clone pair you own (e.g. `contra`/`gryzor`) and
+      make sure the parent's own archive is present and Un-merged/Split mode
+      is in effect (see §5.2) so parent and clones are independent files.
+- [ ] Scan the system. Select the **parent** row (e.g. `contra`). Confirm its
+      "Family" cell shows "`n`/`m` clones" (present/total), in gray if
+      complete or orange if some clones are missing.
+- [ ] Remove (move out) one clone's archive and rescan. Confirm the parent's
+      "n/m clones" count drops by one and turns orange.
+- [ ] Now remove the **parent's** own archive but keep at least one clone's
+      archive present, and rescan. Confirm that clone's own "Family" cell
+      shows an orange warning triangle icon, and hovering it shows the tooltip
+      "This clone is present, but its parent set (`<parent>`) is missing from
+      the collection."
+- [ ] Restore all files and rescan to confirm both indicators clear.
+
+### 10.3 1G1R filter ("Show Only 1G1R")
+- [ ] Open Settings → View Options → **"1G1R region priority"** section.
+      Confirm you can reorder region tags (drag/using the up/down controls)
+      and that there's a reset-to-default action.
+- [ ] Pick an order (e.g. USA before Europe before Japan) for a real family
+      you own with multiple region variants (e.g. a game with `(USA)`,
+      `(Europe)`, `(Japan)` clones).
+- [ ] Back in the Games table (no need to rescan — this is presentation-only,
+      not scan-result-driven), confirm the variant matching your top-priority
+      region shows a **yellow filled star** next to its name in the "Game
+      name" column, and no other variant in that family does.
+- [ ] Click the toolbar button (title reads **"Show Only 1G1R"** when off,
+      with an outline star icon). Confirm the table now hides every
+      non-starred variant of every family that has at least one recognized
+      region, while a variant with no recognized region tag stays visible
+      regardless.
+- [ ] Confirm the button's title/icon flips to **"Show All Variants"** (filled
+      star icon) while active, and clicking it again restores every hidden
+      variant.
+- [ ] Change the region order in Settings (move Japan above USA) and confirm
+      the star moves to the Japan variant instead, without needing a rescan.
+
+### 10.4 DAT version comparison
+- [ ] With a system's DAT already loaded, click the toolbar's **"Compare DAT
+      Versions…"** button (enabled once a DAT is loaded).
+- [ ] In the sheet titled "Compare DAT Versions", click **"Choose Older
+      DAT…"** and pick a genuinely different/older version of the same
+      system's DAT (e.g. an older MAME `-listxml` dump, or the same DAT with
+      a few `<machine>` entries manually deleted/renamed in a text editor if
+      you don't have two real versions handy).
+- [ ] Confirm three sections appear: **"Added (`n`)"**, **"Removed (`n`)"**,
+      and **"Possible Renames (`n`)"**, each listing entries as `name —
+      description` (Added/Removed) or `oldName → newName  (matched rom:
+      romName)` (Renames), or "None" if a section is empty.
+- [ ] Confirm this never touches your actual scan/audit — closing the sheet
+      and checking the Games table shows no change from the comparison.
+- [ ] Click **"Export as Text…"**, save the file, and open it in a text
+      editor — confirm it contains the same Added/Removed/Possible Renames
+      breakdown as the sheet.
+
+### 10.5 Unused BIOS files (orphaned BIOS detection)
+- [ ] Open Settings → your MAME system's page → **"Database tree branches"**
+      section, and enable **"Unused BIOS files"** (it ships off by default).
+- [ ] Pick a real MAME BIOS set you own (e.g. `neogeo.zip`) that no game
+      currently in your scanned collection actually depends on — or
+      temporarily remove every game requiring it from the scanned folder,
+      leaving just the BIOS archive itself.
+- [ ] Scan the system. In the "Database" tree, click **"Unused BIOS files"**.
+      Confirm the orphan BIOS archive (e.g. `neogeo`) appears there, and that
+      it does NOT appear if a real dependent game is present and scanned.
+- [ ] Add back a game that depends on it and rescan; confirm it drops out of
+      "Unused BIOS files".
+
+### 10.6 Filename-embedded CRC check (GoodTools/TOSEC style)
+- [ ] Enable **"Filename CRC mismatches"** the same way as 10.5 (Settings →
+      system → Database tree branches).
+- [ ] Take one real ROM file and rename it to include a GoodTools/TOSEC-style
+      bracketed CRC that does NOT match its actual content, e.g.
+      `Some Game [12345678].zip` (pick any 8 hex digits that aren't the
+      file's real CRC32).
+- [ ] Scan the system. Click **"Filename CRC mismatches"** in the Database
+      tree. Confirm this file appears there.
+- [ ] Rename it back (or fix the embedded CRC to the real value) and rescan;
+      confirm it disappears from that category. Also confirm a file with NO
+      bracketed CRC in its name at all never shows up here (nothing to
+      mismatch against).
+
+### 10.7 ZIP internal CRC cross-check (on-demand)
+- [ ] Enable **"ZIP internal CRC inconsistencies"** the same way as 10.5/10.6.
+- [ ] Take a real `.zip` ROM archive and corrupt its **central directory's**
+      recorded CRC for one entry without touching the actual compressed
+      bytes (a hex editor on the "CRC-32" field of one entry's central
+      directory record is the reliable way — simply corrupting file bytes
+      will just show up as a normal bad dump via the regular scan, not this
+      check) so the zip's own local/central CRC disagrees with the entry's
+      real, decompressed content.
+- [ ] Scan the system normally first — note this mismatch does NOT surface
+      automatically from a plain Scan Folder/Scan All Folders.
+- [ ] Right-click that game's row in the Games table and choose **"Verify
+      ZIP Integrity"** from the context menu (only enabled once a scan has
+      run).
+- [ ] Confirm the archive now appears under **"ZIP internal CRC
+      inconsistencies"** in the Database tree, and that the log panel shows a
+      completion line ending in "…entr(y/ies) with an internal CRC
+      mismatch."
+- [ ] Restore the original file and re-run "Verify ZIP Integrity" (or
+      rescan); confirm it disappears from that category, and the log line
+      instead reads "…no internal CRC inconsistencies found."
+
+---
+
 ## After finishing
 
 Update this file's checkboxes as you go (`- [ ]` → `- [x]`), and note the

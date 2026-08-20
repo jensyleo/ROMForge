@@ -62,8 +62,18 @@ public struct DATVersionDiff: Equatable, Sendable {
     /// removed game, or by more than one added game, is deliberately
     /// excluded as ambiguous rather than resolved by pick order.
     public static func compare(oldFile: DATFile, newFile: DATFile) -> DATVersionDiff {
-        let oldByName = Dictionary(uniqueKeysWithValues: oldFile.games.map { ($0.name.lowercased(), $0) })
-        let newByName = Dictionary(uniqueKeysWithValues: newFile.games.map { ($0.name.lowercased(), $0) })
+        // `uniqueKeysWithValues` would trap on two machine names that only
+        // differ by case (unique to the DAT parser, but not necessarily
+        // after this lowercasing) — a malformed/hand-edited DAT is untrusted
+        // input, so first-one-wins here rather than crashing the app.
+        func lowercasedByName(_ games: [DATGame]) -> [String: DATGame] {
+            games.reduce(into: [String: DATGame]()) { result, game in
+                let key = game.name.lowercased()
+                if result[key] == nil { result[key] = game }
+            }
+        }
+        let oldByName = lowercasedByName(oldFile.games)
+        let newByName = lowercasedByName(newFile.games)
 
         let removedGames = oldFile.games.filter { newByName[$0.name.lowercased()] == nil }
         let addedGames = newFile.games.filter { oldByName[$0.name.lowercased()] == nil }
