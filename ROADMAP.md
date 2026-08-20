@@ -1031,6 +1031,51 @@ Igir's automatic "detect which hashes are actually needed" approach could
 still apply usefully to fase 1's own hashing pipeline, independent of any
 write capability.
 
+- [ ] **"Corrupt" vs "absent" distinction in the repair flow** (RomVault). A
+      physically present but damaged file should trigger a different
+      replacement path than a genuinely missing one — avoids false
+      "missing" reads when the real fix is an overwrite. Size: medium.
+- [ ] **Preservation-archive auto-download** (myrient-downloader-style
+      tools). Feed the fixdat/wanted-list to an automatic downloader.
+      Note (2026-08-19 research): Myrient itself shut down 2026-03-31;
+      Minerva Archive picked up the same ~385TB via torrents. Carries real
+      legal/ethical considerations the user must decide on explicitly
+      before any work starts here — not a pure engineering call. Size:
+      large.
+- [ ] **Rollback set** (mentioned in MAME rebuild community discussion,
+      pyra-handheld.com). Rebuild a set faithful to an *older* MAME
+      version — distinct from the already-implemented DAT-version diff
+      (pure comparison, no reconstruction); this would actually rebuild
+      backward toward a historical MAME release. Size: large.
+
+No solid evidence found (2026-08-19 research pass) of true transactional
+undo/rollback for completed write operations in any tool in this space
+(RomVault/ClrMamePro/Igir) — Igir's `--clean-dry-run` only previews before
+writing. Undoing an already-executed rebuild would be unexplored ground if
+ROMForge ever implements it.
+
+## Fase 1 — read-only items found in a second research pass (2026-08-19)
+
+- [x] ~~`dir2dat`-style report~~ (Igir) — declined by the user (2026-08-19,
+      "1, no"). Not implementing.
+- [ ] **"Known vs unknown files" report** (Igir). A third explicit status
+      for files that match nothing catalogued at all, distinct from the
+      existing missing/surplus categories. Size: small.
+- [ ] **Case-only-mismatch category** (RomVault's own error-message
+      taxonomy). Hash matches but the filename differs only in
+      upper/lowercase — keep it out of the existing "renamed" bucket so a
+      case-sensitive-vs-insensitive filesystem quirk doesn't masquerade as
+      a real rename. Size: small.
+- [ ] **Filename-embedded CRC verification** (GoodTools/TOSEC
+      `[name] [CRC32].ext` convention). Detect "the filename claims CRC X
+      but the actual content hashes to Y." Rare in native MAME sets, but
+      useful for imported external sets using that convention. Size: small.
+- [ ] **Cross-checksum verification inside a ZIP itself** (Igir). Compare
+      the local file header's CRC against the central directory's CRC to
+      catch a corrupt/truncated ZIP container without decompressing
+      anything — builds on the low-level ZIP parsing already touched for
+      the TorrentZip writer. Size: medium.
+
 ## Fase 1 — deferred read-only items (2026-08-19)
 
 Set aside during the read-only research pass, not discarded — revisit later.

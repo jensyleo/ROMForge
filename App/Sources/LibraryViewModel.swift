@@ -884,6 +884,12 @@ final class LibraryViewModel {
                 // pure flag on rows this same report already computed, so
                 // it can run after every other pass has settled them.
                 auditReport = AuditReporter.markingOrphanedBIOS(in: auditReport)
+                // Flags a TOSEC/GoodTools embedded-filename-CRC vs
+                // actual-content mismatch — cheap enough (filename parsing
+                // plus a string compare against a hash already computed
+                // above, no extra file reads) to run on every scan, unlike
+                // the ZIP-internal-CRC check below.
+                auditReport = AuditReporter.markingFilenameCRCMismatches(in: auditReport)
                 return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity)
             }
             cancelDetachedWork = { detached.cancel() }
@@ -961,6 +967,40 @@ final class LibraryViewModel {
             matchProgress = nil
             logError("Failed: \(String(describing: error))")
         }
+    }
+
+    /// Explicit, on-demand ZIP structural check — reads every scanned `.zip`
+    /// archive's own central directory a second time to cross-check each
+    /// entry's local-header CRC32 against it (`ZipIntegrityAuditor`/
+    /// `ZipLocalHeaderCRCVerifier`). Never run automatically as part of
+    /// `scan` above — see `ZipIntegrityAuditor`'s own doc comment for why
+    /// this is a separate, user-triggered action instead: real cost for a
+    /// large collection, for a check that only matters when something is
+    /// actually already damaged.
+    func verifyZipIntegrity(system: RomSystem) async {
+        guard let report = auditReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        log("Verifying ZIP integrity…")
+        let detached = Task.detached(priority: .userInitiated) {
+            AuditReporter.verifyingZipIntegrity(in: report)
+        }
+        let verified = await detached.value
+        auditReport = verified
+        let mismatchCount = verified.entries.filter(\.hasInternalZipCRCMismatch).count
+        log(mismatchCount == 0 ? "ZIP integrity check done: no internal CRC inconsistencies found." : "ZIP integrity check done: \(mismatchCount) entr\(mismatchCount == 1 ? "y" : "ies") with an internal CRC mismatch.")
+        do {
+            if let meta = try AuditDatabaseLocation.open().loadScanMeta(systemID: system.id.uuidString) {
+                try AuditDatabaseLocation.open().saveReport(
+                    verified, systemID: system.id.uuidString, datName: meta.datName, datVersion: meta.datVersion, scannedAt: meta.scannedAt
+                )
+            }
+        } catch {
+            log("Warning: couldn't persist the ZIP integrity check's results: \(error)")
+        }
+        isBusy = false
     }
 
     func fix(system: RomSystem) async {

@@ -51,6 +51,20 @@ public enum DatabaseCategory: String, CaseIterable, Sendable {
     /// bulk set can easily outlive every game that needed it, quietly
     /// wasting space with no report anywhere pointing it out.
     case unusedBiosFiles = "Unused BIOS files"
+    /// A file named per the TOSEC/GoodTools embedded-CRC convention whose
+    /// declared CRC32 disagrees with its own actual content hash — see
+    /// `AuditEntry.hasFilenameCRCMismatch`/`FilenameCRCVerifier` for how
+    /// it's computed. Added 2026-08-19 alongside `.zipCRCInconsistencies`
+    /// below, same read-only auditing spirit as `.unusedBiosFiles`.
+    case filenameCRCMismatches = "Filename CRC mismatches"
+    /// A `.zip` whose local-header CRC32 disagrees with its own
+    /// central-directory CRC32 for the same entry — a structural
+    /// inconsistency in the archive itself, not a DAT mismatch. See
+    /// `AuditEntry.hasInternalZipCRCMismatch`/`ZipIntegrityAuditor`. Only
+    /// ever populated after that on-demand check has actually run for this
+    /// system (see that type's own doc comment) — empty otherwise, same as
+    /// every other branch before its first real scan.
+    case zipCRCInconsistencies = "ZIP internal CRC inconsistencies"
 
     /// Filters a flat `[AuditEntry]` list down to just the entries
     /// belonging to this category — identical logic to the original
@@ -91,6 +105,8 @@ public enum DatabaseCategory: String, CaseIterable, Sendable {
             let matchingGameNames = byGame.filter { _, gameEntries in GameCompletionStatus.compute(for: gameEntries) == wanted }.keys
             return entries.filter { entry in entry.game.map(matchingGameNames.contains) ?? false }
         case .unusedBiosFiles: return entries.filter { $0.isOrphanedBios }
+        case .filenameCRCMismatches: return entries.filter { $0.hasFilenameCRCMismatch }
+        case .zipCRCInconsistencies: return entries.filter { $0.hasInternalZipCRCMismatch }
         }
     }
 }

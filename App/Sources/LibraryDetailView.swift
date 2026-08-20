@@ -96,6 +96,11 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
     /// exists yet to check one against). Off by default, same as every
     /// other post-2026-08-11 addition below `.emptyGames`.
     case unusedBiosFiles = "Unused BIOS files"
+    /// See `DatabaseCategory.filenameCRCMismatches`/`zipCRCInconsistencies`
+    /// (ROMForgeCore) for what each actually checks. Off by default, same as
+    /// every other post-2026-08-11 addition below `.emptyGames`.
+    case filenameCRCMismatches = "Filename CRC mismatches"
+    case zipCRCInconsistencies = "ZIP internal CRC inconsistencies"
     var id: String { rawValue }
 
     /// Placeholder SF Symbols, one per category, standing in for real
@@ -127,6 +132,8 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
         case .partialGames: return "circle.lefthalf.filled"
         case .emptyGames: return "circle.dashed"
         case .unusedBiosFiles: return "archivebox"
+        case .filenameCRCMismatches: return "questionmark.text.page"
+        case .zipCRCInconsistencies: return "checkmark.shield"
         }
     }
 
@@ -160,6 +167,8 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
         case .partialGames: return .partialGames
         case .emptyGames: return .emptyGames
         case .unusedBiosFiles: return .unusedBiosFiles
+        case .filenameCRCMismatches: return .filenameCRCMismatches
+        case .zipCRCInconsistencies: return .zipCRCInconsistencies
         }
     }
 }
@@ -2448,6 +2457,12 @@ struct LibraryDetailView: View {
                     Label("Reveal in Finder", systemImage: "folder")
                 }
                 .disabled(actualFileURL(for: node) == nil)
+                Button {
+                    Task { await viewModel.verifyZipIntegrity(system: system) }
+                } label: {
+                    Label("Verify ZIP Integrity", systemImage: "checkmark.shield")
+                }
+                .disabled(viewModel.isBusy || viewModel.auditReport == nil)
             }
         }
     }

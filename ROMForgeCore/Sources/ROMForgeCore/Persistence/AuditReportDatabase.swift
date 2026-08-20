@@ -99,7 +99,18 @@ public final class AuditReportDatabase {
     // system re-select, with nothing wrong actually having changed. New
     // `is_orphaned_bios` column; only a fresh rescan recomputes it, so the
     // wipe below applies here too.
-    private static let currentSchemaVersion: Int32 = 18
+    // v19 (2026-08-19): new `AuditEntry.hasFilenameCRCMismatch` /
+    // `.hasInternalZipCRCMismatch` — `FilenameCRCVerifier`'s and
+    // `ZipIntegrityAuditor`'s own flags, same unpersisted-flag bug class as
+    // `isOrphanedBios` at v18 if left alone: the "Filename CRC mismatches"/
+    // "ZIP internal CRC inconsistencies" Database branches would show real
+    // entries right after a fresh scan (or, for the ZIP check, right after
+    // running "Verify ZIP Integrity"), then quietly go empty again on the
+    // next app relaunch or system re-select. New `has_filename_crc_mismatch`
+    // / `has_internal_zip_crc_mismatch` columns; only a fresh rescan (and,
+    // for the ZIP one, re-running the on-demand check) recomputes either, so
+    // the wipe below applies here too.
+    private static let currentSchemaVersion: Int32 = 19
 
     private let path: String
 
@@ -142,6 +153,7 @@ public final class AuditReportDatabase {
                     .textOrNull(entry.gameYear), .textOrNull(entry.gameManufacturer), .textOrNull(entry.requiredBiosNames), .textOrNull(entry.deviceRefNames),
                     .int(entry.isDisk ? 1 : 0), .textOrNull(entry.foundElsewhereArchiveName), .textOrNull(entry.requiredByGameDescription),
                     .textOrNull(entry.duplicateSetPrimaryPath?.path), .int(entry.isOrphanedBios ? 1 : 0),
+                    .int(entry.hasFilenameCRCMismatch ? 1 : 0), .int(entry.hasInternalZipCRCMismatch ? 1 : 0),
                     .text(entry.name), .textOrNull(entry.path?.path),
                     .int64OrNull(entry.expectedSize), .int64OrNull(entry.actualSize),
                     .textOrNull(entry.expectedCRC), .textOrNull(entry.expectedMD5), .textOrNull(entry.expectedSHA1),
@@ -156,9 +168,10 @@ public final class AuditReportDatabase {
                     is_optional,
                     rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
                     is_disk, found_elsewhere_archive_name, required_by_game_description, duplicate_primary_path, is_orphaned_bios,
+                    has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
                     name, path, expected_size, actual_size,
                     expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 rowValues
             )
@@ -190,7 +203,8 @@ public final class AuditReportDatabase {
                    is_disk, found_elsewhere_archive_name, required_by_game_description,
                    name, path, expected_size, actual_size,
                    expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
-                   is_optional, duplicate_primary_path, is_orphaned_bios
+                   is_optional, duplicate_primary_path, is_orphaned_bios,
+                   has_filename_crc_mismatch, has_internal_zip_crc_mismatch
             FROM audit_entries WHERE system_id = ?;
             """,
             [.text(systemID)]
@@ -221,6 +235,8 @@ public final class AuditReportDatabase {
                     requiredByGameDescription: Self.columnText(statement, 17),
                     duplicateSetPrimaryPath: Self.columnText(statement, 29).map(URL.init(fileURLWithPath:)),
                     isOrphanedBios: sqlite3_column_int(statement, 30) != 0,
+                    hasFilenameCRCMismatch: sqlite3_column_int(statement, 31) != 0,
+                    hasInternalZipCRCMismatch: sqlite3_column_int(statement, 32) != 0,
                     name: Self.columnText(statement, 18) ?? "",
                     path: Self.columnText(statement, 19).map(URL.init(fileURLWithPath:)),
                     expectedSize: Self.columnInt64(statement, 20),
@@ -473,6 +489,8 @@ public final class AuditReportDatabase {
                 required_by_game_description TEXT,
                 duplicate_primary_path TEXT,
                 is_orphaned_bios INTEGER NOT NULL DEFAULT 0,
+                has_filename_crc_mismatch INTEGER NOT NULL DEFAULT 0,
+                has_internal_zip_crc_mismatch INTEGER NOT NULL DEFAULT 0,
                 name TEXT NOT NULL,
                 path TEXT,
                 expected_size INTEGER,
@@ -596,6 +614,9 @@ public final class AuditReportDatabase {
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN duplicate_primary_path TEXT;")
         // v18: see `currentSchemaVersion`'s own doc comment above.
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN is_orphaned_bios INTEGER NOT NULL DEFAULT 0;")
+        // v19: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN has_filename_crc_mismatch INTEGER NOT NULL DEFAULT 0;")
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN has_internal_zip_crc_mismatch INTEGER NOT NULL DEFAULT 0;")
         if currentVersion > 0 {
             try? exec(db, "DELETE FROM audit_entries;")
             try? exec(db, "DELETE FROM scans;")

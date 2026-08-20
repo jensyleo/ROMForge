@@ -254,6 +254,34 @@ public struct AuditEntry: Equatable, Sendable {
     /// a non-BIOS entry, a BIOS entry with no local file at all, or before
     /// the post-pass has run.
     public let isOrphanedBios: Bool
+    /// True when this entry's own physical file (`path`) is named per the
+    /// TOSEC/GoodTools convention of embedding a rom's CRC32 in its filename
+    /// (e.g. `Sonic The Hedgehog [12AB34CD].zip`, see `FilenameEmbeddedCRC`)
+    /// AND that embedded value disagrees with `actualCRC`, the CRC32 this
+    /// same file's content really hashes to. Orthogonal to `status`: a file
+    /// can sit in the wrong DAT slot (`.incorrect`) or the right one
+    /// (`.correct`/`.badDump`) independent of whether its own filename lies
+    /// about its own content — this only ever asks "does the name's own
+    /// claim match the bytes", nothing about the DAT at all. `false` when no
+    /// such filename pattern is present, when there's no `path`/`actualCRC`
+    /// to check at all (e.g. `.missing`), or when the embedded value agrees.
+    /// Set only by `FilenameCRCVerifier`'s own post-pass, same "flag an
+    /// already-computed row" shape as `isOrphanedBios` above.
+    public let hasFilenameCRCMismatch: Bool
+    /// True when `path` is a `.zip` whose central-directory CRC32 for this
+    /// entry (the copy every other part of this app reads, including the
+    /// DAT-vs-hash comparison that produced `status` itself) disagrees with
+    /// that SAME entry's own local-header CRC32 — a ZIP stores each one
+    /// twice, and a real writer keeps both copies identical; a mismatch
+    /// means the archive itself was truncated/edited/corrupted by something
+    /// that touched one copy and not the other. A structural fact about the
+    /// archive, independent of whether the (central-directory) hash happens
+    /// to match the DAT — see `ZipLocalHeaderCRCVerifier`'s own doc comment.
+    /// Set only by `ZipIntegrityAuditor`'s on-demand post-pass (deliberately
+    /// not run on every scan — see that type's own doc comment for the
+    /// performance reasoning), same "flag an already-computed row" shape as
+    /// `isOrphanedBios` above. `false` until that pass has actually run.
+    public let hasInternalZipCRCMismatch: Bool
     public let name: String
     public let path: URL?
     public let expectedSize: Int64?
@@ -289,6 +317,8 @@ public struct AuditEntry: Equatable, Sendable {
         misnamedArchiveForGameName: String? = nil,
         duplicateSetPrimaryPath: URL? = nil,
         isOrphanedBios: Bool = false,
+        hasFilenameCRCMismatch: Bool = false,
+        hasInternalZipCRCMismatch: Bool = false,
         name: String,
         path: URL?,
         expectedSize: Int64? = nil,
@@ -323,6 +353,8 @@ public struct AuditEntry: Equatable, Sendable {
         self.misnamedArchiveForGameName = misnamedArchiveForGameName
         self.duplicateSetPrimaryPath = duplicateSetPrimaryPath
         self.isOrphanedBios = isOrphanedBios
+        self.hasFilenameCRCMismatch = hasFilenameCRCMismatch
+        self.hasInternalZipCRCMismatch = hasInternalZipCRCMismatch
         self.name = name
         self.path = path
         self.expectedSize = expectedSize
@@ -346,7 +378,43 @@ public struct AuditEntry: Equatable, Sendable {
             requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
-            isOrphanedBios: true,
+            isOrphanedBios: true, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
+            name: name, path: path, expectedSize: expectedSize, actualSize: actualSize,
+            expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
+            actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
+        )
+    }
+
+    /// Same entry, `hasFilenameCRCMismatch` flipped to `true` —
+    /// `FilenameCRCVerifier`'s own post-pass equivalent of `markedOrphanedBios`
+    /// above.
+    public func markedFilenameCRCMismatch() -> AuditEntry {
+        AuditEntry(
+            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
+            hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
+            mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
+            misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
+            isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: true, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
+            name: name, path: path, expectedSize: expectedSize, actualSize: actualSize,
+            expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
+            actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
+        )
+    }
+
+    /// Same entry, `hasInternalZipCRCMismatch` flipped to `true` —
+    /// `ZipIntegrityAuditor`'s own post-pass equivalent of `markedOrphanedBios`
+    /// above.
+    public func markedInternalZipCRCMismatch() -> AuditEntry {
+        AuditEntry(
+            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
+            hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
+            mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
+            misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
+            isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: true,
             name: name, path: path, expectedSize: expectedSize, actualSize: actualSize,
             expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
             actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1

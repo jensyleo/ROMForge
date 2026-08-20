@@ -226,6 +226,23 @@ public enum AuditReporter {
         OrphanedBIOSDetector.markingOrphaned(in: report)
     }
 
+    /// Flags a TOSEC/GoodTools embedded-filename-CRC vs actual-content-hash
+    /// mismatch (`FilenameCRCVerifier`) — cheap (string parsing only, no
+    /// extra file I/O), so run right alongside the other pure flagging
+    /// passes above rather than gated behind an explicit user action the way
+    /// `verifyingZipIntegrity` below is.
+    public static func markingFilenameCRCMismatches(in report: AuditReport) -> AuditReport {
+        FilenameCRCVerifier.markingMismatches(in: report)
+    }
+
+    /// Flags a ZIP local-header vs central-directory CRC32 mismatch
+    /// (`ZipIntegrityAuditor`) — deliberately NOT called from `generate`/the
+    /// normal scan pipeline; see `ZipIntegrityAuditor`'s own doc comment for
+    /// why this is an explicit, on-demand pass instead.
+    public static func verifyingZipIntegrity(in report: AuditReport) -> AuditReport {
+        ZipIntegrityAuditor.verifyingIntegrity(in: report)
+    }
+
     /// Builds the report to actually *display* after a targeted rescan
     /// ("Rescan This File", or "Scan Folder" on one folder) — every other
     /// entry keeps the exact value it had in `previousReport`, byte-for-byte
