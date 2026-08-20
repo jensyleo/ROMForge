@@ -1001,6 +1001,129 @@ none of it starts before the read-only phase (see `LibraryViewModel
 .modificationsEnabled`) is retired. Ordered roughly by dependency, not
 priority — each later item builds on the one before it.
 
+### ClrMamePro's own "Fix" preferences panel (screenshot review, 2026-08-20)
+
+The user shared a screenshot of ClrMamePro's Preferences → Fix tab.
+**Decision: once fase 2 starts, these settings get their own tab in
+ROMForge's Settings window, named "Fix" or "Fix Preferences"** (parallel
+to the existing General/Romsets/Emulators/Releases-style tabs ClrMamePro
+uses) — not folded into an existing tab, not a one-off sheet. Each item
+below records what actually has to be built to make it real, not just the
+UI checkbox.
+
+**Fix parameters:**
+- [ ] **Test archives** — run `ZipIntegrityAuditor` (already implemented,
+      today on-demand only) automatically as a Fix pre-pass. Needs: a
+      toggle in the new Fix tab; wiring so the Fix action, when enabled,
+      calls the existing auditor before doing anything else and folds its
+      findings into the same "corrupted files" policy below. No new
+      detection logic — this is pure orchestration of what already exists.
+- [ ] **Rename files** (archive-level) — needs a real filesystem rename
+      operation (`FileManager.moveItem`) for the outer archive to match
+      the DAT's declared name, gated by the not-yet-built write-permission
+      layer (`modificationsEnabled`). Straightforward once that gate
+      exists; no new detection needed since "misnamed" is already known
+      from fase 1's `.incorrect`/case-mismatch data.
+- [ ] **Rename roms** (entry-level, inside an archive) — harder: requires
+      rewriting a ZIP's central directory/entry name in place (or a
+      full extract-rename-repack round trip) rather than a simple
+      filesystem rename. Builds directly on the TorrentZip writer's
+      existing low-level ZIP-writing code.
+- [ ] **Remove useless files / Remove useless roms** — delete an
+      archive/entry the DAT doesn't recognize at all (today's "surplus"
+      status already identifies exactly these). Needs: the actual
+      delete operation, PLUS its own explicit confirmation dialog
+      distinct from any other Fix step — this is the most destructive
+      item on the whole list and must never be bundled silently into a
+      general "Fix everything" action.
+- [ ] **Find missing roms** — before reporting a ROM as missing, search
+      one or more user-configured "scavenging" folders (separate from the
+      system's own configured ROM folders) for a same-hash file and pull
+      it in. Needs: a new per-system or global setting for scavenging
+      folder paths (new UI, new persisted preference), plus matching logic
+      that's mostly a variant of the existing `ROMMatcher` hash lookup
+      pointed at a different folder set. Same underlying need as the
+      already-documented "rebuild from external scavenging folders" item
+      further down this roadmap — implement once, expose in both places.
+- [ ] **Create dummy roms / Create ghost games** — generate placeholder
+      files/entries so a frontend's game list stays visually complete.
+      Needs: deciding on a placeholder file format/size convention (no
+      existing precedent to copy from ROMForge's own code). **Low
+      priority** — conflicts with [[feedback_romforge_mame_first]] and the
+      "never a launcher" scope decision in [[project_romforge]]; only
+      worth building if a concrete future need appears, not speculatively.
+- [ ] **Fix samples** — blocked entirely on the missing sample-scanning
+      infrastructure already noted in [[project_romforge]]'s Samples
+      pending item (no physical sample file inventory exists yet to fix
+      against). Cannot start before that infrastructure exists.
+- [ ] **Remove zip comments** — mechanical: locate and clear the ZIP end-
+      of-central-directory comment field. Needs a small addition to the
+      binary ZIP writer path already built for TorrentZip — no new
+      detection, no new UI beyond the toggle itself.
+- [ ] **Unzip and rezip** — force every archive in a system through a full
+      extract + rewrite via the TorrentZip writer, even when nothing else
+      about the archive is wrong. Needs: a batch-mode entry point into the
+      existing rebuild/TorrentZip code that runs unconditionally per
+      archive rather than only on detected problems, plus progress
+      reporting for a potentially large sweep (reuse the existing scan-
+      progress infra).
+- [ ] **Allow multiple rom formats** — don't force one output archive
+      format (zip only) when rebuilding/fixing. Needs: fase 2's rebuild
+      engine to support at least one alternative container before this
+      toggle means anything — currently there is only one write path
+      (zip via TorrentZip), so this setting has nothing to select between
+      yet. Depends on decisions not yet made about which other formats
+      (7z? raw loose files?) fase 2 will actually write.
+- [ ] **Number of threads** — a user-facing concurrency slider for the Fix
+      pass specifically. Needs: exposing whatever concurrency primitive
+      the eventual Fix engine uses (likely mirroring
+      `HashingConcurrency.workerCount()`'s existing pattern) as a
+      persisted, user-overridable setting instead of an internal-only
+      constant — small once the Fix engine itself exists, meaningless
+      before it does.
+
+**Corrupted files — three-way policy, not just detect-and-report:**
+- [ ] **Don't touch / Delete / Move to (a configured folder)** — fase 1
+      only *detects* corruption today (`ZipIntegrityAuditor`, filename CRC
+      mismatch flags); nothing acts on that finding. Needs: a new
+      persisted enum setting (`.dontTouch`/`.delete`/`.moveTo(URL)`), a
+      folder picker UI for the "Move to" case (same `NSOpenPanel` pattern
+      already used elsewhere, directory-selection mode), and the actual
+      file-move/delete operation wired to run whenever a Fix pass
+      encounters a confirmed-bad file. Recommend defaulting the setting to
+      "Move to" (quarantine) rather than "Delete" — reversible by default,
+      matching this project's general caution around destructive actions.
+- [ ] Also needs its own confirmation gate before the FIRST time a user
+      enables "Delete" specifically (mirrors the destructive-action
+      pattern already flagged for "Remove useless files/roms" above).
+
+**Sets case / Roms case — independent policies:**
+- [ ] **Don't touch / Uppercase / Lowercase / Datafile case**, applied
+      separately to archive-level names ("Sets case") and entry-level
+      names inside an archive ("Roms case"). Needs: two independent
+      persisted enum settings; the actual case-conversion + rename
+      operation (reuses the same rename machinery as "Rename files/roms"
+      above — same underlying write path, different source of the target
+      name: DAT-declared name vs. a case transform of the existing name);
+      and, for the archive-level case, the same central-directory rewrite
+      concern as "Rename roms" above (an entry's name lives inside the
+      ZIP's own directory structure, not just as a filesystem name).
+      Directly follows up on fase 1's already-implemented "case-only
+      mismatch" detection — fase 1 flags the discrepancy, this is the
+      fase-2 policy for actually resolving it.
+
+**Cross-cutting prerequisite, not specific to any one item above**: every
+write action on this list needs the not-yet-designed permission/
+confirmation layer that gates fase 2 as a whole (today `LibraryViewModel
+.modificationsEnabled = false` blocks all of this at the root) — that
+gate itself is a separate, one-time piece of work this whole tab depends
+on, not something to build per-checkbox.
+
+None of the above needs deciding right now — recorded so the eventual
+"design the Fix tab" conversation starts from a concrete, proven
+reference and a real accounting of what each checkbox actually costs,
+instead of from scratch.
+
 - [ ] **Classic rebuild from loose files → complete sets** (RomCenter/
       ClrMamePro). Package loose ROM files into correctly named zips per the
       DAT. The mandatory starting point — everything else in this phase
