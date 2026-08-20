@@ -35,29 +35,39 @@ struct GameDependenciesTests {
         node.resolvedBiosMachineName = "neogeo"
         let badges = node.dependencyBadges
         #expect(badges.map(\.kind) == [.bios])
-        #expect(badges[0].label == "BIOS")
+        #expect(badges[0].label == "BIOS: neogeo")
         #expect(badges[0].tooltip == "Requires BIOS: neogeo")
     }
 
-    @Test("a game with a CHD disk gets a CHD badge with the disk count")
+    @Test("a game with a CHD disk gets a CHD badge naming the disk and its count")
     func chdDependency() {
         let badges = node(game("cubeqst", disks: [DATDisk(name: "cubeqst", sha1: "abc")])).dependencyBadges
         #expect(badges.map(\.kind) == [.chd])
-        #expect(badges[0].tooltip == "Uses CHD (1 disk(s))")
+        #expect(badges[0].label == "CHD: cubeqst")
+        #expect(badges[0].tooltip == "Uses CHD (1 disk(s)): cubeqst")
     }
 
-    @Test("a game with multiple CHD disks counts them all")
+    @Test("a game with multiple CHD disks names them all and counts them")
     func multipleChdDisks() {
         let disks = [DATDisk(name: "disk1", sha1: "a"), DATDisk(name: "disk2", sha1: "b")]
         let badges = node(game("biggame", disks: disks)).dependencyBadges
-        #expect(badges[0].tooltip == "Uses CHD (2 disk(s))")
+        #expect(badges[0].label == "CHD: disk1, disk2")
+        #expect(badges[0].tooltip == "Uses CHD (2 disk(s)): disk1, disk2")
     }
 
-    @Test("a game with a device_ref gets a Device badge naming it")
-    func deviceDependency() {
+    @Test("a game with a device_ref gets a Hardware badge naming it")
+    func hardwareDependency() {
         let badges = node(game("sf2", deviceRefs: ["ym2151"])).dependencyBadges
-        #expect(badges.map(\.kind) == [.device])
-        #expect(badges[0].tooltip == "Uses device: ym2151")
+        #expect(badges.map(\.kind) == [.hardware])
+        #expect(badges[0].label == "Hardware: ym2151")
+        #expect(badges[0].tooltip == "Uses hardware: ym2151")
+    }
+
+    @Test("a game with several device_refs names them all in one Hardware badge")
+    func multipleHardwareRefs() {
+        let badges = node(game("sf2", deviceRefs: ["ym2151", "okim6295"])).dependencyBadges
+        #expect(badges.map(\.kind) == [.hardware])
+        #expect(badges[0].label == "Hardware: ym2151, okim6295")
     }
 
     @Test("a game declaring samples gets a Samples badge")
@@ -67,11 +77,10 @@ struct GameDependenciesTests {
         #expect(badges[0].tooltip == "Uses samples")
     }
 
-    @Test("a clone gets a Clone badge naming its parent")
-    func cloneDependency() {
+    @Test("a clone gets no dependency badge of its own — that's the Family column's job")
+    func cloneGetsNoBadge() {
         let badges = node(game("sf2a", cloneOf: "sf2")).dependencyBadges
-        #expect(badges.map(\.kind) == [.clone])
-        #expect(badges[0].tooltip == "Clone of: sf2")
+        #expect(badges.isEmpty)
     }
 
     @Test("a game can carry several dependency badges at once, in a fixed order")
@@ -84,7 +93,7 @@ struct GameDependenciesTests {
         )
         built.resolvedBiosMachineName = "neogeo"
         let badges = built.dependencyBadges
-        #expect(badges.map(\.kind) == [.bios, .chd, .device, .samples, .clone])
+        #expect(badges.map(\.kind) == [.bios, .chd, .hardware, .samples])
     }
 
     @Test("the synthetic surplus-files bucket never gets dependency badges")

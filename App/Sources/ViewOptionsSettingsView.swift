@@ -31,6 +31,23 @@ enum PanelVisibilitySettings {
     static let showLogPanelKey = "ROMForge.view.showLogPanel"
 }
 
+/// Which of `DependencyBadge.Kind` cases show in the "Dependencies" column —
+/// jensyleo's own request (2026-08-20), alongside naming real BIOS/hardware
+/// names in each chip's own label: some collections care about BIOS/CHD
+/// dependencies but find the "Hardware" chip (routinely half a dozen
+/// device names) too busy for their taste, or vice versa. All four default
+/// to visible (today's existing behavior, unchanged) — same
+/// `@AppStorage`-backed, plain-enum-of-keys pattern as
+/// `PanelVisibilitySettings` above, read directly by `LibraryDetailView`
+/// under these same keys so the column and this settings view can never
+/// disagree about what's showing.
+enum DependencyColumnSettings {
+    static let showBiosKey = "ROMForge.view.showBiosBadge"
+    static let showCHDKey = "ROMForge.view.showCHDBadge"
+    static let showHardwareKey = "ROMForge.view.showHardwareBadge"
+    static let showSamplesKey = "ROMForge.view.showSamplesBadge"
+}
+
 /// New Settings tab, alongside "General" and "Systems" — jensyleo's own
 /// request (2026-08-12), a dedicated home for layout/visibility toggles
 /// distinct from `GeneralSettingsView`'s scanning/hashing/database-branch
@@ -46,6 +63,10 @@ struct ViewOptionsSettingsView: View {
     @AppStorage(PanelVisibilitySettings.showDetailPanelKey) private var showDetailPanel = true
     @AppStorage(PanelVisibilitySettings.showLogPanelKey) private var showLogPanel = true
     @AppStorage(RegionOrderSettings.storageKey) private var regionOrderRaw = RegionOrderSettings.defaultRawValue
+    @AppStorage(DependencyColumnSettings.showBiosKey) private var showBiosBadge = true
+    @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
+    @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
+    @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
     @State private var didPurgeDatabase = false
@@ -179,6 +200,21 @@ struct ViewOptionsSettingsView: View {
                     regionOrderRaw = RegionOrderSettings.defaultRawValue
                 }
                 Text("Which region wins when \"Show only 1G1R\" (Games table toolbar) has to pick one variant per parent/clone family — earlier in this list beats later. A variant whose own description names none of these regions never competes at all: it stays visible either way, and never takes the family's own star.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Dependencies column") {
+                Toggle("BIOS", isOn: $showBiosBadge)
+                Toggle("CHD", isOn: $showCHDBadge)
+                Toggle("Hardware", isOn: $showHardwareBadge)
+                Toggle("Samples", isOn: $showSamplesBadge)
+                Button("Reset to Defaults") {
+                    showBiosBadge = true
+                    showCHDBadge = true
+                    showHardwareBadge = true
+                    showSamplesBadge = true
+                }
+                Text("Which dependency chips show in the Games table's \"Dependencies\" column (View → Columns, hidden by default). Turning one off only hides that chip — it never affects scanning, matching, or any other column.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

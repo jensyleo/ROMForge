@@ -462,6 +462,10 @@ struct LibraryDetailView: View {
     @AppStorage(PanelVisibilitySettings.showRomsPanelKey) private var showRomsPanel = true
     @AppStorage(PanelVisibilitySettings.showDetailPanelKey) private var showDetailPanel = true
     @AppStorage(PanelVisibilitySettings.showLogPanelKey) private var showLogPanel = true
+    @AppStorage(DependencyColumnSettings.showBiosKey) private var showBiosBadge = true
+    @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
+    @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
+    @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
     private var visibleTopPanes: [SplitPane] {
         var panes: [SplitPane] = []
         if showDatabaseTree || showRomFolderTree { panes.append(SplitPane(minLength: 150) { databaseList }) }
@@ -2581,24 +2585,50 @@ struct LibraryDetailView: View {
         }
     }
 
-    /// Short chips for each of `node.dependencyBadges` (BIOS/CHD/Device/
-    /// Samples/Clone) — each chip's `.help` carries the exact detail (which
-    /// BIOS, which device, how many disks, which parent) so the column
-    /// itself can stay compact.
+    /// Short chips for each of `node.dependencyBadges` (BIOS/CHD/Hardware/
+    /// Samples) that's both non-empty and still enabled under Settings →
+    /// View Options → "Dependencies column" (`DependencyColumnSettings`) —
+    /// each chip's own label already names the real BIOS/CHD/hardware
+    /// involved (see `DependencyBadge`'s own doc comment for why that lives
+    /// in the label and not just the tooltip), with `.help` still carrying
+    /// the fuller sentence for anything the compact label had to omit
+    /// (e.g. the CHD disk count).
+    ///
+    /// jensyleo's own feedback (2026-08-20): nothing about a chip suggested
+    /// it even had a tooltip worth hovering for. A trailing `info.circle`
+    /// (`.caption2`, secondary, matching the chip's own text size) was
+    /// chosen over a dotted underline or a changed cursor: `.help()` only
+    /// changes the cursor on actual hover, too late to be an *invitation*,
+    /// and a dotted underline is already how this app underlines nothing
+    /// else, so it would read as a rendering glitch rather than a
+    /// deliberate affordance — a small SF Symbol matches how the rest of
+    /// this app already signals "more info here" elsewhere (e.g. the
+    /// "Parent missing" `Label` above).
     @ViewBuilder
     private func dependenciesIndicator(for node: GameNode) -> some View {
-        let badges = node.dependencyBadges
+        let badges = node.dependencyBadges.filter { badge in
+            switch badge.kind {
+            case .bios: return showBiosBadge
+            case .chd: return showCHDBadge
+            case .hardware: return showHardwareBadge
+            case .samples: return showSamplesBadge
+            }
+        }
         if badges.isEmpty {
             EmptyView()
         } else {
             HStack(spacing: 4) {
                 ForEach(badges) { badge in
-                    Text(badge.label)
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.15), in: Capsule())
-                        .help(badge.tooltip)
+                    HStack(spacing: 2) {
+                        Text(badge.label)
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption2)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                    .help(badge.tooltip)
                 }
             }
         }
