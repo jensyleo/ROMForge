@@ -2426,6 +2426,13 @@ struct LibraryDetailView: View {
                     .defaultVisibility(.hidden)
                 TableColumn("Family") { (node: GameNode) in familyIndicator(for: node) }
                     .customizationID("family")
+                // Purely informational, like "Family" above — reads
+                // `GameNode.dependencyBadges` (ROMForgeCore), itself built
+                // only from fields already computed by the scan/DAT load,
+                // so this never triggers a re-scan or any extra I/O.
+                TableColumn("Dependencies") { (node: GameNode) in dependenciesIndicator(for: node) }
+                    .customizationID("dependencies")
+                    .defaultVisibility(.hidden)
             }
         }
         .onChange(of: gameColumnCustomization) { Self.persist(gameColumnCustomization, key: Self.gameColumnCustomizationKey) }
@@ -2571,6 +2578,29 @@ struct LibraryDetailView: View {
                 .help("This clone is present, but its parent set (\(node.cloneOf)) is missing from the collection.")
         } else {
             EmptyView()
+        }
+    }
+
+    /// Short chips for each of `node.dependencyBadges` (BIOS/CHD/Device/
+    /// Samples/Clone) — each chip's `.help` carries the exact detail (which
+    /// BIOS, which device, how many disks, which parent) so the column
+    /// itself can stay compact.
+    @ViewBuilder
+    private func dependenciesIndicator(for node: GameNode) -> some View {
+        let badges = node.dependencyBadges
+        if badges.isEmpty {
+            EmptyView()
+        } else {
+            HStack(spacing: 4) {
+                ForEach(badges) { badge in
+                    Text(badge.label)
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.15), in: Capsule())
+                        .help(badge.tooltip)
+                }
+            }
         }
     }
 
