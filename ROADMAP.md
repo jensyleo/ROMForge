@@ -1124,6 +1124,38 @@ None of the above needs deciding right now — recorded so the eventual
 reference and a real accounting of what each checkbox actually costs,
 instead of from scratch.
 
+- [ ] **BIOS compilation and documentation** (user request, 2026-08-20).
+      Automatically organize and document all BIOS files found in a
+      scanned system. Needs:
+      1. **Automatic folder structure creation**: a one-button "Organize
+         BIOS" action that creates a new folder called `BIOS` at a
+         user-configured location (alongside or separate from the ROM
+         folders) with per-system subfolders (`BIOS/neogeo/`,
+         `BIOS/capcom/`, etc.) — determined by examining which systems
+         (parent games) actually require each BIOS via the DAT's `romOf`
+         chain already used in fase 1's `OrphanedBIOSDetector`.
+      2. **Copy or hardlink BIOS files**: either copy each discovered BIOS
+         archive into its destination subfolder, or use filesystem hardlinks
+         (if available on the user's platform) to avoid duplicate storage
+         while keeping the BIOS accessible from a centralized location.
+      3. **Auto-generated documentation**: a text/markdown file per BIOS
+         (or a single index) listing:
+         - Filename and hash (SHA1/MD5/CRC32 already calculated in fase 1).
+         - Which system(s) it belongs to (e.g., "Required by: pacman,
+           pacmanf, pacmanbx, ...").
+         - Which parent games depend on it (audit trail).
+         - Format: CSV or markdown table, or a simple `bios_map.txt` keyed
+           by BIOS name.
+      4. **Dry-run preview before writing**: show the user the proposed
+         structure (tree view of folders and files that would be created)
+         and ask for confirmation before any writes — no silent file
+         copies/moves, matches the cautious pattern elsewhere in fase 2.
+      Size: **medium** (reuses existing BIOS detection from fase 1, mainly
+      new work is folder/file organization + doc generation; no new
+      matching/hashing logic needed). Priority: **low-to-medium** — nice
+      organizational feature, not a core rebuild function, can be added
+      after the mandatory rebuild items are stable.
+
 - [ ] **Classic rebuild from loose files → complete sets** (RomCenter/
       ClrMamePro). Package loose ROM files into correctly named zips per the
       DAT. The mandatory starting point — everything else in this phase
