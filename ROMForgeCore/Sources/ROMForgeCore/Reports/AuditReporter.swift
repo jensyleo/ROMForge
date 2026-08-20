@@ -27,7 +27,16 @@ public enum AuditReporter {
         // resolution (`resolvedBiosMachineName`) needs to look up arbitrary
         // ancestor machines by name, and every one of them is some other
         // game already in this same DAT/scan.
-        let gamesByName = Dictionary(uniqueKeysWithValues: matchReport.games.map { ($0.game.name, $0.game) })
+        // Not `Dictionary(uniqueKeysWithValues:)` — that traps if the DAT
+        // (an arbitrary user-chosen file) has two machines sharing the same
+        // name (malformed/hand-edited DAT), same class of real crash fixed
+        // in `DATVersionDiff.compare`. First occurrence wins,
+        // deterministically, instead of crashing.
+        let gamesByName = matchReport.games.reduce(into: [String: DATGame]()) { result, gameResult in
+            if result[gameResult.game.name] == nil {
+                result[gameResult.game.name] = gameResult.game
+            }
+        }
 
         for gameResult in matchReport.games {
             // Checked every game, not throttled — a lock-free `Task`
