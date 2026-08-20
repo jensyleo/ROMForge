@@ -45,6 +45,7 @@ struct ViewOptionsSettingsView: View {
     @AppStorage(PanelVisibilitySettings.showRomsPanelKey) private var showRomsPanel = true
     @AppStorage(PanelVisibilitySettings.showDetailPanelKey) private var showDetailPanel = true
     @AppStorage(PanelVisibilitySettings.showLogPanelKey) private var showLogPanel = true
+    @AppStorage(RegionOrderSettings.storageKey) private var regionOrderRaw = RegionOrderSettings.defaultRawValue
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
     @State private var didPurgeDatabase = false
@@ -144,6 +145,43 @@ struct ViewOptionsSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("1G1R region priority") {
+                // Plain up/down reordering rather than a draggable `List` —
+                // this app has no existing draggable-list-in-a-Form
+                // pattern to follow (the "ROM folder" ⌘-drag reordering
+                // lives in a `List` inside `LibraryDetailView`'s own
+                // sidebar, a different context entirely), and a short,
+                // fixed-length list of region names doesn't need anything
+                // more elaborate than "move this one up/down one slot".
+                ForEach(Array(RegionOrderSettings.order(from: regionOrderRaw).enumerated()), id: \.element) { index, region in
+                    HStack {
+                        Text("\(index + 1). \(region)")
+                        Spacer()
+                        Button {
+                            regionOrderRaw = RegionOrderSettings.rawValue(
+                                for: RegionOrderSettings.moved(RegionOrderSettings.order(from: regionOrderRaw), fromOffsets: [index], toOffset: index - 1)
+                            )
+                        } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .disabled(index == 0)
+                        Button {
+                            regionOrderRaw = RegionOrderSettings.rawValue(
+                                for: RegionOrderSettings.moved(RegionOrderSettings.order(from: regionOrderRaw), fromOffsets: [index], toOffset: index + 2)
+                            )
+                        } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .disabled(index == RegionOrderSettings.order(from: regionOrderRaw).count - 1)
+                    }
+                }
+                Button("Reset to Defaults") {
+                    regionOrderRaw = RegionOrderSettings.defaultRawValue
+                }
+                Text("Which region wins when \"Show only 1G1R\" (Games table toolbar) has to pick one variant per parent/clone family — earlier in this list beats later. A variant whose own description names none of these regions never competes at all: it stays visible either way, and never takes the family's own star.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -232,6 +270,37 @@ enum DatabaseFilterVisibilitySettings {
     static func enabledFilters(from rawValue: String) -> [DatabaseFilter] {
         let enabled = Set(rawValue.split(separator: ",").map(String.init))
         return DatabaseFilter.allCases.filter { enabled.contains($0.rawValue) }
+    }
+}
+
+/// Region priority for "Show only 1G1R" (`LibraryDetailView`'s toolbar
+/// toggle) — jensyleo's own spec (2026-08-19): user-editable, defaulting to
+/// `RegionCatalog.defaultOrder` (World > USA > Europe > Japan > Asia, then
+/// everything else this recognizes). Same comma-joined-`rawValue`-under-one-
+/// key convention as `DatabaseFilterVisibilitySettings` just above, and for
+/// the same reason: an ordered list, not a `Set`, and order itself is the
+/// whole point here (unlike that one, where only membership matters).
+enum RegionOrderSettings {
+    static let storageKey = "ROMForge.oneGameOneROM.regionOrder"
+    static var defaultRawValue: String { rawValue(for: RegionCatalog.defaultOrder) }
+
+    static func rawValue(for order: [String]) -> String {
+        order.joined(separator: ",")
+    }
+
+    /// Never returns empty — a blank/corrupt stored value (first launch
+    /// before this key existed, or a hand-edited `UserDefaults`) falls back
+    /// to `RegionCatalog.defaultOrder` rather than leaving 1G1R with no
+    /// regions to rank at all.
+    static func order(from rawValue: String) -> [String] {
+        let split = rawValue.split(separator: ",").map(String.init)
+        return split.isEmpty ? RegionCatalog.defaultOrder : split
+    }
+
+    static func moved(_ order: [String], fromOffsets source: IndexSet, toOffset destination: Int) -> [String] {
+        var result = order
+        result.move(fromOffsets: source, toOffset: destination)
+        return result
     }
 }
 

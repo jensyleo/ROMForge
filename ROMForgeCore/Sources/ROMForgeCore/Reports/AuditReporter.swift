@@ -153,7 +153,7 @@ public enum AuditReporter {
             )
         }
 
-        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0, duplicateSets = 0
         for entry in entries {
             switch entry.status {
             case .correct: correct += 1
@@ -166,10 +166,11 @@ public enum AuditReporter {
             // `LibraryDetailView` actually renders), not this summary tally.
             case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
+            case .duplicateSet: duplicateSets += 1
             }
         }
 
-        return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
+        return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
     }
 
     /// Folds `DiskAuditor.audit(...)`'s own entries into an existing ROM
@@ -179,7 +180,7 @@ public enum AuditReporter {
     /// `.chd` file list) rather than a `MatchReport`.
     public static func merging(diskEntries: [AuditEntry], into report: AuditReport) throws -> AuditReport {
         try Task.checkCancellation()
-        var correct = report.correct, incorrect = report.incorrect, badDump = report.badDump, missing = report.missing, surplus = report.surplus, unverifiable = report.unverifiable
+        var correct = report.correct, incorrect = report.incorrect, badDump = report.badDump, missing = report.missing, surplus = report.surplus, unverifiable = report.unverifiable, duplicateSets = report.duplicateSets
         for entry in diskEntries {
             switch entry.status {
             case .correct: correct += 1
@@ -188,9 +189,29 @@ public enum AuditReporter {
             case .missing: missing += 1
             case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
+            case .duplicateSet: duplicateSets += 1
             }
         }
-        return AuditReport(entries: report.entries + diskEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
+        return AuditReport(entries: report.entries + diskEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
+    }
+
+    /// Appends `DuplicateSetDetector`'s own synthetic `.duplicateSet` rows
+    /// to `report` — a separate post-pass (like `merging(diskEntries:into:)`
+    /// above) rather than folded into `generate(from:)` itself, since it
+    /// needs one input `generate` never sees at all: the system's own
+    /// configured ROM folder list, to tell "two different folders" apart
+    /// from "two files inside the same one." A single-folder system (the
+    /// common case) short-circuits inside `DuplicateSetDetector.detect`
+    /// itself and returns `report` unchanged.
+    public static func addingDuplicateSets(to report: AuditReport, rootFolders: [URL]) throws -> AuditReport {
+        try Task.checkCancellation()
+        let duplicateEntries = DuplicateSetDetector.detect(in: report, rootFolders: rootFolders)
+        guard !duplicateEntries.isEmpty else { return report }
+        return AuditReport(
+            entries: report.entries + duplicateEntries, correct: report.correct, incorrect: report.incorrect, badDump: report.badDump,
+            missing: report.missing, surplus: report.surplus, unverifiable: report.unverifiable,
+            duplicateSets: report.duplicateSets + duplicateEntries.count
+        )
     }
 
     /// Builds the report to actually *display* after a targeted rescan
@@ -259,7 +280,7 @@ public enum AuditReporter {
         let refreshedEntries = newReport.entries.filter(isRefreshed)
         let mergedEntries = untouchedEntries + refreshedEntries
 
-        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0, duplicateSets = 0
         for entry in mergedEntries {
             switch entry.status {
             case .correct: correct += 1
@@ -268,8 +289,9 @@ public enum AuditReporter {
             case .missing: missing += 1
             case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
+            case .duplicateSet: duplicateSets += 1
             }
         }
-        return AuditReport(entries: mergedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
+        return AuditReport(entries: mergedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
     }
 }

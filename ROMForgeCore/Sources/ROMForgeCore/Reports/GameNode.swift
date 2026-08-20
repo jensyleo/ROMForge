@@ -191,6 +191,11 @@ public struct GameNode: Identifiable, Sendable {
             // it against, by design, so never "Correct"; the file
             // existing is the best this disk can ever report.
             case .unverifiable: return "Nodump (unverifiable)"
+            // `DuplicateSetDetector` only ever produces rom-level rows
+            // (`isDisk: false`), never for a disk — `gameCategory`/
+            // `romOnlyGameCategory` also never return this for a disk row.
+            // Unreachable in practice, only present for exhaustiveness.
+            case .duplicateSet: return "Correct"
             }
         }
         switch aggregateStatus {
@@ -236,6 +241,11 @@ public struct GameNode: Identifiable, Sendable {
             return "Ok"
         case .unverifiable:
             return "Ok (contains a nodump rom)"
+        // Same reasoning as the disk-row switch above — `GameStatusRollup
+        // .gameCategory` never returns `.duplicateSet` as a game's own
+        // aggregate; only present for exhaustiveness.
+        case .duplicateSet:
+            return "Ok"
         }
     }
 

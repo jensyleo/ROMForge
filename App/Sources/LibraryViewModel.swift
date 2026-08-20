@@ -436,7 +436,7 @@ final class LibraryViewModel {
             return !path.path.hasPrefix(folderPath)
         }
         guard prunedEntries.count != previous.entries.count else { return }
-        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0, duplicateSets = 0
         for entry in prunedEntries {
             switch entry.status {
             case .correct: correct += 1
@@ -445,9 +445,10 @@ final class LibraryViewModel {
             case .missing: missing += 1
             case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
+            case .duplicateSet: duplicateSets += 1
             }
         }
-        auditReport = AuditReport(entries: prunedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
+        auditReport = AuditReport(entries: prunedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
 
         let systemID = system.id.uuidString
         Task.detached(priority: .utility) { [weak self] in
@@ -869,6 +870,14 @@ final class LibraryViewModel {
                     let diskEntries = try DiskAuditor.audit(dat: dat, chdFiles: chdFiles)
                     auditReport = try AuditReporter.merging(diskEntries: diskEntries, into: auditReport)
                 }
+                // Several ROM folders per system is common (different
+                // drives, region subfolders) — this flags a game whose set
+                // is physically duplicated across more than one of them,
+                // with its own dedicated row rather than only the scattered
+                // per-rom "Not needed here" surplus reporting that already
+                // exists. Run last, after every other pass has settled the
+                // real per-rom statuses this reads.
+                auditReport = try AuditReporter.addingDuplicateSets(to: auditReport, rootFolders: system.romFolderURLs)
                 return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity)
             }
             cancelDetachedWork = { detached.cancel() }

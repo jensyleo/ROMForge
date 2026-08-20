@@ -28,6 +28,12 @@ extension AuditStatus {
         // doc comment for the full reasoning behind the split.
         case .surplus, .surplusInArchive, .unknownFile: return .gray
         case .unverifiable: return .gray.opacity(0.5)
+        // Distinct from every "problem" tint above — a duplicate set
+        // elsewhere isn't wrong, it's a whole extra copy of something
+        // already correctly owned. Blue reads as "informational" rather
+        // than "needs fixing", matching every other tint's own severity
+        // signal.
+        case .duplicateSet: return .blue
         }
     }
 }

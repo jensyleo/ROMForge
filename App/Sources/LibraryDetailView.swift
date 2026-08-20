@@ -605,6 +605,33 @@ struct LibraryDetailView: View {
     /// regardless of any caching bug in how the tree's own *structure*
     /// (which games appear as children) gets refreshed.
     @State private var gameAggregateStatusByName: [String: AuditStatus] = [:]
+    /// Presentation-only parent/clone family read (MAME's own `cloneof`
+    /// tree) against `gameAggregateStatusByName` — never an audit category
+    /// of its own, just a "3/5 clones present" badge and a "clone present,
+    /// parent missing" highlight in the Games table. Recomputed alongside
+    /// `gameAggregateStatusByName` itself, from the same already-scanned
+    /// data — see `ParentCloneSummary`'s own doc comment.
+    @State private var cachedParentCloneSummary = ParentCloneSummary(cloneCompletionByParent: [:], clonesMissingParent: [])
+    /// Same "computed alongside `preloadedGames`, never a scan/audit
+    /// category" philosophy as `cachedParentCloneSummary` right above —
+    /// this one only ever depends on the loaded DAT's own descriptions and
+    /// `regionOrderRaw` (never on `gameAggregateStatusByName`/any scan
+    /// result at all), so a family's own preferred variant and star don't
+    /// change just because a rescan happened. See `OneGameOneROMSummary`'s
+    /// own doc comment.
+    @State private var cachedOneGameOneROMSummary = OneGameOneROMSummary.empty
+    /// "Show only 1G1R" — jensyleo's own spec (2026-08-19): a Games-table-
+    /// only display filter, same un-persisted `@State` + toolbar-toggle
+    /// shape as `combineRomAndCHD` just above (never `@AppStorage` — this
+    /// is a one-off "declutter this table right now" choice, not a
+    /// standing preference like `regionOrderRaw` below).
+    @State private var show1G1ROnly = false
+    /// The user's own region-priority order (Settings → View Options),
+    /// read here as the raw comma-joined string `RegionOrderSettings`
+    /// itself owns — `@AppStorage` so a change there is picked up the next
+    /// time this recomputes, without this view needing its own copy of
+    /// that settings UI.
+    @AppStorage(RegionOrderSettings.storageKey) private var regionOrderRaw = RegionOrderSettings.defaultRawValue
     /// `gameNodes` used to be a computed `var`, rebuilt (dictionaries,
     /// filtering, recursive node construction) on every SwiftUI `body`
     /// evaluation — cheap for a hand-built test DAT, but a real MAME DAT
@@ -867,6 +894,22 @@ struct LibraryDetailView: View {
             ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
                 launchSelectedGameInMAME()
             },
+            // jensyleo's own spec (2026-08-19): 1G1R is presentation-only —
+            // toggling it never touches a file, never re-scans, just hides
+            // every non-preferred variant of a family that has at least one
+            // recognized region (see `OneGameOneROMSummary`'s own doc
+            // comment). Title/icon flip with `show1G1ROnly` itself, same
+            // "state visible through the button's own label" idea as
+            // `combineRomAndCHDFilterButton`'s color change elsewhere in
+            // this file — a plain `NSButton`-backed toolbar item has no
+            // built-in on/off look of its own to lean on instead.
+            ToolbarAction(
+                id: "oneGameOneROM", title: show1G1ROnly ? "Show All Variants" : "Show Only 1G1R",
+                systemImage: show1G1ROnly ? "star.fill" : "star",
+                help: "Hide every parent/clone family's non-preferred region variant, per Settings → View Options → \"1G1R region priority\" — a variant with no recognized region is never hidden"
+            ) {
+                show1G1ROnly.toggle()
+            },
         ]
         if let onExportCollectionReport {
             actions.append(
@@ -1014,6 +1057,19 @@ struct LibraryDetailView: View {
             selectedGameID = nil; selectedRomID = nil
             recomputeGameNodes()
             refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
+        }
+        .onChange(of: show1G1ROnly) {
+            selectedGameID = nil; selectedRomID = nil
+            recomputeGameNodes()
+        }
+        // A region-priority change (Settings → View Options) can flip which
+        // variant a family's own star/hide belongs to — needs the full
+        // `refreshCachedGameDataAfterAuditReportChangeAsync()` path (not
+        // just `recomputeGameNodes()`) since `cachedOneGameOneROMSummary`
+        // itself, not merely the Games-table filter reading it, has to be
+        // recomputed.
+        .onChange(of: regionOrderRaw) {
+            refreshCachedGameDataAfterAuditReportChangeAsync()
         }
         .onChange(of: selectedDatabaseFilter) {
             if selectedDatabaseFilter != nil { selectedRomFolder = nil }
@@ -2271,8 +2327,21 @@ struct LibraryDetailView: View {
             .width(20)
             .customizationID("status")
             .disabledCustomizationBehavior(.all)
-            TableColumn("Game name") { node in Text(node.gameName) }
-                .customizationID("gameName")
+            TableColumn("Game name") { node in
+                HStack(spacing: 4) {
+                    // Independent of `show1G1ROnly` — jensyleo's own spec
+                    // (2026-08-19): the star is always visible so a family's
+                    // preferred variant reads at a glance even with the
+                    // toggle off, only the actual hiding is gated by it.
+                    if cachedOneGameOneROMSummary.preferredGameNames.contains(node.name) {
+                        Image(systemName: "star.fill")
+                            .foregroundStyle(.yellow)
+                            .help("The preferred 1G1R variant for this family, per Settings → View Options → \"1G1R region priority\"")
+                    }
+                    Text(node.gameName)
+                }
+            }
+            .customizationID("gameName")
             TableColumn("File name") { node in Text(node.actualFileName ?? node.name) }
                 .customizationID("fileName")
             TableColumn("Info") { node in Text(node.infoText) }
@@ -2317,6 +2386,8 @@ struct LibraryDetailView: View {
                 TableColumn("Clone of (internal name)") { (node: GameNode) in Text(node.cloneOf) }
                     .customizationID("cloneOfInternalName")
                     .defaultVisibility(.hidden)
+                TableColumn("Family") { (node: GameNode) in familyIndicator(for: node) }
+                    .customizationID("family")
             }
         }
         .onChange(of: gameColumnCustomization) { Self.persist(gameColumnCustomization, key: Self.gameColumnCustomizationKey) }
@@ -2431,6 +2502,32 @@ struct LibraryDetailView: View {
     private func scanFile(_ node: GameNode) {
         guard let url = actualFileURL(for: node) else { return }
         viewModel.startScan(system: system, folders: [url])
+    }
+
+    /// Presentation-only "Family" column cell — purely informational, never
+    /// an `AuditStatus`/severity of its own (see `AuditStatusTint` for the
+    /// precedent of a distinct, non-severity tint, `.duplicateSet`'s blue).
+    /// A parent row shows how much of its own clone family is present
+    /// ("3/5 clones"); a clone row whose declared parent is absent gets a
+    /// small amber warning instead — the two never both apply to the same
+    /// row (a row is either a parent or a clone, per the DAT's own
+    /// `cloneof`), so at most one of these ever renders.
+    @ViewBuilder
+    private func familyIndicator(for node: GameNode) -> some View {
+        if node.isSurplusBucket || node.isDiskRow {
+            EmptyView()
+        } else if let completion = cachedParentCloneSummary.cloneCompletionByParent[node.name] {
+            Text("\(completion.present)/\(completion.total) clones")
+                .font(.caption)
+                .foregroundStyle(completion.present == completion.total ? .secondary : Color.orange)
+        } else if cachedParentCloneSummary.clonesMissingParent.contains(node.name) {
+            Label("Parent missing", systemImage: "exclamationmark.triangle.fill")
+                .labelStyle(.iconOnly)
+                .foregroundStyle(.orange)
+                .help("This clone is present, but its parent set (\(node.cloneOf)) is missing from the collection.")
+        } else {
+            EmptyView()
+        }
     }
 
     /// Sum of every rom's size in a game/archive — `expectedSize` (the
@@ -2619,6 +2716,11 @@ struct LibraryDetailView: View {
         // verified) and from `.surplus` (the DAT explicitly documents this
         // exact name/slot for this exact machine, so it isn't unrecognized).
         case .unverifiable: base = "Nodump (unverifiable)"
+        // `DuplicateSetDetector`'s own synthetic game-level row — `path` is
+        // the duplicate copy this row is about, `duplicateSetPrimaryPath`
+        // is where the real/primary copy already lives.
+        case .duplicateSet:
+            base = entry.duplicateSetPrimaryPath.map { "Duplicate set (also in \($0.lastPathComponent))" } ?? "Duplicate set"
         }
         if entry.isBadDump {
             // For every other status, a file DID get matched/found, so this
@@ -2988,7 +3090,10 @@ struct LibraryDetailView: View {
             selectedRomFolder: selectedRomFolder, preloadedGames: viewModel.preloadedGames, selectedDatabaseFilter: selectedDatabaseFilter,
             gamesInFolder: cachedGamesInFolder, gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD
         )
-        cachedGameNodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: gameAggregateStatusByName, showUnknownArchives: showUnknownArchives, activeStatusFilters: activeStatusFilters)
+        cachedGameNodes = Self.computeGameNodes(
+            baseNodes: baseNodes, gameAggregateStatusByName: gameAggregateStatusByName, showUnknownArchives: showUnknownArchives,
+            activeStatusFilters: activeStatusFilters, hiddenOneGameOneROMNames: show1G1ROnly ? cachedOneGameOneROMSummary.hiddenWhenFilteredNames : []
+        )
         refreshCachedFamilyGameNodes()
         cachedGameNodesByID = Self.indexByID(cachedGameNodes)
     }
@@ -3059,6 +3164,7 @@ struct LibraryDetailView: View {
         let combine = combineRomAndCHD
         let showUnknown = showUnknownArchives
         let statusFilters = activeStatusFilters
+        let hidden1G1RNames = show1G1ROnly ? cachedOneGameOneROMSummary.hiddenWhenFilteredNames : []
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
             if isBurst {
                 try? await Task.sleep(for: Self.keyboardNavigationDebounceDelay)
@@ -3071,7 +3177,10 @@ struct LibraryDetailView: View {
                 selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
                 gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
             )
-            let nodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters)
+            let nodes = Self.computeGameNodes(
+                baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
+                activeStatusFilters: statusFilters, hiddenOneGameOneROMNames: hidden1G1RNames
+            )
             let nodesByID = Self.indexByID(nodes)
             let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
@@ -3133,15 +3242,22 @@ struct LibraryDetailView: View {
         let combine = combineRomAndCHD
         let showUnknown = showUnknownArchives
         let statusFilters = activeStatusFilters
+        let show1G1R = show1G1ROnly
+        let regionOrder = RegionOrderSettings.order(from: regionOrderRaw)
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
             let aggStatus = Self.computeGameAggregateStatusByName(entries: entries, preloadedGames: preloadedGames)
+            let parentCloneSummary = ParentCloneSummary.compute(games: preloadedGames, statusByName: aggStatus)
+            let oneGameOneROMSummary = OneGameOneROMSelector.compute(games: preloadedGames, regionOrder: regionOrder)
             let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
             let baseNodes = Self.computeBaseGameNodes(
                 hasAuditReport: hasAuditReport, auditEntries: entries,
                 selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
                 gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
             )
-            let nodes = Self.computeGameNodes(baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown, activeStatusFilters: statusFilters)
+            let nodes = Self.computeGameNodes(
+                baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
+                activeStatusFilters: statusFilters, hiddenOneGameOneROMNames: show1G1R ? oneGameOneROMSummary.hiddenWhenFilteredNames : []
+            )
             let nodesByID = Self.indexByID(nodes)
             let counts = Self.computeScopedStatusCounts(scopedEntries: Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder), gamesByName: Self.gamesByName(preloadedGames))
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
@@ -3150,6 +3266,8 @@ struct LibraryDetailView: View {
                 // — see its own doc comment.
                 guard generation == folderRecomputeGeneration else { return }
                 gameAggregateStatusByName = aggStatus
+                cachedParentCloneSummary = parentCloneSummary
+                cachedOneGameOneROMSummary = oneGameOneROMSummary
                 cachedGamesInFolder = gamesInFolder
                 cachedGameNodes = nodes
                 refreshCachedFamilyGameNodes()
@@ -3739,13 +3857,17 @@ struct LibraryDetailView: View {
     /// into it) for the same reason as `computeUnknownArchivesCount(baseNodes:)`
     /// above: both need that same unfiltered pass, just filtered
     /// differently afterward.
-    private nonisolated static func computeGameNodes(baseNodes: [GameNode], gameAggregateStatusByName: [String: AuditStatus], showUnknownArchives: Bool, activeStatusFilters: Set<AuditStatus>) -> [GameNode] {
+    private nonisolated static func computeGameNodes(
+        baseNodes: [GameNode], gameAggregateStatusByName: [String: AuditStatus], showUnknownArchives: Bool,
+        activeStatusFilters: Set<AuditStatus>, hiddenOneGameOneROMNames: Set<String> = []
+    ) -> [GameNode] {
         // Grouped from *every* entry (not status-filtered — a game's real
         // category must never depend on which rows happen to be visible
         // elsewhere), then the four toggles filter the resulting *games*
         // by that true category. See `statusSummary`'s own doc comment
         // for exactly what each of the four means.
         baseNodes.filter { node in
+            guard !hiddenOneGameOneROMNames.contains(node.name) else { return false }
             // A genuinely unrecognized archive ("Unknown game") isn't one
             // of the four real categories at all — it's gated by its own
             // separate "Unknown" toggle instead. A surplus bucket
@@ -4153,6 +4275,7 @@ struct LibraryDetailView: View {
         case .surplus, .unknownFile: return "questionmark.circle.fill"
         case .surplusInArchive: return "exclamationmark.triangle"
         case .unverifiable: return "questionmark.circle"
+        case .duplicateSet: return "doc.on.doc.fill"
         }
     }
 

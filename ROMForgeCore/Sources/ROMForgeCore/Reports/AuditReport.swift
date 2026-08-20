@@ -68,6 +68,28 @@ public enum AuditStatus: String, Equatable, Sendable, CaseIterable {
     /// failing outright — new code never assigns this. Equivalent in
     /// meaning/severity to `unknownFile`.
     case surplus
+    /// A synthetic row `AuditReporter.addingDuplicateSets` appends for a
+    /// game whose otherwise-genuine set (`.correct`/`.incorrect`/`.badDump`
+    /// roms) is physically present under more than one of the system's own
+    /// configured ROM folders (`RomSystem.romFolderURLs`) — a whole extra
+    /// copy of a set the user already has, not a naming/content problem
+    /// with the set itself. Added 2026-08-19, jensyleo's own request:
+    /// multiple ROM folders per system is common (different drives/region
+    /// subfolders), and until now a same-named archive sitting in a second
+    /// folder was only ever visible indirectly, one rom at a time, as an
+    /// ordinary `.incorrect` "Not needed here" surplus row — accurate, but
+    /// with no single place that actually says "this whole set is
+    /// duplicated across folders."
+    ///
+    /// Never assigned by `ROMMatcher`/plain `AuditReporter.generate`
+    /// itself — only by the dedicated post-pass, run after the real
+    /// per-rom statuses are already settled, so this never displaces or
+    /// hides the genuine `.correct`/`.incorrect`/`.badDump` row for the
+    /// same rom; it's purely an additional, game-level informational row.
+    /// Deliberately excluded from `worst(among:)`'s severity ranking (same
+    /// tier as `.correct`/`.surplus`) — a duplicate copy elsewhere doesn't
+    /// make the primary copy any less correct.
+    case duplicateSet
 }
 
 /// One row of an audit report: an expected ROM's outcome, or a leftover local
@@ -214,6 +236,13 @@ public struct AuditEntry: Equatable, Sendable {
     /// criterion. Lets a UI say "rename this to `1943.zip`" rather than
     /// mislabelling the archive a duplicate.
     public let misnamedArchiveForGameName: String?
+    /// Set only for a `.duplicateSet` row — the path of the OTHER, primary
+    /// copy of this same game's set (the earliest-configured ROM folder
+    /// that owns it; see `DuplicateSetDetector`'s own doc comment for why
+    /// folder order decides which copy is "primary"). `path` on this same
+    /// entry is the duplicate copy itself; this is where the real one
+    /// already lives. `nil` for every other status.
+    public let duplicateSetPrimaryPath: URL?
     public let name: String
     public let path: URL?
     public let expectedSize: Int64?
@@ -247,6 +276,7 @@ public struct AuditEntry: Equatable, Sendable {
         foundElsewhereArchiveName: String? = nil,
         requiredByGameDescription: String? = nil,
         misnamedArchiveForGameName: String? = nil,
+        duplicateSetPrimaryPath: URL? = nil,
         name: String,
         path: URL?,
         expectedSize: Int64? = nil,
@@ -279,6 +309,7 @@ public struct AuditEntry: Equatable, Sendable {
         self.foundElsewhereArchiveName = foundElsewhereArchiveName
         self.requiredByGameDescription = requiredByGameDescription
         self.misnamedArchiveForGameName = misnamedArchiveForGameName
+        self.duplicateSetPrimaryPath = duplicateSetPrimaryPath
         self.name = name
         self.path = path
         self.expectedSize = expectedSize
@@ -302,8 +333,17 @@ public struct AuditReport: Equatable, Sendable {
     public let missing: Int
     public let surplus: Int
     public let unverifiable: Int
+    /// Count of `.duplicateSet` rows only — see that case's own doc
+    /// comment. Deliberately its own tally, not folded into `surplus`: a
+    /// duplicate copy of a genuinely-owned set is a very different thing
+    /// from genuinely unrecognized content, and conflating the two counts
+    /// would misreport how many *actual* unknown files exist.
+    public let duplicateSets: Int
 
-    public init(entries: [AuditEntry], correct: Int, incorrect: Int, badDump: Int = 0, missing: Int, surplus: Int, unverifiable: Int = 0) {
+    public init(
+        entries: [AuditEntry], correct: Int, incorrect: Int, badDump: Int = 0, missing: Int, surplus: Int, unverifiable: Int = 0,
+        duplicateSets: Int = 0
+    ) {
         self.entries = entries
         self.correct = correct
         self.incorrect = incorrect
@@ -311,6 +351,7 @@ public struct AuditReport: Equatable, Sendable {
         self.missing = missing
         self.surplus = surplus
         self.unverifiable = unverifiable
+        self.duplicateSets = duplicateSets
     }
 
     /// The single worst status across the whole report — the same
@@ -348,7 +389,7 @@ extension AuditStatus {
             case .missing: return .missing
             case .badDump: sawBadDump = true
             case .incorrect: sawIncorrect = true
-            case .correct, .surplus, .surplusInArchive, .unknownFile, .unverifiable: sawOther = true
+            case .correct, .surplus, .surplusInArchive, .unknownFile, .unverifiable, .duplicateSet: sawOther = true
             }
         }
         if sawBadDump { return .badDump }

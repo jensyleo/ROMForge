@@ -83,7 +83,14 @@ public final class AuditReportDatabase {
     // archive (name-only comparison), reading as plain "Correct" instead of
     // "Not needed here (required by …)". Real case: a duplicate `sfiii2.zip`
     // the user placed in a second location.
-    private static let currentSchemaVersion: Int32 = 16
+    // v17 (2026-08-19): new `AuditEntry.duplicateSetPrimaryPath` / `AuditStatus
+    // .duplicateSet` — a synthetic row `AuditReporter.addingDuplicateSets`
+    // appends when a game's set is physically present under more than one of
+    // the system's own configured ROM folders (`DuplicateSetDetector`). New
+    // `duplicate_primary_path` column; no prior row can carry this status at
+    // all, so nothing to reconcile — the wipe below just clears the way for
+    // the next scan to compute it fresh.
+    private static let currentSchemaVersion: Int32 = 17
 
     private let path: String
 
@@ -125,6 +132,7 @@ public final class AuditReportDatabase {
                     .textOrNull(entry.romDumpStatus?.rawValue), .textOrNull(entry.mergeName), .textOrNull(entry.chdNames),
                     .textOrNull(entry.gameYear), .textOrNull(entry.gameManufacturer), .textOrNull(entry.requiredBiosNames), .textOrNull(entry.deviceRefNames),
                     .int(entry.isDisk ? 1 : 0), .textOrNull(entry.foundElsewhereArchiveName), .textOrNull(entry.requiredByGameDescription),
+                    .textOrNull(entry.duplicateSetPrimaryPath?.path),
                     .text(entry.name), .textOrNull(entry.path?.path),
                     .int64OrNull(entry.expectedSize), .int64OrNull(entry.actualSize),
                     .textOrNull(entry.expectedCRC), .textOrNull(entry.expectedMD5), .textOrNull(entry.expectedSHA1),
@@ -138,10 +146,10 @@ public final class AuditReportDatabase {
                     system_id, status, game, game_description, clone_of, is_bios, has_chd, has_samples, is_bad_dump,
                     is_optional,
                     rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
-                    is_disk, found_elsewhere_archive_name, required_by_game_description,
+                    is_disk, found_elsewhere_archive_name, required_by_game_description, duplicate_primary_path,
                     name, path, expected_size, actual_size,
                     expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 rowValues
             )
@@ -173,7 +181,7 @@ public final class AuditReportDatabase {
                    is_disk, found_elsewhere_archive_name, required_by_game_description,
                    name, path, expected_size, actual_size,
                    expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
-                   is_optional
+                   is_optional, duplicate_primary_path
             FROM audit_entries WHERE system_id = ?;
             """,
             [.text(systemID)]
@@ -202,6 +210,7 @@ public final class AuditReportDatabase {
                     isDisk: sqlite3_column_int(statement, 15) != 0,
                     foundElsewhereArchiveName: Self.columnText(statement, 16),
                     requiredByGameDescription: Self.columnText(statement, 17),
+                    duplicateSetPrimaryPath: Self.columnText(statement, 29).map(URL.init(fileURLWithPath:)),
                     name: Self.columnText(statement, 18) ?? "",
                     path: Self.columnText(statement, 19).map(URL.init(fileURLWithPath:)),
                     expectedSize: Self.columnInt64(statement, 20),
@@ -231,6 +240,7 @@ public final class AuditReportDatabase {
         // recomputing from `entries`) would show a stale `0` after every
         // app relaunch.
         var unverifiable = 0
+        var duplicateSets = 0
         for entry in entries {
             switch entry.status {
             case .correct: correct += 1
@@ -239,10 +249,14 @@ public final class AuditReportDatabase {
             case .missing: missing += 1
             case .surplus: surplus += 1
             case .unverifiable: unverifiable += 1
+            case .duplicateSet: duplicateSets += 1
             case .surplusInArchive, .unknownFile: break
             }
         }
-        return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable)
+        return AuditReport(
+            entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable,
+            duplicateSets: duplicateSets
+        )
     }
 
     /// The DAT name/version last used to scan a system, and when — shown
@@ -447,6 +461,7 @@ public final class AuditReportDatabase {
                 is_disk INTEGER NOT NULL DEFAULT 0,
                 found_elsewhere_archive_name TEXT,
                 required_by_game_description TEXT,
+                duplicate_primary_path TEXT,
                 name TEXT NOT NULL,
                 path TEXT,
                 expected_size INTEGER,
@@ -566,6 +581,8 @@ public final class AuditReportDatabase {
         // prior bump, so it shows up correctly the next time each system
         // gets rescanned.
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN is_optional INTEGER NOT NULL DEFAULT 0;")
+        // v17: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN duplicate_primary_path TEXT;")
         if currentVersion > 0 {
             try? exec(db, "DELETE FROM audit_entries;")
             try? exec(db, "DELETE FROM scans;")

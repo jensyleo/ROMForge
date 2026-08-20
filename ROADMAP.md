@@ -992,6 +992,45 @@ emulator launching, no controller/gamepad UI, no "play" button. The scope
 stops at managing, auditing and presenting the collection — running games is
 left entirely to the user's own emulators.
 
+## Fase 2 — rebuild/repair (not started, read-only mode active until this)
+
+Research pass (2026-08-19) comparing ROMForge against RomCenter, ClrMamePro,
+RomVault, and Igir specifically for **write** capabilities — everything here
+requires modifying/moving/renaming a user's actual ROM files, which is why
+none of it starts before the read-only phase (see `LibraryViewModel
+.modificationsEnabled`) is retired. Ordered roughly by dependency, not
+priority — each later item builds on the one before it.
+
+- [ ] **Classic rebuild from loose files → complete sets** (RomCenter/
+      ClrMamePro). Package loose ROM files into correctly named zips per the
+      DAT. The mandatory starting point — everything else in this phase
+      builds on it. Size: large.
+- [ ] **Cross-set repair** (ClrMamePro's "Rebuilder"). Repair a broken set by
+      copying a missing ROM from a sibling set (parent/clone share ROMs).
+      Builds directly on the already-implemented TorrentZip writer and
+      merge-mode detection. Size: large.
+- [ ] **Real split/merge/non-merge writing** (detection already exists —
+      only the write side is missing). Actually move shared ROMs to the
+      parent (merge) or duplicate them into every clone (split/non-merge).
+      `HeaderSkipRule` + merge-mode wiring already give this a running
+      start. Size: large.
+- [ ] **RomVault-style "DatRoot"/deep storage.** Internal hash-addressed ROM
+      store; zips are generated on the fly from it per the active DAT
+      instead of duplicating shared bytes across sets on disk. The most
+      architecturally ambitious item here — changes the storage model, not
+      just the rebuild logic. Size: large.
+- [ ] **Physical duplicate dedup via hardlinks.** A lighter alternative to
+      full deep storage — avoid duplicating identical bytes shared between
+      sets using filesystem hardlinks instead. Size: medium-large.
+- [ ] **Rebuild from external scavenging folders** (ClrMamePro). Point at
+      other collections/backups as a repair source, complementing cross-set
+      repair above. Size: medium.
+
+Also noted, not MAME-scoped and therefore not prioritized per [[feedback_romforge_mame_first]]:
+Igir's automatic "detect which hashes are actually needed" approach could
+still apply usefully to fase 1's own hashing pipeline, independent of any
+write capability.
+
 ## Research questions (not started)
 
 Tracked in `TODO.md` (local, gitignored): automatic DAT/metadata source
