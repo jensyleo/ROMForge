@@ -138,7 +138,7 @@ public enum GameNodeBuilder {
         // answer — honestly empty here rather than showing something
         // misleadingly labeled.
         case .verifiedGames, .gamesWithBadDumps, .gamesWithNodump, .missingGames, .incorrectGames,
-             .completeGames, .fixableGames, .partialGames, .emptyGames: categoryFiltered = []
+             .completeGames, .fixableGames, .partialGames, .emptyGames, .unusedBiosFiles: categoryFiltered = []
         case .originals: categoryFiltered = games.filter { $0.cloneOf == nil }
         case .clones: categoryFiltered = games.filter { $0.cloneOf != nil }
         case .biosFiles: categoryFiltered = games.filter(\.isBios)

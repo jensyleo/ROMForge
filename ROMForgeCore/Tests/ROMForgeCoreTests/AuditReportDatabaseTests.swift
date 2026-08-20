@@ -196,6 +196,29 @@ struct AuditReportDatabaseTests {
         #expect(reloadedOwned.foundElsewhereArchiveName == nil)
     }
 
+    /// Same class of bug once more, one schema version later (v18,
+    /// 2026-08-19), for `AuditEntry.isOrphanedBios` — added the `ALTER
+    /// TABLE` and this test in the same commit as the field itself, exactly
+    /// like `requiredByGameDescription` below already learned to do, rather
+    /// than discovering the gap only after a relaunch silently reset the
+    /// flag (as first happened for `isDisk`/`foundElsewhereArchiveName`
+    /// above).
+    @Test("an entry's isOrphanedBios flag survives a save/load round trip")
+    func isOrphanedBiosSurvivesRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let orphaned = AuditEntry(status: .correct, game: "neogeo", isBios: true, isOrphanedBios: true, name: "neogeo.zip", path: URL(fileURLWithPath: "/roms/neogeo.zip"))
+        let inUse = AuditEntry(status: .correct, game: "decocass", isBios: true, isOrphanedBios: false, name: "decocass.zip", path: URL(fileURLWithPath: "/roms/decocass.zip"))
+        let report = AuditReport(entries: [orphaned, inUse], correct: 2, incorrect: 0, missing: 0, surplus: 0)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedOrphaned = try #require(loaded.entries.first { $0.name == "neogeo.zip" })
+        let reloadedInUse = try #require(loaded.entries.first { $0.name == "decocass.zip" })
+        #expect(reloadedOrphaned.isOrphanedBios == true)
+        #expect(reloadedInUse.isOrphanedBios == false)
+    }
+
     /// Same class of bug once more, one schema version later (v6,
     /// 2026-08-04), for `AuditEntry.requiredByGameDescription` — added the
     /// `ALTER TABLE` and this test in the same commit as the field itself

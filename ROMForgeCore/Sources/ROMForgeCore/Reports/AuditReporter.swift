@@ -214,6 +214,18 @@ public enum AuditReporter {
         )
     }
 
+    /// Flags every physically-present BIOS row (`AuditEntry.isBios`, real
+    /// `path`) that no currently-present game in this same report actually
+    /// depends on — see `OrphanedBIOSDetector`'s own doc comment. A pure
+    /// flagging pass, unlike `addingDuplicateSets` above: it never appends
+    /// rows or changes any count, only sets `isOrphanedBios` on existing
+    /// ones, so it can run any time after `generate(from:)` — order
+    /// relative to `merging(diskEntries:into:)`/`addingDuplicateSets` above
+    /// doesn't matter, since neither touches BIOS rows.
+    public static func markingOrphanedBIOS(in report: AuditReport) -> AuditReport {
+        OrphanedBIOSDetector.markingOrphaned(in: report)
+    }
+
     /// Builds the report to actually *display* after a targeted rescan
     /// ("Rescan This File", or "Scan Folder" on one folder) — every other
     /// entry keeps the exact value it had in `previousReport`, byte-for-byte

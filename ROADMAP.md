@@ -1031,6 +1031,27 @@ Igir's automatic "detect which hashes are actually needed" approach could
 still apply usefully to fase 1's own hashing pipeline, independent of any
 write capability.
 
+## Fase 1 — deferred read-only items (2026-08-19)
+
+Set aside during the read-only research pass, not discarded — revisit later.
+
+- [ ] **Collection progress dashboard** (RomCenter/RomVault-style). Aggregate
+      view of % sets complete, per-status counts, optional breakdown by
+      year/manufacturer. Zero new computation — every number already exists
+      in `AuditReport`/SQLite; this is purely a presentation layer. Size:
+      small-medium. User: "5 no, dejalo documentado" (deprioritized, not
+      rejected).
+- [ ] **Incremental fixdat (delta between scans).** Report what changed
+      since the last scan ("N games newly present, N disappeared") using
+      the existing mtime+size scan cache, instead of comparing two old
+      fixdats by hand. Only valuable for a workflow of repeated,
+      time-spaced scans tracking progress — if the user's actual pattern is
+      "load, audit, fix once, done," this adds little. Size: medium (the new
+      part is deciding when to freeze a snapshot — before each scan? a
+      manual "mark this point" button? — plus the diff logic itself, which
+      is simple but new). User: "el 7 no" (declined, kept documented per
+      their own request in case the workflow changes later).
+
 ## Research questions (not started)
 
 Tracked in `TODO.md` (local, gitignored): automatic DAT/metadata source

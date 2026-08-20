@@ -243,6 +243,17 @@ public struct AuditEntry: Equatable, Sendable {
     /// entry is the duplicate copy itself; this is where the real one
     /// already lives. `nil` for every other status.
     public let duplicateSetPrimaryPath: URL?
+    /// True only for a `game.isBios` entry with a real local `path` (the
+    /// BIOS archive is genuinely present on disk) that `OrphanedBIOSDetector`
+    /// found no *other*, currently-present game actually depends on — see
+    /// its own doc comment. A post-pass flag on an otherwise-ordinary
+    /// `.correct`/`.incorrect`/`.badDump` BIOS row, not a new `AuditStatus`
+    /// — the BIOS set's own real verdict (its content is/isn't intact)
+    /// stays exactly as `AuditReporter.generate` already reported it; this
+    /// only adds "and nothing here currently needs it". Always `false` for
+    /// a non-BIOS entry, a BIOS entry with no local file at all, or before
+    /// the post-pass has run.
+    public let isOrphanedBios: Bool
     public let name: String
     public let path: URL?
     public let expectedSize: Int64?
@@ -277,6 +288,7 @@ public struct AuditEntry: Equatable, Sendable {
         requiredByGameDescription: String? = nil,
         misnamedArchiveForGameName: String? = nil,
         duplicateSetPrimaryPath: URL? = nil,
+        isOrphanedBios: Bool = false,
         name: String,
         path: URL?,
         expectedSize: Int64? = nil,
@@ -310,6 +322,7 @@ public struct AuditEntry: Equatable, Sendable {
         self.requiredByGameDescription = requiredByGameDescription
         self.misnamedArchiveForGameName = misnamedArchiveForGameName
         self.duplicateSetPrimaryPath = duplicateSetPrimaryPath
+        self.isOrphanedBios = isOrphanedBios
         self.name = name
         self.path = path
         self.expectedSize = expectedSize
@@ -320,6 +333,24 @@ public struct AuditEntry: Equatable, Sendable {
         self.actualCRC = actualCRC
         self.actualMD5 = actualMD5
         self.actualSHA1 = actualSHA1
+    }
+
+    /// Same entry, `isOrphanedBios` flipped to `true` — `OrphanedBIOSDetector`
+    /// only ever needs to layer this one flag onto an already-computed row,
+    /// never to change anything else about it.
+    public func markedOrphanedBios() -> AuditEntry {
+        AuditEntry(
+            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
+            hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
+            mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
+            misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
+            isOrphanedBios: true,
+            name: name, path: path, expectedSize: expectedSize, actualSize: actualSize,
+            expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
+            actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
+        )
     }
 }
 

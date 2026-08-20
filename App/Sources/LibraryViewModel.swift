@@ -878,6 +878,12 @@ final class LibraryViewModel {
                 // exists. Run last, after every other pass has settled the
                 // real per-rom statuses this reads.
                 auditReport = try AuditReporter.addingDuplicateSets(to: auditReport, rootFolders: system.romFolderURLs)
+                // Flags a BIOS archive nothing currently present actually
+                // needs (e.g. `neogeo.zip` sitting unused once every
+                // Neo-Geo game that used to depend on it was removed) — a
+                // pure flag on rows this same report already computed, so
+                // it can run after every other pass has settled them.
+                auditReport = AuditReporter.markingOrphanedBIOS(in: auditReport)
                 return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity)
             }
             cancelDetachedWork = { detached.cancel() }

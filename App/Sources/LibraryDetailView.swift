@@ -89,6 +89,13 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
     case fixableGames = "Fixable games"
     case partialGames = "Partial games"
     case emptyGames = "Empty games"
+    /// A physically-present BIOS archive nothing currently in the
+    /// collection actually depends on — see `DatabaseCategory
+    /// .unusedBiosFiles`/`OrphanedBIOSDetector` (ROMForgeCore) for how it's
+    /// computed, and why samples aren't included (no sample-file scanning
+    /// exists yet to check one against). Off by default, same as every
+    /// other post-2026-08-11 addition below `.emptyGames`.
+    case unusedBiosFiles = "Unused BIOS files"
     var id: String { rawValue }
 
     /// Placeholder SF Symbols, one per category, standing in for real
@@ -119,6 +126,7 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
         case .fixableGames: return "arrow.triangle.2.circlepath"
         case .partialGames: return "circle.lefthalf.filled"
         case .emptyGames: return "circle.dashed"
+        case .unusedBiosFiles: return "archivebox"
         }
     }
 
@@ -151,6 +159,7 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
         case .fixableGames: return .fixableGames
         case .partialGames: return .partialGames
         case .emptyGames: return .emptyGames
+        case .unusedBiosFiles: return .unusedBiosFiles
         }
     }
 }

@@ -42,6 +42,15 @@ public enum DatabaseCategory: String, CaseIterable, Sendable {
     case fixableGames = "Fixable games"
     case partialGames = "Partial games"
     case emptyGames = "Empty games"
+    /// A physically-present BIOS archive (`neogeo.zip` and similar) that no
+    /// currently-present game in this same collection actually depends on —
+    /// see `OrphanedBIOSDetector`'s own doc comment for how it's computed
+    /// and why it deliberately covers BIOS only, not samples (ROMForge has
+    /// no sample-file scanning at all to check an orphan against). Added
+    /// 2026-08-19, jensyleo's own request: a BIOS downloaded as part of a
+    /// bulk set can easily outlive every game that needed it, quietly
+    /// wasting space with no report anywhere pointing it out.
+    case unusedBiosFiles = "Unused BIOS files"
 
     /// Filters a flat `[AuditEntry]` list down to just the entries
     /// belonging to this category — identical logic to the original
@@ -81,6 +90,7 @@ public enum DatabaseCategory: String, CaseIterable, Sendable {
             let byGame = Dictionary(grouping: entries.filter { $0.game != nil }, by: { $0.game! })
             let matchingGameNames = byGame.filter { _, gameEntries in GameCompletionStatus.compute(for: gameEntries) == wanted }.keys
             return entries.filter { entry in entry.game.map(matchingGameNames.contains) ?? false }
+        case .unusedBiosFiles: return entries.filter { $0.isOrphanedBios }
         }
     }
 }
