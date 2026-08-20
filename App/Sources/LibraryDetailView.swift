@@ -789,6 +789,7 @@ struct LibraryDetailView: View {
 
     @State private var columnPresets: [String: ColumnPreset] = Self.loadColumnPresets()
     @State private var isShowingColumnPresetsSheet = false
+    @State private var isShowingDATCompareSheet = false
     private static let columnPresetsKey = "ROMForge.columnPresets"
 
     private static func loadColumnPresets() -> [String: ColumnPreset] {
@@ -934,6 +935,15 @@ struct LibraryDetailView: View {
                 help: "Save the currently displayed games list as a CSV file"
             ) {
                 exportGameListCSV()
+            }
+        )
+        actions.append(
+            ToolbarAction(
+                id: "compareDATVersions", title: "Compare DAT Versions…",
+                isEnabled: viewModel.cachedDATFile != nil && !viewModel.isBusy,
+                help: "Compare the currently loaded DAT against an older/different version — added, removed, and possibly-renamed games"
+            ) {
+                isShowingDATCompareSheet = true
             }
         )
         actions.append(
@@ -1155,6 +1165,16 @@ struct LibraryDetailView: View {
                 onRename: { oldName, newName in renameColumnPreset(from: oldName, to: newName) },
                 onDelete: { name in deleteColumnPreset(named: name) }
             )
+        }
+        .sheet(isPresented: $isShowingDATCompareSheet) {
+            datVersionCompareSheetContent
+        }
+    }
+
+    @ViewBuilder
+    private var datVersionCompareSheetContent: some View {
+        if let cachedDATFile = viewModel.cachedDATFile {
+            DATVersionCompareSheet(currentDAT: cachedDATFile, systemName: system.name)
         }
     }
 
