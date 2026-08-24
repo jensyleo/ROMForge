@@ -642,12 +642,16 @@ struct LibraryDetailView: View {
     /// change just because a rescan happened. See `OneGameOneROMSummary`'s
     /// own doc comment.
     @State private var cachedOneGameOneROMSummary = OneGameOneROMSummary.empty
-    /// "Show only 1G1R" — jensyleo's own spec (2026-08-19): a Games-table-
-    /// only display filter, same un-persisted `@State` + toolbar-toggle
-    /// shape as `combineRomAndCHD` just above (never `@AppStorage` — this
-    /// is a one-off "declutter this table right now" choice, not a
-    /// standing preference like `regionOrderRaw` below).
-    @State private var show1G1ROnly = false
+    /// "Show only 1G1R" — jensyleo's own spec (2026-08-19) called this a
+    /// one-off, un-persisted display filter (a plain `@State`, toggled from
+    /// the toolbar). Moved to `@AppStorage` (2026-08-24) alongside its own
+    /// move from the toolbar into Settings → View Options → "1G1R" — once
+    /// it's a Settings toggle rather than a toolbar action button, leaving
+    /// it as ephemeral `@State` would mean it silently reset to "off" every
+    /// relaunch despite living right next to `regionOrderRaw` (a genuine,
+    /// persisted preference) in the same Settings section, which would
+    /// read as broken rather than intentional.
+    @AppStorage(OneGameOneROMSettings.showOnlyKey) private var show1G1ROnly = false
     /// The user's own region-priority order (Settings → View Options),
     /// read here as the raw comma-joined string `RegionOrderSettings`
     /// itself owns — `@AppStorage` so a change there is picked up the next
@@ -887,11 +891,11 @@ struct LibraryDetailView: View {
     // Column Presets…
     private var detailToolbarActions: [ToolbarAction] {
         var actions: [ToolbarAction] = [
-            ToolbarAction(id: "scanFile", title: "Scan File", isEnabled: canScanSelectedFile, help: scanFileButtonHelpText) {
+            ToolbarAction(id: "scanFile", title: "Scan File", systemImage: "doc.text.magnifyingglass", isEnabled: canScanSelectedFile, help: scanFileButtonHelpText) {
                 scanSelectedFile()
             },
             ToolbarAction(
-                id: "scanFolder", title: "Scan Folder",
+                id: "scanFolder", title: "Scan Folder", systemImage: "folder",
                 isEnabled: !viewModel.isBusy && selectedRomFolder != nil,
                 help: selectedRomFolder.map { "Scan only \"\($0.lastPathComponent)\" — other folders keep their last known results" }
                     ?? "Select a folder under \"Rom files\" to scan it"
@@ -899,14 +903,14 @@ struct LibraryDetailView: View {
                 viewModel.startScan(system: system, folders: selectedRomFolder.map { [$0] })
             },
             ToolbarAction(
-                id: "scanAllFolders", title: "Scan All Folders",
+                id: "scanAllFolders", title: "Scan All Folders", systemImage: "folder.fill",
                 isEnabled: !viewModel.isBusy && !system.romFolderURLs.isEmpty,
                 help: "Scan every configured \"Rom files\" folder for this system, one after another"
             ) {
                 viewModel.startScan(system: system)
             },
             ToolbarAction(
-                id: "fix", title: "Fix",
+                id: "fix", title: "Fix", systemImage: "wrench.and.screwdriver",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
                 help: LibraryViewModel.modificationsEnabled
                     ? "Rename misnamed ROMs to match the DAT"
@@ -917,33 +921,22 @@ struct LibraryDetailView: View {
             ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
                 launchSelectedGameInMAME()
             },
-            // jensyleo's own spec (2026-08-19): 1G1R is presentation-only —
-            // toggling it never touches a file, never re-scans, just hides
-            // every non-preferred variant of a family that has at least one
-            // recognized region (see `OneGameOneROMSummary`'s own doc
-            // comment). Title/icon flip with `show1G1ROnly` itself, same
-            // "state visible through the button's own label" idea as
-            // `combineRomAndCHDFilterButton`'s color change elsewhere in
-            // this file — a plain `NSButton`-backed toolbar item has no
-            // built-in on/off look of its own to lean on instead.
-            ToolbarAction(
-                id: "oneGameOneROM", title: show1G1ROnly ? "Show All Variants" : "Show Only 1G1R",
-                systemImage: show1G1ROnly ? "star.fill" : "star",
-                help: "Hide every parent/clone family's non-preferred region variant, per Settings → View Options → \"1G1R region priority\" — a variant with no recognized region is never hidden"
-            ) {
-                show1G1ROnly.toggle()
-            },
+            // "Show Only 1G1R" moved to Settings → View Options → "1G1R"
+            // (jensyleo's own request, 2026-08-24) — now a persisted
+            // `@AppStorage` toggle there (see `show1G1ROnly`'s own doc
+            // comment) rather than a toolbar action button, so it no
+            // longer belongs in this list at all.
         ]
         if let onExportCollectionReport {
             actions.append(
-                ToolbarAction(id: "exportReport", title: "Export Report…", help: "Save a printable HTML report combining every configured system's last scan") {
+                ToolbarAction(id: "exportReport", title: "Export Report…", systemImage: "doc.richtext", help: "Save a printable HTML report combining every configured system's last scan") {
                     onExportCollectionReport()
                 }
             )
         }
         actions.append(
             ToolbarAction(
-                id: "exportFixDat", title: "Export Fix DAT…",
+                id: "exportFixDat", title: "Export Fix DAT…", systemImage: "square.and.arrow.up",
                 isEnabled: viewModel.auditReport != nil && !viewModel.isBusy,
                 help: "Save a DAT containing only this scan's missing/incorrect entries"
             ) {
@@ -952,7 +945,7 @@ struct LibraryDetailView: View {
         )
         actions.append(
             ToolbarAction(
-                id: "exportListCSV", title: "Export List to CSV…",
+                id: "exportListCSV", title: "Export List to CSV…", systemImage: "tablecells",
                 isEnabled: !cachedGameNodes.isEmpty && !viewModel.isBusy,
                 help: "Save the currently displayed games list as a CSV file"
             ) {
@@ -961,18 +954,22 @@ struct LibraryDetailView: View {
         )
         actions.append(
             ToolbarAction(
-                id: "compareDATVersions", title: "Compare DAT Versions…",
+                id: "compareDATVersions", title: "Compare DAT Versions…", systemImage: "arrow.left.arrow.right",
                 isEnabled: viewModel.cachedDATFile != nil && !viewModel.isBusy,
                 help: "Compare the currently loaded DAT against an older/different version — added, removed, and possibly-renamed games"
             ) {
                 isShowingDATCompareSheet = true
             }
         )
-        actions.append(
-            ToolbarAction(id: "columnPresets", title: "Column Presets…", help: "Save or switch between named column layouts for both tables") {
-                isShowingColumnPresetsSheet = true
-            }
-        )
+        // "Column Presets…" moved to Settings → View Options → "Columns"
+        // (jensyleo's own request, 2026-08-24) — it's a layout preference,
+        // not a per-scan action, so it belongs alongside every other
+        // display toggle rather than sitting in the same toolbar as
+        // Scan/Fix/Export. `.romForgeShowColumnPresetsSheet` (posted by
+        // that Settings button) is how it still reaches this exact sheet
+        // without duplicating `columnPresets`'s own load/save/apply logic
+        // there — same "notify the live window" shape as
+        // `SavedViewStatePurger.scanResultsPurgedNotification` above.
         return actions
     }
 
@@ -1157,6 +1154,18 @@ struct LibraryDetailView: View {
             if let dat = viewModel.cachedDATFile {
                 onDATAnalyzed?(dat.hasClones)
             }
+            // Real regression found live (2026-08-24): the star/"Show Only
+            // 1G1R" hiding never showed up for a system that hadn't been
+            // scanned yet — `onAppear`'s own
+            // `refreshCachedGameDataAfterAuditReportChangeAsync()` call
+            // runs before `startPreloadDAT` has actually finished loading
+            // the DAT, so it computes `cachedOneGameOneROMSummary` from an
+            // still-empty `preloadedGames`. Nothing recomputed it again
+            // once the DAT genuinely finished loading — this `onChange`
+            // fires exactly then, so it's the right place to redo that
+            // computation for real, same as `.onChange(of: regionOrderRaw)`
+            // already does for a region-priority change.
+            refreshCachedGameDataAfterAuditReportChangeAsync()
         }
         .onAppear {
             viewModel.loadPersistedReport(system: system)
@@ -1173,6 +1182,9 @@ struct LibraryDetailView: View {
             romColumnCustomization = TableColumnCustomization<RomRow>()
             UserDefaults.standard.removeObject(forKey: Self.gameColumnCustomizationKey)
             UserDefaults.standard.removeObject(forKey: Self.romColumnCustomizationKey)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .romForgeShowColumnPresetsSheet)) { _ in
+            isShowingColumnPresetsSheet = true
         }
         .onChange(of: viewModel.auditReport) { onAuditReportChanged?() }
         .sheet(isPresented: $isShowingColumnPresetsSheet) {

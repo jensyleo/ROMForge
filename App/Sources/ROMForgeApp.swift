@@ -19,6 +19,13 @@ import SwiftUI
 /// callback down through `ContentView` for something this infrequent.
 extension Notification.Name {
     static let romForgeResetColumnSizes = Notification.Name("ROMForge.resetColumnSizes")
+    /// Posted by Settings → View Options → "Columns"'s "Manage Column
+    /// Presets…" button (`ViewOptionsSettingsView`, a separate `Scene` from
+    /// `LibraryDetailView`'s own window) — same reasoning as
+    /// `romForgeResetColumnSizes` just above: `LibraryDetailView` alone
+    /// owns the actual preset list/sheet state, so Settings can only ever
+    /// ask it to open the sheet, never show the sheet itself.
+    static let romForgeShowColumnPresetsSheet = Notification.Name("ROMForge.showColumnPresetsSheet")
 }
 
 @main

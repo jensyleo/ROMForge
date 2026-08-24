@@ -93,6 +93,46 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     }
     private var lastAppliedSignatureByID: [String: ActionSignature] = [:]
 
+    /// jensyleo's own report (2026-08-24): a ⌘-drag reorder never survived
+    /// quit/relaunch, despite `autosavesConfiguration = true` — the
+    /// property that's supposed to make `NSToolbar` persist this on its
+    /// own for free. Confirmed live this genuinely isn't the `Set`-
+    /// iteration bug documented on `reconcile(region:previousIDs:newIDs:toolbar:)`
+    /// below (that fix is still intact, and only ever affected *newly
+    /// appearing* items in the first place, not a manual drag of items
+    /// already present): the real cause is `NSToolbar`'s own native
+    /// autosave, which keys its saved dictionary off each item's
+    /// `NSToolbarItem`, silently failing to round-trip items whose `view`
+    /// is a hand-built `NSButton` rather than one of its own standard
+    /// item kinds — exactly what every item here is (see `toolbar(_:
+    /// itemForItemIdentifier:willBeInsertedIntoToolbar:)` below, and its
+    /// own doc comment on why a custom view was needed at all). A fresh
+    /// launch's brand-new `NSToolbar` never receives any saved order back
+    /// from AppKit for these items, so it just falls back to
+    /// `toolbarDefaultItemIdentifiers`'s own declared (region) order every
+    /// time — indistinguishable from "reset to defaults" even though
+    /// nothing was ever actually purged.
+    ///
+    /// Fixed by not depending on that native mechanism at all:
+    /// `autosavesConfiguration` stays off, and this controller keeps its
+    /// own plain `[String]` of item identifiers under `itemOrderDefaultsKey`,
+    /// updated live off `NSToolbar.didRemoveItemNotification`/
+    /// `.willAddItemNotification` (both of which a ⌘-drag reorder fires,
+    /// since AppKit implements it internally as a remove immediately
+    /// followed by a re-insert) and consulted by `reconcile(...)` to place
+    /// a newly (re)appearing item back where the user last put it, rather
+    /// than wherever `regionOrder`/declaration order would put it.
+    private static let itemOrderDefaultsKey = "ROMForge.mainToolbar.v2.savedOrder"
+
+    private func loadSavedOrder() -> [String] {
+        UserDefaults.standard.stringArray(forKey: Self.itemOrderDefaultsKey) ?? []
+    }
+
+    @objc private func persistCurrentOrder() {
+        guard let toolbar else { return }
+        UserDefaults.standard.set(toolbar.items.map(\.itemIdentifier.rawValue), forKey: Self.itemOrderDefaultsKey)
+    }
+
     func install(on window: NSWindow) {
         if let existing = window.toolbar, existing.identifier == Self.toolbarIdentifier {
             toolbar = existing
@@ -101,7 +141,12 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         let toolbar = NSToolbar(identifier: Self.toolbarIdentifier)
         toolbar.delegate = self
         toolbar.allowsUserCustomization = true
-        toolbar.autosavesConfiguration = true
+        // See `itemOrderDefaultsKey`'s own doc comment just above — native
+        // autosave doesn't actually round-trip this toolbar's custom-view
+        // items across a relaunch, so it stays off rather than left
+        // silently doing nothing (or worse, racing this controller's own
+        // manual restore).
+        toolbar.autosavesConfiguration = false
         // jensyleo's own report (2026-08-19): `.iconAndLabel` left every
         // item without a `systemImage` (all but "Play") showing no visible
         // text at all — AppKit's icon+label layout doesn't fall back to a
@@ -114,6 +159,19 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         window.toolbar = toolbar
         window.toolbarStyle = .unified
         self.toolbar = toolbar
+        // Deferred one runloop turn (`DispatchQueue.main.async`, same
+        // reasoning as `ToolbarHost.Coordinator`'s own deferral): both
+        // notifications fire mid-mutation (`willAddItem` before the item
+        // is actually in `toolbar.items` yet, `didRemoveItem` before a
+        // reorder's matching re-insert has happened), so reading
+        // `toolbar.items` synchronously inside either handler would
+        // capture a transient, incomplete order rather than the real one.
+        NotificationCenter.default.addObserver(forName: NSToolbar.didRemoveItemNotification, object: toolbar, queue: nil) { [weak self] _ in
+            DispatchQueue.main.async { self?.persistCurrentOrder() }
+        }
+        NotificationCenter.default.addObserver(forName: NSToolbar.willAddItemNotification, object: toolbar, queue: nil) { [weak self] _ in
+            DispatchQueue.main.async { self?.persistCurrentOrder() }
+        }
     }
 
     /// Declares (or replaces) one named region's current action list.
@@ -171,13 +229,48 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
                 toolbar.removeItem(at: index)
             }
         }
+        var insertedAny = false
         for id in newIDs where !previousIDs.contains(id) {
             guard !toolbar.items.contains(where: { $0.itemIdentifier.rawValue == id }) else { continue }
-            toolbar.insertItem(withItemIdentifier: NSToolbarItem.Identifier(rawValue: id), at: insertionIndex(forRegion: region, toolbar: toolbar))
+            toolbar.insertItem(withItemIdentifier: NSToolbarItem.Identifier(rawValue: id), at: insertionIndex(forRegion: region, id: id, toolbar: toolbar))
+            insertedAny = true
         }
+        // Only a real structural change (not every no-op `setRegion` call)
+        // should touch the saved order — matters the very first time a
+        // region populates at app launch, since that's exactly when a
+        // user's own last-saved order needs applying (see
+        // `itemOrderDefaultsKey`'s own doc comment), and it must win over
+        // whatever plain `regionOrder` position `insertionIndex` picked as
+        // a fallback for ids `loadSavedOrder()` didn't already know about.
+        if insertedAny { persistCurrentOrder() }
     }
 
-    /// Where a newly-appearing item in `region` belongs: right before the
+    /// Where a newly-appearing `id` in `region` belongs. Consults the
+    /// user's own last saved order first (see `itemOrderDefaultsKey`'s own
+    /// doc comment): if `id` appears there, this places it right before
+    /// whichever *later*-in-that-saved-order id is already present on the
+    /// toolbar (or at the end if every id after it in the saved order is
+    /// itself still absent) — reproducing a past ⌘-drag reorder on a fresh
+    /// `NSToolbar` that never got AppKit's own native restore. Falls back
+    /// to the plain `regionOrder`-based placement below for an id the
+    /// saved order has never seen (a newly added action, or the very
+    /// first launch ever).
+    private func insertionIndex(forRegion region: String, id: String, toolbar: NSToolbar) -> Int {
+        let savedOrder = loadSavedOrder()
+        if let savedPosition = savedOrder.firstIndex(of: id) {
+            let presentIDs = Set(toolbar.items.map(\.itemIdentifier.rawValue))
+            for laterID in savedOrder[(savedPosition + 1)...] where presentIDs.contains(laterID) {
+                if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier.rawValue == laterID }) {
+                    return index
+                }
+            }
+            return toolbar.items.count
+        }
+        return insertionIndex(forRegion: region, toolbar: toolbar)
+    }
+
+    /// Where a newly-appearing item in `region` belongs when the saved
+    /// order (above) doesn't already know about it: right before the
     /// first existing item that belongs to a later region, or at the end
     /// if none exists yet — keeps `regionOrder` roughly respected on first
     /// appearance without moving anything already there.

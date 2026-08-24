@@ -31,6 +31,17 @@ enum PanelVisibilitySettings {
     static let showLogPanelKey = "ROMForge.view.showLogPanel"
 }
 
+/// "Show only 1G1R" (`LibraryDetailView`'s Games-table filter) — moved from
+/// a toolbar action button to this `@AppStorage`-backed toggle (jensyleo's
+/// own request, 2026-08-24), alongside its own move into Settings → View
+/// Options → "1G1R". Same one-key-enum convention as
+/// `PanelVisibilitySettings`/`DependencyColumnSettings` above, kept in its
+/// own tiny enum (rather than inlined as a raw string literal both here and
+/// in `LibraryDetailView`) so the two can never disagree on the key name.
+enum OneGameOneROMSettings {
+    static let showOnlyKey = "ROMForge.view.show1G1ROnly"
+}
+
 /// Which of `DependencyBadge.Kind` cases show in the "Dependencies" column —
 /// jensyleo's own request (2026-08-20), alongside naming real BIOS/hardware
 /// names in each chip's own label: some collections care about BIOS/CHD
@@ -54,19 +65,60 @@ enum DependencyColumnSettings {
 /// preferences. Named "View Options" rather than folded into "General":
 /// this is specifically about what's *shown on screen*, not how a scan
 /// itself behaves.
+private enum ViewOptionsSubtab: Hashable {
+    case general
+    case panels
+    case columns
+    case oneGameOneROM
+}
+
+/// New Settings tab, alongside "General" and "Systems" — jensyleo's own
+/// request (2026-08-12), a dedicated home for layout/visibility toggles
+/// distinct from `GeneralSettingsView`'s scanning/hashing/database-branch
+/// preferences. Named "View Options" rather than folded into "General":
+/// this is specifically about what's *shown on screen*, not how a scan
+/// itself behaves.
+///
+/// Reorganized into its own nested subtabs (jensyleo's own request,
+/// 2026-08-24) once a single flat `Form` grew to eight sections mixing
+/// panel visibility, column layout, and 1G1R together — "General" (the
+/// purge/reset actions that don't belong to any one of the others),
+/// "Panels", "Columns" (column presets + the Dependencies chip toggles,
+/// since both are about what a column shows), and "1G1R". Same explicit
+/// `selection` + `.tag()`-driven `TabView` as `AppSettingsView`'s own outer
+/// tab bar, and for the identical reason documented on that type: without
+/// them, clicking a second subtab visually does nothing (a known SwiftUI
+/// quirk with implicit `TabView` selection tracking) — confirmed live here
+/// too before adding this.
 struct ViewOptionsSettingsView: View {
     var store: SystemLibraryStore
-    @AppStorage(PanelVisibilitySettings.showDatabaseTreeKey) private var showDatabaseTree = true
-    @AppStorage(PanelVisibilitySettings.showRomFolderTreeKey) private var showRomFolderTree = true
-    @AppStorage(PanelVisibilitySettings.showGamesPanelKey) private var showGamesPanel = true
-    @AppStorage(PanelVisibilitySettings.showRomsPanelKey) private var showRomsPanel = true
-    @AppStorage(PanelVisibilitySettings.showDetailPanelKey) private var showDetailPanel = true
-    @AppStorage(PanelVisibilitySettings.showLogPanelKey) private var showLogPanel = true
-    @AppStorage(RegionOrderSettings.storageKey) private var regionOrderRaw = RegionOrderSettings.defaultRawValue
-    @AppStorage(DependencyColumnSettings.showBiosKey) private var showBiosBadge = true
-    @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
-    @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
-    @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
+    @State private var selectedSubtab: ViewOptionsSubtab = .general
+
+    var body: some View {
+        TabView(selection: $selectedSubtab) {
+            ViewOptionsGeneralTab(store: store)
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(ViewOptionsSubtab.general)
+            ViewOptionsPanelsTab()
+                .tabItem { Label("Panels", systemImage: "sidebar.squares.leading") }
+                .tag(ViewOptionsSubtab.panels)
+            ViewOptionsColumnsTab()
+                .tabItem { Label("Columns", systemImage: "tablecells") }
+                .tag(ViewOptionsSubtab.columns)
+            ViewOptions1G1RTab()
+                .tabItem { Label("1G1R", systemImage: "star") }
+                .tag(ViewOptionsSubtab.oneGameOneROM)
+        }
+    }
+}
+
+/// "General" subtab — the purge/reset actions that aren't really about
+/// panels, columns, or 1G1R specifically, just leftover layout/scan-data
+/// housekeeping. Exactly the three sections ("Saved layout", "Saved scan
+/// results", "ROM folder order") that used to sit at the top level here
+/// before the 2026-08-24 subtab split, unchanged otherwise.
+private struct ViewOptionsGeneralTab: View {
+    var store: SystemLibraryStore
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
     @State private var didPurgeDatabase = false
@@ -76,36 +128,6 @@ struct ViewOptionsSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Panels") {
-                Toggle("Database", isOn: $showDatabaseTree)
-                Toggle("ROM folder", isOn: $showRomFolderTree)
-                Toggle("Games", isOn: $showGamesPanel)
-                Toggle("Roms", isOn: $showRomsPanel)
-                Toggle("Detail", isOn: $showDetailPanel)
-                Toggle("Log", isOn: $showLogPanel)
-                Button("Reset to Defaults") {
-                    showDatabaseTree = true
-                    showRomFolderTree = true
-                    showGamesPanel = true
-                    showRomsPanel = true
-                    showDetailPanel = true
-                    showLogPanel = true
-                }
-            }
-            Text("Hides a panel from the library view entirely, freeing its space for the ones left showing — it never discards anything, and re-checking a box (or Reset to Defaults) brings it straight back exactly where it was.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            // jensyleo's own request (2026-08-13): "esas View Options
-            // llévalas a la sección MAME de System, tiene más sentido" —
-            // the "Database tree branches" toggles that briefly lived here
-            // moved to `SystemSettingsView`'s own "MAME" section instead
-            // (Settings → Systems → MAME) once it became clear every
-            // `DatabaseFilter` branch is a MAME-specific concept, and
-            // that's where every *other* MAME-specific setting (the
-            // executable path, both merge modes) already lives — not
-            // here, which is about panel layout in general. The storage
-            // enum (`DatabaseFilterVisibilitySettings`, below) stayed in
-            // this file regardless of where its own UI lives.
             // jensyleo's own request (2026-08-12): kept as two separate,
             // independently-triggered actions rather than one combined
             // button — "Purge Saved Views" only ever resets layout/
@@ -126,7 +148,7 @@ struct ViewOptionsSettingsView: View {
                 // doc comment), but this button itself gave no feedback
                 // whatsoever either, so there was nothing confirming it had
                 // even run. This alert is that confirmation.
-                Text("Clears every remembered split-panel size and every system's remembered last-selected \"Database\"/\"ROM folder\" view — takes effect the next time you switch to (or reopen) that system, or on next launch, not instantly in a window already open. Falls back then to this system's first ROM folder (or first enabled \"Database\" branch) and each split's original proportions, exactly like a fresh install. Never touches any scan result — see \"Purge Database View\" below for that. The toggles above and the \"Database\" branch visibility settings are untouched too — use their own \"Reset to Defaults\" for those.")
+                Text("Clears every remembered split-panel size and every system's remembered last-selected \"Database\"/\"ROM folder\" view — takes effect the next time you switch to (or reopen) that system, or on next launch, not instantly in a window already open. Falls back then to this system's first ROM folder (or first enabled \"Database\" branch) and each split's original proportions, exactly like a fresh install. Never touches any scan result — see \"Purge Database View\" below for that. Panel visibility and the \"Database\" branch visibility settings are untouched too — use their own \"Reset to Defaults\" for those.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -166,7 +188,152 @@ struct ViewOptionsSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("1G1R region priority") {
+        }
+        .formStyle(.grouped)
+        .padding()
+        .alert("Saved Views Purged", isPresented: $didPurgeViews) {
+            Button("OK") {}
+        } message: {
+            Text(
+                purgedViewCount > 0
+                    ? "Removed \(purgedViewCount) saved item\(purgedViewCount == 1 ? "" : "s") (remembered selections and/or split-panel sizes). Switch systems (or reopen this one) to see the fallback view."
+                    : "Nothing was saved yet — there was nothing to remove."
+            )
+        }
+        .alert("Database View Purged", isPresented: $didPurgeDatabase) {
+            Button("OK") {}
+        } message: {
+            Text(
+                purgedDatabaseCount > 0
+                    ? "Cleared the last scan result for \(purgedDatabaseCount) system\(purgedDatabaseCount == 1 ? "" : "s"). Each one now needs a fresh scan before \"Database\"/\"ROM folder\" show anything again."
+                    : "No system had a saved scan result — there was nothing to clear."
+            )
+        }
+        .alert("ROM Folder Order Reset", isPresented: $didResetFolderOrder) {
+            Button("OK") {}
+        } message: {
+            Text(
+                resetFolderOrderCount > 0
+                    ? "Re-sorted \"ROM folder\" alphabetically for \(resetFolderOrderCount) system\(resetFolderOrderCount == 1 ? "" : "s")."
+                    : "Every system's \"ROM folder\" list was already alphabetical — nothing to change."
+            )
+        }
+    }
+}
+
+/// "Panels" subtab — which of `LibraryDetailView`'s six main panels show,
+/// unchanged from before the 2026-08-24 subtab split.
+private struct ViewOptionsPanelsTab: View {
+    @AppStorage(PanelVisibilitySettings.showDatabaseTreeKey) private var showDatabaseTree = true
+    @AppStorage(PanelVisibilitySettings.showRomFolderTreeKey) private var showRomFolderTree = true
+    @AppStorage(PanelVisibilitySettings.showGamesPanelKey) private var showGamesPanel = true
+    @AppStorage(PanelVisibilitySettings.showRomsPanelKey) private var showRomsPanel = true
+    @AppStorage(PanelVisibilitySettings.showDetailPanelKey) private var showDetailPanel = true
+    @AppStorage(PanelVisibilitySettings.showLogPanelKey) private var showLogPanel = true
+
+    var body: some View {
+        Form {
+            Section("Panels") {
+                Toggle("Database", isOn: $showDatabaseTree)
+                Toggle("ROM folder", isOn: $showRomFolderTree)
+                Toggle("Games", isOn: $showGamesPanel)
+                Toggle("Roms", isOn: $showRomsPanel)
+                Toggle("Detail", isOn: $showDetailPanel)
+                Toggle("Log", isOn: $showLogPanel)
+                Button("Reset to Defaults") {
+                    showDatabaseTree = true
+                    showRomFolderTree = true
+                    showGamesPanel = true
+                    showRomsPanel = true
+                    showDetailPanel = true
+                    showLogPanel = true
+                }
+            }
+            Text("Hides a panel from the library view entirely, freeing its space for the ones left showing — it never discards anything, and re-checking a box (or Reset to Defaults) brings it straight back exactly where it was.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            // jensyleo's own request (2026-08-13): "esas View Options
+            // llévalas a la sección MAME de System, tiene más sentido" —
+            // the "Database tree branches" toggles that briefly lived here
+            // moved to `SystemSettingsView`'s own "MAME" section instead
+            // (Settings → Systems → MAME) once it became clear every
+            // `DatabaseFilter` branch is a MAME-specific concept, and
+            // that's where every *other* MAME-specific setting (the
+            // executable path, both merge modes) already lives — not
+            // here, which is about panel layout in general. The storage
+            // enum (`DatabaseFilterVisibilitySettings`, below in this
+            // file) stayed regardless of where its own UI lives.
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+}
+
+/// "Columns" subtab — everything about what shows *inside* the Games/Roms
+/// tables' own columns: the Dependencies chip toggles (unchanged from
+/// before the split) plus "Column Presets…" (jensyleo's own request,
+/// 2026-08-24: moved here from a toolbar button, since picking a saved
+/// column layout is a display preference, not a per-scan action). Applying/
+/// saving/renaming/deleting a preset still happens in `LibraryDetailView`'s
+/// own sheet — this button only opens it, via
+/// `.romForgeShowColumnPresetsSheet` (see that notification's own doc
+/// comment for why Settings can't just show the sheet itself).
+private struct ViewOptionsColumnsTab: View {
+    @AppStorage(DependencyColumnSettings.showBiosKey) private var showBiosBadge = true
+    @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
+    @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
+    @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
+
+    var body: some View {
+        Form {
+            Section("Column layouts") {
+                Button("Manage Column Presets…") {
+                    NotificationCenter.default.post(name: .romForgeShowColumnPresetsSheet, object: nil)
+                }
+                Text("Save or switch between named column layouts for both tables (Games and Roms) — opens the same sheet the toolbar's own \"Column Presets…\" button used to.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Dependencies column") {
+                Toggle("BIOS", isOn: $showBiosBadge)
+                Toggle("CHD", isOn: $showCHDBadge)
+                Toggle("Hardware", isOn: $showHardwareBadge)
+                Toggle("Samples", isOn: $showSamplesBadge)
+                Button("Reset to Defaults") {
+                    showBiosBadge = true
+                    showCHDBadge = true
+                    showHardwareBadge = true
+                    showSamplesBadge = true
+                }
+                Text("Which dependency chips show in the Games table's \"Dependencies\" column (View → Columns, hidden by default). Turning one off only hides that chip — it never affects scanning, matching, or any other column.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+}
+
+/// "1G1R" subtab — region priority (unchanged from before the split) plus
+/// "Show Only 1G1R" itself (jensyleo's own request, 2026-08-24: moved here
+/// from a toolbar action button, now a persisted `@AppStorage` toggle — see
+/// `show1G1ROnly`'s own doc comment in `LibraryDetailView` for why it's no
+/// longer ephemeral `@State` once it lives in Settings instead of the
+/// toolbar).
+private struct ViewOptions1G1RTab: View {
+    @AppStorage(OneGameOneROMSettings.showOnlyKey) private var show1G1ROnly = false
+    @AppStorage(RegionOrderSettings.storageKey) private var regionOrderRaw = RegionOrderSettings.defaultRawValue
+
+    var body: some View {
+        Form {
+            Section("1G1R filter") {
+                Toggle("Show Only 1G1R", isOn: $show1G1ROnly)
+                Text("Hides every parent/clone family's non-preferred region variant in the Games table, per the region priority below — a variant with no recognized region is never hidden. Presentation-only: never touches a file, never re-scans.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Region priority") {
                 // Plain up/down reordering rather than a draggable `List` —
                 // this app has no existing draggable-list-in-a-Form
                 // pattern to follow (the "ROM folder" ⌘-drag reordering
@@ -199,55 +366,13 @@ struct ViewOptionsSettingsView: View {
                 Button("Reset to Defaults") {
                     regionOrderRaw = RegionOrderSettings.defaultRawValue
                 }
-                Text("Which region wins when \"Show only 1G1R\" (Games table toolbar) has to pick one variant per parent/clone family — earlier in this list beats later. A variant whose own description names none of these regions never competes at all: it stays visible either way, and never takes the family's own star.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section("Dependencies column") {
-                Toggle("BIOS", isOn: $showBiosBadge)
-                Toggle("CHD", isOn: $showCHDBadge)
-                Toggle("Hardware", isOn: $showHardwareBadge)
-                Toggle("Samples", isOn: $showSamplesBadge)
-                Button("Reset to Defaults") {
-                    showBiosBadge = true
-                    showCHDBadge = true
-                    showHardwareBadge = true
-                    showSamplesBadge = true
-                }
-                Text("Which dependency chips show in the Games table's \"Dependencies\" column (View → Columns, hidden by default). Turning one off only hides that chip — it never affects scanning, matching, or any other column.")
+                Text("Which region wins when \"Show Only 1G1R\" above has to pick one variant per parent/clone family — earlier in this list beats later. A variant whose own description names none of these regions never competes at all: it stays visible either way, and never takes the family's own star.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .padding()
-        .alert("Saved Views Purged", isPresented: $didPurgeViews) {
-            Button("OK") {}
-        } message: {
-            Text(
-                purgedViewCount > 0
-                    ? "Removed \(purgedViewCount) saved item\(purgedViewCount == 1 ? "" : "s") (remembered selections and/or split-panel sizes). Switch systems (or reopen this one) to see the fallback view."
-                    : "Nothing was saved yet — there was nothing to remove."
-            )
-        }
-        .alert("Database View Purged", isPresented: $didPurgeDatabase) {
-            Button("OK") {}
-        } message: {
-            Text(
-                purgedDatabaseCount > 0
-                    ? "Cleared the last scan result for \(purgedDatabaseCount) system\(purgedDatabaseCount == 1 ? "" : "s"). Each one now needs a fresh scan before \"Database\"/\"ROM folder\" show anything again."
-                    : "No system had a saved scan result — there was nothing to clear."
-            )
-        }
-        .alert("ROM Folder Order Reset", isPresented: $didResetFolderOrder) {
-            Button("OK") {}
-        } message: {
-            Text(
-                resetFolderOrderCount > 0
-                    ? "Re-sorted \"ROM folder\" alphabetically for \(resetFolderOrderCount) system\(resetFolderOrderCount == 1 ? "" : "s")."
-                    : "Every system's \"ROM folder\" list was already alphabetical — nothing to change."
-            )
-        }
     }
 }
 
