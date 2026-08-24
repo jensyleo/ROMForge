@@ -60,7 +60,24 @@ public enum OneGameOneROMSelector {
             for rawToken in group.split(separator: ",") {
                 let token = rawToken.trimmingCharacters(in: .whitespaces)
                 guard !token.isEmpty else { continue }
-                guard let index = order.firstIndex(where: { $0.compare(token, options: .caseInsensitive) == .orderedSame }) else { continue }
+                // Real MAME descriptions routinely tack a revision date or
+                // set number directly onto the region with no comma —
+                // e.g. "(World 910522)", "(USA 910228)" (both real `sf2`
+                // clones) — so an exact-token match against real DAT data
+                // recognizes almost nothing, which is exactly what
+                // jensyleo saw: no clone family ever had two RECOGNIZED
+                // members, so nothing ever got hidden. Matching a region
+                // as a leading whole word (the region name followed by
+                // the token's end or a space) catches that case while
+                // still refusing a false positive like "Worldwide" or
+                // "USAF" mid-word.
+                guard let index = order.firstIndex(where: { region in
+                    guard token.count >= region.count else { return false }
+                    let prefix = String(token.prefix(region.count))
+                    guard prefix.compare(region, options: .caseInsensitive) == .orderedSame else { return false }
+                    let rest = token.dropFirst(region.count)
+                    return rest.isEmpty || rest.first == " "
+                }) else { continue }
                 if bestIndex == nil || index < bestIndex! {
                     bestIndex = index
                     bestRegion = order[index]

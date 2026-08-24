@@ -2587,23 +2587,21 @@ struct LibraryDetailView: View {
 
     /// Short chips for each of `node.dependencyBadges` (BIOS/CHD/Hardware/
     /// Samples) that's both non-empty and still enabled under Settings →
-    /// View Options → "Dependencies column" (`DependencyColumnSettings`) —
-    /// each chip's own label already names the real BIOS/CHD/hardware
-    /// involved (see `DependencyBadge`'s own doc comment for why that lives
-    /// in the label and not just the tooltip), with `.help` still carrying
-    /// the fuller sentence for anything the compact label had to omit
-    /// (e.g. the CHD disk count).
+    /// View Options → "Dependencies column" (`DependencyColumnSettings`).
+    /// The chip shows only the category word — the real BIOS/CHD/hardware
+    /// names go in `.help` (a prior session inlined them into the label
+    /// itself and jensyleo reverted it the same day: with `deviceRefNames`
+    /// routinely holding half a dozen names, that made the column wrap
+    /// across several lines for exactly the games this feature most needs
+    /// to help with).
     ///
-    /// jensyleo's own feedback (2026-08-20): nothing about a chip suggested
-    /// it even had a tooltip worth hovering for. A trailing `info.circle`
-    /// (`.caption2`, secondary, matching the chip's own text size) was
-    /// chosen over a dotted underline or a changed cursor: `.help()` only
-    /// changes the cursor on actual hover, too late to be an *invitation*,
-    /// and a dotted underline is already how this app underlines nothing
-    /// else, so it would read as a rendering glitch rather than a
-    /// deliberate affordance — a small SF Symbol matches how the rest of
-    /// this app already signals "more info here" elsewhere (e.g. the
-    /// "Parent missing" `Label` above).
+    /// Each category gets its own subtle background tint instead of a
+    /// generic gray capsule, so the chip itself hints "there's more here,
+    /// grouped by kind" without adding any visible text or icon: color is
+    /// something the eye picks up before it consciously reads the tooltip
+    /// affordance, and macOS/SwiftUI already leans on semantic tint colors
+    /// elsewhere in this app (e.g. status colors) rather than icons for
+    /// this kind of hint.
     @ViewBuilder
     private func dependenciesIndicator(for node: GameNode) -> some View {
         let badges = node.dependencyBadges.filter { badge in
@@ -2619,18 +2617,28 @@ struct LibraryDetailView: View {
         } else {
             HStack(spacing: 4) {
                 ForEach(badges) { badge in
-                    HStack(spacing: 2) {
-                        Text(badge.label)
-                        Image(systemName: "info.circle")
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.caption2)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.15), in: Capsule())
-                    .help(badge.tooltip)
+                    Text(badge.label)
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(badgeTint(for: badge.kind).opacity(0.18), in: Capsule())
+                        .help(badge.tooltip)
                 }
             }
+        }
+    }
+
+    /// One accent per dependency category, purely a visual grouping cue —
+    /// arbitrary beyond "distinct and not already meaningful elsewhere in
+    /// this table" (this app's status colors already own red/orange/green
+    /// as pass/fail signals, so those are avoided here for anything but
+    /// Samples, which has no failure state of its own to be confused with).
+    private func badgeTint(for kind: DependencyBadge.Kind) -> Color {
+        switch kind {
+        case .bios: return .blue
+        case .chd: return .purple
+        case .hardware: return .indigo
+        case .samples: return .teal
         }
     }
 

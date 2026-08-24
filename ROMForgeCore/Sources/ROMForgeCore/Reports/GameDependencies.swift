@@ -14,15 +14,12 @@ import Foundation
 /// scan (or the pre-scan DAT catalog) already computed — no re-scan, no
 /// extra I/O.
 ///
-/// jensyleo's own feedback after trying this in the real app (2026-08-20):
-/// a bare category chip ("Device", "BIOS") reads as noise from a glance —
-/// the only real information lived in the tooltip, which nothing on screen
-/// hinted was there. `label` now carries the actual DAT name(s) for that
-/// category (one chip per category, not one per individual dependency —
-/// with `deviceRefNames` routinely holding half a dozen chip names, one
-/// chip each would make the column wrap across several lines for exactly
-/// the games this feature most needs to help with; the tooltip still lists
-/// every name in full for anything `label` had to omit).
+/// jensyleo tried putting the real DAT name(s) inline in `label` (2026-08-20)
+/// and reverted it the same day: with `deviceRefNames` routinely holding
+/// half a dozen names, the chip text made the column wrap across several
+/// lines for exactly the games this feature most needs to help with.
+/// `label` is back to the bare category word; `tooltip` still carries the
+/// full name list.
 public struct DependencyBadge: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
         case bios, chd, hardware, samples
@@ -58,18 +55,18 @@ extension GameNode {
 
         if !requiredBiosNames.isEmpty {
             badges.append(
-                DependencyBadge(kind: .bios, label: "BIOS: \(requiredBiosNames)", tooltip: "Requires BIOS: \(requiredBiosNames)")
+                DependencyBadge(kind: .bios, label: "BIOS", tooltip: "Requires BIOS: \(requiredBiosNames)")
             )
         }
         if !chdNames.isEmpty {
             let diskCount = chdNames.split(separator: ",").count
             badges.append(
-                DependencyBadge(kind: .chd, label: "CHD: \(chdNames)", tooltip: "Uses CHD (\(diskCount) disk(s)): \(chdNames)")
+                DependencyBadge(kind: .chd, label: "CHD", tooltip: "Uses CHD (\(diskCount) disk(s)): \(chdNames)")
             )
         }
         if !deviceRefNames.isEmpty {
             badges.append(
-                DependencyBadge(kind: .hardware, label: "Hardware: \(deviceRefNames)", tooltip: "Uses hardware: \(deviceRefNames)")
+                DependencyBadge(kind: .hardware, label: "Hardware", tooltip: "Uses hardware: \(deviceRefNames)")
             )
         }
         if samplesText == "Yes" {

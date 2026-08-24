@@ -57,6 +57,20 @@ struct OneGameOneROMSelectorTests {
         #expect(region == nil)
     }
 
+    @Test("recognizes a region even when a revision date is appended with no comma, as real MAME descriptions do")
+    func recognizesRegionWithTrailingRevisionDate() {
+        let region = OneGameOneROMSelector.detectedRegion(
+            inDescription: "Street Fighter II: The World Warrior (World 910522)", order: RegionCatalog.defaultOrder
+        )
+        #expect(region == "World")
+    }
+
+    @Test("does not treat a word that merely starts with a region name as a match")
+    func rejectsPartialWordMatch() {
+        let region = OneGameOneROMSelector.detectedRegion(inDescription: "Some Game (Worldwide)", order: RegionCatalog.defaultOrder)
+        #expect(region == nil)
+    }
+
     // MARK: - compute
 
     @Test("picks the higher-priority region as the family's preferred game")
@@ -128,6 +142,18 @@ struct OneGameOneROMSelectorTests {
         let games = [game("sf2u", "Street Fighter II (USA)"), game("sf2j", "Street Fighter II (Japan)", cloneOf: "sf2u")]
         let summary = OneGameOneROMSelector.compute(games: games, regionOrder: [])
         #expect(summary == .empty)
+    }
+
+    @Test("a real MAME sf2 family (region + trailing revision date, no comma) still gets a winner and hidden clones")
+    func realMameSf2FamilyStillResolves() {
+        let games = [
+            game("sf2", "Street Fighter II: The World Warrior (World 910522)"),
+            game("sf2u", "Street Fighter II: The World Warrior (USA 910228)", cloneOf: "sf2"),
+            game("sf2j", "Street Fighter II: The World Warrior (Japan 910522)", cloneOf: "sf2"),
+        ]
+        let summary = OneGameOneROMSelector.compute(games: games, regionOrder: RegionCatalog.defaultOrder)
+        #expect(summary.preferredGameNames == ["sf2"])
+        #expect(summary.hiddenWhenFilteredNames == ["sf2u", "sf2j"])
     }
 
     @Test("empty games list yields an empty summary")

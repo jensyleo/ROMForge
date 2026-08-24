@@ -35,7 +35,7 @@ struct GameDependenciesTests {
         node.resolvedBiosMachineName = "neogeo"
         let badges = node.dependencyBadges
         #expect(badges.map(\.kind) == [.bios])
-        #expect(badges[0].label == "BIOS: neogeo")
+        #expect(badges[0].label == "BIOS")
         #expect(badges[0].tooltip == "Requires BIOS: neogeo")
     }
 
@@ -43,7 +43,7 @@ struct GameDependenciesTests {
     func chdDependency() {
         let badges = node(game("cubeqst", disks: [DATDisk(name: "cubeqst", sha1: "abc")])).dependencyBadges
         #expect(badges.map(\.kind) == [.chd])
-        #expect(badges[0].label == "CHD: cubeqst")
+        #expect(badges[0].label == "CHD")
         #expect(badges[0].tooltip == "Uses CHD (1 disk(s)): cubeqst")
     }
 
@@ -51,7 +51,7 @@ struct GameDependenciesTests {
     func multipleChdDisks() {
         let disks = [DATDisk(name: "disk1", sha1: "a"), DATDisk(name: "disk2", sha1: "b")]
         let badges = node(game("biggame", disks: disks)).dependencyBadges
-        #expect(badges[0].label == "CHD: disk1, disk2")
+        #expect(badges[0].label == "CHD")
         #expect(badges[0].tooltip == "Uses CHD (2 disk(s)): disk1, disk2")
     }
 
@@ -59,7 +59,7 @@ struct GameDependenciesTests {
     func hardwareDependency() {
         let badges = node(game("sf2", deviceRefs: ["ym2151"])).dependencyBadges
         #expect(badges.map(\.kind) == [.hardware])
-        #expect(badges[0].label == "Hardware: ym2151")
+        #expect(badges[0].label == "Hardware")
         #expect(badges[0].tooltip == "Uses hardware: ym2151")
     }
 
@@ -67,7 +67,8 @@ struct GameDependenciesTests {
     func multipleHardwareRefs() {
         let badges = node(game("sf2", deviceRefs: ["ym2151", "okim6295"])).dependencyBadges
         #expect(badges.map(\.kind) == [.hardware])
-        #expect(badges[0].label == "Hardware: ym2151, okim6295")
+        #expect(badges[0].label == "Hardware")
+        #expect(badges[0].tooltip == "Uses hardware: ym2151, okim6295")
     }
 
     @Test("a game declaring samples gets a Samples badge")
