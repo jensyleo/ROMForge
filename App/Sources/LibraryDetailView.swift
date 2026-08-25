@@ -3321,7 +3321,8 @@ struct LibraryDetailView: View {
             let baseNodes = Self.computeBaseGameNodes(
                 hasAuditReport: hasAuditReport, auditEntries: entries,
                 selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
-                gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
+                gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine,
+                precomputedScoped: scoped
             )
             let nodes = Self.computeGameNodes(
                 baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
@@ -3397,10 +3398,12 @@ struct LibraryDetailView: View {
             let parentCloneSummary = ParentCloneSummary.compute(games: preloadedGames, statusByName: aggStatus)
             let oneGameOneROMSummary = OneGameOneROMSelector.compute(games: preloadedGames, regionOrder: regionOrder)
             let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
+            let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
             let baseNodes = Self.computeBaseGameNodes(
                 hasAuditReport: hasAuditReport, auditEntries: entries,
                 selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
-                gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
+                gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine,
+                precomputedScoped: scoped
             )
             let nodes = Self.computeGameNodes(
                 baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
@@ -3408,7 +3411,7 @@ struct LibraryDetailView: View {
             )
             let hiddenCount = baseNodes.filter { oneGameOneROMSummary.hiddenWhenFilteredNames.contains($0.name) }.count
             let nodesByID = Self.indexByID(nodes)
-            let counts = Self.computeScopedStatusCounts(scopedEntries: Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder), gamesByName: Self.gamesByName(preloadedGames))
+            let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
             await MainActor.run {
                 // Same out-of-order guard as `triggerCachedGameDataRecompute()`
@@ -3941,15 +3944,34 @@ struct LibraryDetailView: View {
     /// `.onChange(of: selectedRomFolder)` doc comment: this, and everything
     /// it calls, must stay free of any direct `@State` access so it can run
     /// off the main thread on a large collection.
+    /// `precomputedScoped`, when given, is this exact same scope's entries
+    /// the caller already built via `Self.scoped(...)` for its own use
+    /// (e.g. `computeScopedStatusCounts`'s input) — real measured cost
+    /// found live (2026-08-25 perf investigation, instrumented with
+    /// `CFAbsoluteTimeGetCurrent()` around each stage of a folder click on
+    /// a ~324k-entry real MAME collection): a single click was silently
+    /// running `scoped(...)`'s own O(entries) filter TWICE — once here by
+    /// the caller for its own use, once again inside this function from
+    /// the same raw `auditEntries`/`selectedDatabaseFilter`/
+    /// `selectedRomFolder`/`gamesInFolder` — for no reason, since both
+    /// calls always compute the exact same result. Measured ~104ms for
+    /// the standalone `scoped(...)` call plus another duplicate pass
+    /// hidden inside the ~148ms `computeBaseGameNodes` step, out of a
+    /// ~374ms total per click. Passing the already-built result through
+    /// instead of recomputing it removes that duplicate pass entirely.
+    /// Falls back to computing it here when a caller has no other need for
+    /// it (`recomputeGameNodes()`'s sync path).
     private nonisolated static func computeBaseGameNodes(
         hasAuditReport: Bool, auditEntries: [AuditEntry], selectedRomFolder: URL?, preloadedGames: [DATGame], selectedDatabaseFilter: DatabaseFilter?,
-        gamesInFolder: Set<String>, gameAggregateStatusByName: [String: AuditStatus], combineRomAndCHD: Bool
+        gamesInFolder: Set<String>, gameAggregateStatusByName: [String: AuditStatus], combineRomAndCHD: Bool,
+        precomputedScoped: [AuditEntry]? = nil
     ) -> [GameNode] {
         if !hasAuditReport, selectedRomFolder == nil, !preloadedGames.isEmpty {
             return sortedByLowercasedKey(unscannedCatalogNodes(matching: selectedDatabaseFilter ?? .allGames, preloadedGames: preloadedGames), key: \.name)
         }
+        let scopedEntries = precomputedScoped ?? scoped(auditEntries, databaseFilter: selectedDatabaseFilter, romFolder: selectedRomFolder, gamesInFolder: gamesInFolder)
         return gameNodes(
-            from: scoped(auditEntries, databaseFilter: selectedDatabaseFilter, romFolder: selectedRomFolder, gamesInFolder: gamesInFolder),
+            from: scopedEntries,
             gamesByName: gamesByName(preloadedGames),
             gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD,
             isFolderScoped: selectedRomFolder != nil
