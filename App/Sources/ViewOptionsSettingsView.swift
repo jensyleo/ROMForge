@@ -84,30 +84,46 @@ private enum ViewOptionsSubtab: Hashable {
 /// panel visibility, column layout, and 1G1R together — "General" (the
 /// purge/reset actions that don't belong to any one of the others),
 /// "Panels", "Columns" (column presets + the Dependencies chip toggles,
-/// since both are about what a column shows), and "1G1R". Same explicit
-/// `selection` + `.tag()`-driven `TabView` as `AppSettingsView`'s own outer
-/// tab bar, and for the identical reason documented on that type: without
-/// them, clicking a second subtab visually does nothing (a known SwiftUI
-/// quirk with implicit `TabView` selection tracking) — confirmed live here
-/// too before adding this.
+/// since both are about what a column shows), and "1G1R".
+///
+/// A first version (2026-08-24) used a second, nested `TabView` here —
+/// exactly the same explicit `selection` + `.tag()` pattern that works fine
+/// for `AppSettingsView`'s own *outer* tab bar. Confirmed live (2026-08-25)
+/// that it doesn't work one level down: clicking "Panels"/"Columns"/"1G1R"
+/// highlighted the clicked tab but never actually swapped the content —
+/// `AppSettingsView`'s own already-selected "View Options" tab kept showing
+/// whatever subtab was selected when it first appeared. A `TabView` nested
+/// directly inside another `TabView` is a known bad combination on macOS —
+/// the inner one doesn't reliably get its own hit-testing/selection once
+/// it's not the outermost tab-bar-owning view — so this now drives the same
+/// four cases with a plain segmented `Picker` + `switch`, which never
+/// involves a second `TabView` at all.
 struct ViewOptionsSettingsView: View {
     var store: SystemLibraryStore
     @State private var selectedSubtab: ViewOptionsSubtab = .general
 
     var body: some View {
-        TabView(selection: $selectedSubtab) {
-            ViewOptionsGeneralTab(store: store)
-                .tabItem { Label("General", systemImage: "gearshape") }
-                .tag(ViewOptionsSubtab.general)
-            ViewOptionsPanelsTab()
-                .tabItem { Label("Panels", systemImage: "sidebar.squares.leading") }
-                .tag(ViewOptionsSubtab.panels)
-            ViewOptionsColumnsTab()
-                .tabItem { Label("Columns", systemImage: "tablecells") }
-                .tag(ViewOptionsSubtab.columns)
-            ViewOptions1G1RTab()
-                .tabItem { Label("1G1R", systemImage: "star") }
-                .tag(ViewOptionsSubtab.oneGameOneROM)
+        VStack(spacing: 0) {
+            Picker("", selection: $selectedSubtab) {
+                Text("General").tag(ViewOptionsSubtab.general)
+                Text("Panels").tag(ViewOptionsSubtab.panels)
+                Text("Columns").tag(ViewOptionsSubtab.columns)
+                Text("1G1R").tag(ViewOptionsSubtab.oneGameOneROM)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding([.horizontal, .top])
+
+            switch selectedSubtab {
+            case .general:
+                ViewOptionsGeneralTab(store: store)
+            case .panels:
+                ViewOptionsPanelsTab()
+            case .columns:
+                ViewOptionsColumnsTab()
+            case .oneGameOneROM:
+                ViewOptions1G1RTab()
+            }
         }
     }
 }

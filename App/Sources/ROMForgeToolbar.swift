@@ -18,10 +18,13 @@ struct ToolbarAction: Identifiable {
     var isEnabled: Bool = true
     var help: String = ""
     /// `false` for an icon-only button (needs `systemImage`) — jensyleo's
-    /// own request (2026-08-19): "Toggle Sidebar" reads better as just its
-    /// icon, same as most macOS sidebar-toggle buttons. `title`/`help`
-    /// still apply everywhere else (tooltip, customization palette).
-    var showsLabel: Bool = true
+    /// own request (2026-08-25): every toolbar button is icon-only now,
+    /// matching "Toggle Sidebar" (the first one to get this treatment,
+    /// 2026-08-19). `title`/`help` still apply everywhere else (tooltip,
+    /// customization palette) — `help` in particular is now the ONLY way
+    /// to tell what a button does without hovering it, since there's no
+    /// visible text left on any of them.
+    var showsLabel: Bool = false
     let action: () -> Void
 }
 
@@ -172,6 +175,32 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         NotificationCenter.default.addObserver(forName: NSToolbar.willAddItemNotification, object: toolbar, queue: nil) { [weak self] _ in
             DispatchQueue.main.async { self?.persistCurrentOrder() }
         }
+        // jensyleo's own report (2026-08-25), confirmed live: a reorder
+        // dragged inside the "Customize Toolbar…" sheet (`NSToolbar`'s own
+        // built-in palette, opened via right-click → "Customize Toolbar…"
+        // or `runCustomizationPalette(for:)`) visibly reorders the real
+        // toolbar the moment you drop an item, but neither
+        // `didRemoveItemNotification` nor `willAddItemNotification` fires
+        // for it — those two only cover a plain ⌘-drag directly on the
+        // live toolbar (AppKit implements *that* as a remove+re-insert
+        // pair), not a drag inside the palette sheet, which apparently
+        // mutates `toolbar.items` some other way internally. Confirmed by
+        // reproducing the exact failure end-to-end: reorder via the
+        // palette, quit, relaunch — `itemOrderDefaultsKey` still held the
+        // pre-reorder order because `persistCurrentOrder()` was simply
+        // never called. The palette always runs as a sheet on this
+        // toolbar's own window, so `NSWindow.didEndSheetNotification`
+        // catches exactly the moment it closes (Done/Escape/clicking
+        // outside), regardless of what AppKit did internally to get there.
+        NotificationCenter.default.addObserver(forName: NSWindow.didEndSheetNotification, object: window, queue: nil) { [weak self] _ in
+            DispatchQueue.main.async { self?.persistCurrentOrder() }
+        }
+        // Safety net, not the fix for the bug above: covers quitting while
+        // some other, still-unknown reorder path also skipped the two
+        // notifications above without a sheet ever closing.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.persistCurrentOrder()
+        }
     }
 
     /// Declares (or replaces) one named region's current action list.
@@ -229,20 +258,36 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
                 toolbar.removeItem(at: index)
             }
         }
-        var insertedAny = false
         for id in newIDs where !previousIDs.contains(id) {
             guard !toolbar.items.contains(where: { $0.itemIdentifier.rawValue == id }) else { continue }
             toolbar.insertItem(withItemIdentifier: NSToolbarItem.Identifier(rawValue: id), at: insertionIndex(forRegion: region, id: id, toolbar: toolbar))
-            insertedAny = true
         }
-        // Only a real structural change (not every no-op `setRegion` call)
-        // should touch the saved order — matters the very first time a
-        // region populates at app launch, since that's exactly when a
-        // user's own last-saved order needs applying (see
-        // `itemOrderDefaultsKey`'s own doc comment), and it must win over
-        // whatever plain `regionOrder` position `insertionIndex` picked as
-        // a fallback for ids `loadSavedOrder()` didn't already know about.
-        if insertedAny { persistCurrentOrder() }
+        // jensyleo's own report (2026-08-25), confirmed live: a real
+        // reorder made via the "Customize Toolbar…" sheet never survived
+        // even a single quit/relaunch, despite `persistCurrentOrder()`
+        // genuinely running (confirmed with `defaults read` right after
+        // clicking "Done") and genuinely writing the correct 11-item
+        // order. Root cause traced to THIS call, previously here
+        // (`if insertedAny { persistCurrentOrder() }`) — `setRegion` is
+        // called separately per region ("sidebar" with 2 items, then
+        // "detail" with 9, at every single launch), so this fired right
+        // after the *first* of those two calls populated only 2 of the
+        // eventual 11 items, and `persistCurrentOrder()` unconditionally
+        // saves `toolbar.items` *in full* — silently overwriting the
+        // user's real, complete saved order with a 2-item snapshot before
+        // "detail" had even loaded. Every later `setRegion` call then
+        // built its placement off that already-truncated saved order,
+        // and any structural change (any system's toolbar merely
+        // finishing its startup population, not an actual user reorder)
+        // kept re-deriving and re-saving a "mostly declaration order"
+        // result, permanently burying whatever the user last actually
+        // dragged. Removed entirely — persisting on every incremental
+        // population was never necessary in the first place: applying a
+        // saved order (`insertionIndex` below) only ever *reads*
+        // `loadSavedOrder()`, and the real triggers that should persist
+        // (an actual user-driven reorder) are covered on `install(on:)`
+        // by the `didRemoveItem`/`willAddItem`/sheet-close/app-terminate
+        // observers, none of which is this method.
     }
 
     /// Where a newly-appearing `id` in `region` belongs. Consults the
