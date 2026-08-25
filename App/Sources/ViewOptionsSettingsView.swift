@@ -303,7 +303,7 @@ private struct ViewOptionsColumnsTab: View {
     var body: some View {
         Form {
             Section("Column layouts") {
-                Button("Manage Column Presets…") {
+                Button("Manage Panel Presets…") {
                     NotificationCenter.default.post(name: .romForgeShowColumnPresetsSheet, object: nil)
                 }
                 Text("Save or switch between named column layouts for both tables (Games and Roms) — opens the same sheet the toolbar's own \"Column Presets…\" button used to.")
