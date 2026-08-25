@@ -338,7 +338,15 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
             guard lastAppliedSignatureByID[id] != signature else { continue }
             lastAppliedSignatureByID[id] = signature
             item.toolTip = spec.help
-            item.label = spec.title
+            // See `toolbar(_:itemForItemIdentifier:willBeInsertedIntoToolbar:)`'s
+            // own comment on `item.label = ""` — this second write site
+            // (a plain refresh of an already-installed item, e.g. a
+            // `help`/`isEnabled` change) was still setting it back to
+            // `spec.title` on every such refresh, which is exactly why
+            // the fix at the creation site alone wasn't enough: the very
+            // first `setRegion` call after launch always runs this loop
+            // too, immediately overwriting the empty label just set.
+            item.label = ""
             if let button = item.view as? NSButton {
                 apply(spec, to: button, displayMode: toolbar.displayMode)
                 button.isEnabled = spec.isEnabled
@@ -462,7 +470,16 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         guard let spec = actionsByID[itemIdentifier.rawValue] else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        item.label = spec.title
+        // Confirmed live (2026-08-25): the CUSTOM button's own icon-only
+        // rendering (`apply(_:to:displayMode:)`) isn't the whole picture —
+        // `NSToolbarItem` draws its OWN `label` text underneath the custom
+        // view whenever `displayMode` calls for one, entirely independent
+        // of whatever `button.title`/`imagePosition` say. Since every
+        // button must stay icon-only regardless of `displayMode` (see that
+        // function's own doc comment), this item-level label has to stay
+        // empty too — `paletteLabel` (customization palette list) keeps
+        // the real name so the palette itself is still legible.
+        item.label = ""
         item.paletteLabel = spec.title
         item.toolTip = spec.help
 
