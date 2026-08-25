@@ -68,7 +68,6 @@ enum DependencyColumnSettings {
 private enum ViewOptionsSubtab: Hashable {
     case general
     case panels
-    case columns
     case oneGameOneROM
 }
 
@@ -83,8 +82,15 @@ private enum ViewOptionsSubtab: Hashable {
 /// 2026-08-24) once a single flat `Form` grew to eight sections mixing
 /// panel visibility, column layout, and 1G1R together — "General" (the
 /// purge/reset actions that don't belong to any one of the others),
-/// "Panels", "Columns" (column presets + the Dependencies chip toggles,
-/// since both are about what a column shows), and "1G1R".
+/// "Panels", and "1G1R".
+///
+/// A separate "Columns" subtab (panel/preset button + the Dependencies
+/// chip toggles) existed briefly (2026-08-24 to 2026-08-25) — folded back
+/// into "Panels" on jensyleo's own follow-up request once renaming the
+/// preset button to "Manage Panel Presets…" made "Panels" the more
+/// logical home for it, which then left "Columns" holding only the four
+/// Dependencies toggles — too thin to justify its own subtab. Both are
+/// "what shows in the UI" concerns either way, so they share one tab now.
 ///
 /// A first version (2026-08-24) used a second, nested `TabView` here —
 /// exactly the same explicit `selection` + `.tag()` pattern that works fine
@@ -107,7 +113,6 @@ struct ViewOptionsSettingsView: View {
             Picker("", selection: $selectedSubtab) {
                 Text("General").tag(ViewOptionsSubtab.general)
                 Text("Panels").tag(ViewOptionsSubtab.panels)
-                Text("Columns").tag(ViewOptionsSubtab.columns)
                 Text("1G1R").tag(ViewOptionsSubtab.oneGameOneROM)
             }
             .pickerStyle(.segmented)
@@ -119,8 +124,6 @@ struct ViewOptionsSettingsView: View {
                 ViewOptionsGeneralTab(store: store)
             case .panels:
                 ViewOptionsPanelsTab()
-            case .columns:
-                ViewOptionsColumnsTab()
             case .oneGameOneROM:
                 ViewOptions1G1RTab()
             }
@@ -246,6 +249,10 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(PanelVisibilitySettings.showRomsPanelKey) private var showRomsPanel = true
     @AppStorage(PanelVisibilitySettings.showDetailPanelKey) private var showDetailPanel = true
     @AppStorage(PanelVisibilitySettings.showLogPanelKey) private var showLogPanel = true
+    @AppStorage(DependencyColumnSettings.showBiosKey) private var showBiosBadge = true
+    @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
+    @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
+    @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
 
     var body: some View {
         Form {
@@ -279,30 +286,11 @@ private struct ViewOptionsPanelsTab: View {
             // here, which is about panel layout in general. The storage
             // enum (`DatabaseFilterVisibilitySettings`, below in this
             // file) stayed regardless of where its own UI lives.
-        }
-        .formStyle(.grouped)
-        .padding()
-    }
-}
-
-/// "Columns" subtab — everything about what shows *inside* the Games/Roms
-/// tables' own columns: the Dependencies chip toggles (unchanged from
-/// before the split) plus "Column Presets…" (jensyleo's own request,
-/// 2026-08-24: moved here from a toolbar button, since picking a saved
-/// column layout is a display preference, not a per-scan action). Applying/
-/// saving/renaming/deleting a preset still happens in `LibraryDetailView`'s
-/// own sheet — this button only opens it, via
-/// `.romForgeShowColumnPresetsSheet` (see that notification's own doc
-/// comment for why Settings can't just show the sheet itself).
-private struct ViewOptionsColumnsTab: View {
-    @AppStorage(DependencyColumnSettings.showBiosKey) private var showBiosBadge = true
-    @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
-    @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
-    @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
-
-    var body: some View {
-        Form {
-            Section("Column layouts") {
+            // "Column layouts"/"Dependencies column" (jensyleo's own
+            // request, 2026-08-25): folded in from the now-removed
+            // "Columns" subtab — see this file's own `ViewOptionsSubtab`
+            // doc comment for why.
+            Section("Panel layouts") {
                 Button("Manage Panel Presets…") {
                     NotificationCenter.default.post(name: .romForgeShowColumnPresetsSheet, object: nil)
                 }
@@ -321,7 +309,7 @@ private struct ViewOptionsColumnsTab: View {
                     showHardwareBadge = true
                     showSamplesBadge = true
                 }
-                Text("Which dependency chips show in the Games table's \"Dependencies\" column (View → Columns, hidden by default). Turning one off only hides that chip — it never affects scanning, matching, or any other column.")
+                Text("Which dependency chips show in the Games table's \"Dependencies\" column (hidden by default). Turning one off only hides that chip — it never affects scanning, matching, or any other column.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
