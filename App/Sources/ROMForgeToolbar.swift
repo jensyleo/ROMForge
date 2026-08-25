@@ -88,6 +88,19 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     private var actionsByID: [String: ToolbarAction] = [:]
     private var itemsByRegion: [String: [ToolbarAction]] = [:]
     private weak var toolbar: NSToolbar?
+    /// Confirmed live (2026-08-25): right-click on the toolbar → "Icon and
+    /// Text"/"Icon Only"/"Text Only" mutates `toolbar.displayMode`
+    /// directly, with no sheet involved at all — `NSWindow
+    /// .didEndSheetNotification` (added for the "Customize Toolbar…"
+    /// palette's own segmented control) never fires for it, so neither the
+    /// buttons' own rendering nor the saved preference ever updated for
+    /// this path; reproduced by clicking it and reading back both the
+    /// screen and `UserDefaults` unchanged. AppKit exposes no dedicated
+    /// notification for a `displayMode` change either, but the property
+    /// itself is KVO-compliant, which is the one hook that covers every
+    /// path (this quick menu, the palette's control, and any other way
+    /// AppKit might flip it) uniformly instead of chasing each one by hand.
+    private var displayModeObservation: NSKeyValueObservation?
     /// The dynamic bits of `ToolbarAction` that actually get pushed to
     /// AppKit on a refresh (everything except `action` itself, which
     /// isn't `Equatable`) — jensyleo's own report (2026-08-19): this
@@ -273,15 +286,18 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         // toolbar's own window, so `NSWindow.didEndSheetNotification`
         // catches exactly the moment it closes (Done/Escape/clicking
         // outside), regardless of what AppKit did internally to get there.
-        // The same sheet close is also the only moment the "Icon and
-        // Text"/"Icon Only"/"Text Only" segmented control in that palette
-        // can have changed `toolbar.displayMode` — persisted and applied
-        // to every existing button's rendering right alongside the order.
         NotificationCenter.default.addObserver(forName: NSWindow.didEndSheetNotification, object: window, queue: nil) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.persistCurrentOrder()
-                self?.persistDisplayModeAndRefresh()
-            }
+            DispatchQueue.main.async { self?.persistCurrentOrder() }
+        }
+        // See `displayModeObservation`'s own doc comment: the right-click
+        // quick menu changes `toolbar.displayMode` with no sheet and no
+        // dedicated AppKit notification at all, so KVO on the property
+        // itself is the only hook that reliably covers that path (and the
+        // palette's own control, which also goes through this same
+        // property either way — no separate handling needed for it here
+        // anymore).
+        displayModeObservation = toolbar.observe(\.displayMode, options: [.new]) { [weak self] _, _ in
+            self?.persistDisplayModeAndRefresh()
         }
         // Safety net, not the fix for the bug above: covers quitting while
         // some other, still-unknown reorder path also skipped the two
