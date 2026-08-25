@@ -189,39 +189,11 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     @objc private func persistDisplayModeAndRefresh() {
         guard let toolbar else { return }
         UserDefaults.standard.set(Int(toolbar.displayMode.rawValue), forKey: Self.displayModeDefaultsKey)
-        refreshAllButtonLabels()
-    }
-
-    /// Re-renders every button already on the real toolbar to match its
-    /// current `displayMode`, bypassing `lastAppliedSignatureByID` — that
-    /// cache only exists to skip redundant AppKit writes across `setRegion`
-    /// calls with an unchanged `ToolbarAction`, but a `displayMode` switch
-    /// changes what the *same* unchanged action should render as, so it
-    /// has to force every button regardless of the cached signature.
-    private func refreshAllButtonLabels() {
-        guard let toolbar else { return }
-        for item in toolbar.items {
-            guard let spec = actionsByID[item.itemIdentifier.rawValue], let button = item.view as? NSButton else { continue }
-            apply(spec, to: button, displayMode: toolbar.displayMode)
-        }
-    }
-
-    // Reverted (2026-08-25) — jensyleo's own follow-up correction: the
-    // "always icon-only" answer above was chosen while the text was still
-    // rendering wrong (mixed into/beside the icon via the `item.label`
-    // duplicate-label bug fixed right after, and `.imageLeading` before
-    // that) — not a real preference for "Icon and Text" to do nothing.
-    // What was actually wanted, confirmed against how their own other
-    // native-toolbar apps do it: the icon stays put, and real text
-    // appears BELOW it as its own separate line — exactly what
-    // `displayMode != .iconOnly` + `.imageAbove` already produces now that
-    // `item.label` no longer duplicates it.
-    private func apply(_ spec: ToolbarAction, to button: NSButton, displayMode: NSToolbar.DisplayMode) {
-        let showsText = spec.showsLabel && displayMode != .iconOnly
-        button.title = showsText ? spec.title : ""
-        if spec.systemImage != nil {
-            button.imagePosition = showsText ? .imageAbove : .imageOnly
-        }
+        // No per-item re-render needed here (contrast the old custom-
+        // NSButton version's `refreshAllButtonLabels`): a plain
+        // `NSToolbarItem` already redraws itself for the new `displayMode`
+        // on its own — see `toolbar(_:itemForItemIdentifier:...)`'s own
+        // doc comment for why this controller switched to plain items.
     }
 
     func install(on window: NSWindow) {
@@ -238,22 +210,15 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         // silently doing nothing (or worse, racing this controller's own
         // manual restore).
         toolbar.autosavesConfiguration = false
-        // jensyleo's own report (2026-08-19): `.iconAndLabel` left every
-        // item without a `systemImage` (all but "Play") showing no visible
-        // text at all — AppKit's icon+label layout doesn't fall back to a
-        // plain text button when there's no icon to anchor the label
-        // under. Only "Play" carries an icon in this app's action set
-        // today, so `.labelOnly` is what actually renders every button's
-        // name reliably; "Play" trades its ▶ icon for the plain word
-        // "Play" as a result, a small visual difference from before.
-        //
-        // A saved displayMode (from a prior "Customize Toolbar..." choice
-        // -- see displayModeDefaultsKey's own doc comment) overrides this
-        // default; applied here, before any item exists, so the very
-        // first buttons toolbar(_:itemForItemIdentifier:...) builds
-        // already render in the right mode instead of flashing
-        // .labelOnly first.
-        let savedDisplayMode = loadSavedDisplayMode() ?? .labelOnly
+        // jensyleo's own stated preference: icon-only by default, text
+        // only once explicitly switched to "Icon and Text"/"Text Only"
+        // from the toolbar's own menu. A saved `displayMode` (from that
+        // prior choice — see `displayModeDefaultsKey`'s own doc comment)
+        // overrides this default; applied here, before any item exists,
+        // so the very first items `toolbar(_:itemForItemIdentifier:...)`
+        // builds already render in the right mode instead of flashing
+        // `.iconOnly` first.
+        let savedDisplayMode = loadSavedDisplayMode() ?? .iconOnly
         toolbar.displayMode = savedDisplayMode
         window.toolbar = toolbar
         window.toolbarStyle = .unified
@@ -341,19 +306,16 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
             guard lastAppliedSignatureByID[id] != signature else { continue }
             lastAppliedSignatureByID[id] = signature
             item.toolTip = spec.help
-            // See `toolbar(_:itemForItemIdentifier:willBeInsertedIntoToolbar:)`'s
-            // own comment on `item.label = ""` — this second write site
-            // (a plain refresh of an already-installed item, e.g. a
-            // `help`/`isEnabled` change) was still setting it back to
-            // `spec.title` on every such refresh, which is exactly why
-            // the fix at the creation site alone wasn't enough: the very
-            // first `setRegion` call after launch always runs this loop
-            // too, immediately overwriting the empty label just set.
-            item.label = ""
-            if let button = item.view as? NSButton {
-                apply(spec, to: button, displayMode: toolbar.displayMode)
-                button.isEnabled = spec.isEnabled
-                button.toolTip = spec.help
+            item.isEnabled = spec.isEnabled
+            // `showsLabel == false` (only "Toggle Sidebar" today) forces
+            // icon-only regardless of `displayMode` — a plain
+            // `NSToolbarItem` with an empty `label` simply doesn't reserve
+            // a text row under any display mode, so this alone is enough;
+            // no per-`displayMode` branching needed the way the old
+            // custom-button version required.
+            item.label = spec.showsLabel ? spec.title : ""
+            if let systemImage = spec.systemImage {
+                item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: spec.title)
             }
         }
     }
@@ -460,48 +422,34 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         toolbarDefaultItemIdentifiers(toolbar) + [.flexibleSpace]
     }
 
-    // jensyleo's own report (2026-08-19): plain `NSToolbarItem.label` under
-    // `.iconAndLabel` (and later `.labelOnly`) never actually rendered any
-    // visible text for the 8 of 9 actions with no `systemImage` — AppKit's
-    // own implicit image+label layout apparently doesn't fall back to a
-    // readable plain-text button on this SDK/macOS combination, at least
-    // not for a custom (non-system) toolbar item. Rather than keep
-    // guessing at `NSToolbarItem`'s own undocumented rendering heuristics,
-    // each item gets its OWN `NSButton` as its `view` — full control over
-    // what's actually drawn, guaranteed visible text regardless of
-    // whether an icon is present.
+    // jensyleo's own report (2026-08-19): plain `NSToolbarItem.label` never
+    // rendered visible text back when most actions here had no
+    // `systemImage` yet — worked around at the time with a hand-built
+    // `NSButton` `view`, which then needed its own icon-position/duplicate-
+    // label bugs chased across several follow-up sessions (2026-08-25).
+    // Every action now carries a `systemImage`, so that whole workaround
+    // is unnecessary: a plain `NSToolbarItem` (`image` + `label` +
+    // `target`/`action`) renders correctly on its own, governed by
+    // `toolbar.displayMode` exactly like any other native toolbar item —
+    // matching how this app's own other toolbar (TCPV4MAC's) already does
+    // this, which is what jensyleo pointed at as the reference to copy.
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         guard let spec = actionsByID[itemIdentifier.rawValue] else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        // Confirmed live (2026-08-25): the CUSTOM button's own icon-only
-        // rendering (`apply(_:to:displayMode:)`) isn't the whole picture —
-        // `NSToolbarItem` draws its OWN `label` text underneath the custom
-        // view whenever `displayMode` calls for one, entirely independent
-        // of whatever `button.title`/`imagePosition` say. Since every
-        // button must stay icon-only regardless of `displayMode` (see that
-        // function's own doc comment), this item-level label has to stay
-        // empty too — `paletteLabel` (customization palette list) keeps
-        // the real name so the palette itself is still legible.
-        item.label = ""
+        item.label = spec.showsLabel ? spec.title : ""
         item.paletteLabel = spec.title
         item.toolTip = spec.help
-
-        let button = NSButton(title: "", target: self, action: #selector(performAction(_:)))
-        button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
-        button.bezelStyle = .texturedRounded
-        button.isEnabled = spec.isEnabled
-        button.toolTip = spec.help
+        item.isEnabled = spec.isEnabled
+        item.target = self
+        item.action = #selector(performAction(_:))
         if let systemImage = spec.systemImage {
-            button.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: spec.title)
+            item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: spec.title)
         }
-        apply(spec, to: button, displayMode: toolbar.displayMode)
-        item.view = button
         return item
     }
 
-    @objc private func performAction(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue else { return }
-        actionsByID[id]?.action()
+    @objc private func performAction(_ sender: NSToolbarItem) {
+        actionsByID[sender.itemIdentifier.rawValue]?.action()
     }
 }
 
