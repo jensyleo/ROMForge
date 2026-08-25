@@ -1107,10 +1107,12 @@ UI checkbox.
       name: DAT-declared name vs. a case transform of the existing name);
       and, for the archive-level case, the same central-directory rewrite
       concern as "Rename roms" above (an entry's name lives inside the
-      ZIP's own directory structure, not just as a filesystem name).
-      Directly follows up on fase 1's already-implemented "case-only
-      mismatch" detection — fase 1 flags the discrepancy, this is the
-      fase-2 policy for actually resolving it.
+      ZIP's own directory structure, not just as a filesystem name). Also
+      the natural place to detect a case-only mismatch in the first
+      place (2026-08-25: removed from fase 1 as its own read-only item —
+      see the "Fase 1 — read-only items found in a second research pass"
+      section — since a detection with no fase-2 write action to resolve
+      it wasn't worth its own item; this policy covers both).
 
 **Cross-cutting prerequisite, not specific to any one item above**: every
 write action on this list needs the not-yet-designed permission/
@@ -1213,14 +1215,20 @@ ROMForge ever implements it.
 
 - [x] ~~`dir2dat`-style report~~ (Igir) — declined by the user (2026-08-19,
       "1, no"). Not implementing.
-- [ ] **"Known vs unknown files" report** (Igir). A third explicit status
-      for files that match nothing catalogued at all, distinct from the
-      existing missing/surplus categories. Size: small.
-- [ ] **Case-only-mismatch category** (RomVault's own error-message
-      taxonomy). Hash matches but the filename differs only in
-      upper/lowercase — keep it out of the existing "renamed" bucket so a
-      case-sensitive-vs-insensitive filesystem quirk doesn't masquerade as
-      a real rename. Size: small.
+- [x] ~~"Known vs unknown files" report~~ (Igir) — already covered:
+      `AuditStatus.unknownFile`/`.surplusInArchive` already give a local
+      file whose hash matches nothing in the DAT its own distinct status,
+      separate from a plain surplus. Confirmed by grepping the codebase
+      (2026-08-25) rather than assumed from this note alone.
+- [ ] ~~Case-only-mismatch category~~ — removed (2026-08-25, user request):
+      not its own fase 1 read-only detection after all. RomVault's origin
+      for this (its own error-message taxonomy, not a MAME DAT concept —
+      the DAT has no notion of casing at all; this is purely a filesystem
+      case-sensitivity artifact) belongs with the fase 2 **Sets case /
+      Roms case** Fix policy below instead, which already covers deciding
+      what to DO about a case mismatch (Datafile case/Uppercase/Lowercase)
+      — detecting one without a fase-2 write action to resolve it isn't
+      worth its own read-only item.
 - [ ] **Filename-embedded CRC verification** (GoodTools/TOSEC
       `[name] [CRC32].ext` convention). Detect "the filename claims CRC X
       but the actual content hashes to Y." Rare in native MAME sets, but
