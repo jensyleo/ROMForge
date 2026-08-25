@@ -17,14 +17,16 @@ struct ToolbarAction: Identifiable {
     var systemImage: String?
     var isEnabled: Bool = true
     var help: String = ""
-    /// `false` for an icon-only button (needs `systemImage`) — jensyleo's
-    /// own request (2026-08-25): every toolbar button is icon-only now,
-    /// matching "Toggle Sidebar" (the first one to get this treatment,
-    /// 2026-08-19). `title`/`help` still apply everywhere else (tooltip,
-    /// customization palette) — `help` in particular is now the ONLY way
-    /// to tell what a button does without hovering it, since there's no
-    /// visible text left on any of them.
-    var showsLabel: Bool = false
+    /// Whether this button is allowed to show its text label when the
+    /// toolbar's real `displayMode` (set from "Customize Toolbar…", or
+    /// restored from a prior launch — see `ROMForgeToolbarController`'s
+    /// `displayModeDefaultsKey`) calls for one (`.iconAndLabel`/
+    /// `.labelOnly`). `false` forces icon-only regardless of that mode —
+    /// reserved for "Toggle Sidebar", which keeps the plain-icon look most
+    /// macOS sidebar toggles use even when the user has switched every
+    /// other button to show text. `title`/`help` still apply everywhere
+    /// else (tooltip, customization palette) regardless of this flag.
+    var showsLabel: Bool = true
     let action: () -> Void
 }
 
@@ -141,6 +143,21 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     /// than wherever `regionOrder`/declaration order would put it.
     private static let itemOrderDefaultsKey = "ROMForge.mainToolbar.v2.savedOrder"
 
+    /// jensyleo's own report (2026-08-25): switching to "Icon and Text" in
+    /// "Customize Toolbar…" never actually showed any text, and didn't
+    /// survive relaunch even where it visually appeared to take. Root
+    /// cause was two-fold — `toolbar(_:itemForItemIdentifier:...)` and
+    /// `setRegion` both decided a button's text purely from `spec.showsLabel`
+    /// (a fixed per-action flag, see its own doc comment) and never
+    /// consulted `toolbar.displayMode` at all, so the customization
+    /// panel's segmented control changed AppKit's own bookkeeping but
+    /// nothing this controller actually draws; and `autosavesConfiguration`
+    /// is off (see `itemOrderDefaultsKey` above), which also throws away
+    /// `NSToolbar`'s free native persistence of `displayMode` alongside
+    /// item order. This key restores just that one piece manually, the
+    /// same way `itemOrderDefaultsKey` already does for order.
+    private static let displayModeDefaultsKey = "ROMForge.mainToolbar.v2.displayMode"
+
     private func loadSavedOrder() -> [String] {
         UserDefaults.standard.stringArray(forKey: Self.itemOrderDefaultsKey) ?? []
     }
@@ -148,6 +165,40 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     @objc private func persistCurrentOrder() {
         guard let toolbar else { return }
         UserDefaults.standard.set(toolbar.items.map(\.itemIdentifier.rawValue), forKey: Self.itemOrderDefaultsKey)
+    }
+
+    private func loadSavedDisplayMode() -> NSToolbar.DisplayMode? {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Self.displayModeDefaultsKey) != nil else { return nil }
+        return NSToolbar.DisplayMode(rawValue: UInt(defaults.integer(forKey: Self.displayModeDefaultsKey)))
+    }
+
+    @objc private func persistDisplayModeAndRefresh() {
+        guard let toolbar else { return }
+        UserDefaults.standard.set(Int(toolbar.displayMode.rawValue), forKey: Self.displayModeDefaultsKey)
+        refreshAllButtonLabels()
+    }
+
+    /// Re-renders every button already on the real toolbar to match its
+    /// current `displayMode`, bypassing `lastAppliedSignatureByID` — that
+    /// cache only exists to skip redundant AppKit writes across `setRegion`
+    /// calls with an unchanged `ToolbarAction`, but a `displayMode` switch
+    /// changes what the *same* unchanged action should render as, so it
+    /// has to force every button regardless of the cached signature.
+    private func refreshAllButtonLabels() {
+        guard let toolbar else { return }
+        for item in toolbar.items {
+            guard let spec = actionsByID[item.itemIdentifier.rawValue], let button = item.view as? NSButton else { continue }
+            apply(spec, to: button, displayMode: toolbar.displayMode)
+        }
+    }
+
+    private func apply(_ spec: ToolbarAction, to button: NSButton, displayMode: NSToolbar.DisplayMode) {
+        let showsText = spec.showsLabel && displayMode != .iconOnly
+        button.title = showsText ? spec.title : ""
+        if spec.systemImage != nil {
+            button.imagePosition = showsText ? .imageLeading : .imageOnly
+        }
     }
 
     func install(on window: NSWindow) {
@@ -172,9 +223,25 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         // today, so `.labelOnly` is what actually renders every button's
         // name reliably; "Play" trades its ▶ icon for the plain word
         // "Play" as a result, a small visual difference from before.
-        toolbar.displayMode = .labelOnly
+        //
+        // A saved displayMode (from a prior "Customize Toolbar..." choice
+        // -- see displayModeDefaultsKey's own doc comment) overrides this
+        // default; applied here, before any item exists, so the very
+        // first buttons toolbar(_:itemForItemIdentifier:...) builds
+        // already render in the right mode instead of flashing
+        // .labelOnly first.
+        let savedDisplayMode = loadSavedDisplayMode() ?? .labelOnly
+        toolbar.displayMode = savedDisplayMode
         window.toolbar = toolbar
         window.toolbarStyle = .unified
+        // `NSWindow.toolbar`'s setter silently resets `displayMode` back to
+        // `.default` (which AppKit then renders as icon-only) as part of
+        // attaching a brand-new toolbar — confirmed live (2026-08-25): the
+        // assignment above reads back correctly immediately after, but a
+        // relaunch showed icon-only again despite the right value already
+        // sitting in `UserDefaults`. Reasserting it once more here, after
+        // attachment, is what actually survives.
+        toolbar.displayMode = savedDisplayMode
         self.toolbar = toolbar
         // Deferred one runloop turn (`DispatchQueue.main.async`, same
         // reasoning as `ToolbarHost.Coordinator`'s own deferral): both
@@ -206,8 +273,15 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         // toolbar's own window, so `NSWindow.didEndSheetNotification`
         // catches exactly the moment it closes (Done/Escape/clicking
         // outside), regardless of what AppKit did internally to get there.
+        // The same sheet close is also the only moment the "Icon and
+        // Text"/"Icon Only"/"Text Only" segmented control in that palette
+        // can have changed `toolbar.displayMode` — persisted and applied
+        // to every existing button's rendering right alongside the order.
         NotificationCenter.default.addObserver(forName: NSWindow.didEndSheetNotification, object: window, queue: nil) { [weak self] _ in
-            DispatchQueue.main.async { self?.persistCurrentOrder() }
+            DispatchQueue.main.async {
+                self?.persistCurrentOrder()
+                self?.persistDisplayModeAndRefresh()
+            }
         }
         // Safety net, not the fix for the bug above: covers quitting while
         // some other, still-unknown reorder path also skipped the two
@@ -243,7 +317,7 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
             item.toolTip = spec.help
             item.label = spec.title
             if let button = item.view as? NSButton {
-                button.title = spec.showsLabel ? spec.title : ""
+                apply(spec, to: button, displayMode: toolbar.displayMode)
                 button.isEnabled = spec.isEnabled
                 button.toolTip = spec.help
             }
@@ -369,15 +443,15 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         item.paletteLabel = spec.title
         item.toolTip = spec.help
 
-        let button = NSButton(title: spec.showsLabel ? spec.title : "", target: self, action: #selector(performAction(_:)))
+        let button = NSButton(title: "", target: self, action: #selector(performAction(_:)))
         button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
         button.bezelStyle = .texturedRounded
         button.isEnabled = spec.isEnabled
         button.toolTip = spec.help
         if let systemImage = spec.systemImage {
             button.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: spec.title)
-            button.imagePosition = spec.showsLabel ? .imageLeading : .imageOnly
         }
+        apply(spec, to: button, displayMode: toolbar.displayMode)
         item.view = button
         return item
     }

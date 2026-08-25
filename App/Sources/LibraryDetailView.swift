@@ -2401,20 +2401,7 @@ struct LibraryDetailView: View {
             .width(20)
             .customizationID("status")
             .disabledCustomizationBehavior(.all)
-            TableColumn("Game name") { node in
-                HStack(spacing: 4) {
-                    // Independent of `show1G1ROnly` — jensyleo's own spec
-                    // (2026-08-19): the star is always visible so a family's
-                    // preferred variant reads at a glance even with the
-                    // toggle off, only the actual hiding is gated by it.
-                    if cachedOneGameOneROMSummary.preferredGameNames.contains(node.name) {
-                        Image(systemName: "star.fill")
-                            .foregroundStyle(.yellow)
-                            .help("The preferred 1G1R variant for this family, per Settings → View Options → \"1G1R region priority\"")
-                    }
-                    Text(node.gameName)
-                }
-            }
+            TableColumn("Game name") { node in Text(node.gameName) }
             .customizationID("gameName")
             TableColumn("File name") { node in Text(node.actualFileName ?? node.name) }
                 .customizationID("fileName")
@@ -2469,6 +2456,20 @@ struct LibraryDetailView: View {
                 TableColumn("Dependencies") { (node: GameNode) in dependenciesIndicator(for: node) }
                     .customizationID("dependencies")
                     .defaultVisibility(.hidden)
+                // Independent of `show1G1ROnly` — jensyleo's own spec
+                // (2026-08-19, moved to its own column 2026-08-25): the
+                // star is always visible so a family's preferred variant
+                // reads at a glance even with the toggle off, only the
+                // actual hiding is gated by it.
+                TableColumn("1G1R") { (node: GameNode) in
+                    if cachedOneGameOneROMSummary.preferredGameNames.contains(node.name) {
+                        Image(systemName: "star.fill")
+                            .foregroundStyle(.yellow)
+                            .help("The preferred 1G1R variant for this family, per Settings → View Options → \"1G1R region priority\"")
+                    }
+                }
+                .customizationID("oneGameOneROM")
+                .defaultVisibility(.hidden)
             }
         }
         .onChange(of: gameColumnCustomization) { Self.persist(gameColumnCustomization, key: Self.gameColumnCustomizationKey) }
