@@ -54,14 +54,28 @@ struct ToolbarAction: Identifiable {
 /// own current list without needing to know about the other's.
 @MainActor
 final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
-    // `.v2` — a fresh identifier, deliberately never reused from the
-    // earlier, briefly-broken attempt (2026-08-19, see this type's own
-    // doc comment) at this exact same string. `autosavesConfiguration`
-    // persists whatever item set a toolbar had under a key derived from
-    // its identifier; reusing the old string risked silently restoring
-    // that broken (near-empty) saved configuration instead of the real
-    // one this controller declares.
-    static let toolbarIdentifier = "ROMForge.mainToolbar.v2"
+    // Confirmed live (2026-08-25) as the real cause of a startup
+    // `SIGABRT`: `WindowGroup` lets macOS open more than one `ContentView`
+    // window (⌘N, or window-state restoration recreating more than one
+    // from a prior quit) — each gets its own `ROMForgeToolbarController`
+    // and thus its own real `NSToolbar`, but a *shared static* identifier
+    // string here meant every one of those `NSToolbar` instances counted
+    // as the same AppKit "family". Any family member inserting an item
+    // makes AppKit walk every other member (`_enumerateToolbarsInFamily`/
+    // `_notifyFamily_InsertedNewItem`, both in the crash's own stack) and
+    // clone that same item onto it directly — bypassing this controller's
+    // own `NSToolbarDelegate` and its `reconcile(...)` duplicate guard
+    // entirely, since the sync path never asks the delegate anything. The
+    // second window's toolbar reaches this same identifier on its own,
+    // independently, moments later in the exact same startup sequence,
+    // and AppKit's family-sync tries to insert it there too — this time
+    // hitting an item that's already present, which is the fatal
+    // `NSAssertionHandler` failure in the crash report. A unique-per-
+    // instance identifier (below) makes each window's toolbar its own
+    // family of one, so this sync path never fires across windows at
+    // all — which is correct anyway, since nothing here ever wanted two
+    // windows' toolbars mirroring each other's item set.
+    let toolbarIdentifier = "ROMForge.mainToolbar.v2.\(UUID().uuidString)"
     /// Fixed so items don't jump around as regions update independently/
     /// out of order — sidebar items always precede the per-system actions,
     /// matching this app's existing layout, though a user's own manual
@@ -137,11 +151,11 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     }
 
     func install(on window: NSWindow) {
-        if let existing = window.toolbar, existing.identifier == Self.toolbarIdentifier {
+        if let existing = window.toolbar, existing.identifier == toolbarIdentifier {
             toolbar = existing
             return
         }
-        let toolbar = NSToolbar(identifier: Self.toolbarIdentifier)
+        let toolbar = NSToolbar(identifier: toolbarIdentifier)
         toolbar.delegate = self
         toolbar.allowsUserCustomization = true
         // See `itemOrderDefaultsKey`'s own doc comment just above — native

@@ -642,6 +642,13 @@ struct LibraryDetailView: View {
     /// change just because a rescan happened. See `OneGameOneROMSummary`'s
     /// own doc comment.
     @State private var cachedOneGameOneROMSummary = OneGameOneROMSummary.empty
+    /// How many rows in the CURRENT scope (folder/category) "Show Only
+    /// 1G1R" is actually hiding right now — jensyleo's own report
+    /// (2026-08-25): with the toolbar button gone, nothing in the Games
+    /// table itself said whether the toggle was doing anything, so a
+    /// family with no recognized-region duplicates (nothing to hide) read
+    /// exactly like the filter being broken. Surfaced in `gamesListTitle`.
+    @State private var cachedHiddenOneGameOneROMCount = 0
     /// "Show only 1G1R" — jensyleo's own spec (2026-08-19) called this a
     /// one-off, un-persisted display filter (a plain `@State`, toggled from
     /// the toolbar). Moved to `@AppStorage` (2026-08-24) alongside its own
@@ -2292,8 +2299,21 @@ struct LibraryDetailView: View {
     }
 
     private var gamesListTitle: String {
-        guard let selectedRomFolder else { return "Games (\(displayedGameNodes.count))" }
-        return "\(selectedRomFolder.lastPathComponent) — Games (\(displayedGameNodes.count))"
+        let base: String
+        if let selectedRomFolder {
+            base = "\(selectedRomFolder.lastPathComponent) — Games (\(displayedGameNodes.count))"
+        } else {
+            base = "Games (\(displayedGameNodes.count))"
+        }
+        guard show1G1ROnly else { return base }
+        // jensyleo's own report (2026-08-25): with no toolbar button left
+        // to even show the filter is on, a scope where nothing has a
+        // recognized-region duplicate (nothing eligible to hide) looked
+        // identical to the filter doing nothing at all. Spelling out the
+        // count either way — including zero — makes "it's on, and there's
+        // just nothing to hide here" distinguishable from "it's not
+        // working".
+        return base + " · 1G1R hides \(cachedHiddenOneGameOneROMCount)"
     }
 
     /// The one audit-driven tree — same columns, same status colors, same
@@ -3218,6 +3238,7 @@ struct LibraryDetailView: View {
             baseNodes: baseNodes, gameAggregateStatusByName: gameAggregateStatusByName, showUnknownArchives: showUnknownArchives,
             activeStatusFilters: activeStatusFilters, hiddenOneGameOneROMNames: show1G1ROnly ? cachedOneGameOneROMSummary.hiddenWhenFilteredNames : []
         )
+        cachedHiddenOneGameOneROMCount = baseNodes.filter { cachedOneGameOneROMSummary.hiddenWhenFilteredNames.contains($0.name) }.count
         refreshCachedFamilyGameNodes()
         cachedGameNodesByID = Self.indexByID(cachedGameNodes)
     }
@@ -3305,6 +3326,7 @@ struct LibraryDetailView: View {
                 baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
                 activeStatusFilters: statusFilters, hiddenOneGameOneROMNames: hidden1G1RNames
             )
+            let hiddenCount = baseNodes.filter { hidden1G1RNames.contains($0.name) }.count
             let nodesByID = Self.indexByID(nodes)
             let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
@@ -3323,6 +3345,7 @@ struct LibraryDetailView: View {
                 guard generation == folderRecomputeGeneration else { return }
                 cachedGamesInFolder = gamesInFolder
                 cachedGameNodes = nodes
+                cachedHiddenOneGameOneROMCount = hiddenCount
                 refreshCachedFamilyGameNodes()
                 cachedGameNodesByID = nodesByID
                 cachedScopedStatusCounts = counts
@@ -3382,6 +3405,7 @@ struct LibraryDetailView: View {
                 baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
                 activeStatusFilters: statusFilters, hiddenOneGameOneROMNames: show1G1R ? oneGameOneROMSummary.hiddenWhenFilteredNames : []
             )
+            let hiddenCount = baseNodes.filter { oneGameOneROMSummary.hiddenWhenFilteredNames.contains($0.name) }.count
             let nodesByID = Self.indexByID(nodes)
             let counts = Self.computeScopedStatusCounts(scopedEntries: Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder), gamesByName: Self.gamesByName(preloadedGames))
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
@@ -3392,6 +3416,7 @@ struct LibraryDetailView: View {
                 gameAggregateStatusByName = aggStatus
                 cachedParentCloneSummary = parentCloneSummary
                 cachedOneGameOneROMSummary = oneGameOneROMSummary
+                cachedHiddenOneGameOneROMCount = hiddenCount
                 cachedGamesInFolder = gamesInFolder
                 cachedGameNodes = nodes
                 refreshCachedFamilyGameNodes()
