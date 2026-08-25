@@ -1081,27 +1081,27 @@ struct LibraryDetailView: View {
         }
         .onChange(of: activeStatusFilters) {
             selectedGameID = nil; selectedRomID = nil
-            recomputeGameNodes()
+            triggerCachedGameDataRecompute()
             refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
         }
         .onChange(of: showUnknownArchives) {
             selectedGameID = nil; selectedRomID = nil
-            recomputeGameNodes()
+            triggerCachedGameDataRecompute()
             refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
         }
         .onChange(of: combineRomAndCHD) {
             selectedGameID = nil; selectedRomID = nil
-            recomputeGameNodes()
+            triggerCachedGameDataRecompute()
             refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
         }
         .onChange(of: show1G1ROnly) {
             selectedGameID = nil; selectedRomID = nil
-            recomputeGameNodes()
+            triggerCachedGameDataRecompute()
         }
         // A region-priority change (Settings → View Options) can flip which
         // variant a family's own star/hide belongs to — needs the full
         // `refreshCachedGameDataAfterAuditReportChangeAsync()` path (not
-        // just `recomputeGameNodes()`) since `cachedOneGameOneROMSummary`
+        // just `triggerCachedGameDataRecompute()`) since `cachedOneGameOneROMSummary`
         // itself, not merely the Games-table filter reading it, has to be
         // recomputed.
         .onChange(of: regionOrderRaw) {
@@ -3222,28 +3222,6 @@ struct LibraryDetailView: View {
     /// doc comment.
     private static let keyboardNavigationDebounceDelay: Duration = .milliseconds(80)
 
-    /// Synchronous convenience for the sites where only the *display*
-    /// filter (`activeStatusFilters`/`showUnknownArchives`/`combineRomAndCHD`)
-    /// just changed, not the underlying scope itself — still recomputes
-    /// the full base node list (cheaper than the `selectedRomFolder` path
-    /// tends to be reported as sluggish, but the same real work either
-    /// way), just without the folder/counts side effects that don't
-    /// actually change here.
-    private func recomputeGameNodes() {
-        let baseNodes = Self.computeBaseGameNodes(
-            hasAuditReport: viewModel.auditReport != nil, auditEntries: viewModel.auditReport?.entries ?? [],
-            selectedRomFolder: selectedRomFolder, preloadedGames: viewModel.preloadedGames, selectedDatabaseFilter: selectedDatabaseFilter,
-            gamesInFolder: cachedGamesInFolder, gameAggregateStatusByName: gameAggregateStatusByName, combineRomAndCHD: combineRomAndCHD
-        )
-        cachedGameNodes = Self.computeGameNodes(
-            baseNodes: baseNodes, gameAggregateStatusByName: gameAggregateStatusByName, showUnknownArchives: showUnknownArchives,
-            activeStatusFilters: activeStatusFilters, hiddenOneGameOneROMNames: show1G1ROnly ? cachedOneGameOneROMSummary.hiddenWhenFilteredNames : []
-        )
-        cachedHiddenOneGameOneROMCount = baseNodes.filter { cachedOneGameOneROMSummary.hiddenWhenFilteredNames.contains($0.name) }.count
-        refreshCachedFamilyGameNodes()
-        cachedGameNodesByID = Self.indexByID(cachedGameNodes)
-    }
-
     /// The async, off-main-thread path for recomputing all of
     /// `cachedGameNodes`/`cachedGamesInFolder`/`cachedScopedStatusCounts`/
     /// `cachedUnknownArchivesCount`, guarded against out-of-order
@@ -3960,7 +3938,20 @@ struct LibraryDetailView: View {
     /// ~374ms total per click. Passing the already-built result through
     /// instead of recomputing it removes that duplicate pass entirely.
     /// Falls back to computing it here when a caller has no other need for
-    /// it (`recomputeGameNodes()`'s sync path).
+    /// it.
+    ///
+    /// Real bug found live (2026-08-25 performance audit): the four
+    /// display-only toggles (`activeStatusFilters`/`showUnknownArchives`/
+    /// `combineRomAndCHD`/`show1G1ROnly`) used to call a separate,
+    /// synchronous `recomputeGameNodes()` that ran this exact same
+    /// ~350ms-per-click O(entries) work directly on the main thread — the
+    /// same freeze `triggerCachedGameDataRecompute()` (below) was already
+    /// built to fix for folder/category clicks, just left unfixed here.
+    /// Measured directly against the real ~324k-entry collection (release
+    /// build, `GameNodeBuilder.scoped`+`gameNodes` alone, "All games"):
+    /// ~340-380ms per call. Those four toggles now go through
+    /// `triggerCachedGameDataRecompute()` too, so the same work runs off
+    /// the main thread instead.
     private nonisolated static func computeBaseGameNodes(
         hasAuditReport: Bool, auditEntries: [AuditEntry], selectedRomFolder: URL?, preloadedGames: [DATGame], selectedDatabaseFilter: DatabaseFilter?,
         gamesInFolder: Set<String>, gameAggregateStatusByName: [String: AuditStatus], combineRomAndCHD: Bool,
