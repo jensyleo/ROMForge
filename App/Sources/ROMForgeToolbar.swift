@@ -210,7 +210,11 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         let showsText = spec.showsLabel && displayMode != .iconOnly
         button.title = showsText ? spec.title : ""
         if spec.systemImage != nil {
-            button.imagePosition = showsText ? .imageLeading : .imageOnly
+            // jensyleo's own report (2026-08-25): `.imageLeading` put the
+            // label beside the icon; native macOS toolbar buttons in
+            // "Icon and Text" mode stack the label BELOW an unchanged
+            // icon instead — `.imageAbove` matches that.
+            button.imagePosition = showsText ? .imageAbove : .imageOnly
         }
     }
 
