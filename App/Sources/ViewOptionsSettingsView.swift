@@ -138,8 +138,6 @@ struct ViewOptionsSettingsView: View {
 /// before the 2026-08-24 subtab split, unchanged otherwise.
 private struct ViewOptionsGeneralTab: View {
     var store: SystemLibraryStore
-    @State private var didPurgeViews = false
-    @State private var purgedViewCount = 0
     @State private var didPurgeDatabase = false
     @State private var purgedDatabaseCount = 0
     @State private var didResetFolderOrder = false
@@ -147,30 +145,11 @@ private struct ViewOptionsGeneralTab: View {
 
     var body: some View {
         Form {
-            // jensyleo's own request (2026-08-12): kept as two separate,
-            // independently-triggered actions rather than one combined
-            // button — "Purge Saved Views" only ever resets layout/
-            // selection (never touches scan data); "Purge Database View"
-            // only ever clears scan data (never touches layout/selection).
-            // A first version combined both under one button; jensyleo's
-            // own correction the same day was that each should stay its
-            // own separate, deliberate action.
-            Section("Saved layout") {
-                Button("Purge Saved Views") {
-                    purgedViewCount = SavedViewStatePurger.purgeViews()
-                    didPurgeViews = true
-                }
-                // jensyleo's own report (2026-08-12): "no veo que haga
-                // nada" — true of the *library window* (it only re-reads
-                // these on its own next fresh open, not live while you're
-                // already looking at it — see `SavedViewStatePurger`'s own
-                // doc comment), but this button itself gave no feedback
-                // whatsoever either, so there was nothing confirming it had
-                // even run. This alert is that confirmation.
-                Text("Clears every remembered split-panel size and every system's remembered last-selected \"Database\"/\"ROM folder\" view — takes effect the next time you switch to (or reopen) that system, or on next launch, not instantly in a window already open. Falls back then to this system's first ROM folder (or first enabled \"Database\" branch) and each split's original proportions, exactly like a fresh install. Never touches any scan result — see \"Purge Database View\" below for that. Panel visibility and the \"Database\" branch visibility settings are untouched too — use their own \"Reset to Defaults\" for those.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            // "Saved layout" moved to the "Panels" subtab (jensyleo's own
+            // request, 2026-08-25) — it resets remembered split sizes and
+            // selections, which is a panel-layout concern like everything
+            // else there, not really "general" housekeeping the way
+            // "Saved scan results"/"ROM folder order" below are.
             Section("Saved scan results") {
                 // jensyleo's own follow-up request (2026-08-12): "que purge
                 // la vista de la base de datos para volver a escanear los
@@ -210,15 +189,6 @@ private struct ViewOptionsGeneralTab: View {
         }
         .formStyle(.grouped)
         .padding()
-        .alert("Saved Views Purged", isPresented: $didPurgeViews) {
-            Button("OK") {}
-        } message: {
-            Text(
-                purgedViewCount > 0
-                    ? "Removed \(purgedViewCount) saved item\(purgedViewCount == 1 ? "" : "s") (remembered selections and/or split-panel sizes). Switch systems (or reopen this one) to see the fallback view."
-                    : "Nothing was saved yet — there was nothing to remove."
-            )
-        }
         .alert("Database View Purged", isPresented: $didPurgeDatabase) {
             Button("OK") {}
         } message: {
@@ -253,6 +223,8 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
     @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
     @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
+    @State private var didPurgeViews = false
+    @State private var purgedViewCount = 0
 
     var body: some View {
         Form {
@@ -313,9 +285,31 @@ private struct ViewOptionsPanelsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // "Saved layout" moved here from "General" (jensyleo's own
+            // request, 2026-08-25) — it resets remembered split sizes and
+            // selections, a panel-layout concern like everything else on
+            // this subtab. See `ViewOptionsGeneralTab`'s own doc comment.
+            Section("Saved layout") {
+                Button("Purge Saved Views") {
+                    purgedViewCount = SavedViewStatePurger.purgeViews()
+                    didPurgeViews = true
+                }
+                Text("Clears every remembered split-panel size and every system's remembered last-selected \"Database\"/\"ROM folder\" view — takes effect the next time you switch to (or reopen) that system, or on next launch, not instantly in a window already open. Falls back then to this system's first ROM folder (or first enabled \"Database\" branch) and each split's original proportions, exactly like a fresh install. Never touches any scan result — see \"Purge Database View\" (General) for that. Panel visibility and the \"Database\" branch visibility settings are untouched too — use their own \"Reset to Defaults\" for those.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
+        .alert("Saved Views Purged", isPresented: $didPurgeViews) {
+            Button("OK") {}
+        } message: {
+            Text(
+                purgedViewCount > 0
+                    ? "Removed \(purgedViewCount) saved item\(purgedViewCount == 1 ? "" : "s") (remembered selections and/or split-panel sizes). Switch systems (or reopen this one) to see the fallback view."
+                    : "Nothing was saved yet — there was nothing to remove."
+            )
+        }
     }
 }
 
