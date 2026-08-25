@@ -206,18 +206,21 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         }
     }
 
-    // jensyleo's own explicit answer (2026-08-25, asked directly rather
-    // than guess after two failed reads of "quítale el texto..."): every
-    // button stays icon-only, full stop — "Icon and Text"/"Text Only" from
-    // the toolbar's own right-click menu or "Customize Toolbar…" palette
-    // must behave exactly like "Icon Only" too, not actually show text.
-    // `displayMode` is still tracked/persisted (see `displayModeObservation`)
-    // since AppKit itself needs a real value there regardless, but it no
-    // longer feeds into what a button renders.
+    // Reverted (2026-08-25) — jensyleo's own follow-up correction: the
+    // "always icon-only" answer above was chosen while the text was still
+    // rendering wrong (mixed into/beside the icon via the `item.label`
+    // duplicate-label bug fixed right after, and `.imageLeading` before
+    // that) — not a real preference for "Icon and Text" to do nothing.
+    // What was actually wanted, confirmed against how their own other
+    // native-toolbar apps do it: the icon stays put, and real text
+    // appears BELOW it as its own separate line — exactly what
+    // `displayMode != .iconOnly` + `.imageAbove` already produces now that
+    // `item.label` no longer duplicates it.
     private func apply(_ spec: ToolbarAction, to button: NSButton, displayMode: NSToolbar.DisplayMode) {
-        button.title = ""
+        let showsText = spec.showsLabel && displayMode != .iconOnly
+        button.title = showsText ? spec.title : ""
         if spec.systemImage != nil {
-            button.imagePosition = .imageOnly
+            button.imagePosition = showsText ? .imageAbove : .imageOnly
         }
     }
 
