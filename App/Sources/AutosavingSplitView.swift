@@ -209,6 +209,24 @@ struct AutosavingSplitView: NSViewRepresentable {
         // perceive as a deliberate delay rather than instant.
         private var pendingApply: DispatchWorkItem?
         private static let settleDelay: TimeInterval = 0.06
+        // jensyleo's own report (2026-08-26): with the restore-side fix
+        // above landed, dragging any divider in the app — not just the one
+        // this bug was chased through — visibly lagged behind the mouse.
+        // `splitViewDidResizeSubviews` (below) is present, unmodified,
+        // since this file's very first commit, and `NSSplitView` fires it
+        // on every single `mouseDragged` step of a live drag, not just
+        // once the user lets go — `UserDefaults.standard.set(_:forKey:)`
+        // was running synchronously on the main thread, the same thread
+        // driving the drag's own event-tracking loop, dozens of times a
+        // second for the length of any drag. Debounced the same way as
+        // the restore above: only the write itself is deferred/coalesced
+        // (never the native divider tracking, which AppKit drives
+        // entirely on its own regardless of this delegate) — so during a
+        // drag, `UserDefaults` is untouched until motion actually stops
+        // for a beat, and the very last position is still exactly what
+        // gets persisted once it does.
+        private var pendingSave: DispatchWorkItem?
+        private static let saveDebounce: TimeInterval = 0.15
 
         init(axis: Axis, minLengths: [CGFloat], defaultsKey: String, defaultFractions: [Double]? = nil) {
             self.axis = axis
@@ -293,7 +311,13 @@ struct AutosavingSplitView: NSViewRepresentable {
             // sane, in-range set of fractions — anything summing far from
             // 1 (a transient mid-layout state) isn't a real answer to save.
             guard abs(fractions.reduce(0, +) - 1) < 0.01 else { return }
-            UserDefaults.standard.set(fractions, forKey: defaultsKey)
+            pendingSave?.cancel()
+            let defaultsKey = self.defaultsKey
+            let workItem = DispatchWorkItem {
+                UserDefaults.standard.set(fractions, forKey: defaultsKey)
+            }
+            pendingSave = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.saveDebounce, execute: workItem)
         }
 
         func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
