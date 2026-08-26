@@ -4,6 +4,10 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Fixed — split panel widths now persist correctly across app launches
+
+jensyleo's own report (2026-08-26): dragging a split view divider to resize panels worked on screen, but closing and reopening the app lost the new size. Root cause: the panes list was recreated on every render (each computed property built new SplitPane objects), causing SwiftUI to see the NSViewRepresentable's `panes` parameter as "changed" and recreate the whole AutosavingSplitView/Coordinator, wiping the `didApplyRestore` flag that controls whether saved positions can be restored. Fixed by caching the panes list and only recreating it when visibility toggles actually change — the panes list is now the same object across renders unless visibility settings change.
+
 ### Fixed — fase 1 leftover: Column Presets now reorderable, Settings window focus restored on close
 
 - **Panel Presets list was read-only** — no way to reorder saved presets except delete and recreate. Now supports drag-to-reorder via SwiftUI's `ForEach.onMove`, with order persisted across launches.
