@@ -467,17 +467,27 @@ struct LibraryDetailView: View {
     @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
     @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
     private var visibleTopPanes: [SplitPane] {
-        var panes: [SplitPane] = []
-        if showDatabaseTree || showRomFolderTree { panes.append(SplitPane(minLength: 150) { databaseList }) }
-        if showGamesPanel { panes.append(SplitPane(minLength: 220) { gamesList }) }
-        if showRomsPanel { panes.append(SplitPane(minLength: 260) { romsList }) }
-        return panes
+        let key = "\(showDatabaseTree)|\(showRomFolderTree)|\(showGamesPanel)|\(showRomsPanel)"
+        if cachedVisibleTopPanesKey != key {
+            var panes: [SplitPane] = []
+            if showDatabaseTree || showRomFolderTree { panes.append(SplitPane(minLength: 150) { databaseList }) }
+            if showGamesPanel { panes.append(SplitPane(minLength: 220) { gamesList }) }
+            if showRomsPanel { panes.append(SplitPane(minLength: 260) { romsList }) }
+            cachedVisibleTopPanes = panes
+            cachedVisibleTopPanesKey = key
+        }
+        return cachedVisibleTopPanes
     }
     private var visibleBottomPanes: [SplitPane] {
-        var panes: [SplitPane] = []
-        if showDetailPanel { panes.append(SplitPane(minLength: 260) { detailPane }) }
-        if showLogPanel { panes.append(SplitPane(minLength: 220) { logPane }) }
-        return panes
+        let key = "\(showDetailPanel)|\(showLogPanel)"
+        if cachedVisibleBottomPanesKey != key {
+            var panes: [SplitPane] = []
+            if showDetailPanel { panes.append(SplitPane(minLength: 260) { detailPane }) }
+            if showLogPanel { panes.append(SplitPane(minLength: 220) { logPane }) }
+            cachedVisibleBottomPanes = panes
+            cachedVisibleBottomPanesKey = key
+        }
+        return cachedVisibleBottomPanes
     }
     @AppStorage("ROMForge.isDatabaseSectionExpanded") private var isDatabaseSectionExpanded = true
     @AppStorage("ROMForge.isRomFilesSectionExpanded") private var isRomFilesSectionExpanded = true
@@ -642,6 +652,17 @@ struct LibraryDetailView: View {
     /// change just because a rescan happened. See `OneGameOneROMSummary`'s
     /// own doc comment.
     @State private var cachedOneGameOneROMSummary = OneGameOneROMSummary.empty
+    /// jensyleo's own report (2026-08-26): split pane lists were being
+    /// recreated on every render (each computed property created new
+    /// SplitPane objects), which caused SwiftUI to see the NSViewRepresentable's
+    /// `panes` parameter as "changed" and recreate the whole
+    /// AutosavingSplitView/Coordinator, wiping the didApplyRestore flag and
+    /// breaking split position persistence. Cached here to stay stable across
+    /// renders unless the visibility toggles actually change.
+    @State private var cachedVisibleTopPanesKey: String = ""
+    @State private var cachedVisibleTopPanes: [SplitPane] = []
+    @State private var cachedVisibleBottomPanesKey: String = ""
+    @State private var cachedVisibleBottomPanes: [SplitPane] = []
     /// How many rows in the CURRENT scope (folder/category) "Show Only
     /// 1G1R" is actually hiding right now — jensyleo's own report
     /// (2026-08-25): with the toolbar button gone, nothing in the Games
