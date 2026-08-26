@@ -4,6 +4,11 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Fixed — fase 1 leftover: Column Presets now reorderable, Settings window focus restored on close
+
+- **Panel Presets list was read-only** — no way to reorder saved presets except delete and recreate. Now supports drag-to-reorder via SwiftUI's `ForEach.onMove`, with order persisted across launches.
+- **"Done" button in Presets sheet didn't return to Settings** — the sheet was dimming the Settings window behind it, and pressing "Done" left the main library window in focus instead. Fixed by matching the Settings window against its actual tab titles ("General", "View Options", "Systems") instead of a literal "Settings" string — SwiftUI's macOS Settings window titles itself after the active tab, not the frame title itself.
+
 ### Added — bundled 7-Zip engine, no install step needed for `.7z` scanning
 
 The official `7zz` binary (universal, x86_64 + arm64) now ships inside the
