@@ -4,9 +4,13 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
-### Known issue — split panel widths don't persist across app launches
+### Fixed — split panel widths reverting toward their minimum size after a relaunch
 
-jensyleo's own report (2026-08-26): dragging a split view divider to resize panels works on screen, but closing and reopening the app loses the new size. A first fix attempt (caching the panes list in `@State`) mutated that state from inside a computed property's getter, invoked during body evaluation — undefined behavior in SwiftUI, and it broke rendering outright (every panel below the toolbar went blank). Reverted immediately. The original diagnosis doesn't hold either: `makeCoordinator` only runs once per structural view identity, independent of parameter equality, so a recreated panes array shouldn't recreate the `AutosavingSplitView`'s `Coordinator`. Root cause is still open — not yet fixed.
+jensyleo's own report (2026-08-26): shrinking a split view panel worked on screen, but closing and reopening the app brought it back noticeably bigger than left. A first fix attempt (caching the panes list in `@State`) mutated that state from inside a computed property's getter, invoked during body evaluation — undefined behavior in SwiftUI, and it broke rendering outright (every panel below the toolbar went blank). Reverted immediately.
+
+Root-caused live this time, through several real drag-then-quit-then-relaunch cycles with temporary stderr instrumentation: `AutosavingSplitView`'s restore step ran exactly once, at whichever `total` width first cleared its "not a degenerate zero-size layout" guard — and that first non-trivial width is a transient one (observed consistently around 868pt), narrower than the window's real, final width (observed around 1438pt) reached moments later as SwiftUI finishes laying out. When a saved fraction was perfectly valid at the real final width but computed to a pixel size below a pane's minimum at that smaller transient width, `NSSplitView`'s own delegate-constrained `setPosition` silently clamped it up to the bare minimum — and since the restore only ran once, that clamped layout just scaled proportionally as the window grew to its final size, never re-deriving the correct fractions. Worse, the clamped result then got saved right back over the user's real value on the very next resize notification, so the distortion persisted rather than self-correcting.
+
+Fixed by re-applying the saved fractions (always freshly, from the same saved source, never from an already-clamped intermediate state) every time the split view's width actually changes, until the width repeats twice in a row (the layout has genuinely settled) or a small attempt cap is hit — only then does it lock in and hand off to normal drag-saving. Verified directly: forced a previously-corrupting saved fraction via the preference file, relaunched, and confirmed it now round-trips to 8 decimal places instead of drifting toward the pane's minimum width.
 
 ### Fixed — fase 1 leftover: Column Presets now reorderable, Settings window focus restored on close
 

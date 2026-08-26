@@ -163,6 +163,34 @@ struct AutosavingSplitView: NSViewRepresentable {
         let defaultsKey: String
         let defaultFractions: [Double]?
         private var didApplyRestore = false
+        // jensyleo's own report (2026-08-26): a resized pane snapped back to
+        // roughly its minimum size (not the size it was left at) after a
+        // quit/relaunch. Root-caused live (via stderr-logged instrumentation
+        // through several real drag+quit+relaunch cycles): this view's very
+        // first non-trivial `total` during launch is a TRANSIENT width
+        // (observed consistently: ~868pt) smaller than the window's real,
+        // final width (observed: ~1438pt) reached a moment later as SwiftUI
+        // finishes laying out. The old code applied the restore exactly
+        // once, at whatever `total` first cleared the "not degenerate"
+        // guard — if a saved fraction was perfectly valid at the real final
+        // width but computed to a pixel size below `minLengths` at that
+        // smaller transient width, `NSSplitView`'s own delegate-constrained
+        // `setPosition` silently clamped it up to the bare minimum, and
+        // that clamped layout then just scaled proportionally as the window
+        // grew to its final size — never re-deriving the correct fractions.
+        // Worse, `splitViewDidResizeSubviews` (below) saves as soon as
+        // `didApplyRestore` is true, so the clamped, wrong layout got
+        // persisted right back over the user's real saved value on the very
+        // next resize notification. `lastAppliedTotal` tracks the width the
+        // fractions were last (re)applied against — as long as later calls
+        // report a genuinely different width, the saved fractions are
+        // reapplied fresh (never from the previous, possibly-clamped
+        // result) against that new width; once the width repeats (the
+        // layout has actually stabilized) or `maxApplyAttempts` is hit as a
+        // safety valve, this locks in and hands off to normal drag-saving.
+        private var lastAppliedTotal: CGFloat?
+        private var applyAttempts = 0
+        private let maxApplyAttempts = 8
 
         init(axis: Axis, minLengths: [CGFloat], defaultsKey: String, defaultFractions: [Double]? = nil) {
             self.axis = axis
@@ -187,7 +215,21 @@ struct AutosavingSplitView: NSViewRepresentable {
             // fractions against that would just reproduce the exact
             // degenerate-collapse bug this replaced `autosaveName` to fix.
             guard total > CGFloat(minLengths.count) * 4 else { return }
-            didApplyRestore = true
+            // Width hasn't changed since our last (re)application — the
+            // layout has settled at whatever fractions were last applied
+            // against this exact width, so there's nothing new to correct.
+            // Lock in and let `splitViewDidResizeSubviews` take over saving
+            // any real user drag from here on.
+            if let lastAppliedTotal, abs(lastAppliedTotal - total) < 0.5 {
+                didApplyRestore = true
+                return
+            }
+            guard applyAttempts < maxApplyAttempts else {
+                didApplyRestore = true
+                return
+            }
+            applyAttempts += 1
+            lastAppliedTotal = total
             // `NSSplitView`'s own default initial arrangement — used
             // whenever nothing is explicitly positioned — turned out to be
             // genuinely non-deterministic in this specific SwiftUI-hosted
@@ -206,6 +248,11 @@ struct AutosavingSplitView: NSViewRepresentable {
             } else {
                 fractions = Array(repeating: 1.0 / Double(minLengths.count), count: minLengths.count)
             }
+            // Always applied fresh from the saved/default source, never
+            // from whatever the split view's own current (possibly still
+            // provisionally-clamped) state happens to be — so re-applying
+            // against a wider, later `total` can only improve on an earlier
+            // clamp, never compound it.
             apply(fractions: fractions, to: splitView)
         }
 
