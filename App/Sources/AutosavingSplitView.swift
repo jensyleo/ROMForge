@@ -195,8 +195,20 @@ struct AutosavingSplitView: NSViewRepresentable {
         // a mid-sequence transient, no matter how many transient widths
         // repeat or how many times they repeat, since each one just pushes
         // the deadline back out again.
+        //
+        // jensyleo's own report (2026-08-26): a first version of this used
+        // a 250ms delay — comfortably long enough to reliably clear the
+        // handful of transient layout passes observed live, but long
+        // enough on its own (paid on *every* launch, for *every* nested
+        // split — five of them in this app) to read as the whole window's
+        // panels visibly, sluggishly snapping into place rather than
+        // simply appearing already correct. The transient-to-final layout
+        // sequence itself resolves within a handful of AppKit layout
+        // passes well under this window in practice — 60ms leaves ample
+        // margin over that while landing under the range most people
+        // perceive as a deliberate delay rather than instant.
         private var pendingApply: DispatchWorkItem?
-        private static let settleDelay: TimeInterval = 0.25
+        private static let settleDelay: TimeInterval = 0.06
 
         init(axis: Axis, minLengths: [CGFloat], defaultsKey: String, defaultFractions: [Double]? = nil) {
             self.axis = axis
