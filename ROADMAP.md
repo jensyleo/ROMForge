@@ -1229,15 +1229,17 @@ ROMForge ever implements it.
       what to DO about a case mismatch (Datafile case/Uppercase/Lowercase)
       — detecting one without a fase-2 write action to resolve it isn't
       worth its own read-only item.
-- [ ] **Filename-embedded CRC verification** (GoodTools/TOSEC
-      `[name] [CRC32].ext` convention). Detect "the filename claims CRC X
-      but the actual content hashes to Y." Rare in native MAME sets, but
-      useful for imported external sets using that convention. Size: small.
-- [ ] **Cross-checksum verification inside a ZIP itself** (Igir). Compare
-      the local file header's CRC against the central directory's CRC to
-      catch a corrupt/truncated ZIP container without decompressing
-      anything — builds on the low-level ZIP parsing already touched for
-      the TorrentZip writer. Size: medium.
+- [x] **Filename-embedded CRC verification** (GoodTools/TOSEC
+      `[name] [CRC32].ext` convention) — done (commit `6975fae`):
+      `FilenameEmbeddedCRC.swift`/`FilenameCRCVerifier.swift`, runs
+      automatically every scan, surfaced as "Filename CRC mismatches" in
+      the Database tree.
+- [x] **Cross-checksum verification inside a ZIP itself** (Igir) — done
+      (commit `6975fae`): `ZipLocalHeaderCRCVerifier.swift`/
+      `ZipIntegrityAuditor.swift`, on-demand via "Verify ZIP Integrity"
+      context menu item (not automatic — see that file's own doc comment
+      for the performance reasoning), surfaced as "ZIP internal CRC
+      inconsistencies" in the Database tree.
 
 ## Fase 1 — deferred read-only items (2026-08-19)
 
