@@ -1,0 +1,173 @@
+// ROMForge — a native ROM collection manager for macOS.
+// Copyright (C) 2026 Jensy Leonardo Martínez Cruz
+//
+// This program is free software under the GNU General Public License v3.0
+// or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
+
+import AppKit
+import Foundation
+
+/// The `@AppStorage` key `SystemSettingsView`'s MAME executable path field
+/// uses, mirrored here as a plain string constant so `LibraryDetailView`
+/// (not a place that otherwise touches Settings state) can read the same
+/// `UserDefaults` value without importing SwiftUI's property wrapper for
+/// it — the same pattern `HashAlgorithmSettings` already uses.
+enum MAMELaunchSettings {
+    static let executablePathKey = "ROMForge.mame.executablePath"
+
+    /// The conventional Homebrew install location on Apple Silicon —
+    /// jensyleo's own call (2026-07-30): this is where a `brew install
+    /// mame` puts the real executable on every current Mac, so the
+    /// Settings field's own "Default" button can offer it directly
+    /// instead of making every user locate it by hand via a file panel.
+    static let homebrewDefaultPath = "/opt/homebrew/bin/mame"
+
+    /// `nil` when nothing's configured yet — the feature (context menu
+    /// item, "Play" toolbar button) stays hidden/disabled rather than
+    /// offered with nothing to actually launch.
+    static var executablePath: String? {
+        let path = UserDefaults.standard.string(forKey: executablePathKey) ?? ""
+        return path.isEmpty ? nil : path
+    }
+}
+
+/// Where MAME's own auxiliary files (`cfg`/`diff`/`snap`/`nvram`, whatever
+/// it decides to create) actually live — the same directory `MAMELauncher
+/// .launch` points MAME's own working directory at (see that function's
+/// own doc comment for why). Shared here so `MAMEAuxiliaryFilesPurger`
+/// never has to re-derive or risk disagreeing with it.
+enum MAMEWorkingDirectoryLocation {
+    static var url: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("ROMForge", isDirectory: true)
+            .appendingPathComponent("MAME", isDirectory: true)
+    }
+}
+
+/// jensyleo's own report (2026-08-25): before `MAMELauncher.launch` pinned
+/// down MAME's working directory (2026-08-18), MAME had already scattered
+/// `cfg`/`diff`/`snap` folders wherever the OS happened to default to
+/// (confirmed live: found sitting loose in the user's own project-parent
+/// directory, dated the exact day of that fix — leftover debris from
+/// testing that same session, not an ongoing bug). Gives the user a real
+/// button to clear out whatever MAME has accumulated under its own
+/// now-correct working directory, for the same reason "Purge Saved Views"/
+/// "Purge Database View" exist elsewhere in Settings — MAME's own files
+/// are use-derived clutter, not anything ROMForge itself needs to keep.
+enum MAMEAuxiliaryFilesPurger {
+    /// Removes every item directly inside the MAME working directory
+    /// (not the directory itself, so MAME can keep using the same path
+    /// next launch) and returns how many top-level items were removed —
+    /// `0` if the directory doesn't exist yet or is already empty.
+    static func purge() -> Int {
+        guard let directory = MAMEWorkingDirectoryLocation.url,
+              let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        else { return 0 }
+        var removed = 0
+        for item in contents {
+            if (try? FileManager.default.removeItem(at: item)) != nil { removed += 1 }
+        }
+        return removed
+    }
+}
+
+/// Launches a MAME machine directly — "does this actually run/boot in the
+/// real emulator", the one thing ROMForge's own audit (hash-correctness)
+/// can't answer on its own. Deliberately MAME-only for now (not a generic
+/// "launch in any emulator" feature) and entirely opt-in: nothing here
+/// runs unless a real `mame` executable has been located in Settings.
+enum MAMELauncher {
+    enum LaunchError: Error, CustomStringConvertible {
+        case notConfigured
+        case executableNotFound(String)
+
+        var description: String {
+            switch self {
+            case .notConfigured:
+                return "No MAME executable configured — set one in Settings → Systems first."
+            case .executableNotFound(let path):
+                return "The configured MAME executable no longer exists at \(path)."
+            }
+        }
+    }
+
+    /// Launches `machineName` (the DAT's own internal name, e.g. "pacman"
+    /// — never its human-readable description) with every one of the
+    /// system's configured ROM folders on MAME's own `-rompath`
+    /// (semicolon-separated, MAME's own convention for searching more than
+    /// one location) — regardless of merge mode, since MAME itself already
+    /// knows how to resolve parent/clone/BIOS archives across whichever
+    /// folders it's given. MAME still runs as its own independent process
+    /// and window — this doesn't wait for it to quit — but its stderr is
+    /// captured and, if it exits with a non-zero status (jensyleo's own
+    /// report: a bad/non-working driver quits back to ROMForge immediately
+    /// with no visible explanation), handed to `onFailure` so the caller
+    /// can actually show the user *why* — MAME's own stderr always names
+    /// the real reason (bad dump, unemulated protection, etc.), it just
+    /// otherwise vanishes together with the process. A clean exit (the
+    /// user closing MAME normally) never calls `onFailure` at all.
+    static func launch(machineName: String, romFolders: [URL], onFailure: @escaping @Sendable (String) -> Void) throws {
+        guard let executablePath = MAMELaunchSettings.executablePath else {
+            throw LaunchError.notConfigured
+        }
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
+            throw LaunchError.executableNotFound(executablePath)
+        }
+        let rompath = romFolders.map(\.path).joined(separator: ";")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = [machineName, "-rompath", rompath]
+        // MAME writes its own auxiliary files (`cfg`/`nvram`/`snap`, and —
+        // the real case that surfaced this — a "DIFF CHD" scratch overlay
+        // for a machine whose hard disk MAME treats as writable, e.g.
+        // Killer Instinct) relative to its OWN process's current working
+        // directory, not anywhere ROMForge controls otherwise. Left unset,
+        // `Process` gets whatever the OS hands a GUI-launched app (often
+        // `/`, not writable), and MAME fails outright with e.g. "kinst.chd
+        // DIFF CHD ERROR: No such file or directory" — jensyleo's own
+        // report (2026-08-18): ROMForge said a scan was correct, but MAME
+        // itself refused to run the exact same, genuinely-good romset,
+        // confirmed live by running MAME's own `-verifyroms` (passed) and
+        // then the identical launch command by hand from a normal writable
+        // shell directory (worked) — the only difference was ROMForge's
+        // own unset working directory. Pointed at the same
+        // `Application Support/ROMForge/` directory every other
+        // ROMForge-owned file already lives under, created if it doesn't
+        // exist yet, so MAME's own auxiliary files land somewhere
+        // findable and persist across launches instead of scattering
+        // wherever the OS happened to default to.
+        if let mameWorkingDirectory = MAMEWorkingDirectoryLocation.url {
+            try? FileManager.default.createDirectory(at: mameWorkingDirectory, withIntermediateDirectories: true)
+            process.currentDirectoryURL = mameWorkingDirectory
+        }
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+        let stderrData = SendableBox(Data())
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            stderrData.value.append(handle.availableData)
+        }
+        process.terminationHandler = { finished in
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            guard finished.terminationStatus != 0 else { return }
+            let message = String(data: stderrData.value, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            onFailure(message?.isEmpty == false ? message! : "MAME exited with status \(finished.terminationStatus) and no further output.")
+        }
+        try process.run()
+    }
+
+    /// A tiny mutable box to accumulate `stderrPipe`'s bytes across the
+    /// readability handler's repeated callbacks — `Data` itself isn't a
+    /// problem to mutate, but capturing a plain `var` across two separate
+    /// `@Sendable` closures (the readability handler and the termination
+    /// handler) needs an explicit reference type for Swift's concurrency
+    /// checker to allow the shared mutation.
+    private final class SendableBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _value: Data
+        init(_ value: Data) { _value = value }
+        var value: Data {
+            get { lock.withLock { _value } }
+            set { lock.withLock { _value = newValue } }
+        }
+    }
+}

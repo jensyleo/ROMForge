@@ -1,0 +1,62 @@
+name: ROMForge
+options:
+  bundleIdPrefix: com.jensyleo
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ROMFORGE_COPYRIGHT: "© 2026 Jensy Leonardo Martínez Cruz. GPLv3."
+    # Ad-hoc signing ("Sign to Run Locally") — real ad-hoc, not linker-signed.
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    ENABLE_HARDENED_RUNTIME: NO
+    SWIFT_VERSION: "6.0"
+
+packages:
+  ROMForgeCore:
+    path: ROMForgeCore
+
+targets:
+  ROMForge:
+    type: application
+    platform: macOS
+    sources:
+      - App/Sources
+      - path: App/Resources
+        buildPhase: resources
+        excludes:
+          - Info.plist
+          - Engine
+      # Folder reference: the official 7zz engine (bundled verbatim) is
+      # copied as one opaque directory into Contents/Resources/Engine/,
+      # preserving the
+      # executable bit — excluded from the glob above so it isn't also
+      # picked up file-by-file there.
+      - path: App/Resources/Engine
+        type: folder
+    dependencies:
+      - package: ROMForgeCore
+        product: ROMForgeCore
+    info:
+      path: App/Resources/Info.plist
+      properties:
+        CFBundleName: ROMForge
+        CFBundleDisplayName: ROMForge
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSHumanReadableCopyright: $(ROMFORGE_COPYRIGHT)
+        LSMinimumSystemVersion: "15.0"
+        LSApplicationCategoryType: public.app-category.utilities
+        # Only one running instance at a time — macOS activates the
+        # existing one instead of launching a second process.
+        LSMultipleInstancesProhibited: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jensyleo.romforge
+        PRODUCT_NAME: ROMForge
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_APP_SANDBOX: NO

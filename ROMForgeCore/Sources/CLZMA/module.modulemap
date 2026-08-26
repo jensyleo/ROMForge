@@ -1,0 +1,18 @@
+// Deliberately does NOT `link "lzma"` — real bug found live by jensyleo
+// (2026-08-05): that directive makes the linker embed a hard, unconditional
+// `LC_LOAD_DYLIB` on liblzma (confirmed via `otool -L`: an absolute path,
+// `/opt/homebrew/opt/xz/lib/liblzma.5.dylib`, baked into the binary) for
+// EVERY consumer of ROMForgeCore, including the app itself — regardless of
+// whether any CHD/LZMA code path is ever actually invoked. On any Mac
+// without that exact file (no Homebrew, a different prefix, or `xz`
+// uninstalled), the app fails to LAUNCH at all with a cryptic dyld error,
+// never reaching any of ROMForge's own code. `CHDLZMADecompressor` now
+// resolves the one real function it needs (`lzma_raw_buffer_decode`) via
+// `dlopen`/`dlsym` at runtime instead (see `HomebrewDylibLoader`) — this
+// header is still needed at BUILD time (for the `lzma_options_lzma`/
+// `lzma_filter`/`lzma_ret` C type declarations ClangImporter bridges, which
+// cost nothing at link time on their own), just no longer at *run* time.
+module CLZMA [system] {
+    header "shim.h"
+    export *
+}
