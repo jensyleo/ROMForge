@@ -821,9 +821,19 @@ struct LibraryDetailView: View {
     }
 
     @State private var columnPresets: [String: ColumnPreset] = Self.loadColumnPresets()
+    /// jensyleo's own report (2026-08-26): a fase 1 leftover — the sheet
+    /// listed presets `.keys.sorted()` (alphabetical, the only order a
+    /// plain `[String: ColumnPreset]` dictionary can offer), with no way
+    /// to put a frequently-used preset near the top. A separate `[String]`
+    /// holds the user's own drag order; reconciled against the real keys
+    /// on every read (`orderedPresetNames`) rather than trusted blindly,
+    /// same "merge saved order with current reality" shape already used
+    /// for the toolbar's own saved item order.
+    @State private var columnPresetOrder: [String] = Self.loadColumnPresetOrder()
     @State private var isShowingColumnPresetsSheet = false
     @State private var isShowingDATCompareSheet = false
     private static let columnPresetsKey = "ROMForge.columnPresets"
+    private static let columnPresetOrderKey = "ROMForge.columnPresetOrder"
 
     private static func loadColumnPresets() -> [String: ColumnPreset] {
         guard let data = UserDefaults.standard.data(forKey: columnPresetsKey),
@@ -837,6 +847,26 @@ struct LibraryDetailView: View {
         UserDefaults.standard.set(data, forKey: columnPresetsKey)
     }
 
+    private static func loadColumnPresetOrder() -> [String] {
+        UserDefaults.standard.stringArray(forKey: columnPresetOrderKey) ?? []
+    }
+
+    private func persistColumnPresetOrder() {
+        UserDefaults.standard.set(columnPresetOrder, forKey: Self.columnPresetOrderKey)
+    }
+
+    /// The saved order, with any preset it doesn't mention (created since
+    /// the user last reordered, or a fresh install with no saved order at
+    /// all) appended alphabetically at the end, and any name it mentions
+    /// that no longer exists (deleted/renamed) dropped — never trusts
+    /// `columnPresetOrder` to already be in sync with `columnPresets`.
+    private var orderedPresetNames: [String] {
+        let existing = Set(columnPresets.keys)
+        let kept = columnPresetOrder.filter { existing.contains($0) }
+        let missing = columnPresets.keys.filter { !columnPresetOrder.contains($0) }.sorted()
+        return kept + missing
+    }
+
     private func saveColumnPreset(named name: String) {
         guard !name.isEmpty,
               let gameData = try? JSONEncoder().encode(gameColumnCustomization),
@@ -844,6 +874,20 @@ struct LibraryDetailView: View {
         else { return }
         columnPresets[name] = ColumnPreset(gameData: gameData, romData: romData, sidebarVisible: isSidebarVisible?.wrappedValue)
         Self.persistColumnPresets(columnPresets)
+        if !columnPresetOrder.contains(name) {
+            columnPresetOrder.append(name)
+            persistColumnPresetOrder()
+        }
+    }
+
+    /// Applies a drag reorder from the sheet's own `List` — operates on
+    /// `orderedPresetNames` (what the sheet actually displayed when the
+    /// drag happened), not the raw, possibly-stale `columnPresetOrder`.
+    private func moveColumnPresets(from source: IndexSet, to destination: Int) {
+        var names = orderedPresetNames
+        names.move(fromOffsets: source, toOffset: destination)
+        columnPresetOrder = names
+        persistColumnPresetOrder()
     }
 
     private func applyColumnPreset(named name: String) {
@@ -864,6 +908,8 @@ struct LibraryDetailView: View {
     private func deleteColumnPreset(named name: String) {
         columnPresets.removeValue(forKey: name)
         Self.persistColumnPresets(columnPresets)
+        columnPresetOrder.removeAll { $0 == name }
+        persistColumnPresetOrder()
     }
 
     /// jensyleo's own report (2026-08-18): the sheet only let you create a
@@ -881,6 +927,12 @@ struct LibraryDetailView: View {
         columnPresets.removeValue(forKey: oldName)
         columnPresets[trimmed] = preset
         Self.persistColumnPresets(columnPresets)
+        if let index = columnPresetOrder.firstIndex(of: oldName) {
+            columnPresetOrder[index] = trimmed
+        } else {
+            columnPresetOrder.append(trimmed)
+        }
+        persistColumnPresetOrder()
     }
 
     /// This view's own contribution to the shared toolbar's "detail"
@@ -1196,7 +1248,7 @@ struct LibraryDetailView: View {
         .onChange(of: viewModel.auditReport) { onAuditReportChanged?() }
         .sheet(isPresented: $isShowingColumnPresetsSheet) {
             ColumnPresetsSheet(
-                presetNames: columnPresets.keys.sorted(),
+                presetNames: orderedPresetNames,
                 onApply: { name in
                     applyColumnPreset(named: name)
                     isShowingColumnPresetsSheet = false
@@ -1204,7 +1256,8 @@ struct LibraryDetailView: View {
                 onSave: { name in saveColumnPreset(named: name) },
                 onUpdate: { name in saveColumnPreset(named: name) },
                 onRename: { oldName, newName in renameColumnPreset(from: oldName, to: newName) },
-                onDelete: { name in deleteColumnPreset(named: name) }
+                onDelete: { name in deleteColumnPreset(named: name) },
+                onMove: { source, destination in moveColumnPresets(from: source, to: destination) }
             )
         }
         .sheet(isPresented: $isShowingDATCompareSheet) {
