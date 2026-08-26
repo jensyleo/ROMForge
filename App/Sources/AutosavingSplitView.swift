@@ -178,19 +178,25 @@ struct AutosavingSplitView: NSViewRepresentable {
         // `setPosition` silently clamped it up to the bare minimum, and
         // that clamped layout then just scaled proportionally as the window
         // grew to its final size — never re-deriving the correct fractions.
-        // Worse, `splitViewDidResizeSubviews` (below) saves as soon as
-        // `didApplyRestore` is true, so the clamped, wrong layout got
-        // persisted right back over the user's real saved value on the very
-        // next resize notification. `lastAppliedTotal` tracks the width the
-        // fractions were last (re)applied against — as long as later calls
-        // report a genuinely different width, the saved fractions are
-        // reapplied fresh (never from the previous, possibly-clamped
-        // result) against that new width; once the width repeats (the
-        // layout has actually stabilized) or `maxApplyAttempts` is hit as a
-        // safety valve, this locks in and hands off to normal drag-saving.
-        private var lastAppliedTotal: CGFloat?
-        private var applyAttempts = 0
-        private let maxApplyAttempts = 8
+        //
+        // A first fix attempt reapplied on every width change until the
+        // SAME width was reported twice in a row, then locked. That still
+        // wasn't enough — instrumented again, live: the transient ~868pt
+        // width itself got reported on two (or more) consecutive layout
+        // passes before the real growth to ~1438pt ever happened, so
+        // "repeats once" isn't proof of real stability, and the fix locked
+        // in on the wrong, still-transient width just as before.
+        //
+        // Replaced with a plain debounce: every layout call (re)schedules
+        // the actual apply a short delay out, cancelling whatever was
+        // scheduled before. Only once layout calls stop arriving for that
+        // whole stretch does the apply actually run, against whatever
+        // width is current at that point — by construction that can't be
+        // a mid-sequence transient, no matter how many transient widths
+        // repeat or how many times they repeat, since each one just pushes
+        // the deadline back out again.
+        private var pendingApply: DispatchWorkItem?
+        private static let settleDelay: TimeInterval = 0.25
 
         init(axis: Axis, minLengths: [CGFloat], defaultsKey: String, defaultFractions: [Double]? = nil) {
             self.axis = axis
@@ -215,45 +221,33 @@ struct AutosavingSplitView: NSViewRepresentable {
             // fractions against that would just reproduce the exact
             // degenerate-collapse bug this replaced `autosaveName` to fix.
             guard total > CGFloat(minLengths.count) * 4 else { return }
-            // Width hasn't changed since our last (re)application — the
-            // layout has settled at whatever fractions were last applied
-            // against this exact width, so there's nothing new to correct.
-            // Lock in and let `splitViewDidResizeSubviews` take over saving
-            // any real user drag from here on.
-            if let lastAppliedTotal, abs(lastAppliedTotal - total) < 0.5 {
-                didApplyRestore = true
-                return
+            pendingApply?.cancel()
+            let workItem = DispatchWorkItem { [weak self, weak splitView] in
+                guard let self, let splitView, !self.didApplyRestore else { return }
+                self.didApplyRestore = true
+                // `NSSplitView`'s own default initial arrangement — used
+                // whenever nothing is explicitly positioned — turned out to
+                // be genuinely non-deterministic in this specific
+                // SwiftUI-hosted context: observed, repeatedly, collapsing
+                // the two edge panes to exactly zero width on some
+                // launches and not others, with no drag and no saved data
+                // involved at all. Rather than ever relying on it, a
+                // position is set explicitly for every divider below —
+                // from saved fractions if there are any, or an even split
+                // otherwise — so there's never a moment where this split
+                // view's layout is whatever `NSSplitView` felt like.
+                let fractions: [Double]
+                if let saved = UserDefaults.standard.array(forKey: self.defaultsKey) as? [Double], saved.count == self.minLengths.count {
+                    fractions = saved
+                } else if let defaultFractions = self.defaultFractions, defaultFractions.count == self.minLengths.count {
+                    fractions = defaultFractions
+                } else {
+                    fractions = Array(repeating: 1.0 / Double(self.minLengths.count), count: self.minLengths.count)
+                }
+                self.apply(fractions: fractions, to: splitView)
             }
-            guard applyAttempts < maxApplyAttempts else {
-                didApplyRestore = true
-                return
-            }
-            applyAttempts += 1
-            lastAppliedTotal = total
-            // `NSSplitView`'s own default initial arrangement — used
-            // whenever nothing is explicitly positioned — turned out to be
-            // genuinely non-deterministic in this specific SwiftUI-hosted
-            // context: observed, repeatedly, collapsing the two edge panes
-            // to exactly zero width on some launches and not others, with
-            // no drag and no saved data involved at all. Rather than ever
-            // relying on it, a position is set explicitly for every
-            // divider below — from saved fractions if there are any, or an
-            // even split otherwise — so there's never a moment where this
-            // split view's layout is whatever `NSSplitView` felt like.
-            let fractions: [Double]
-            if let saved = UserDefaults.standard.array(forKey: defaultsKey) as? [Double], saved.count == minLengths.count {
-                fractions = saved
-            } else if let defaultFractions, defaultFractions.count == minLengths.count {
-                fractions = defaultFractions
-            } else {
-                fractions = Array(repeating: 1.0 / Double(minLengths.count), count: minLengths.count)
-            }
-            // Always applied fresh from the saved/default source, never
-            // from whatever the split view's own current (possibly still
-            // provisionally-clamped) state happens to be — so re-applying
-            // against a wider, later `total` can only improve on an earlier
-            // clamp, never compound it.
-            apply(fractions: fractions, to: splitView)
+            pendingApply = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay, execute: workItem)
         }
 
         private func apply(fractions: [Double], to splitView: NSSplitView) {
