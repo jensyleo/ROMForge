@@ -148,6 +148,8 @@ private struct MAMEMergeSettingsForm: View {
     /// this banner makes hard to miss instead of easy to skip past).
     @State private var mergeModeAtAppear: String?
     @State private var biosMergeModeAtAppear: String?
+    @State private var didPurgeMAMEFiles = false
+    @State private var purgedMAMEFileCount = 0
 
     private var mergeModeChangedSinceAppear: Bool {
         guard let mergeModeAtAppear, let biosMergeModeAtAppear else { return false }
@@ -215,6 +217,16 @@ private struct MAMEMergeSettingsForm: View {
                     }
                 }
                 Text("Lets you launch the selected game directly in MAME to test it, from a game's context menu or the \"Play\" toolbar button — only for MAME systems, and only once a real `mame` executable is located here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Purge MAME Auxiliary Files") {
+                        purgedMAMEFileCount = MAMEAuxiliaryFilesPurger.purge()
+                        didPurgeMAMEFiles = true
+                    }
+                    Spacer()
+                }
+                Text("Clears whatever MAME itself has written under its own working directory while running a game launched from here (\"cfg\"/\"nvram\"/\"snap\", and a machine-specific \"diff\" scratch overlay for any hard disk MAME treats as writable) — per-game settings, screenshots, and in-progress hard-disk state, none of it anything ROMForge needs to keep. Never touches your ROMs, DATs, or any scan result.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -386,6 +398,15 @@ private struct MAMEMergeSettingsForm: View {
         .onAppear {
             mergeModeAtAppear = mergeModeRaw
             biosMergeModeAtAppear = biosMergeModeRaw
+        }
+        .alert("MAME Auxiliary Files Purged", isPresented: $didPurgeMAMEFiles) {
+            Button("OK") {}
+        } message: {
+            Text(
+                purgedMAMEFileCount > 0
+                    ? "Removed \(purgedMAMEFileCount) item\(purgedMAMEFileCount == 1 ? "" : "s") (\"cfg\"/\"diff\"/\"snap\" and anything else MAME had written there)."
+                    : "Nothing was there yet — there was nothing to remove."
+            )
         }
     }
 

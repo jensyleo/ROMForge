@@ -31,6 +31,46 @@ enum MAMELaunchSettings {
     }
 }
 
+/// Where MAME's own auxiliary files (`cfg`/`diff`/`snap`/`nvram`, whatever
+/// it decides to create) actually live — the same directory `MAMELauncher
+/// .launch` points MAME's own working directory at (see that function's
+/// own doc comment for why). Shared here so `MAMEAuxiliaryFilesPurger`
+/// never has to re-derive or risk disagreeing with it.
+enum MAMEWorkingDirectoryLocation {
+    static var url: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("ROMForge", isDirectory: true)
+            .appendingPathComponent("MAME", isDirectory: true)
+    }
+}
+
+/// jensyleo's own report (2026-08-25): before `MAMELauncher.launch` pinned
+/// down MAME's working directory (2026-08-18), MAME had already scattered
+/// `cfg`/`diff`/`snap` folders wherever the OS happened to default to
+/// (confirmed live: found sitting loose in the user's own project-parent
+/// directory, dated the exact day of that fix — leftover debris from
+/// testing that same session, not an ongoing bug). Gives the user a real
+/// button to clear out whatever MAME has accumulated under its own
+/// now-correct working directory, for the same reason "Purge Saved Views"/
+/// "Purge Database View" exist elsewhere in Settings — MAME's own files
+/// are use-derived clutter, not anything ROMForge itself needs to keep.
+enum MAMEAuxiliaryFilesPurger {
+    /// Removes every item directly inside the MAME working directory
+    /// (not the directory itself, so MAME can keep using the same path
+    /// next launch) and returns how many top-level items were removed —
+    /// `0` if the directory doesn't exist yet or is already empty.
+    static func purge() -> Int {
+        guard let directory = MAMEWorkingDirectoryLocation.url,
+              let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        else { return 0 }
+        var removed = 0
+        for item in contents {
+            if (try? FileManager.default.removeItem(at: item)) != nil { removed += 1 }
+        }
+        return removed
+    }
+}
+
 /// Launches a MAME machine directly — "does this actually run/boot in the
 /// real emulator", the one thing ROMForge's own audit (hash-correctness)
 /// can't answer on its own. Deliberately MAME-only for now (not a generic
@@ -96,10 +136,7 @@ enum MAMELauncher {
         // exist yet, so MAME's own auxiliary files land somewhere
         // findable and persist across launches instead of scattering
         // wherever the OS happened to default to.
-        let mameWorkingDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("ROMForge", isDirectory: true)
-            .appendingPathComponent("MAME", isDirectory: true)
-        if let mameWorkingDirectory {
+        if let mameWorkingDirectory = MAMEWorkingDirectoryLocation.url {
             try? FileManager.default.createDirectory(at: mameWorkingDirectory, withIntermediateDirectories: true)
             process.currentDirectoryURL = mameWorkingDirectory
         }
