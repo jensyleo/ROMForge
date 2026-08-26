@@ -4,9 +4,9 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
-### Fixed — split panel widths now persist correctly across app launches
+### Known issue — split panel widths don't persist across app launches
 
-jensyleo's own report (2026-08-26): dragging a split view divider to resize panels worked on screen, but closing and reopening the app lost the new size. Root cause: the panes list was recreated on every render (each computed property built new SplitPane objects), causing SwiftUI to see the NSViewRepresentable's `panes` parameter as "changed" and recreate the whole AutosavingSplitView/Coordinator, wiping the `didApplyRestore` flag that controls whether saved positions can be restored. Fixed by caching the panes list and only recreating it when visibility toggles actually change — the panes list is now the same object across renders unless visibility settings change.
+jensyleo's own report (2026-08-26): dragging a split view divider to resize panels works on screen, but closing and reopening the app loses the new size. A first fix attempt (caching the panes list in `@State`) mutated that state from inside a computed property's getter, invoked during body evaluation — undefined behavior in SwiftUI, and it broke rendering outright (every panel below the toolbar went blank). Reverted immediately. The original diagnosis doesn't hold either: `makeCoordinator` only runs once per structural view identity, independent of parameter equality, so a recreated panes array shouldn't recreate the `AutosavingSplitView`'s `Coordinator`. Root cause is still open — not yet fixed.
 
 ### Fixed — fase 1 leftover: Column Presets now reorderable, Settings window focus restored on close
 
