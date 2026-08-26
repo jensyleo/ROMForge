@@ -144,8 +144,20 @@ struct ColumnPresetsSheet: View {
                     // for. Deferred one runloop turn so it runs after the
                     // sheet's own dismiss animation starts tearing down,
                     // not racing it.
+                    //
+                    // A first attempt matched `$0.title == "Settings"` —
+                    // confirmed live (2026-08-26) that's wrong: SwiftUI's
+                    // macOS Settings window titles itself after the
+                    // currently selected top-level tab's own label
+                    // (`AppSettingsView`'s `TabView`, not this sheet), so
+                    // it read "View Options" when that tab was active, not
+                    // literally "Settings" — the plain string match never
+                    // found it. Matching against every real tab name
+                    // (`SystemSettingsView.swift`'s own three
+                    // `Label(...)` titles) instead of one hardcoded guess.
                     DispatchQueue.main.async {
-                        NSApp.windows.first(where: { $0.title == "Settings" })?.makeKeyAndOrderFront(nil)
+                        let settingsTabTitles: Set<String> = ["General", "View Options", "Systems"]
+                        NSApp.windows.first(where: { settingsTabTitles.contains($0.title) })?.makeKeyAndOrderFront(nil)
                     }
                 }
                 .keyboardShortcut(.defaultAction)
