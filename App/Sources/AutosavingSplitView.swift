@@ -123,6 +123,19 @@ struct AutosavingSplitView: NSViewRepresentable {
             // directly by divider drags and by `Coordinator`'s restore,
             // not by a competing constraint system.
             hosting.translatesAutoresizingMaskIntoConstraints = true
+            // A pane's size is dictated entirely by the split view, so
+            // there is nothing to gain from `NSHostingView` measuring its
+            // SwiftUI content's own min/ideal/max sizes and publishing them
+            // as constraints — and something real to lose: the default
+            // (`.standardBounds`) makes every resize run extra sizing
+            // traversals of the hosted view tree, and this window nests
+            // five of these splits, so a single drag pays that at every
+            // level. Empty means "just fill the frame you're given".
+            hosting.sizingOptions = []
+            // A shrinking pane whose SwiftUI content is momentarily wider
+            // than its frame would otherwise draw outside it, enlarging the
+            // repaint region across the whole split on every drag frame.
+            hosting.clipsToBounds = true
             splitView.addArrangedSubview(hosting)
         }
         return splitView
@@ -253,6 +266,10 @@ struct AutosavingSplitView: NSViewRepresentable {
         // how that length is divided — so this can never fight a drag
         // either, and no timers are involved anywhere.
         private var appliedAgainstTotal: CGFloat?
+        /// Set once a restore has been applied and the split view actually
+        /// honoured it (nothing clamped). After that this coordinator never
+        /// repositions anything again — see the comment where it is set.
+        private var restoreSatisfied = false
         init(axis: Axis, minLengths: [CGFloat], defaultsKey: String, defaultFractions: [Double]? = nil) {
             self.axis = axis
             self.minLengths = minLengths
@@ -269,6 +286,11 @@ struct AutosavingSplitView: NSViewRepresentable {
         }
 
         func applyRestoredLayoutIfPossible(to splitView: NSSplitView) {
+            // Nothing left to correct — see `restoreSatisfied`. From here on
+            // this is a single bool test per layout pass, which matters:
+            // `layout()` calls in on every pass, including every frame of
+            // every drag anywhere in the window.
+            guard !restoreSatisfied else { return }
             let total = totalLength(of: splitView)
             // A fresh SwiftUI-hosted view often starts at .zero (or some
             // other transient size) before its real layout pass — applying
@@ -301,6 +323,25 @@ struct AutosavingSplitView: NSViewRepresentable {
                 fractions = Array(repeating: 1.0 / Double(minLengths.count), count: minLengths.count)
             }
             apply(fractions: fractions, to: splitView)
+            // Did the layout actually land where it was asked to? If a pane
+            // was clamped up to its minimum — which is what happens when a
+            // perfectly good saved fraction is applied against a too-narrow
+            // transient startup width — leave the door open so the real
+            // width that follows can correct it. Once an apply lands
+            // unclamped there is nothing left to fix, and this locks for
+            // good.
+            //
+            // That lock is not just tidiness. Without it, any nested split
+            // whose length genuinely changes mid-drag (dragging the sidebar
+            // divider changes the width of the side-by-side split inside the
+            // detail area, for instance) would re-read `UserDefaults` and
+            // re-issue a `setPosition` per divider on every mouse-moved
+            // frame — work the original one-shot guard never did, and a
+            // regression introduced earlier today while chasing the
+            // persistence bug.
+            let landed = splitView.arrangedSubviews.map { length(of: $0, in: splitView) / total }
+            restoreSatisfied = landed.count == fractions.count
+                && zip(landed, fractions).allSatisfy { abs($0 - CGFloat($1)) < 0.01 }
         }
 
         private func apply(fractions: [Double], to splitView: NSSplitView) {

@@ -451,6 +451,7 @@ public struct AuditReport: Equatable, Sendable {
         self.surplus = surplus
         self.unverifiable = unverifiable
         self.duplicateSets = duplicateSets
+        self.worstStatus = Self.computeWorstStatus(entries: entries)
     }
 
     /// The single worst status across the whole report — the same
@@ -467,9 +468,29 @@ public struct AuditReport: Equatable, Sendable {
     /// overwhelmingly common case — nobody has every arcade CD/hard-disk
     /// image) permanently pinned this whole-system badge to "Bad" even
     /// when every rom the user actually cares about was perfectly correct.
-    public var worstStatus: AuditStatus? {
-        let romEntries = entries.filter { !$0.isDisk }
-        return AuditStatus.worst(among: (romEntries.isEmpty ? entries : romEntries).map(\.status))
+    ///
+    /// Stored, not computed on demand. jensyleo's own report (2026-08-26),
+    /// found with a sampling profiler taken during a real divider drag: as a
+    /// computed property this read `entries.filter { !$0.isDisk }` — which
+    /// copies every matching `AuditEntry` into a fresh array, with all the
+    /// retain/release traffic its stored strings imply — and then `.map`ped
+    /// that into a second array, on *every* read. The UI reads it from
+    /// `LibraryDetailView`'s header on every body evaluation, so on a large
+    /// MAME report that was two full-report allocations per frame while a
+    /// divider was being dragged; the profile showed `worstStatus` plus the
+    /// `AuditEntry` copy/destroy churn it caused dominating ROMForge's own
+    /// time. `AuditReport` is immutable (every property is a `let`), so the
+    /// value can simply be derived once here and read for free thereafter.
+    public let worstStatus: AuditStatus?
+
+    /// Allocation-free: `AuditStatus.worst(among:)` takes any `Sequence`, so
+    /// the filter/map can stay lazy rather than materialising intermediate
+    /// arrays, and it early-outs on the first `.missing` it sees.
+    private static func computeWorstStatus(entries: [AuditEntry]) -> AuditStatus? {
+        if entries.contains(where: { !$0.isDisk }) {
+            return AuditStatus.worst(among: entries.lazy.filter { !$0.isDisk }.map(\.status))
+        }
+        return AuditStatus.worst(among: entries.lazy.map(\.status))
     }
 }
 

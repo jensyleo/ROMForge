@@ -4,6 +4,53 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Performance — two more per-frame costs removed from divider dragging
+
+Follow-up to the fix below, after jensyleo reported dragging was better but still slow.
+Re-profiled a real drag; with the previous hot spot gone, two new ones stood out and both are
+now fixed.
+
+**`AuditReport.worstStatus` was a computed property doing two full-report allocations per
+read.** It ran `entries.filter { !$0.isDisk }` — copying every matching `AuditEntry`, with all
+the retain/release traffic its stored strings imply — then `.map`ped that into a second array.
+`LibraryDetailView`'s header reads it on every body evaluation, and the body is re-evaluated
+while a divider is being dragged, so a large MAME report paid that twice per frame. The
+profile showed `worstStatus` plus its `AuditEntry` copy/destroy churn as the dominant remaining
+cost in ROMForge's own code. `AuditReport` is immutable, so the value is now derived once in
+`init` and stored; the derivation itself is also allocation-free (lazy sequences into
+`AuditStatus.worst(among:)`, which early-outs on the first `.missing`).
+
+**The saved-layout restore had stopped being one-shot.** Earlier today, while chasing the
+persistence bug, the `didApplyRestore` guard that made `applyRestoredLayoutIfPossible` run
+exactly once was removed in favour of re-applying whenever the split view's own length
+changed. That is correct for the transient-startup-width case it was written for, but it also
+means any *nested* split whose length genuinely changes mid-drag — dragging the sidebar
+divider changes the width of the side-by-side split inside the detail area — re-read
+`UserDefaults` and re-issued a `setPosition` per divider on every mouse-moved frame. It now
+locks permanently as soon as an apply lands unclamped, which is the only case where there was
+ever anything left to correct.
+
+After both, ROMForge's own frames disappear from a drag profile entirely: `worstStatus` is
+gone, and every remaining ROMForge symbol sits at a single sample, with the rest of the time
+inside AppKit/SwiftUI's own layout machinery.
+
+Also applied, but explicitly *not* individually verified: each pane's `NSHostingView` now sets
+`sizingOptions = []` (a pane's size is dictated entirely by the split view, so measuring the
+hosted content's own min/ideal/max sizes and publishing them as constraints is wasted work at
+each of five nesting levels) and `clipsToBounds = true`. Both are sound in principle and the
+layout was confirmed visually unchanged, but the drag metric turned out to have roughly tenfold
+run-to-run variance on an identical build (24, 26 and 261 samples across three runs), which is
+far too wide to attribute any improvement to them.
+
+**Still open.** Dragging remains slower than it should be, and the remaining cause is
+identified but not yet fixed: the Tables bind `columnCustomization` to `@State` declared on
+`LibraryDetailView` itself, so a width-driven column write-back invalidates that whole
+~4400-line view once per mouse-moved event, which cascades through `updateNSView` into
+reassigning `rootView` on every pane of all five nested splits. Fixing it properly means
+extracting each Table and its customization state into its own small child view so the
+invalidation stays local — a real refactor of a large file, deliberately deferred rather than
+attempted late in a session that has already had to revert unverified changes.
+
 ### Fixed — dragging a split divider lagged badly behind the mouse
 
 jensyleo's own report (2026-08-26). Root-caused with a sampling profiler taken during a real
