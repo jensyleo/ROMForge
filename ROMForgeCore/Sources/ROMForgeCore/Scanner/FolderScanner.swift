@@ -55,7 +55,7 @@ public enum FolderScanner {
 
         guard let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
             return []
@@ -71,7 +71,24 @@ public enum FolderScanner {
         var files: [ScannedFile] = []
         for case let itemURL as URL in enumerator {
             let depth = itemURL.standardizedFileURL.pathComponents.count - rootComponentCount - 1
-            let values = try itemURL.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+            let values = try itemURL.resourceValues(
+                forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey]
+            )
+            // jensyleo's own report (2026-08-26, security audit): `.isRegularFileKey`/
+            // `.isDirectoryKey` follow a symlink to whatever it points at (matching
+            // POSIX `stat()`, not `lstat()`), so a symlink planted inside a scanned
+            // ROM folder — e.g. from an untrusted downloaded "ROM set" archive —
+            // used to be silently followed: its target's content got hashed and its
+            // size/hash surfaced in the audit UI/exported reports, regardless of
+            // where on disk that target actually lives. `.isSymbolicLinkKey` is the
+            // one resource value that reports on the link itself rather than its
+            // target, so it's checked first and unconditionally skipped — for a
+            // symlinked directory, before ever descending into whatever it points
+            // at, exactly like the too-deep case right below it.
+            if values.isSymbolicLink == true {
+                if values.isDirectory == true { enumerator.skipDescendants() }
+                continue
+            }
             // A directory sitting exactly at `maxSubfolderDepth` is itself
             // fine (it's the allowed subfolder level), but its own contents
             // would be one level too deep — skipped here, before ever

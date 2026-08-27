@@ -34,6 +34,50 @@ struct FolderScannerTests {
         #expect(nestedResult.size == Int64("nested-content".utf8.count))
     }
 
+    @Test("never follows a symlink to a file outside the scanned folder")
+    func skipsSymlinkedFileOutsideFolder() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Stands in for a file the scan must never read the content of —
+        // outside the folder the user actually pointed the scan at, the
+        // same shape as e.g. `~/.ssh/id_rsa` or a Keychain file.
+        let secretOutside = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("outside-secret-content".utf8).write(to: secretOutside)
+        defer { try? FileManager.default.removeItem(at: secretOutside) }
+
+        let realGame = root.appendingPathComponent("Game.sfc")
+        try Data("real-game".utf8).write(to: realGame)
+
+        let symlink = root.appendingPathComponent("Planted Link.sfc")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: secretOutside)
+
+        let files = try FolderScanner.scan(folder: root)
+
+        #expect(files.map(\.name) == ["Game.sfc"])
+        #expect(!files.contains { $0.name == "Planted Link.sfc" })
+    }
+
+    @Test("never descends into a symlinked directory")
+    func skipsSymlinkedDirectory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let outsideDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: outsideDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outsideDir) }
+        try Data("outside-nested-secret".utf8).write(to: outsideDir.appendingPathComponent("secret.bin"))
+
+        let symlinkedDir = root.appendingPathComponent("Linked")
+        try FileManager.default.createSymbolicLink(at: symlinkedDir, withDestinationURL: outsideDir)
+
+        let files = try FolderScanner.scan(folder: root)
+
+        #expect(files.isEmpty)
+    }
+
     @Test("throws when the folder does not exist")
     func throwsWhenFolderMissing() {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

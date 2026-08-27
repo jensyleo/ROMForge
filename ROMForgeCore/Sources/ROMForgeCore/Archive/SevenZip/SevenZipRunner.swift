@@ -10,8 +10,31 @@ import Foundation
 /// background queue while stdout is read on the calling thread, so a large
 /// listing or extraction can't deadlock on a full pipe buffer.
 enum SevenZipRunner {
-    static func run(executableURL: URL, arguments: [String]) throws -> Data {
-        let result = try invoke(executableURL: executableURL, arguments: arguments)
+    /// Thrown by `run(_:arguments:maxOutputBytes:)` when a byte cap was
+    /// given and stdout exceeded it — deliberately a distinct type from
+    /// `SevenZipError`, since this file has no notion of "which archive
+    /// entry" is being read (it only ever sees raw `argv`). The caller
+    /// that supplied the cap (and does know the entry) is expected to
+    /// catch this specifically and re-throw its own, better-contextualized
+    /// error — see `SevenZipArchiveHasher`.
+    struct OutputExceededLimit: Error {
+        let limitBytes: Int
+    }
+
+    /// `maxOutputBytes` — see `OutputExceededLimit` and
+    /// `SevenZipError.suspectedDecompressionBomb`'s own doc comments.
+    /// `nil` (the default, used by the plain archive listing) preserves
+    /// the original unbounded read; a decompression (`e -so`) call passes
+    /// an explicit cap derived from the entry's own declared size.
+    static func run(executableURL: URL, arguments: [String], maxOutputBytes: Int? = nil) throws -> Data {
+        let result = try invoke(executableURL: executableURL, arguments: arguments, maxOutputBytes: maxOutputBytes)
+        if let maxOutputBytes, result.outputExceededLimit {
+            // The process was killed for over-producing — its exit code
+            // and stderr reflect that abrupt termination, not the real
+            // failure, so this takes priority over the generic exit-code
+            // check below.
+            throw OutputExceededLimit(limitBytes: maxOutputBytes)
+        }
         guard result.exitCode == 0 else {
             let message = String(data: result.standardError, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -33,8 +56,9 @@ enum SevenZipRunner {
 
     private static func invoke(
         executableURL: URL,
-        arguments: [String]
-    ) throws -> (standardOutput: Data, standardError: Data, exitCode: Int32) {
+        arguments: [String],
+        maxOutputBytes: Int? = nil
+    ) throws -> (standardOutput: Data, standardError: Data, exitCode: Int32, outputExceededLimit: Bool) {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
@@ -66,11 +90,34 @@ enum SevenZipRunner {
             throw SevenZipError.processFailed(error.localizedDescription)
         }
 
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        // See `OutputExceededLimit`'s own doc comment for why this exists.
+        // Read in bounded chunks via `availableData` (blocks until at
+        // least one byte or EOF, unlike a fixed-size `read` which could
+        // spin) rather than `readDataToEndOfFile()`, so a decompression
+        // bomb is caught — and the process killed — as soon as its output
+        // crosses the limit, instead of only after it has already been
+        // fully buffered into memory.
+        var outputData = Data()
+        var exceededLimit = false
+        let outputHandle = outputPipe.fileHandleForReading
+        while true {
+            let chunk = outputHandle.availableData
+            if chunk.isEmpty { break }
+            outputData.append(chunk)
+            if let maxOutputBytes, outputData.count > maxOutputBytes {
+                exceededLimit = true
+                // SIGTERM, not dependent on the pipe ever draining — 7zz
+                // doesn't trap it, so this reliably kills the process even
+                // though its stdout may still be blocked on a full pipe
+                // buffer that nothing is reading anymore.
+                process.terminate()
+                break
+            }
+        }
         process.waitUntilExit()
         errorDrain.wait()
 
-        return (outputData, errorBox.value, process.terminationStatus)
+        return (outputData, errorBox.value, process.terminationStatus, exceededLimit)
     }
 
     /// Same rationale as `MAMEDATGenerator`/`MAMELauncher`'s own private

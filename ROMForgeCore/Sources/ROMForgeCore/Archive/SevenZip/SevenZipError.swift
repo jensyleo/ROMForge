@@ -17,6 +17,17 @@ public enum SevenZipError: Error, Equatable, CustomStringConvertible {
     case entryNotFound(entryPath: String, archiveURL: URL)
     case processFailed(String)
     case malformedListing(String)
+    /// jensyleo's own report (2026-08-26, security audit): `7zz e -so`
+    /// streams a single entry's decompressed bytes to stdout, and
+    /// `SevenZipRunner` used to buffer that whole stream into memory with
+    /// no limit — unlike the ZIP hashing path, which has always aborted a
+    /// suspiciously over-decompressing entry mid-stream. A crafted `.7z`
+    /// with a small compressed/declared size but a huge real decompressed
+    /// size (a classic decompression bomb) could exhaust memory through
+    /// this path. Mirrors `ZipArchiveError.suspectedZipBomb`'s own
+    /// `declaredSize × 10` (floor 1 MiB) heuristic, checked incrementally
+    /// as bytes arrive rather than only after the fact.
+    case suspectedDecompressionBomb(entryPath: String, declaredSize: Int64)
 
     public var description: String {
         switch self {
@@ -45,6 +56,8 @@ public enum SevenZipError: Error, Equatable, CustomStringConvertible {
             return "7-Zip failed: \(message)"
         case .malformedListing(let message):
             return "Could not parse 7-Zip listing output: \(message)"
+        case .suspectedDecompressionBomb(let entryPath, let declaredSize):
+            return "\"\(entryPath)\" decompressed far beyond its declared size (\(declaredSize) bytes) — treating it as a suspected decompression bomb rather than continuing to read it."
         }
     }
 }
