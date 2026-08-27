@@ -2833,14 +2833,35 @@ struct LibraryDetailView: View {
         if !badges.isEmpty {
             HStack(alignment: .top, spacing: 8) {
                 Text("Dependencies").bold().frame(width: 100, alignment: .leading)
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(badges) { badge in
-                        Text(badge.tooltip.isEmpty ? badge.label : "\(badge.label): \(badge.tooltip)")
-                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(badges) { badge in dependencyDetailLines(for: badge) }
                 }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+        }
+    }
+
+    /// One badge's own lines within `dependenciesDetailRow` — jensyleo's
+    /// own follow-up: "Hardware" (the one badge whose `tooltip` is itself
+    /// multi-line — `CPU:`/`Sound:`/`Other:`, see `GameDependencies
+    /// .hardwareTooltip`) used to read as `"Hardware: CPU: …"` glued to the
+    /// first sub-line, burying the category name instead of heading its
+    /// own details. A multi-line tooltip now gets its own bolded label
+    /// line, with the sub-lines beneath it; a single-line tooltip (BIOS,
+    /// CHD) keeps the compact "Label: value" this always used, and Samples
+    /// (an empty tooltip) still just prints its bare label.
+    @ViewBuilder
+    private func dependencyDetailLines(for badge: DependencyBadge) -> some View {
+        if badge.tooltip.isEmpty {
+            Text(badge.label)
+        } else if badge.tooltip.contains("\n") {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(badge.label).fontWeight(.semibold)
+                Text(badge.tooltip)
+            }
+        } else {
+            Text("\(badge.label): \(badge.tooltip)")
         }
     }
 

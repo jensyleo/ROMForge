@@ -2,6 +2,17 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.2.2] - 2026-08-27
+
+### Changed — "Hardware" now heads its own line in the Detail panel's Dependencies row
+
+jensyleo's own follow-up: "Hardware" (the one badge whose detail is itself multi-line — CPU/
+Sound/Other, see `GameDependencies.hardwareTooltip`) used to read as "Hardware: CPU: …" glued to
+its first sub-line, burying the category name instead of heading its own details. It now gets
+its own bolded line, with CPU:/Sound:/Other: underneath — BIOS/CHD keep the compact "Label:
+value" they already had (their detail is a single line), and Samples still just prints its bare
+label.
+
 ## [0.2.1] - 2026-08-27
 
 ### Fixed — "Detail panel — game fields" toggles still didn't match the rest of Settings
