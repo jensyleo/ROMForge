@@ -55,20 +55,38 @@ struct GameDependenciesTests {
         #expect(badges[0].tooltip == "Uses CHD (2 disk(s)): disk1, disk2")
     }
 
-    @Test("a game with a device_ref gets a Hardware badge naming it")
+    @Test("a game with an unrecognized device_ref gets a Hardware badge naming it under Other")
     func hardwareDependency() {
         let badges = node(game("sf2", deviceRefs: ["ym2151"])).dependencyBadges
         #expect(badges.map(\.kind) == [.hardware])
         #expect(badges[0].label == "Hardware")
-        #expect(badges[0].tooltip == "Uses hardware: ym2151")
+        #expect(badges[0].tooltip == "Uses hardware —\nOther: ym2151")
     }
 
-    @Test("a game with several device_refs names them all in one Hardware badge")
+    @Test("a game with several unrecognized device_refs names them all under one Other line")
     func multipleHardwareRefs() {
         let badges = node(game("sf2", deviceRefs: ["ym2151", "okim6295"])).dependencyBadges
         #expect(badges.map(\.kind) == [.hardware])
         #expect(badges[0].label == "Hardware")
-        #expect(badges[0].tooltip == "Uses hardware: ym2151, okim6295")
+        #expect(badges[0].tooltip == "Uses hardware —\nOther: ym2151, okim6295")
+    }
+
+    @Test("a game with a known CPU device_ref gets it split into its own CPU: line")
+    func knownCPUDeviceRef() {
+        let badges = node(game("sf2", deviceRefs: ["z80"])).dependencyBadges
+        #expect(badges[0].tooltip == "Uses hardware —\nCPU: z80")
+    }
+
+    @Test("a game mixing known CPU and unrecognized device_refs splits them into CPU: and Other: lines")
+    func mixedCPUAndOtherDeviceRefs() {
+        let badges = node(game("sf2", deviceRefs: ["z80", "ym2151", "m68000", "okim6295"])).dependencyBadges
+        #expect(badges[0].tooltip == "Uses hardware —\nCPU: z80, m68000\nOther: ym2151, okim6295")
+    }
+
+    @Test("CPU device_ref matching is case-insensitive against the known-CPU list")
+    func caseInsensitiveCPUMatch() {
+        let badges = node(game("sf2", deviceRefs: ["Z80"])).dependencyBadges
+        #expect(badges[0].tooltip == "Uses hardware —\nCPU: Z80")
     }
 
     @Test("a game declaring samples gets a Samples badge")

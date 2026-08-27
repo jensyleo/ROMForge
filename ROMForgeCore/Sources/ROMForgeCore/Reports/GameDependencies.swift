@@ -38,6 +38,45 @@ public struct DependencyBadge: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Curated, deliberately incomplete list of common MAME CPU device short
+/// names — used only to split the "Hardware" tooltip into a `CPU:` line a
+/// user is likely to recognize and an `Other:` line for everything else.
+/// MAME's `<device_ref>` carries only a device name, no type, so this list
+/// isn't sourced from the DAT and never claims completeness: any name not
+/// in this set falls into `Other:`, never silently mislabeled as something
+/// it isn't.
+private let knownCPUDeviceNames: Set<String> = [
+    "z80", "z8400", "z84c0010", "z180",
+    "m6502", "m6507", "m6509", "m65c02", "m6510", "n2a03",
+    "m6800", "m6801", "m6803", "m6805", "m6809", "m6809e", "hd6309", "hd63701", "hd6301",
+    "m68000", "m68010", "m68020", "m68030", "m68040", "scc68070",
+    "i8080", "i8085", "i8086", "i8088", "i80186", "i80286", "v20", "v30", "v33", "v60", "v70",
+    "i8035", "i8039", "i8048", "i8049", "i8051", "i8749", "mcs48", "mcs51",
+    "tms9900", "tms9980", "tms9995", "tms32010", "tms32025", "tms34010", "tms34020",
+    "arm", "arm7", "arm7500", "arm9", "sh1", "sh2", "sh4",
+    "mips1", "mips3", "powerpc", "ppc403", "ppc601", "ppc602", "ppc603",
+    "upd7810", "upd78c05", "upd78c11", "upd7801",
+    "cop420", "cop410", "cop440",
+    "h6280", "h83002", "h83007", "h83044",
+    "pic16c54", "pic16c57", "pic16c58",
+    "se3208", "e116t", "mn10200", "dsp16a", "adsp2100", "adsp2105", "adsp2115",
+]
+
+/// Splits a comma-separated `deviceRefNames` string into a `CPU:` line
+/// (names found in `knownCPUDeviceNames`) and an `Other:` line (everything
+/// else), so the "Hardware" tooltip reads as more than a wall of internal
+/// MAME device names without ever guessing at a category this doesn't
+/// actually recognize.
+private func hardwareTooltip(from deviceRefNames: String) -> String {
+    let names = deviceRefNames.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+    let cpus = names.filter { knownCPUDeviceNames.contains($0.lowercased()) }
+    let others = names.filter { !knownCPUDeviceNames.contains($0.lowercased()) }
+    var lines: [String] = []
+    if !cpus.isEmpty { lines.append("CPU: \(cpus.joined(separator: ", "))") }
+    if !others.isEmpty { lines.append("Other: \(others.joined(separator: ", "))") }
+    return "Uses hardware —\n" + lines.joined(separator: "\n")
+}
+
 extension GameNode {
     /// This game's dependency badges, in a fixed display order (BIOS, CHD,
     /// Hardware, Samples) — roughly how central each dependency usually is
@@ -66,7 +105,7 @@ extension GameNode {
         }
         if !deviceRefNames.isEmpty {
             badges.append(
-                DependencyBadge(kind: .hardware, label: "Hardware", tooltip: "Uses hardware: \(deviceRefNames)")
+                DependencyBadge(kind: .hardware, label: "Hardware", tooltip: hardwareTooltip(from: deviceRefNames))
             )
         }
         if samplesText == "Yes" {
