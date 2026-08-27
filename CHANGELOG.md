@@ -2,6 +2,35 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.1.8] - 2026-08-27
+
+### Fixed — toggling a panel in Settings while the app was already running did nothing visible
+
+jensyleo's own report: "no hay relación entre los toggles y lo que se ve y no se activa ni
+desactiva nada." Root-caused live (confirmed the setting itself really was changing —
+`defaults read` showed the correct new value immediately — while the main window's display
+never updated, even after forcing an unrelated resize; only relaunching the app picked up the
+correct layout). The real bug: `AutosavingSplitView.updateNSView` (the hand-rolled `NSSplitView`
+wrapper behind every split panel in this app) only ever refreshed an *existing* arranged
+subview's own content by index — it never added or removed a subview when the `panes` array
+itself changed length, which is exactly what toggling a panel does (`visibleBottomPanes` shrinks
+from two panes to one, or back). The stale extra pane just sat there, or the wrong index got
+updated, until a relaunch rebuilt the split view from scratch with the current settings.
+
+Now rebuilds the whole arranged-subview list (and resets `Coordinator`'s own restore-tracking
+state, which described the previous pane count) whenever `panes.count` actually changes,
+matching `makeNSView`'s own initial setup — and, on that path, leaves positioning the new layout
+to the existing `onLayout` hook rather than doing it synchronously in the same call, since the
+freshly added subviews don't have real, laid-out frames yet at that exact point (confirmed live:
+positioning them immediately produced a fully collapsed, blank split).
+
+Pre-existing since Panel Visibility toggles were introduced (2026-08-12) — every panel-visibility
+and Dependencies-chip toggle in the app went through this same code path, so this was never
+specific to today's Settings-window rework. Verified live, both directions, on the actual
+Detail/Log split: toggling Log off now removes it immediately (Detail panel expanding to fill
+the freed width), and toggling it back on restores the two-pane split correctly, all without
+needing to relaunch or reselect a game.
+
 ## [0.1.7] - 2026-08-27
 
 ### Fixed — Detail panel's rom fields didn't match the Roms table's real columns

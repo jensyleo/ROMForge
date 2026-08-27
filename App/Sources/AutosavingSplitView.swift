@@ -186,17 +186,66 @@ struct AutosavingSplitView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSSplitView, context: Context) {
-        // Panes capture live `@State`/`@Observable` data that changes over
-        // time — each hosting view's `rootView` needs refreshing on every
-        // SwiftUI re-render, same as any other `NSViewRepresentable`.
-        for (index, pane) in panes.enumerated() {
-            guard let hosting = nsView.arrangedSubviews[safe: index] as? NSHostingView<AnyView> else { continue }
-            hosting.rootView = pane.view
+        if nsView.arrangedSubviews.count != panes.count {
+            // `panes.count` itself changed — a panel was switched on/off in
+            // Settings (`visibleTopPanes`/`visibleBottomPanes` shrank or
+            // grew) while this split view already exists. Real bug found
+            // live by jensyleo (2026-08-27): the plain by-index update loop
+            // below only ever refreshes an EXISTING arranged subview's own
+            // content, so a shrinking/growing `panes` array left a stale
+            // extra pane on screen (or quietly updated the wrong index)
+            // until the app was relaunched — toggling a panel while the app
+            // was already running looked like the toggle did nothing at
+            // all, even though the underlying setting genuinely changed
+            // (confirmed directly: `defaults read` showed the correct new
+            // value; only this view's own arranged-subview list was stale).
+            // `NSSplitView` has no API to insert/remove just the one that
+            // changed, so this rebuilds the whole arranged-subview list to
+            // match — the same setup `makeNSView` uses for its initial one.
+            for subview in nsView.arrangedSubviews {
+                nsView.removeArrangedSubview(subview)
+                subview.removeFromSuperview()
+            }
+            for pane in panes {
+                let hosting = NSHostingView(rootView: pane.view)
+                hosting.translatesAutoresizingMaskIntoConstraints = true
+                hosting.sizingOptions = []
+                hosting.clipsToBounds = true
+                nsView.addArrangedSubview(hosting)
+            }
+            // The old `minLengths`/restore state describe a split with the
+            // PREVIOUS pane count — stale against the rebuilt subview list
+            // above, so `Coordinator` needs the same reset `makeCoordinator`
+            // would have given a freshly created instance.
+            context.coordinator.reconfigure(minLengths: panes.map(\.minLength))
+            // Deliberately NOT calling `applyRestoredLayoutIfPossible` here
+            // (unlike the `else` branch below) — freshly added arranged
+            // subviews don't have real, laid-out frames yet at this exact
+            // point (AppKit computes those during its own `layout()` pass,
+            // not synchronously inside `addArrangedSubview`), so positioning
+            // dividers against them right now landed a collapsed, blank
+            // layout in testing (confirmed live: both panes zero-size after
+            // re-enabling one that had been toggled off). `makeNSView`
+            // already leans on exactly the same `onLayout` hook below for
+            // its own initial arrangement, for the same reason — it fires
+            // on the very next real AppKit layout pass, which follows
+            // essentially immediately after this method returns.
+        } else {
+            // Panes capture live `@State`/`@Observable` data that changes
+            // over time — each hosting view's `rootView` needs refreshing
+            // on every SwiftUI re-render, same as any other
+            // `NSViewRepresentable`.
+            for (index, pane) in panes.enumerated() {
+                guard let hosting = nsView.arrangedSubviews[safe: index] as? NSHostingView<AnyView> else { continue }
+                hosting.rootView = pane.view
+            }
+            // Idempotent: applies the saved layout the first time (and only
+            // the first time) `nsView` has a real, non-zero frame to apply
+            // it against — however many `updateNSView` calls that takes.
+            // Skipped on a rebuild pass (above) — see that branch's own
+            // comment.
+            context.coordinator.applyRestoredLayoutIfPossible(to: nsView)
         }
-        // Idempotent: applies the saved layout the first time (and only
-        // the first time) `nsView` has a real, non-zero frame to apply it
-        // against — however many `updateNSView` calls that takes.
-        context.coordinator.applyRestoredLayoutIfPossible(to: nsView)
     }
 
     // `@MainActor` — AppKit's `NSView`/`NSSplitView` are only ever valid to
@@ -209,7 +258,7 @@ struct AutosavingSplitView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSSplitViewDelegate {
         let axis: Axis
-        let minLengths: [CGFloat]
+        private(set) var minLengths: [CGFloat]
         let defaultsKey: String
         let defaultFractions: [Double]?
         private var didApplyRestore = false
@@ -275,6 +324,24 @@ struct AutosavingSplitView: NSViewRepresentable {
             self.minLengths = minLengths
             self.defaultsKey = defaultsKey
             self.defaultFractions = defaultFractions
+        }
+
+        /// Re-arms this coordinator for a rebuilt arranged-subview list
+        /// whose pane count differs from what it was constructed with —
+        /// see `updateNSView`'s own doc comment for why that can happen at
+        /// all (a panel switched on/off in Settings while this split view
+        /// already exists). Resets every piece of restore-tracking state a
+        /// freshly created `Coordinator` would have started with, since all
+        /// of it (`minLengths`, `appliedAgainstTotal`, `restoreSatisfied`,
+        /// `didApplyRestore`) describes the split's PREVIOUS shape and would
+        /// otherwise silently mismatch the new one (e.g. the `saved.count
+        /// == minLengths.count` guard in `applyRestoredLayoutIfPossible`
+        /// comparing a stale count).
+        func reconfigure(minLengths: [CGFloat]) {
+            self.minLengths = minLengths
+            appliedAgainstTotal = nil
+            restoreSatisfied = false
+            didApplyRestore = false
         }
 
         private func length(of view: NSView, in splitView: NSSplitView) -> CGFloat {
