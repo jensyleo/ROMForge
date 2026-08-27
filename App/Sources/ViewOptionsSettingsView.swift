@@ -94,15 +94,27 @@ enum DetailPanelGameFieldSettings {
 }
 
 /// Same idea as `DetailPanelGameFieldSettings`, for
-/// `LibraryDetailView.romDetailSection`'s own fields.
+/// `LibraryDetailView.romDetailSection`'s own fields — jensyleo's own
+/// correction (2026-08-27): this first shipped with its own field set
+/// (Game/Clone of/DAT/Path) that didn't correspond to anything, when the
+/// actual request was "exactamente los mismos campos que se pueden
+/// configurar en las columnas" — the Roms table's own real, already
+/// customizable columns (`romsList`'s own `customizationID`s: fileName,
+/// info, size, crc, sha1, folder, md5, dumpStatus — `romName`/`status`
+/// excluded, since those are this panel's own always-shown header/icon,
+/// not optional fields). Field names and content below match those
+/// columns exactly (e.g. "Folder" shows the containing folder's name,
+/// same as the column, not the full path this used to show).
 enum DetailPanelRomFieldSettings {
-    static let showGameKey = "ROMForge.view.detail.rom.showGame"
-    static let showCloneOfKey = "ROMForge.view.detail.rom.showCloneOf"
-    static let showDatKey = "ROMForge.view.detail.rom.showDat"
-    static let showPathKey = "ROMForge.view.detail.rom.showPath"
-    static let showCRC32Key = "ROMForge.view.detail.rom.showCRC32"
-    static let showMD5Key = "ROMForge.view.detail.rom.showMD5"
+    static let showFileNameKey = "ROMForge.view.detail.rom.showFileName"
+    static let showInfoKey = "ROMForge.view.detail.rom.showInfo"
+    static let showSizeKey = "ROMForge.view.detail.rom.showSize"
+    static let showCRCKey = "ROMForge.view.detail.rom.showCRC"
     static let showSHA1Key = "ROMForge.view.detail.rom.showSHA1"
+    static let showFolderKey = "ROMForge.view.detail.rom.showFolder"
+    static let showMD5Key = "ROMForge.view.detail.rom.showMD5"
+    static let showDumpStatusKey = "ROMForge.view.detail.rom.showDumpStatus"
+    static let showTypeKey = "ROMForge.view.detail.rom.showType"
 }
 
 /// New Settings tab, alongside "General" and "Systems" — jensyleo's own
@@ -278,13 +290,15 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
     @AppStorage(DetailPanelGameFieldSettings.showBiosSetKey) private var showDetailBiosSet = true
     @AppStorage(DetailPanelGameFieldSettings.showStatusKey) private var showDetailStatus = true
-    @AppStorage(DetailPanelRomFieldSettings.showGameKey) private var showDetailRomGame = true
-    @AppStorage(DetailPanelRomFieldSettings.showCloneOfKey) private var showDetailRomCloneOf = true
-    @AppStorage(DetailPanelRomFieldSettings.showDatKey) private var showDetailRomDat = true
-    @AppStorage(DetailPanelRomFieldSettings.showPathKey) private var showDetailRomPath = true
-    @AppStorage(DetailPanelRomFieldSettings.showCRC32Key) private var showDetailRomCRC32 = true
-    @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
+    @AppStorage(DetailPanelRomFieldSettings.showFileNameKey) private var showDetailRomFileName = true
+    @AppStorage(DetailPanelRomFieldSettings.showInfoKey) private var showDetailRomInfo = true
+    @AppStorage(DetailPanelRomFieldSettings.showSizeKey) private var showDetailRomSize = true
+    @AppStorage(DetailPanelRomFieldSettings.showCRCKey) private var showDetailRomCRC = true
     @AppStorage(DetailPanelRomFieldSettings.showSHA1Key) private var showDetailRomSHA1 = true
+    @AppStorage(DetailPanelRomFieldSettings.showFolderKey) private var showDetailRomFolder = true
+    @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
+    @AppStorage(DetailPanelRomFieldSettings.showDumpStatusKey) private var showDetailRomDumpStatus = true
+    @AppStorage(DetailPanelRomFieldSettings.showTypeKey) private var showDetailRomType = true
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
 
@@ -391,23 +405,27 @@ private struct ViewOptionsPanelsTab: View {
                     .foregroundStyle(.secondary)
             }
             Section("Detail panel (bottom-left) — rom fields") {
-                Toggle("Game", isOn: $showDetailRomGame)
-                Toggle("Clone of", isOn: $showDetailRomCloneOf)
-                Toggle("DAT", isOn: $showDetailRomDat)
-                Toggle("Path", isOn: $showDetailRomPath)
-                Toggle("CRC32", isOn: $showDetailRomCRC32)
+                Toggle("File name", isOn: $showDetailRomFileName)
+                Toggle("Info", isOn: $showDetailRomInfo)
+                Toggle("Size", isOn: $showDetailRomSize)
+                Toggle("CRC", isOn: $showDetailRomCRC)
+                Toggle("SHA-1", isOn: $showDetailRomSHA1)
+                Toggle("Folder", isOn: $showDetailRomFolder)
                 Toggle("MD5", isOn: $showDetailRomMD5)
-                Toggle("SHA1", isOn: $showDetailRomSHA1)
+                Toggle("Dump status", isOn: $showDetailRomDumpStatus)
+                Toggle("Type", isOn: $showDetailRomType)
                 Button("Reset to Defaults") {
-                    showDetailRomGame = true
-                    showDetailRomCloneOf = true
-                    showDetailRomDat = true
-                    showDetailRomPath = true
-                    showDetailRomCRC32 = true
-                    showDetailRomMD5 = true
+                    showDetailRomFileName = true
+                    showDetailRomInfo = true
+                    showDetailRomSize = true
+                    showDetailRomCRC = true
                     showDetailRomSHA1 = true
+                    showDetailRomFolder = true
+                    showDetailRomMD5 = true
+                    showDetailRomDumpStatus = true
+                    showDetailRomType = true
                 }
-                Text("Which fields show in the Detail panel for the selected rom (below the selected game's own fields above, when both are showing). A field with no value (e.g. a rom with no computed hash yet) is still skipped automatically — these toggles only control fields that DO have a value.")
+                Text("The exact same fields as the Roms table's own columns (\"Rom name\" and the status icon always show here, same as this panel's own header — not optional, same as the Games table's own \"Game name\" column isn't either). A field with no value is still skipped automatically — these toggles only control fields that DO have a value.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

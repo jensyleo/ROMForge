@@ -527,13 +527,15 @@ struct LibraryDetailView: View {
     @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
     @AppStorage(DetailPanelGameFieldSettings.showBiosSetKey) private var showDetailBiosSet = true
     @AppStorage(DetailPanelGameFieldSettings.showStatusKey) private var showDetailStatus = true
-    @AppStorage(DetailPanelRomFieldSettings.showGameKey) private var showDetailRomGame = true
-    @AppStorage(DetailPanelRomFieldSettings.showCloneOfKey) private var showDetailRomCloneOf = true
-    @AppStorage(DetailPanelRomFieldSettings.showDatKey) private var showDetailRomDat = true
-    @AppStorage(DetailPanelRomFieldSettings.showPathKey) private var showDetailRomPath = true
-    @AppStorage(DetailPanelRomFieldSettings.showCRC32Key) private var showDetailRomCRC32 = true
-    @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
+    @AppStorage(DetailPanelRomFieldSettings.showFileNameKey) private var showDetailRomFileName = true
+    @AppStorage(DetailPanelRomFieldSettings.showInfoKey) private var showDetailRomInfo = true
+    @AppStorage(DetailPanelRomFieldSettings.showSizeKey) private var showDetailRomSize = true
+    @AppStorage(DetailPanelRomFieldSettings.showCRCKey) private var showDetailRomCRC = true
     @AppStorage(DetailPanelRomFieldSettings.showSHA1Key) private var showDetailRomSHA1 = true
+    @AppStorage(DetailPanelRomFieldSettings.showFolderKey) private var showDetailRomFolder = true
+    @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
+    @AppStorage(DetailPanelRomFieldSettings.showDumpStatusKey) private var showDetailRomDumpStatus = true
+    @AppStorage(DetailPanelRomFieldSettings.showTypeKey) private var showDetailRomType = true
     private var visibleTopPanes: [SplitPane] {
         var panes: [SplitPane] = []
         if showDatabaseTree || showRomFolderTree { panes.append(SplitPane(minLength: 150) { databaseList }) }
@@ -4544,26 +4546,44 @@ struct LibraryDetailView: View {
         }
     }
 
+    /// Same field set as the Roms table's own customizable columns
+    /// (`romsList`), each showing the exact same content — jensyleo's own
+    /// correction (2026-08-27): "la idea es que tenga exactamente los
+    /// mismos campos que se pueden configurar en las columnas." "Rom name"
+    /// and the status icon aren't separate toggleable rows here because
+    /// they're this panel's own always-shown header (`Text(entry.name)`
+    /// below) and the status color already applied to every row via
+    /// `hashLine`/`romCell`-style tinting elsewhere — matching how the
+    /// Games table's own "Game name" column isn't optional either.
     private func romDetailSection(_ entry: AuditEntry) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(entry.name).font(.headline)
-            if showDetailRomGame, let game = entry.game {
-                Text("Game: \(game)")
+            if showDetailRomFileName {
+                if let fileName = entry.path?.lastPathComponent {
+                    Text("File name: \(fileName)")
+                } else {
+                    Text("File name: — not found —").foregroundStyle(.secondary)
+                }
             }
-            if showDetailRomCloneOf, let cloneOf = entry.cloneOf {
-                Text("Clone of: \(gameDescription(forMachineName: cloneOf))")
+            if showDetailRomInfo {
+                Text("Info: \(infoText(for: entry))")
+            }
+            if showDetailRomSize {
+                Text("Size: \(sizeText(for: entry))")
+            }
+            if showDetailRomFolder {
+                Text("Folder: \(entry.path?.deletingLastPathComponent().lastPathComponent ?? "")")
                     .foregroundStyle(.secondary)
             }
-            if showDetailRomDat {
-                Text("DAT: \(viewModel.datHeader?.name ?? system.name)")
-            }
-            if showDetailRomPath {
-                Text("Path: \(entry.path?.path ?? "—")")
-                    .foregroundStyle(.secondary)
-            }
-            if showDetailRomCRC32 { hashLine(label: "CRC32", expected: entry.expectedCRC, actual: entry.actualCRC) }
+            if showDetailRomCRC { hashLine(label: "CRC", expected: entry.expectedCRC, actual: entry.actualCRC) }
+            if showDetailRomSHA1 { hashLine(label: "SHA-1", expected: entry.expectedSHA1, actual: entry.actualSHA1) }
             if showDetailRomMD5 { hashLine(label: "MD5", expected: entry.expectedMD5, actual: entry.actualMD5) }
-            if showDetailRomSHA1 { hashLine(label: "SHA1", expected: entry.expectedSHA1, actual: entry.actualSHA1) }
+            if showDetailRomDumpStatus {
+                Text("Dump status: \(dumpStatusText(for: entry))")
+            }
+            if showDetailRomType {
+                Text("Type: \(entryKindText(for: entry))")
+            }
         }
     }
 

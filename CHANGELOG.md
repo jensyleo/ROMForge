@@ -2,6 +2,20 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.1.7] - 2026-08-27
+
+### Fixed — Detail panel's rom fields didn't match the Roms table's real columns
+
+jensyleo's own correction: "la idea es que tenga exactamente los mismos campos que se pueden
+configurar en las columnas." The rom half of the Detail panel shipped with its own field set
+(Game/Clone of/DAT/Path) that corresponded to nothing — none of those are real Roms table
+columns. Now shows the exact same fields as `romsList`'s own customizable columns — File name,
+Info, Size, Folder, CRC, SHA-1, MD5, Dump status, Type — each with matching content (e.g.
+"Folder" now shows the containing folder's name, same as the column, not the full path this used
+to show). "Rom name" and the status icon aren't separate toggleable rows, same as before, since
+they're this panel's own always-shown header/tint, not optional fields — matching how the Games
+table's own "Game name" column isn't optional either.
+
 ## [0.1.6] - 2026-08-27
 
 ### Fixed — new app-modal Settings window shipped clipped, with no tab icons
