@@ -2,6 +2,19 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.2.1] - 2026-08-27
+
+### Fixed — "Detail panel — game fields" toggles still didn't match the rest of Settings
+
+jensyleo's own report, live, right after 0.2.0 shipped: forcing `.toggleStyle(.switch)` and
+`.controlSize(.small)` on the reorderable `List`'s own `Toggle`s stopped them from looking like
+checkboxes, but they still didn't match the plain `Form`-hosted toggles surrounding them (now too
+*small*, visibly smaller than "Detail panel — rom fields" directly below in the same `Form`).
+Rather than keep chasing `List`'s own default control styling, the reorderable `List` is gone —
+every field is back to being an entirely ordinary `Form`-hosted `Toggle`, pixel-identical to
+every other toggle on this page by construction rather than by matching style overrides, with a
+small up/down chevron button pair alongside each row for reordering instead of a drag handle.
+
 ## [0.2.0] - 2026-08-27
 
 ### Added — Detail panel's game fields are now drag-to-reorder, and "Dependencies" is one of them

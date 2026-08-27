@@ -125,7 +125,7 @@ enum DetailPanelGameFieldSettings {
 /// list rather than being fixed in code. Declaration order here is only
 /// ever used as the DEFAULT order (a fresh install, or a "Reset to
 /// Defaults") — matches the Games table's own real column menu.
-enum DetailGameField: String, CaseIterable, Identifiable, Sendable {
+enum DetailGameField: String, CaseIterable, Identifiable, Hashable, Sendable {
     case fileName, expectedFileName, size, oneGameOneROM, info, cloneOf, requiredBios, chd, samples, bios, year,
         manufacturer, deviceRefs, cloneOfInternalName, family, dependencies
 
@@ -417,6 +417,20 @@ private struct ViewOptionsPanelsTab: View {
         }
     }
 
+    /// Swaps `gameFieldOrder[from]` with whatever's at `to` — the up/down
+    /// buttons' own reordering, an adjacent-swap alternative to drag
+    /// (`onMove`'s more general "move to any offset") since a plain
+    /// `Form`-hosted row has no drag handle to offer in the first place.
+    /// A no-op when `to` is out of bounds (a chevron on the first/last row
+    /// should already be `.disabled` before this ever fires, but this
+    /// guards it either way rather than trusting that alone).
+    private func moveGameField(from index: Int, to newIndex: Int) {
+        var order = gameFieldOrder
+        guard order.indices.contains(newIndex) else { return }
+        order.swapAt(index, newIndex)
+        gameFieldOrderRaw = order.map(\.rawValue).joined(separator: ",")
+    }
+
     var body: some View {
         Form {
             // jensyleo's own correction (2026-08-27): with several
@@ -497,47 +511,51 @@ private struct ViewOptionsPanelsTab: View {
             // against a screenshot of the Games table's own real
             // right-click column menu (one toggle per real column it
             // offers, skipping only "Game name", this panel's own
-            // always-shown headline) — plus, this pass, "deja que esto sea
-            // organizable por el usuario y permite Dependencies en el
-            // toggle": drag-to-reorder (a plain `List`/`ForEach.onMove`,
-            // not `Form`'s usual static rows — macOS `List` supports
-            // reordering with no separate "Edit" mode needed), and
-            // "Dependencies" folded into this same reorderable list as its
-            // own row rather than a separately-worded exception. Which
-            // badges show WITHIN "Dependencies" once it's on is still the
-            // shared toggle set in the "Dependencies" section above —
-            // unchanged, this only adds whether the ROW itself appears (and
-            // where in the order).
+            // always-shown headline) — plus, "deja que esto sea organizable
+            // por el usuario y permite Dependencies en el toggle":
+            // reorderable, with "Dependencies" folded in as its own row
+            // (its own toggle, reorderable like every other field) rather
+            // than unconditionally appended at the end. Which badges show
+            // WITHIN "Dependencies" once it's on is still the shared
+            // toggle set in the "Dependencies" section above — unchanged,
+            // this only adds whether the ROW itself appears (and where in
+            // the order).
+            //
+            // Reordered with a chevron-up/chevron-down button pair per row,
+            // not a drag-to-reorder `List` — jensyleo's own report, live,
+            // twice over the same session: a plain `Toggle` inside a macOS
+            // `List` renders as a checkbox instead of a switch, and even
+            // after forcing `.toggleStyle(.switch)` back, `List`'s own
+            // control scale still didn't match the same `Toggle` sitting in
+            // a `Form` `Section` (tried `.controlSize(.small)`, then it
+            // read as too SMALL next to "Detail panel — rom fields"
+            // directly below, still inside the ordinary `Form`). Rather
+            // than keep chasing `List`'s own default styling, every row
+            // here is a completely ordinary `Form`-hosted `Toggle` —
+            // pixel-identical to every other toggle on this page by
+            // construction, not by matching styling overrides — with
+            // small up/down buttons alongside it for reordering instead of
+            // a drag handle.
             Section("Detail panel (bottom-left) — game fields") {
-                List {
-                    ForEach(gameFieldOrder) { field in
-                        // `.toggleStyle(.switch)` isn't optional here —
-                        // jensyleo's own report, live: a plain `Toggle`
-                        // inside a macOS `List` silently renders as a
-                        // checkbox/checkmark row instead of the switch
-                        // every other toggle in this app (including this
-                        // same field's own toggle before this list existed)
-                        // uses, with no code-visible reason why. Forcing
-                        // the style keeps the reordering `List` from
-                        // looking like a different control than the
-                        // `Form`-based `Toggle`s surrounding it.
-                        // `.controlSize(.small)` — same reasoning, second
-                        // report: a `List`'s own default control scale
-                        // renders noticeably bigger than the same `Toggle`
-                        // sitting directly in a `Form` `Section`, again
-                        // with no code-visible reason why.
+                ForEach(Array(gameFieldOrder.enumerated()), id: \.element) { index, field in
+                    HStack {
                         Toggle(field.title, isOn: visibilityBinding(for: field))
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
+                        Spacer()
+                        Button {
+                            moveGameField(from: index, to: index - 1)
+                        } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .disabled(index == 0)
+                        Button {
+                            moveGameField(from: index, to: index + 1)
+                        } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .disabled(index == gameFieldOrder.count - 1)
                     }
-                    .onMove { indices, newOffset in
-                        var order = gameFieldOrder
-                        order.move(fromOffsets: indices, toOffset: newOffset)
-                        gameFieldOrderRaw = order.map(\.rawValue).joined(separator: ",")
-                    }
+                    .buttonStyle(.borderless)
                 }
-                .listStyle(.plain)
-                .frame(height: CGFloat(DetailGameField.allCases.count) * 22 + 8)
                 Button("Reset to Defaults") {
                     showDetailGameFileName = true
                     showDetailExpectedFileName = true
@@ -557,7 +575,7 @@ private struct ViewOptionsPanelsTab: View {
                     showDetailDependencies = true
                     gameFieldOrderRaw = DetailGameField.allCases.map(\.rawValue).joined(separator: ",")
                 }
-                Text("Drag a row to reorder it. Which badges show inside \"Dependencies\" (once it's on here) is still the shared toggle set in the \"Dependencies\" section above.")
+                Text("Use the arrows to reorder a row. Which badges show inside \"Dependencies\" (once it's on here) is still the shared toggle set in the \"Dependencies\" section above.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
