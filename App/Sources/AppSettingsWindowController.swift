@@ -46,12 +46,19 @@ final class AppSettingsWindowController: NSObject, NSWindowDelegate {
         )
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Settings"
-        // `.closable` (not `.miniaturizable`/`.resizable`): a real title
-        // bar with a working red close button, matching "Done"/Escape —
-        // deliberately no green zoom or yellow minimize, since neither
-        // makes sense for a modal window nothing else can interact with
-        // while it's miniaturized or specifically full-screened.
-        window.styleMask = [.titled, .closable]
+        // `.resizable` added (jensyleo's own report, 2026-08-27: content
+        // was showing up clipped) alongside the explicit size set below —
+        // `NSWindow(contentViewController:)` doesn't reliably pick up
+        // `AppSettingsView`'s own `.frame(minWidth: 760, minHeight: 560)`
+        // at creation time (a timing race against SwiftUI's own layout
+        // pass), so this sets the same size directly rather than trusting
+        // that to happen automatically. No green zoom/yellow minimize —
+        // neither makes sense for a modal window nothing else can interact
+        // with while it's miniaturized or full-screened.
+        window.styleMask = [.titled, .closable, .resizable]
+        let contentSize = NSSize(width: 760, height: 560)
+        window.setContentSize(contentSize)
+        window.contentMinSize = contentSize
         // Kept alive across closes (below) rather than deallocated, so
         // `show(store:)` can just re-show the same instance next time
         // instead of rebuilding `AppSettingsView`'s whole tab state from

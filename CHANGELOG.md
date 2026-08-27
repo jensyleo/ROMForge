@@ -2,6 +2,20 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.1.6] - 2026-08-27
+
+### Fixed — new app-modal Settings window shipped clipped, with no tab icons
+
+Two real regressions in 0.1.5's move to a plain `NSWindow` for Settings, both jensyleo's own
+reports right after installing it. Content was showing up cut off on both edges — `NSWindow
+(contentViewController:)` doesn't reliably pick up `AppSettingsView`'s own `.frame(minWidth: 760,
+minHeight: 560)` at creation time, so `AppSettingsWindowController` now sets that size directly
+(and made the window resizable, so it's never stuck too small). The "General"/"View Options"/
+"Systems" tab switcher also lost its icons — a plain `TabView` only gets the icon-over-label
+"Preferences pane" look automatic when it's the root content of a `Settings { }` scene, which
+0.1.5 stopped using; replaced with a small custom tab bar (`SettingsTabBar`) that draws its own
+icon+label buttons directly, so the look no longer depends on which container is hosting it.
+
 ## [0.1.5] - 2026-08-27
 
 ### Fixed — Detail panel's "game fields" toggles didn't actually do what they looked like

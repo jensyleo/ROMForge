@@ -50,22 +50,68 @@ struct SystemSettingsView: View {
     }
 }
 
-private enum SettingsTab: Hashable {
-    case systems
+private enum SettingsTab: CaseIterable, Hashable {
     case general
     case viewOptions
+    case systems
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .viewOptions: return "View Options"
+        case .systems: return "Systems"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: return "gearshape"
+        case .viewOptions: return "sidebar.squares.leading"
+        case .systems: return "list.bullet"
+        }
+    }
+}
+
+/// The icon-above-label tab switcher classic macOS Preferences windows use
+/// — jensyleo's own report (2026-08-27): "quitaste los iconos." A plain
+/// SwiftUI `TabView` rendered that way automatically as long as it was the
+/// root content of a `Settings { }` scene, which specially cases it into
+/// that exact look; hosted in `AppSettingsWindowController`'s own plain
+/// `NSWindow` instead (see that type's own doc comment for why), `TabView`
+/// falls back to an ordinary macOS top tab strip with no room for an icon
+/// at all. This reimplements the look directly — a `Button` per tab, an
+/// icon over a caption, a tinted background on whichever is selected — so
+/// it no longer depends on which container happens to be hosting it.
+private struct SettingsTabBar: View {
+    @Binding var selectedTab: SettingsTab
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(SettingsTab.allCases, id: \.self) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 20))
+                        Text(tab.title)
+                            .font(.caption)
+                    }
+                    .frame(width: 74, height: 48)
+                    .background(
+                        selectedTab == tab ? Color.accentColor.opacity(0.25) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 10)
+    }
 }
 
 /// Hosts both Settings tabs at a shared window size — `SystemSettingsView`
 /// used to set its own `.frame` directly, back when it was the only tab.
-///
-/// `TabView` is given an explicit `selection` binding + a `.tag()` per tab
-/// rather than relying on its own implicit/automatic selection tracking —
-/// without them, clicking "General" visually did nothing at all (confirmed
-/// both by a real click and by automated testing: the "Systems" tab stayed
-/// highlighted/selected no matter what was clicked). Driving selection
-/// explicitly is the standard, reliable fix for this exact known SwiftUI
-/// quirk.
 struct AppSettingsView: View {
     @Bindable var store: SystemLibraryStore
     /// Closes this window — jensyleo's own request (2026-08-27) that
@@ -80,20 +126,22 @@ struct AppSettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView(selection: $selectedTab) {
-                GeneralSettingsView()
-                    .tabItem { Label("General", systemImage: "gearshape") }
-                    .tag(SettingsTab.general)
+            SettingsTabBar(selectedTab: $selectedTab)
+            Divider()
+            Group {
+                switch selectedTab {
+                case .general:
+                    GeneralSettingsView()
                 // jensyleo's own request (2026-08-12): a dedicated tab for
                 // layout/visibility toggles — see `ViewOptionsSettingsView`'s
                 // own doc comment for why this is separate from "General".
-                ViewOptionsSettingsView(store: store)
-                    .tabItem { Label("View Options", systemImage: "sidebar.squares.leading") }
-                    .tag(SettingsTab.viewOptions)
-                SystemSettingsView(store: store)
-                    .tabItem { Label("Systems", systemImage: "list.bullet") }
-                    .tag(SettingsTab.systems)
+                case .viewOptions:
+                    ViewOptionsSettingsView(store: store)
+                case .systems:
+                    SystemSettingsView(store: store)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             // jensyleo's own request (2026-07-30): a visible "Done" button
             // to close the window, alongside — not instead of — the
