@@ -113,6 +113,10 @@ struct AutosavingSplitView: NSViewRepresentable {
             guard let splitView else { return }
             context.coordinator.applyRestoredLayoutIfPossible(to: splitView)
         }
+        splitView.onDragEnded = { [weak splitView] in
+            guard let splitView else { return }
+            context.coordinator.saveCurrentLayout(of: splitView)
+        }
         for pane in panes {
             let hosting = NSHostingView(rootView: pane.view)
             // Frame-based, not Auto Layout — sizing here is driven
@@ -124,14 +128,47 @@ struct AutosavingSplitView: NSViewRepresentable {
         return splitView
     }
 
-    /// A plain `NSSplitView` whose only addition is a hook into AppKit's
-    /// own `layout()` pass — see `makeNSView`'s own doc comment for why
-    /// this exists instead of relying on SwiftUI's `updateNSView` alone.
+    /// A plain `NSSplitView` with two additions: a hook into AppKit's own
+    /// `layout()` pass (see `makeNSView`'s doc comment for why that exists
+    /// instead of relying on SwiftUI's `updateNSView` alone), and a
+    /// trustworthy answer to "is the user dragging a divider right now?".
+    ///
+    /// That second one has to be exact, because it decides when the stored
+    /// layout may be overwritten — see `Coordinator
+    /// .splitViewDidResizeSubviews`. `NSSplitView` runs its divider drag as
+    /// a modal event-tracking loop inside `mouseDown(with:)`, so the whole
+    /// drag — every intermediate resize it reports — happens between this
+    /// override setting the flag and `super` returning at mouse-up.
+    /// Nothing else in the app's lifetime falls inside that window.
+    ///
+    /// `splitView(_:constrainSplitPosition:ofSubviewAt:)` was tried first,
+    /// on the strength of it being documented as a drag-time callback. It
+    /// is not one here: logging it live showed AppKit calling it during
+    /// this view's own initial arrangement at launch, with no mouse
+    /// involved at all — which was enough to persist a degenerate startup
+    /// layout (observed directly: `[0.173, 0.825, 0.0]`, the right pane at
+    /// literally zero width) straight over the user's saved proportions.
     final class ObservingSplitView: NSSplitView {
         var onLayout: (() -> Void)?
+        /// Called once the user's drag has finished, so the layout they
+        /// settled on gets persisted even though the flag below is already
+        /// back to `false` by the time any final resize is reported.
+        var onDragEnded: (() -> Void)?
+        private(set) var isUserDraggingDivider = false
+
         override func layout() {
             super.layout()
             onLayout?()
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            isUserDraggingDivider = true
+            // Blocks for the entire drag: AppKit's own modal tracking loop
+            // lives in here, and every resize it reports arrives before
+            // this returns.
+            super.mouseDown(with: event)
+            isUserDraggingDivider = false
+            onDragEnded?()
         }
     }
 
@@ -179,36 +216,43 @@ struct AutosavingSplitView: NSViewRepresentable {
         // that clamped layout then just scaled proportionally as the window
         // grew to its final size — never re-deriving the correct fractions.
         //
-        // A first fix attempt reapplied on every width change until the
-        // SAME width was reported twice in a row, then locked. That still
-        // wasn't enough — instrumented again, live: the transient ~868pt
-        // width itself got reported on two (or more) consecutive layout
-        // passes before the real growth to ~1438pt ever happened, so
-        // "repeats once" isn't proof of real stability, and the fix locked
-        // in on the wrong, still-transient width just as before.
+        // Two timing-based attempts followed, both wrong. The first
+        // re-applied on every width change until the same width was seen
+        // twice running, then locked — but the transient width itself
+        // repeats across consecutive passes, so it locked on the wrong one
+        // just the same. The second deferred the apply through
+        // `DispatchQueue.main.asyncAfter` scheduled from `layout()`. That
+        // one did hold, but jensyleo then reported every divider in the
+        // window lagging behind the mouse, and it was the cause:
+        // `layout()` runs on every layout pass, and `DispatchWorkItem
+        // .cancel()` does not remove an already-scheduled `asyncAfter`
+        // from the queue — it only makes the block a no-op when it runs —
+        // so each pass left another timer behind to wake the main queue at
+        // its own deadline, burying the run loop AppKit drives its modal
+        // divider-tracking loop on.
         //
-        // Replaced with a plain debounce: every layout call (re)schedules
-        // the actual apply a short delay out, cancelling whatever was
-        // scheduled before. Only once layout calls stop arriving for that
-        // whole stretch does the apply actually run, against whatever
-        // width is current at that point — by construction that can't be
-        // a mid-sequence transient, no matter how many transient widths
-        // repeat or how many times they repeat, since each one just pushes
-        // the deadline back out again.
+        // What both were really working around is that the *saved* value
+        // could be corrupted in the first place, which is the actual root
+        // cause and is now fixed at the source instead:
+        // `splitViewDidResizeSubviews` used to persist on every resize
+        // notification, and AppKit sends plenty that have nothing to do
+        // with the user — this view's own degenerate initial arrangement
+        // at launch (logged live as `[0.173, 0.825, 0.0]`), every window
+        // resize, the teardown passes as a window closes. Each of those
+        // overwrote the proportions the user had actually chosen. Saving
+        // is now gated on a real divider drag, detected exactly (see
+        // `ObservingSplitView.isUserDraggingDivider`).
         //
-        // jensyleo's own report (2026-08-26): a first version of this used
-        // a 250ms delay — comfortably long enough to reliably clear the
-        // handful of transient layout passes observed live, but long
-        // enough on its own (paid on *every* launch, for *every* nested
-        // split — five of them in this app) to read as the whole window's
-        // panels visibly, sluggishly snapping into place rather than
-        // simply appearing already correct. The transient-to-final layout
-        // sequence itself resolves within a handful of AppKit layout
-        // passes well under this window in practice — 60ms leaves ample
-        // margin over that while landing under the range most people
-        // perceive as a deliberate delay rather than instant.
-        private var pendingApply: DispatchWorkItem?
-        private static let settleDelay: TimeInterval = 0.06
+        // With the stored value guaranteed to only ever be something the
+        // user chose, restoring needs no timing heuristic at all: re-apply
+        // whenever this split view's own length changes, reading the saved
+        // value fresh each time. A transient launch width applies clamped
+        // and harmlessly, the real width that follows re-applies correctly,
+        // and nothing is persisted in between to poison the next launch.
+        // A divider drag never changes the split view's own length — only
+        // how that length is divided — so this can never fight a drag
+        // either, and no timers are involved anywhere.
+        private var appliedAgainstTotal: CGFloat?
         init(axis: Axis, minLengths: [CGFloat], defaultsKey: String, defaultFractions: [Double]? = nil) {
             self.axis = axis
             self.minLengths = minLengths
@@ -225,40 +269,38 @@ struct AutosavingSplitView: NSViewRepresentable {
         }
 
         func applyRestoredLayoutIfPossible(to splitView: NSSplitView) {
-            guard !didApplyRestore else { return }
             let total = totalLength(of: splitView)
             // A fresh SwiftUI-hosted view often starts at .zero (or some
             // other transient size) before its real layout pass — applying
             // fractions against that would just reproduce the exact
             // degenerate-collapse bug this replaced `autosaveName` to fix.
             guard total > CGFloat(minLengths.count) * 4 else { return }
-            pendingApply?.cancel()
-            let workItem = DispatchWorkItem { [weak self, weak splitView] in
-                guard let self, let splitView, !self.didApplyRestore else { return }
-                self.didApplyRestore = true
-                // `NSSplitView`'s own default initial arrangement — used
-                // whenever nothing is explicitly positioned — turned out to
-                // be genuinely non-deterministic in this specific
-                // SwiftUI-hosted context: observed, repeatedly, collapsing
-                // the two edge panes to exactly zero width on some
-                // launches and not others, with no drag and no saved data
-                // involved at all. Rather than ever relying on it, a
-                // position is set explicitly for every divider below —
-                // from saved fractions if there are any, or an even split
-                // otherwise — so there's never a moment where this split
-                // view's layout is whatever `NSSplitView` felt like.
-                let fractions: [Double]
-                if let saved = UserDefaults.standard.array(forKey: self.defaultsKey) as? [Double], saved.count == self.minLengths.count {
-                    fractions = saved
-                } else if let defaultFractions = self.defaultFractions, defaultFractions.count == self.minLengths.count {
-                    fractions = defaultFractions
-                } else {
-                    fractions = Array(repeating: 1.0 / Double(self.minLengths.count), count: self.minLengths.count)
-                }
-                self.apply(fractions: fractions, to: splitView)
+            // Already positioned against exactly this length. This is the
+            // common case on all but a handful of passes — including every
+            // pass a divider drag causes, since a drag redistributes this
+            // length without changing it. One comparison, no allocation.
+            if let appliedAgainstTotal, abs(appliedAgainstTotal - total) < 0.5 { return }
+            appliedAgainstTotal = total
+            didApplyRestore = true
+            // `NSSplitView`'s own default initial arrangement — used
+            // whenever nothing is explicitly positioned — turned out to be
+            // genuinely non-deterministic in this specific SwiftUI-hosted
+            // context: observed, repeatedly, collapsing the two edge panes
+            // to exactly zero width on some launches and not others, with
+            // no drag and no saved data involved at all. Rather than ever
+            // relying on it, a position is set explicitly for every
+            // divider below — from saved fractions if there are any, or an
+            // even split otherwise — so there's never a moment where this
+            // split view's layout is whatever `NSSplitView` felt like.
+            let fractions: [Double]
+            if let saved = UserDefaults.standard.array(forKey: defaultsKey) as? [Double], saved.count == minLengths.count {
+                fractions = saved
+            } else if let defaultFractions, defaultFractions.count == minLengths.count {
+                fractions = defaultFractions
+            } else {
+                fractions = Array(repeating: 1.0 / Double(minLengths.count), count: minLengths.count)
             }
-            pendingApply = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay, execute: workItem)
+            apply(fractions: fractions, to: splitView)
         }
 
         private func apply(fractions: [Double], to splitView: NSSplitView) {
@@ -272,25 +314,31 @@ struct AutosavingSplitView: NSViewRepresentable {
         }
 
         func splitViewDidResizeSubviews(_ notification: Notification) {
-            // `NSSplitView` fires this for its own *initial* natural
-            // layout too, not just user drags — before `applyRestoredLayout
-            // IfPossible` (called from `updateNSView`, which can run after
-            // this first internal layout pass) has had any chance to run.
-            // Saving unconditionally meant that very first, unwanted
-            // natural-layout event would overwrite a real saved value
-            // before it was ever read back — reproducing, one level up,
-            // the same "the real value never actually gets applied"
-            // symptom this rewrite was meant to fix. Ignored until our own
-            // restore step has run at least once (successfully applying a
-            // saved layout, or confirming there was none to apply).
+            // `NSSplitView` sends this for far more than user drags: its
+            // own initial arrangement at launch, every window resize, and
+            // the teardown passes as a window closes. Persisting on all of
+            // them is what made the stored proportions unreliable in the
+            // first place — any layout AppKit settled on by itself got
+            // written straight over the proportions the user had chosen,
+            // and the next launch faithfully restored *that*. Only a real
+            // divider drag may change a stored preference now.
+            guard let splitView = notification.object as? ObservingSplitView,
+                  splitView.isUserDraggingDivider
+            else { return }
+            saveCurrentLayout(of: splitView)
+        }
+
+        /// Persists the layout as it stands right now. Only ever called
+        /// from a context that has already established the user is the one
+        /// who put it that way — mid-drag, or immediately after one ends.
+        func saveCurrentLayout(of splitView: NSSplitView) {
             guard didApplyRestore else { return }
-            guard let splitView = notification.object as? NSSplitView else { return }
             let total = totalLength(of: splitView)
             guard total > 1 else { return }
             let fractions = splitView.arrangedSubviews.map { length(of: $0, in: splitView) / total }
-            // A user drag (or a restore we just applied) always reports a
-            // sane, in-range set of fractions — anything summing far from
-            // 1 (a transient mid-layout state) isn't a real answer to save.
+            // A settled drag always reports a sane, in-range set of
+            // fractions — anything summing far from 1 (a transient
+            // mid-layout state) isn't a real answer to save.
             guard abs(fractions.reduce(0, +) - 1) < 0.01 else { return }
             UserDefaults.standard.set(fractions, forKey: defaultsKey)
         }
