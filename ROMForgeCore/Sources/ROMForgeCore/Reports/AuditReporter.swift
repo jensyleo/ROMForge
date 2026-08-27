@@ -57,6 +57,10 @@ public enum AuditReporter {
             // "single, multi, single3") this fixes.
             let requiredBiosNames = game.resolvedBiosMachineName(gamesByName: gamesByName)
             let deviceRefNames = game.deviceRefs.isEmpty ? nil : game.deviceRefs.joined(separator: ", ")
+            let cpuNames = game.chips.filter { $0.type == "cpu" }.map(\.name)
+            let cpuChipNames = cpuNames.isEmpty ? nil : cpuNames.joined(separator: ", ")
+            let audioNames = game.chips.filter { $0.type == "audio" }.map(\.name)
+            let audioChipNames = audioNames.isEmpty ? nil : audioNames.joined(separator: ", ")
             for romMatch in gameResult.matches {
                 let rom = romMatch.rom
                 let isBadDump = rom.status != .good
@@ -71,6 +75,7 @@ public enum AuditReporter {
                         hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: rom.optional, romDumpStatus: rom.status, mergeName: rom.mergeName,
                         chdNames: chdNames, gameYear: game.year, gameManufacturer: game.manufacturer,
                         requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames,
+                        cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
                         matchedViaHeaderStrip: viaHeaderStrip, foundElsewhereArchiveName: foundElsewhereArchiveName,
                         name: rom.name, path: path,
                         expectedSize: rom.size, actualSize: hashedFile?.file.size,

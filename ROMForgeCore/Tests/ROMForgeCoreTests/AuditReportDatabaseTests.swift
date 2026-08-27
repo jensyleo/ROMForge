@@ -203,6 +203,27 @@ struct AuditReportDatabaseTests {
     /// than discovering the gap only after a relaunch silently reset the
     /// flag (as first happened for `isDisk`/`foundElsewhereArchiveName`
     /// above).
+    @Test("an entry's cpuChipNames and audioChipNames survive a save/load round trip")
+    func chipNamesSurviveRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let withChips = AuditEntry(
+            status: .correct, game: "dkong", cpuChipNames: "Zilog Z80, Intel 8035", audioChipNames: "Discrete",
+            name: "dkong.zip", path: URL(fileURLWithPath: "/roms/dkong.zip")
+        )
+        let withoutChips = AuditEntry(status: .correct, game: "pacman", name: "pacman.zip", path: URL(fileURLWithPath: "/roms/pacman.zip"))
+        let report = AuditReport(entries: [withChips, withoutChips], correct: 2, incorrect: 0, missing: 0, surplus: 0)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedWithChips = try #require(loaded.entries.first { $0.name == "dkong.zip" })
+        let reloadedWithoutChips = try #require(loaded.entries.first { $0.name == "pacman.zip" })
+        #expect(reloadedWithChips.cpuChipNames == "Zilog Z80, Intel 8035")
+        #expect(reloadedWithChips.audioChipNames == "Discrete")
+        #expect(reloadedWithoutChips.cpuChipNames == nil)
+        #expect(reloadedWithoutChips.audioChipNames == nil)
+    }
+
     @Test("an entry's isOrphanedBios flag survives a save/load round trip")
     func isOrphanedBiosSurvivesRoundTrip() throws {
         let db = try AuditReportDatabase(path: tempDBPath())

@@ -110,7 +110,19 @@ public final class AuditReportDatabase {
     // / `has_internal_zip_crc_mismatch` columns; only a fresh rescan (and,
     // for the ZIP one, re-running the on-demand check) recomputes either, so
     // the wipe below applies here too.
-    private static let currentSchemaVersion: Int32 = 19
+    // v20 (2026-08-27): new `AuditEntry.cpuChipNames` / `.audioChipNames` —
+    // MAME `-listxml`'s own `<chip type="cpu"|"audio">` elements, DAT-sourced
+    // ground truth for the Dependencies column's "Hardware" tooltip (see
+    // `MAMEChip`'s own doc comment) rather than guessing a category from
+    // `deviceRefNames`. Same unpersisted-new-field class as v18/v19 above:
+    // left unpersisted, a fresh scan would show the real split but it would
+    // silently revert to the old device_ref-only heuristic on the next app
+    // relaunch, with nothing wrong actually having changed. New
+    // `cpu_chip_names` / `audio_chip_names` columns; only a fresh rescan
+    // recomputes either (the DAT itself was already re-parsed with `<chip>`
+    // support by the time this version ships), so the wipe below applies
+    // here too.
+    private static let currentSchemaVersion: Int32 = 20
 
     private let path: String
 
@@ -158,6 +170,7 @@ public final class AuditReportDatabase {
                     .int64OrNull(entry.expectedSize), .int64OrNull(entry.actualSize),
                     .textOrNull(entry.expectedCRC), .textOrNull(entry.expectedMD5), .textOrNull(entry.expectedSHA1),
                     .textOrNull(entry.actualCRC), .textOrNull(entry.actualMD5), .textOrNull(entry.actualSHA1),
+                    .textOrNull(entry.cpuChipNames), .textOrNull(entry.audioChipNames),
                 ]
             }
             try Self.bindAndExecMany(
@@ -170,8 +183,9 @@ public final class AuditReportDatabase {
                     is_disk, found_elsewhere_archive_name, required_by_game_description, duplicate_primary_path, is_orphaned_bios,
                     has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
                     name, path, expected_size, actual_size,
-                    expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
+                    cpu_chip_names, audio_chip_names
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 rowValues
             )
@@ -204,7 +218,8 @@ public final class AuditReportDatabase {
                    name, path, expected_size, actual_size,
                    expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
                    is_optional, duplicate_primary_path, is_orphaned_bios,
-                   has_filename_crc_mismatch, has_internal_zip_crc_mismatch
+                   has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
+                   cpu_chip_names, audio_chip_names
             FROM audit_entries WHERE system_id = ?;
             """,
             [.text(systemID)]
@@ -230,6 +245,8 @@ public final class AuditReportDatabase {
                     gameManufacturer: Self.columnText(statement, 12),
                     requiredBiosNames: Self.columnText(statement, 13),
                     deviceRefNames: Self.columnText(statement, 14),
+                    cpuChipNames: Self.columnText(statement, 33),
+                    audioChipNames: Self.columnText(statement, 34),
                     isDisk: sqlite3_column_int(statement, 15) != 0,
                     foundElsewhereArchiveName: Self.columnText(statement, 16),
                     requiredByGameDescription: Self.columnText(statement, 17),
@@ -484,6 +501,8 @@ public final class AuditReportDatabase {
                 game_manufacturer TEXT,
                 required_bios_names TEXT,
                 device_ref_names TEXT,
+                cpu_chip_names TEXT,
+                audio_chip_names TEXT,
                 is_disk INTEGER NOT NULL DEFAULT 0,
                 found_elsewhere_archive_name TEXT,
                 required_by_game_description TEXT,
@@ -617,6 +636,9 @@ public final class AuditReportDatabase {
         // v19: see `currentSchemaVersion`'s own doc comment above.
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN has_filename_crc_mismatch INTEGER NOT NULL DEFAULT 0;")
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN has_internal_zip_crc_mismatch INTEGER NOT NULL DEFAULT 0;")
+        // v20: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN cpu_chip_names TEXT;")
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN audio_chip_names TEXT;")
         if currentVersion > 0 {
             try? exec(db, "DELETE FROM audit_entries;")
             try? exec(db, "DELETE FROM scans;")

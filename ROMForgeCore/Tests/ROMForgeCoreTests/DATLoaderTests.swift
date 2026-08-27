@@ -47,6 +47,7 @@ struct DATLoaderTests {
                 <year>1996</year>
                 <manufacturer>SNK</manufacturer>
                 <rom name="038-p1.p1" size="524288" crc="1e174290"/>
+                <chip type="cpu" tag="maincpu" name="Motorola 68000" clock="12000000"/>
             </machine>
             <machine name="cpu_device" isdevice="yes">
                 <description>Shared CPU core</description>
@@ -69,6 +70,10 @@ struct DATLoaderTests {
         let mslug = try #require(dat.games.first { $0.name == "mslug" })
         #expect(mslug.romOf == "neogeo")
         #expect(mslug.roms[0].crc == "1e174290")
+        // MAMEMachine.chips (`<chip>`) threaded through into DATGame.chips —
+        // the DAT-sourced ground truth `GameDependencies.hardwareTooltip`
+        // relies on for the "Hardware" tooltip's CPU:/Sound: lines.
+        #expect(mslug.chips == [DATChip(type: "cpu", name: "Motorola 68000")])
     }
 
     @Test("falls back to MAME software list when neither Logiqx nor -listxml roots match")

@@ -183,6 +183,14 @@ public struct AuditEntry: Equatable, Sendable {
     /// references (MAME `-listxml`'s `<device_ref>`) — a dependency list,
     /// not real games themselves. `nil` when `game` declares none.
     public let deviceRefNames: String?
+    /// Comma-joined human-readable names of `game`'s CPU chips (MAME
+    /// `-listxml`'s `<chip type="cpu">`) — DAT-sourced ground truth, unlike
+    /// `deviceRefNames`, which carries only internal short names with no
+    /// type. `nil` when `game` declares none (including every non-MAME DAT
+    /// format).
+    public let cpuChipNames: String?
+    /// Same as `cpuChipNames`, for `<chip type="audio">`.
+    public let audioChipNames: String?
     /// True when this rom's local file only matched once a detected copier
     /// header (iNES/Lynx/copier512 — see `HeaderSkipRule`) was stripped from
     /// it, rather than matching the DAT's declared hash byte-for-byte as-is.
@@ -310,6 +318,8 @@ public struct AuditEntry: Equatable, Sendable {
         gameManufacturer: String? = nil,
         requiredBiosNames: String? = nil,
         deviceRefNames: String? = nil,
+        cpuChipNames: String? = nil,
+        audioChipNames: String? = nil,
         matchedViaHeaderStrip: Bool = false,
         isDisk: Bool = false,
         foundElsewhereArchiveName: String? = nil,
@@ -346,6 +356,8 @@ public struct AuditEntry: Equatable, Sendable {
         self.gameManufacturer = gameManufacturer
         self.requiredBiosNames = requiredBiosNames
         self.deviceRefNames = deviceRefNames
+        self.cpuChipNames = cpuChipNames
+        self.audioChipNames = audioChipNames
         self.matchedViaHeaderStrip = matchedViaHeaderStrip
         self.isDisk = isDisk
         self.foundElsewhereArchiveName = foundElsewhereArchiveName
@@ -375,7 +387,7 @@ public struct AuditEntry: Equatable, Sendable {
             status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
             hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
-            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: true, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
@@ -393,7 +405,7 @@ public struct AuditEntry: Equatable, Sendable {
             status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
             hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
-            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: true, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
@@ -411,7 +423,7 @@ public struct AuditEntry: Equatable, Sendable {
             status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
             hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
-            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: true,

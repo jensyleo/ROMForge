@@ -150,6 +150,7 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
     private var roms: [DATRom] = []
     private var disks: [MAMEDisk] = []
     private var deviceRefs: [String] = []
+    private var chips: [MAMEChip] = []
     private var hasSamples = false
 
     func parser(
@@ -177,6 +178,7 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
             roms = []
             disks = []
             deviceRefs = []
+            chips = []
             hasSamples = false
         case "biosset":
             guard inMachine, let biosName = attributeDict["name"] else { break }
@@ -204,6 +206,18 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
         case "device_ref":
             guard inMachine, let refName = attributeDict["name"] else { break }
             deviceRefs.append(refName)
+        case "chip":
+            // `-listxml`'s own hardware truth: every real CPU/audio device
+            // actually instantiated in the machine, with a human-readable
+            // `name` (e.g. "Capcom QSound (custom)") and a `type` of "cpu"
+            // or "audio" — distinct from `device_ref` above, which lists
+            // shared/support sub-devices by their internal short name, with
+            // no type at all. Unrecognized/future `type` values (MAME has
+            // never defined a third one, but nothing guarantees that stays
+            // true) are kept as-is rather than dropped, so a caller can
+            // still decide what to do with them.
+            guard inMachine, let chipType = attributeDict["type"], let chipName = attributeDict["name"] else { break }
+            chips.append(MAMEChip(type: chipType, name: chipName))
         case "sample":
             guard inMachine else { break }
             hasSamples = true
@@ -247,6 +261,7 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
                     roms: roms,
                     disks: disks,
                     deviceRefs: deviceRefs,
+                    chips: chips,
                     hasSamples: hasSamples
                 )
             )

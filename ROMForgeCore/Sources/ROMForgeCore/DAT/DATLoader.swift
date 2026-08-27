@@ -354,7 +354,8 @@ public enum DATLoader {
                 manufacturer: machine.manufacturer.isEmpty ? nil : machine.manufacturer,
                 mergedFamilyMachineNames: layout.mergedFamilyMachineNames,
                 biosSetNames: machine.biosSets.map(\.name),
-                deviceRefs: machine.deviceRefs
+                deviceRefs: machine.deviceRefs,
+                chips: machine.chips.map { DATChip(type: $0.type, name: $0.name) }
             ))
         }
         return DATFile(

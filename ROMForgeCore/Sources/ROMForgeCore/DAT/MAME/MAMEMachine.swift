@@ -33,6 +33,22 @@ public struct MAMEDisk: Equatable, Sendable {
     }
 }
 
+/// One `<chip>` a `<machine>` actually instantiates — MAME's own hardware
+/// truth, straight from `-listxml`'s `type` ("cpu" or "audio" — MAME has
+/// never defined a third) and human-readable `name` (e.g. "Capcom QSound
+/// (custom)", not an internal device short name). Distinct from
+/// `MAMEMachine.deviceRefs`, which lists shared/support sub-devices by
+/// short name with no type at all.
+public struct MAMEChip: Equatable, Sendable {
+    public let type: String
+    public let name: String
+
+    public init(type: String, name: String) {
+        self.type = type
+        self.name = name
+    }
+}
+
 /// One `<machine>` entry from MAME's `-listxml` output — a superset of the
 /// generic Logiqx `DATGame`, with the hardware/BIOS metadata Logiqx lacks.
 public struct MAMEMachine: Equatable, Sendable {
@@ -48,6 +64,12 @@ public struct MAMEMachine: Equatable, Sendable {
     public let roms: [DATRom]
     public let disks: [MAMEDisk]
     public let deviceRefs: [String]
+    /// Every CPU/audio chip this machine actually instantiates, per
+    /// `-listxml`'s own `<chip>` elements — see `MAMEChip`'s own doc
+    /// comment. Empty for machines `-listxml` reports none for (rare but
+    /// real, e.g. some pure-mechanical or placeholder devices) and for
+    /// every non-MAME DAT format, which has no such concept.
+    public let chips: [MAMEChip]
     /// True when the machine declares any `<sample>` — presence-only, like
     /// `disks`; ROMForge doesn't audit sample files on disk.
     public let hasSamples: Bool
@@ -65,6 +87,7 @@ public struct MAMEMachine: Equatable, Sendable {
         roms: [DATRom],
         disks: [MAMEDisk],
         deviceRefs: [String],
+        chips: [MAMEChip] = [],
         hasSamples: Bool = false
     ) {
         self.name = name
@@ -79,6 +102,7 @@ public struct MAMEMachine: Equatable, Sendable {
         self.roms = roms
         self.disks = disks
         self.deviceRefs = deviceRefs
+        self.chips = chips
         self.hasSamples = hasSamples
     }
 }

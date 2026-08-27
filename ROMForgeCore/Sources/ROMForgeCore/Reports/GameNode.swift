@@ -265,6 +265,14 @@ public struct GameNode: Identifiable, Sendable {
     public var deviceRefNames: String {
         firstNonEmpty(\.deviceRefNames) ?? sourceGame.map { $0.deviceRefs.joined(separator: ", ") } ?? ""
     }
+    public var cpuChipNames: String {
+        firstNonEmpty(\.cpuChipNames)
+            ?? sourceGame.map { $0.chips.filter { $0.type == "cpu" }.map(\.name).joined(separator: ", ") } ?? ""
+    }
+    public var audioChipNames: String {
+        firstNonEmpty(\.audioChipNames)
+            ?? sourceGame.map { $0.chips.filter { $0.type == "audio" }.map(\.name).joined(separator: ", ") } ?? ""
+    }
     public var samplesText: String {
         if entries.contains(where: \.hasSamples) { return "Yes" }
         return sourceGame?.hasSamples == true ? "Yes" : ""

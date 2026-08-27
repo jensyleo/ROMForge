@@ -29,6 +29,8 @@ struct MAMEListXMLParserTests {
             <disk name="mslug" sha1="7c9e8a7e372e08c93c81b8ceb18e731e26f4cbb2"/>
             <sample name="jump"/>
             <device_ref name="hd6301"/>
+            <chip type="cpu" tag="maincpu" name="Motorola 68000" clock="12000000"/>
+            <chip type="audio" tag="ymsnd" name="Yamaha YM2610" clock="8000000"/>
         </machine>
         <machine name="mslugx" cloneof="mslug" romof="mslug">
             <description>Metal Slug X</description>
@@ -56,6 +58,9 @@ struct MAMEListXMLParserTests {
         #expect(parent.biosSets == [MAMEBiosSet(name: "neogeo", description: "Neo-Geo (Asia, MVS)")])
         #expect(parent.disks == [MAMEDisk(name: "mslug", sha1: "7c9e8a7e372e08c93c81b8ceb18e731e26f4cbb2")])
         #expect(parent.deviceRefs == ["hd6301"])
+        #expect(parent.chips == [
+            MAMEChip(type: "cpu", name: "Motorola 68000"), MAMEChip(type: "audio", name: "Yamaha YM2610"),
+        ])
         #expect(parent.hasSamples == true)
         #expect(parent.roms.first { $0.name == "v1.v1" }?.status == .baddump)
         #expect(parent.roms.first { $0.name == "038-p1.p1" }?.status == .good)

@@ -10,9 +10,9 @@ import Foundation
 /// like `ParentCloneSummary`'s family indicator: never a new `AuditStatus`,
 /// never anything that feeds severity. Built entirely from fields
 /// `AuditEntry`/`GameNode` already carry (`requiredBiosNames`, `chdNames`,
-/// `deviceRefNames`, `hasSamples`), so showing it costs nothing beyond what a
-/// scan (or the pre-scan DAT catalog) already computed — no re-scan, no
-/// extra I/O.
+/// `deviceRefNames`, `cpuChipNames`, `audioChipNames`, `hasSamples`), so
+/// showing it costs nothing beyond what a scan (or the pre-scan DAT
+/// catalog) already computed — no re-scan, no extra I/O.
 ///
 /// jensyleo tried putting the real DAT name(s) inline in `label` (2026-08-20)
 /// and reverted it the same day: with `deviceRefNames` routinely holding
@@ -39,8 +39,8 @@ public struct DependencyBadge: Identifiable, Equatable, Sendable {
 }
 
 /// Curated, deliberately incomplete list of common MAME CPU device short
-/// names — used only to split the "Hardware" tooltip into a `CPU:` line a
-/// user is likely to recognize and an `Other:` line for everything else.
+/// names — used only as a fallback for the "Hardware" tooltip's `CPU:` line
+/// when a game has no real `<chip>` data of its own (see `hardwareTooltip`).
 /// MAME's `<device_ref>` carries only a device name, no type, so this list
 /// isn't sourced from the DAT and never claims completeness: any name not
 /// in this set falls into `Other:`, never silently mislabeled as something
@@ -62,21 +62,43 @@ private let knownCPUDeviceNames: Set<String> = [
     "se3208", "e116t", "mn10200", "dsp16a", "adsp2100", "adsp2105", "adsp2115",
 ]
 
-/// Splits a comma-separated `deviceRefNames` string into a `CPU:` line
-/// (names found in `knownCPUDeviceNames`) and an `Other:` line (everything
-/// else), so the "Hardware" tooltip reads as more than a wall of internal
-/// MAME device names without ever guessing at a category this doesn't
-/// actually recognize. No leading "Uses hardware" restates the badge's own
-/// "Hardware" label, so it's left out — same reasoning as the other badges'
-/// tooltips below.
-private func hardwareTooltip(from deviceRefNames: String) -> String {
-    let names = deviceRefNames.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-    let cpus = names.filter { knownCPUDeviceNames.contains($0.lowercased()) }
-    let others = names.filter { !knownCPUDeviceNames.contains($0.lowercased()) }
-    var lines: [String] = []
-    if !cpus.isEmpty { lines.append("CPU: \(cpus.joined(separator: ", "))") }
-    if !others.isEmpty { lines.append("Other: \(others.joined(separator: ", "))") }
-    return lines.joined(separator: "\n")
+/// Builds the "Hardware" tooltip out of up to three lines — `CPU:`,
+/// `Sound:`, `Other:` — none of them restating the badge's own "Hardware"
+/// label, same reasoning as the other badges' tooltips below.
+///
+/// `cpuChipNames`/`audioChipNames` are MAME `-listxml`'s own `<chip
+/// type="cpu"|"audio">` elements (see `MAMEChip`'s own doc comment) — real
+/// DAT ground truth, with human-readable names (e.g. "Capcom QSound
+/// (custom)"), not a guess. jensyleo's own question (2026-08-27): does the
+/// DAT actually mark qsound as a sound chip anywhere? It does, just not in
+/// `device_ref` — `<chip>` is a separate element ROMForge didn't parse
+/// before this. When present, it entirely replaces the curated-list
+/// guess below for the CPU line, and `deviceRefNames` becomes purely
+/// `Other:` (device_ref lists shared/support sub-devices, a different
+/// namespace from chip, so no attempt is made to cross-reference the two
+/// against each other).
+///
+/// When a game has no `<chip>` data at all (an older/partial DAT, or a
+/// non-MAME format with no such concept), CPU falls back to matching
+/// `deviceRefNames` against `knownCPUDeviceNames` — the same heuristic this
+/// tooltip used before real chip data was available — so CPU identification
+/// degrades gracefully instead of disappearing outright.
+private func hardwareTooltip(cpuChipNames: String, audioChipNames: String, deviceRefNames: String) -> String {
+    let deviceNames = deviceRefNames.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+
+    let cpuLine: String?
+    let otherNames: [String]
+    if !cpuChipNames.isEmpty {
+        cpuLine = "CPU: \(cpuChipNames)"
+        otherNames = deviceNames
+    } else {
+        let cpus = deviceNames.filter { knownCPUDeviceNames.contains($0.lowercased()) }
+        cpuLine = cpus.isEmpty ? nil : "CPU: \(cpus.joined(separator: ", "))"
+        otherNames = deviceNames.filter { !knownCPUDeviceNames.contains($0.lowercased()) }
+    }
+    let soundLine = audioChipNames.isEmpty ? nil : "Sound: \(audioChipNames)"
+    let otherLine = otherNames.isEmpty ? nil : "Other: \(otherNames.joined(separator: ", "))"
+    return [cpuLine, soundLine, otherLine].compactMap { $0 }.joined(separator: "\n")
 }
 
 extension GameNode {
@@ -109,9 +131,12 @@ extension GameNode {
                 DependencyBadge(kind: .chd, label: "CHD", tooltip: "\(diskCount) \(diskWord): \(chdNames)")
             )
         }
-        if !deviceRefNames.isEmpty {
+        if !deviceRefNames.isEmpty || !cpuChipNames.isEmpty || !audioChipNames.isEmpty {
             badges.append(
-                DependencyBadge(kind: .hardware, label: "Hardware", tooltip: hardwareTooltip(from: deviceRefNames))
+                DependencyBadge(
+                    kind: .hardware, label: "Hardware",
+                    tooltip: hardwareTooltip(cpuChipNames: cpuChipNames, audioChipNames: audioChipNames, deviceRefNames: deviceRefNames)
+                )
             )
         }
         if samplesText == "Yes" {

@@ -11,11 +11,11 @@ import Testing
 struct GameDependenciesTests {
     private func game(
         _ name: String, cloneOf: String? = nil, romOf: String? = nil, disks: [DATDisk] = [],
-        hasSamples: Bool = false, deviceRefs: [String] = []
+        hasSamples: Bool = false, deviceRefs: [String] = [], chips: [DATChip] = []
     ) -> DATGame {
         DATGame(
             name: name, description: name, cloneOf: cloneOf, romOf: romOf, roms: [], disks: disks,
-            hasSamples: hasSamples, deviceRefs: deviceRefs
+            hasSamples: hasSamples, deviceRefs: deviceRefs, chips: chips
         )
     }
 
@@ -87,6 +87,57 @@ struct GameDependenciesTests {
     func caseInsensitiveCPUMatch() {
         let badges = node(game("sf2", deviceRefs: ["Z80"])).dependencyBadges
         #expect(badges[0].tooltip == "CPU: Z80")
+    }
+
+    @Test("a game with real <chip> CPU data uses it verbatim instead of guessing from device_ref")
+    func realChipCPUData() {
+        let badges = node(game("dkong", chips: [DATChip(type: "cpu", name: "Zilog Z80")])).dependencyBadges
+        #expect(badges.map(\.kind) == [.hardware])
+        #expect(badges[0].tooltip == "CPU: Zilog Z80")
+    }
+
+    @Test("a game with real <chip> audio data gets a Sound: line")
+    func realChipAudioData() {
+        let badges = node(game("sf2", chips: [DATChip(type: "audio", name: "Capcom QSound (custom)")])).dependencyBadges
+        #expect(badges.map(\.kind) == [.hardware])
+        #expect(badges[0].tooltip == "Sound: Capcom QSound (custom)")
+    }
+
+    @Test("real <chip> CPU and audio data combine into CPU: and Sound: lines, in that order")
+    func realChipCPUAndAudioData() {
+        let badges = node(
+            game(
+                "dkong",
+                chips: [
+                    DATChip(type: "cpu", name: "Zilog Z80"), DATChip(type: "cpu", name: "Intel 8035"),
+                    DATChip(type: "audio", name: "Discrete"),
+                ]
+            )
+        ).dependencyBadges
+        #expect(badges[0].tooltip == "CPU: Zilog Z80, Intel 8035\nSound: Discrete")
+    }
+
+    @Test("real <chip> CPU data and device_ref both present: device_ref becomes purely Other:, not re-guessed")
+    func realChipCPUWithDeviceRef() {
+        let badges = node(
+            game("dkong", deviceRefs: ["z80"], chips: [DATChip(type: "cpu", name: "Zilog Z80")])
+        ).dependencyBadges
+        // "z80" isn't dropped as a duplicate of the chip-derived "Zilog Z80" —
+        // chip and device_ref are different namespaces, so it surfaces as
+        // Other: rather than being cross-referenced away.
+        #expect(badges[0].tooltip == "CPU: Zilog Z80\nOther: z80")
+    }
+
+    @Test("a Hardware badge appears from real <chip> data alone, even with no device_ref at all")
+    func hardwareBadgeFromChipDataWithNoDeviceRef() {
+        let badges = node(game("dkong", chips: [DATChip(type: "cpu", name: "Zilog Z80")])).dependencyBadges
+        #expect(badges.map(\.kind) == [.hardware])
+    }
+
+    @Test("with no real <chip> CPU data, a known device_ref name still falls back to the curated CPU heuristic")
+    func fallsBackToHeuristicWithoutChipData() {
+        let badges = node(game("sf2", deviceRefs: ["z80", "ym2151"])).dependencyBadges
+        #expect(badges[0].tooltip == "CPU: z80\nOther: ym2151")
     }
 
     @Test("a game declaring samples gets a Samples badge")

@@ -91,6 +91,21 @@ public struct DATDisk: Equatable, Sendable, Codable {
     }
 }
 
+/// One CPU/audio chip a game's machine actually instantiates, per MAME
+/// `-listxml`'s own `<chip>` elements — see `MAMEChip`'s own doc comment for
+/// why this is more trustworthy than guessing at a category from
+/// `deviceRefs`. `type` is `"cpu"` or `"audio"`; `name` is MAME's own
+/// human-readable device name, not an internal short name.
+public struct DATChip: Equatable, Sendable, Codable {
+    public let type: String
+    public let name: String
+
+    public init(type: String, name: String) {
+        self.type = type
+        self.name = name
+    }
+}
+
 /// A game (ROM set) entry, i.e. one or more ROM files that together make up a title.
 public struct DATGame: Equatable, Sendable, Codable {
     public let name: String
@@ -126,6 +141,10 @@ public struct DATGame: Equatable, Sendable, Codable {
     /// entirely), just a dependency list. Empty for formats with no such
     /// concept.
     public let deviceRefs: [String]
+    /// Every CPU/audio chip this game's machine actually instantiates
+    /// (MAME `-listxml`'s `<chip>`) — see `DATChip`'s own doc comment.
+    /// Empty for formats/entries with no such concept.
+    public let chips: [DATChip]
     /// Under Merged Rom mode only: every raw machine name (this game's own,
     /// plus every clone) whose own archive `MAMESetLayoutPlanner.mergedGame`
     /// drew roms from — lowercased. Empty for Split/Non-merged (every clone
@@ -159,7 +178,8 @@ public struct DATGame: Equatable, Sendable, Codable {
         manufacturer: String? = nil,
         mergedFamilyMachineNames: [String] = [],
         biosSetNames: [String] = [],
-        deviceRefs: [String] = []
+        deviceRefs: [String] = [],
+        chips: [DATChip] = []
     ) {
         self.name = name
         self.description = description
@@ -173,6 +193,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         self.manufacturer = manufacturer
         self.biosSetNames = biosSetNames
         self.deviceRefs = deviceRefs
+        self.chips = chips
         self.mergedFamilyMachineNames = mergedFamilyMachineNames
     }
 }

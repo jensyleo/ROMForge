@@ -2,6 +2,28 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.1.3] - 2026-08-27
+
+### Added — real CPU/Sound chip data from MAME's `-listxml`, replacing guesswork
+
+jensyleo's own question: does the DAT actually mark a chip like QSound as a sound device
+anywhere? It does — MAME `-listxml` emits a `<chip type="cpu"|"audio" name="...">` element per
+machine, entirely separate from `<device_ref>`, with a human-readable name (e.g. "Capcom QSound
+(custom)") rather than an internal short name. ROMForge never parsed it before this.
+
+`MAMEListXMLParser` now captures `<chip>`, threaded through `MAMEMachine` → `DATGame` →
+`AuditReport`/`GameNode` (including SQLite persistence — schema v20, `cpu_chip_names`/
+`audio_chip_names` columns, same wipe-and-rescan pattern as every prior schema bump) into the
+Dependencies column's "Hardware" tooltip. When a game has real chip data, the tooltip now shows:
+
+    CPU: Zilog Z80
+    Sound: Capcom QSound (custom)
+
+instead of the CPU-only, name-guessing heuristic added in 0.1.2. That heuristic isn't gone — it's
+the fallback for a game with no `<chip>` data at all (an older/partial DAT, or a non-MAME format),
+so CPU identification degrades gracefully instead of disappearing. `device_ref` names never
+covered by `<chip>` still surface under `Other:`.
+
 ## [0.1.2] - 2026-08-27
 
 ### Changed — Hardware dependency tooltip now splits CPU from other devices
