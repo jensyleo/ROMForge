@@ -2,7 +2,37 @@
 
 All notable changes to ROMForge are documented in this file.
 
-## [Unreleased]
+## [0.1.1] - 2026-08-27
+
+### Changed — Hardware dependency tooltip now splits CPU from other devices
+
+The Dependencies column's Hardware badge previously listed every `device_ref` name from the
+DAT as one flat, comma-separated string — meaningful to MAME internals, cryptic to most users.
+The tooltip now splits recognized CPU device names onto their own `CPU:` line, leaving
+everything else under `Other:`. Matching is against a curated, deliberately incomplete list of
+around 60 common MAME CPU short names (case-insensitive) — MAME's `<device_ref>` carries only a
+device name, no type, so this isn't sourced from the DAT itself, and an unrecognized name always
+falls into `Other:` rather than being silently mislabeled.
+
+### Security
+
+**Decompression bomb guard for `.7z` archives.** `SevenZipArchiveHasher` used to buffer a `.7z`
+entry's fully decompressed output with no size limit, unlike `ZipArchiveHasher`, which has
+always aborted a suspiciously over-decompressing entry mid-stream. `SevenZipRunner` now reads
+7-Zip's stdout incrementally and aborts the process once output exceeds `declaredSize x 10`
+(floor 1 MiB), matching the existing zip guard's heuristic. Verified end-to-end against a real
+`7zz` process with a 50 MiB payload compressed to a few KB.
+
+**Argument-injection guard for 7-Zip entry names.** A crafted archive can name an entry however
+it likes, including something that looks like a `7zz` command-line switch (e.g.
+`-p1234looksLikeASwitch.bin`). `SevenZipArchiveHasher` now passes `--` before both the archive
+path and the entry path so such a name can never be parsed as an option.
+
+**Symlinks are no longer followed during a folder scan.** `FolderScanner` now checks
+`isSymbolicLinkKey` and skips symlinked files entirely and symlinked directories without
+descending into them, closing a path where a symlink planted inside a scanned ROM folder could
+have caused ROMForge to read files outside the folder the user selected (e.g. `~/.ssh`, Keychain
+files).
 
 ### Performance — two more per-frame costs removed from divider dragging
 
