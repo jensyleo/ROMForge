@@ -2757,15 +2757,26 @@ struct LibraryDetailView: View {
             EmptyView()
         } else {
             HStack(spacing: 4) {
-                ForEach(badges) { badge in
-                    Text(badge.label)
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(badgeTint(for: badge.kind).opacity(0.18), in: Capsule())
-                        .help(badge.tooltip)
-                }
+                ForEach(badges) { badge in dependencyChip(for: badge) }
             }
+        }
+    }
+
+    /// One chip for a single `DependencyBadge`. An empty `tooltip` (the
+    /// Samples badge, which has nothing beyond its own label to say) skips
+    /// `.help(_:)` entirely rather than attaching a tooltip that would just
+    /// repeat the visible chip text.
+    @ViewBuilder
+    private func dependencyChip(for badge: DependencyBadge) -> some View {
+        let chip = Text(badge.label)
+            .font(.caption2)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(badgeTint(for: badge.kind).opacity(0.18), in: Capsule())
+        if badge.tooltip.isEmpty {
+            chip
+        } else {
+            chip.help(badge.tooltip)
         }
     }
 

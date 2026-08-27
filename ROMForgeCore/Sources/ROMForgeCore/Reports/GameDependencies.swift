@@ -66,7 +66,9 @@ private let knownCPUDeviceNames: Set<String> = [
 /// (names found in `knownCPUDeviceNames`) and an `Other:` line (everything
 /// else), so the "Hardware" tooltip reads as more than a wall of internal
 /// MAME device names without ever guessing at a category this doesn't
-/// actually recognize.
+/// actually recognize. No leading "Uses hardware" restates the badge's own
+/// "Hardware" label, so it's left out — same reasoning as the other badges'
+/// tooltips below.
 private func hardwareTooltip(from deviceRefNames: String) -> String {
     let names = deviceRefNames.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
     let cpus = names.filter { knownCPUDeviceNames.contains($0.lowercased()) }
@@ -74,7 +76,7 @@ private func hardwareTooltip(from deviceRefNames: String) -> String {
     var lines: [String] = []
     if !cpus.isEmpty { lines.append("CPU: \(cpus.joined(separator: ", "))") }
     if !others.isEmpty { lines.append("Other: \(others.joined(separator: ", "))") }
-    return "Uses hardware —\n" + lines.joined(separator: "\n")
+    return lines.joined(separator: "\n")
 }
 
 extension GameNode {
@@ -92,15 +94,19 @@ extension GameNode {
         guard !isSurplusBucket, !isDiskRow else { return [] }
         var badges: [DependencyBadge] = []
 
+        // Each tooltip below deliberately skips restating its own badge
+        // label ("Requires BIOS:", "Uses CHD:", "Uses hardware:", "Uses
+        // samples") — the chip is already labeled, so the tooltip carries
+        // only the information the label itself can't fit: the actual
+        // name(s).
         if !requiredBiosNames.isEmpty {
-            badges.append(
-                DependencyBadge(kind: .bios, label: "BIOS", tooltip: "Requires BIOS: \(requiredBiosNames)")
-            )
+            badges.append(DependencyBadge(kind: .bios, label: "BIOS", tooltip: requiredBiosNames))
         }
         if !chdNames.isEmpty {
             let diskCount = chdNames.split(separator: ",").count
+            let diskWord = diskCount == 1 ? "disk" : "disks"
             badges.append(
-                DependencyBadge(kind: .chd, label: "CHD", tooltip: "Uses CHD (\(diskCount) disk(s)): \(chdNames)")
+                DependencyBadge(kind: .chd, label: "CHD", tooltip: "\(diskCount) \(diskWord): \(chdNames)")
             )
         }
         if !deviceRefNames.isEmpty {
@@ -109,9 +115,10 @@ extension GameNode {
             )
         }
         if samplesText == "Yes" {
-            badges.append(
-                DependencyBadge(kind: .samples, label: "Samples", tooltip: "Uses samples")
-            )
+            // Nothing beyond the "Samples" label itself to say here, so
+            // this badge carries no tooltip at all rather than a sentence
+            // that would just repeat the label.
+            badges.append(DependencyBadge(kind: .samples, label: "Samples", tooltip: ""))
         }
         return badges
     }

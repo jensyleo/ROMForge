@@ -36,7 +36,7 @@ struct GameDependenciesTests {
         let badges = node.dependencyBadges
         #expect(badges.map(\.kind) == [.bios])
         #expect(badges[0].label == "BIOS")
-        #expect(badges[0].tooltip == "Requires BIOS: neogeo")
+        #expect(badges[0].tooltip == "neogeo")
     }
 
     @Test("a game with a CHD disk gets a CHD badge naming the disk and its count")
@@ -44,7 +44,7 @@ struct GameDependenciesTests {
         let badges = node(game("cubeqst", disks: [DATDisk(name: "cubeqst", sha1: "abc")])).dependencyBadges
         #expect(badges.map(\.kind) == [.chd])
         #expect(badges[0].label == "CHD")
-        #expect(badges[0].tooltip == "Uses CHD (1 disk(s)): cubeqst")
+        #expect(badges[0].tooltip == "1 disk: cubeqst")
     }
 
     @Test("a game with multiple CHD disks names them all and counts them")
@@ -52,7 +52,7 @@ struct GameDependenciesTests {
         let disks = [DATDisk(name: "disk1", sha1: "a"), DATDisk(name: "disk2", sha1: "b")]
         let badges = node(game("biggame", disks: disks)).dependencyBadges
         #expect(badges[0].label == "CHD")
-        #expect(badges[0].tooltip == "Uses CHD (2 disk(s)): disk1, disk2")
+        #expect(badges[0].tooltip == "2 disks: disk1, disk2")
     }
 
     @Test("a game with an unrecognized device_ref gets a Hardware badge naming it under Other")
@@ -60,7 +60,7 @@ struct GameDependenciesTests {
         let badges = node(game("sf2", deviceRefs: ["ym2151"])).dependencyBadges
         #expect(badges.map(\.kind) == [.hardware])
         #expect(badges[0].label == "Hardware")
-        #expect(badges[0].tooltip == "Uses hardware —\nOther: ym2151")
+        #expect(badges[0].tooltip == "Other: ym2151")
     }
 
     @Test("a game with several unrecognized device_refs names them all under one Other line")
@@ -68,32 +68,32 @@ struct GameDependenciesTests {
         let badges = node(game("sf2", deviceRefs: ["ym2151", "okim6295"])).dependencyBadges
         #expect(badges.map(\.kind) == [.hardware])
         #expect(badges[0].label == "Hardware")
-        #expect(badges[0].tooltip == "Uses hardware —\nOther: ym2151, okim6295")
+        #expect(badges[0].tooltip == "Other: ym2151, okim6295")
     }
 
     @Test("a game with a known CPU device_ref gets it split into its own CPU: line")
     func knownCPUDeviceRef() {
         let badges = node(game("sf2", deviceRefs: ["z80"])).dependencyBadges
-        #expect(badges[0].tooltip == "Uses hardware —\nCPU: z80")
+        #expect(badges[0].tooltip == "CPU: z80")
     }
 
     @Test("a game mixing known CPU and unrecognized device_refs splits them into CPU: and Other: lines")
     func mixedCPUAndOtherDeviceRefs() {
         let badges = node(game("sf2", deviceRefs: ["z80", "ym2151", "m68000", "okim6295"])).dependencyBadges
-        #expect(badges[0].tooltip == "Uses hardware —\nCPU: z80, m68000\nOther: ym2151, okim6295")
+        #expect(badges[0].tooltip == "CPU: z80, m68000\nOther: ym2151, okim6295")
     }
 
     @Test("CPU device_ref matching is case-insensitive against the known-CPU list")
     func caseInsensitiveCPUMatch() {
         let badges = node(game("sf2", deviceRefs: ["Z80"])).dependencyBadges
-        #expect(badges[0].tooltip == "Uses hardware —\nCPU: Z80")
+        #expect(badges[0].tooltip == "CPU: Z80")
     }
 
     @Test("a game declaring samples gets a Samples badge")
     func samplesDependency() {
         let badges = node(game("dkong", hasSamples: true)).dependencyBadges
         #expect(badges.map(\.kind) == [.samples])
-        #expect(badges[0].tooltip == "Uses samples")
+        #expect(badges[0].tooltip == "")
     }
 
     @Test("a clone gets no dependency badge of its own — that's the Family column's job")

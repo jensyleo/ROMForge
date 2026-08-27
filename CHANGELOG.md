@@ -14,6 +14,12 @@ around 60 common MAME CPU short names (case-insensitive) — MAME's `<device_ref
 device name, no type, so this isn't sourced from the DAT itself, and an unrecognized name always
 falls into `Other:` rather than being silently mislabeled.
 
+Every Dependencies badge tooltip also dropped its restatement of its own chip label — "Requires
+BIOS:", "Uses CHD:", "Uses hardware:", "Uses samples" all repeated information already on
+screen in the chip itself. Tooltips now carry only the actual names (or nothing at all, for
+Samples, which has none). The CHD tooltip's disk count kept, since that's real information the
+label alone doesn't carry.
+
 ### Security
 
 **Decompression bomb guard for `.7z` archives.** `SevenZipArchiveHasher` used to buffer a `.7z`
