@@ -230,6 +230,57 @@ private final class ZipCommentCache {
     }
 }
 
+/// The loaded DAT's games indexed by their own lowercased machine name, so
+/// resolving one (`gameDescription(forMachineName:)`, for the "Clone of"
+/// column) is a single dictionary lookup.
+///
+/// jensyleo's own report (2026-08-26), root-caused with a sampling profiler
+/// on a real divider drag: without this, `gameDescription(forMachineName:)`
+/// rebuilt that whole dictionary from `preloadedGames` on *every call* — and
+/// it is called once per visible table row, inside the column's own content
+/// closure, so it ran again for every row on every layout pass. Dragging a
+/// divider re-lays the table out on every mouse-moved event, which made each
+/// frame cost (visible rows × the entire DAT); on a full MAME set that is
+/// tens of thousands of dictionary insertions and twice as many
+/// `lowercased()` allocations per row, per frame. The profile showed
+/// `NSHostingView.layout()` → `AppKitOutlineTableCoordinator.update` →
+/// `TableColumnList.visitAll` → `gameDescription(forMachineName:)` →
+/// `gamesByName(_:)` dominating ROMForge's own time during a drag, which is
+/// what made the divider visibly lag behind the mouse.
+///
+/// A plain reference-type cache rather than `@State`, for the same reason
+/// `ZipCommentCache` above is one: it gets filled while the view body is
+/// being evaluated, and mutating SwiftUI state mid-render is undefined
+/// behavior. Rebuilt only when the underlying game list actually changes
+/// (a different DAT, or a reload) — detected by identity of the array's
+/// storage plus its count, which is exact for the "same array reused" case
+/// and merely rebuilds once more than strictly needed otherwise.
+private final class GamesByNameCache {
+    private var storage: [String: DATGame] = [:]
+    private var sourceCount = -1
+    private var sourceFirstName: String?
+    private var sourceLastName: String?
+
+    func games(from games: [DATGame]) -> [String: DATGame] {
+        if games.count == sourceCount,
+           games.first?.name == sourceFirstName,
+           games.last?.name == sourceLastName {
+            return storage
+        }
+        var result: [String: DATGame] = [:]
+        result.reserveCapacity(games.count)
+        for game in games {
+            let key = game.name.lowercased()
+            if result[key] == nil { result[key] = game }
+        }
+        storage = result
+        sourceCount = games.count
+        sourceFirstName = games.first?.name
+        sourceLastName = games.last?.name
+        return storage
+    }
+}
+
 struct LibraryDetailView: View {
     let system: RomSystem
     /// Called with the full, updated folder list whenever the user adds a
@@ -401,6 +452,10 @@ struct LibraryDetailView: View {
     /// filling it while `infoText(for:)` runs during view-body evaluation
     /// never mutates SwiftUI state mid-render.
     private let zipCommentCache = ZipCommentCache()
+    /// See `GamesByNameCache`'s own doc comment — this is what keeps the
+    /// "Clone of" column from rebuilding the whole DAT index once per row,
+    /// per layout pass.
+    private let gamesByNameCache = GamesByNameCache()
     /// The status filter (Correct/Incorrect/Missing/Surplus) is a genuine
     /// multi-select — each status button is an independent on/off toggle,
     /// not a single exclusive choice — so "Correct + Incorrect together,
@@ -4065,7 +4120,7 @@ struct LibraryDetailView: View {
     /// the loaded DAT at all (shouldn't normally happen — `cloneof` always
     /// names a real machine in the same DAT).
     private func gameDescription(forMachineName name: String) -> String {
-        Self.gamesByName(viewModel.preloadedGames)[name.lowercased()]?.description ?? name
+        gamesByNameCache.games(from: viewModel.preloadedGames)[name.lowercased()]?.description ?? name
     }
 
     /// Applies the `showUnknownArchives`/`activeStatusFilters` toggles to

@@ -4,6 +4,42 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Fixed — dragging a split divider lagged badly behind the mouse
+
+jensyleo's own report (2026-08-26). Root-caused with a sampling profiler taken during a real
+divider drag, after four wrong theories had been tried and discarded — the profile pointed
+straight at ROMForge's own code:
+
+    NSHostingView.layout()
+      -> AppKitOutlineTableCoordinator.update(to:with:diffRows:diffColumns:)
+        -> TableColumnList.visitAll
+          -> LibraryDetailView.gameTreeTableContent   ("Clone of" column)
+            -> gameDescription(forMachineName:)        116 samples
+              -> gamesByName(_:)                        44 samples
+
+`gameDescription(forMachineName:)` resolved a machine name to its human-readable description
+by calling `gamesByName(preloadedGames)`, which builds a dictionary of the **entire loaded
+DAT** — every game, each keyed by a freshly allocated `lowercased()` string. That is a
+per-call rebuild, and the call sits inside the "Clone of" column's own content closure, so it
+ran once per visible row, on every table layout pass. Dragging a divider re-lays the table out
+on every mouse-moved event, which made each frame cost (visible rows x whole DAT): on a full
+MAME set, tens of thousands of dictionary insertions and twice as many string allocations per
+row, per frame. The divider could only advance once the main thread finished all of it, which
+is exactly the "doesn't follow the mouse" symptom.
+
+Fixed by indexing the DAT once into a `GamesByNameCache` and rebuilding it only when the
+underlying game list actually changes, turning the per-row work into a single dictionary
+lookup. It is a plain reference-type cache rather than `@State`, matching the existing
+`ZipCommentCache` in the same file, because it is filled while the view body is being
+evaluated and mutating SwiftUI state mid-render is undefined behavior.
+
+Measured on a real drag, before and after, with `sample(1)`: time in the AppKit layout /
+CoreAnimation transaction-flush path dropped from 506 samples to 6, and both
+`gameDescription(forMachineName:)` and `gamesByName(_:)` disappeared from the profile
+entirely. The bug predates this session (the "Clone of" column has resolved descriptions this
+way since 2026-08-17); it was not introduced by the split-persistence work below, which was
+investigated first and cleared by measurement.
+
 ### Fixed — split panel sizes not surviving a relaunch, and dividers lagging behind the mouse
 
 jensyleo's own report (2026-08-26): shrinking a split view panel worked on screen, but closing and reopening the app brought it back noticeably bigger than left. Chasing it turned up a second, related problem — dragging any divider lagged visibly behind the mouse — and both trace back to the same place.
