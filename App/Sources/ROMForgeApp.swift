@@ -30,8 +30,9 @@ extension Notification.Name {
 
 @main
 struct ROMForgeApp: App {
-    // Owned here (not inside `ContentView`) so the Settings scene below —
-    // a separate `Scene`, not a child of `ContentView` — can read/write the
+    // Owned here (not inside `ContentView`) so the "Settings…" command
+    // below — `AppSettingsWindowController.shared.show(store:)`, a
+    // separate window, not a child of `ContentView` — can read/write the
     // same configured systems rather than a second, disconnected store.
     @State private var store = SystemLibraryStore()
 
@@ -86,15 +87,23 @@ struct ROMForgeApp: App {
                 // — ⌘? is the conventional key for this across macOS apps.
                 ShortcutsMenuButton()
             }
-        }
-        // A real "Settings…" window (⌘,), the conventional macOS place for
-        // configuration that isn't part of the main content flow —
-        // replaces the earlier "Edit Merge Settings…" context-menu item,
-        // which buried this in a place a user had no reason to check first.
-        // Two tabs: per-system merge mode, and app-wide preferences (which
-        // hash algorithms to compute) — see `AppSettingsView`.
-        Settings {
-            AppSettingsView(store: store)
+            // "Settings…" (⌘,), the conventional macOS place for
+            // configuration that isn't part of the main content flow —
+            // replaces the earlier "Edit Merge Settings…" context-menu
+            // item, which buried this in a place a user had no reason to
+            // check first. A custom `Button`/`CommandGroup(replacing:
+            // .appSettings)`, not a `Settings { }` scene — jensyleo's own
+            // request (2026-08-27) that this window be a real app-modal
+            // one (can't click away to the main window while it's open) is
+            // something `Settings { }` has no supported way to do at all;
+            // see `AppSettingsWindowController`'s own doc comment for the
+            // full reasoning and how the modal session itself works.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    AppSettingsWindowController.shared.show(store: store)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
         // `Window` (not `WindowGroup`): each is a single, unique window —
         // opening "About"/"Help" again while one's already showing should

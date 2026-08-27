@@ -68,6 +68,14 @@ private enum SettingsTab: Hashable {
 /// quirk.
 struct AppSettingsView: View {
     @Bindable var store: SystemLibraryStore
+    /// Closes this window — jensyleo's own request (2026-08-27) that
+    /// Settings behave as a genuine app-modal window drove this off
+    /// `AppSettingsWindowController`'s own plain `NSWindow` rather than a
+    /// SwiftUI `Window`/`WindowGroup` scene, so the `@Environment
+    /// (\.dismissWindow)` this used to call (scoped to scene-managed
+    /// windows) no longer applies here — this callback (`window.close()`)
+    /// is `AppSettingsWindowController`'s own replacement for it.
+    var onDone: () -> Void
     @State private var selectedTab: SettingsTab = .general
 
     var body: some View {
@@ -89,11 +97,11 @@ struct AppSettingsView: View {
             Divider()
             // jensyleo's own request (2026-07-30): a visible "Done" button
             // to close the window, alongside — not instead of — the
-            // native traffic-light close button a `Settings{}` scene
-            // already has.
+            // native red traffic-light close button
+            // `AppSettingsWindowController`'s own `NSWindow` already has.
             HStack {
                 Spacer()
-                Button("Done") { dismissWindow() }
+                Button("Done") { onDone() }
                     .keyboardShortcut(.defaultAction)
             }
             .padding()
@@ -106,7 +114,7 @@ struct AppSettingsView: View {
             // (`.opacity(0)` + zero frame) rather than a second visible
             // button — there's genuinely only one action to offer, this just
             // gives it a second key that triggers it.
-            Button("Close") { dismissWindow() }
+            Button("Close") { onDone() }
                 .keyboardShortcut(.cancelAction)
                 .opacity(0)
                 .frame(width: 0, height: 0)
@@ -117,8 +125,6 @@ struct AppSettingsView: View {
         // wrapped awkwardly in the old fixed size.
         .frame(minWidth: 760, minHeight: 560)
     }
-
-    @Environment(\.dismissWindow) private var dismissWindow
 }
 
 private struct MAMEMergeSettingsForm: View {

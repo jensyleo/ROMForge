@@ -2,6 +2,35 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.1.5] - 2026-08-27
+
+### Fixed — Detail panel's "game fields" toggles didn't actually do what they looked like
+
+0.1.4 shipped the Detail panel's CHD/Samples/Required BIOS/Device refs as four separate
+toggles, under names that just duplicated the existing "Dependencies column" settings — turning
+one off didn't affect the other, which read as "no está funcionando." The Detail panel now shows
+those four as the exact same "Dependencies" chips as the Games table's own column (same badges,
+same tooltips, same filtering), governed by the one existing BIOS/CHD/Hardware/Samples toggle
+set — turning one off now hides that chip everywhere at once, table and panel both.
+
+### Changed — Settings → View Options reorganized and documented in-app
+
+Several sections all named their own subset of panels/fields with no indication of which
+on-screen area each one actually touched. The "Panels" subtab now opens with a one-paragraph map
+of all six panels and where they sit on screen, every panel toggle is labeled with its own
+location ("Detail (bottom-left)", "Roms (top-right table)", etc.), and "Dependencies column" is
+renamed plain "Dependencies (Games table column + Detail panel row)" now that it governs both.
+
+### Changed — Settings window is now a real app-modal window
+
+jensyleo's own request: clicking outside the Settings window used to just switch focus to
+whatever was behind it, letting you interact with the main window while Settings stayed open —
+standard macOS behavior for a Preferences window, but not what was wanted here. Settings is now
+presented as a genuine app-modal `NSWindow` (`AppSettingsWindowController`, driven by
+`NSApp.runModal(for:)`) instead of SwiftUI's `Settings { }` scene, which has no supported way to
+do this at all — while it's open, no other window in the app can receive clicks or keystrokes
+until it's closed via "Done", Escape, or the red close button.
+
 ## [0.1.4] - 2026-08-27
 
 ### Added — Detail panel fields are now individually configurable

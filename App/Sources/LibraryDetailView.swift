@@ -526,10 +526,6 @@ struct LibraryDetailView: View {
     @AppStorage(DetailPanelGameFieldSettings.showYearKey) private var showDetailYear = true
     @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
     @AppStorage(DetailPanelGameFieldSettings.showBiosSetKey) private var showDetailBiosSet = true
-    @AppStorage(DetailPanelGameFieldSettings.showCHDKey) private var showDetailCHD = true
-    @AppStorage(DetailPanelGameFieldSettings.showSamplesKey) private var showDetailSamples = true
-    @AppStorage(DetailPanelGameFieldSettings.showRequiredBiosKey) private var showDetailRequiredBios = true
-    @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
     @AppStorage(DetailPanelGameFieldSettings.showStatusKey) private var showDetailStatus = true
     @AppStorage(DetailPanelRomFieldSettings.showGameKey) private var showDetailRomGame = true
     @AppStorage(DetailPanelRomFieldSettings.showCloneOfKey) private var showDetailRomCloneOf = true
@@ -2776,7 +2772,27 @@ struct LibraryDetailView: View {
     /// this kind of hint.
     @ViewBuilder
     private func dependenciesIndicator(for node: GameNode) -> some View {
-        let badges = node.dependencyBadges.filter { badge in
+        let badges = visibleDependencyBadges(for: node)
+        if badges.isEmpty {
+            EmptyView()
+        } else {
+            HStack(spacing: 4) {
+                ForEach(badges) { badge in dependencyChip(for: badge) }
+            }
+        }
+    }
+
+    /// `node.dependencyBadges` filtered down to the categories Settings →
+    /// View Options → Dependencies still has switched on — the single
+    /// source of truth shared by both the Games table's "Dependencies"
+    /// column (`dependenciesIndicator`, above) and the Detail panel's own
+    /// "Dependencies" row (`dependenciesDetailRow`, below). jensyleo's own
+    /// correction (2026-08-27): the Detail panel first shipped with its
+    /// own separate CHD/Samples/Required BIOS/Device refs toggles, which
+    /// only confused things — two differently-named settings governing
+    /// what looked like the same information in two different places.
+    private func visibleDependencyBadges(for node: GameNode) -> [DependencyBadge] {
+        node.dependencyBadges.filter { badge in
             switch badge.kind {
             case .bios: return showBiosBadge
             case .chd: return showCHDBadge
@@ -2784,12 +2800,26 @@ struct LibraryDetailView: View {
             case .samples: return showSamplesBadge
             }
         }
-        if badges.isEmpty {
-            EmptyView()
-        } else {
-            HStack(spacing: 4) {
-                ForEach(badges) { badge in dependencyChip(for: badge) }
+    }
+
+    /// The Detail panel's own "Dependencies" row — the exact same chips as
+    /// `dependenciesIndicator` (same badges, same filtering, same tooltips),
+    /// just laid out with a label like every other `infoRow` in this panel
+    /// instead of bare in a table cell. Skipped entirely when no badge
+    /// survives filtering, same "nothing to say, don't show the row"
+    /// convention as `infoRow`.
+    @ViewBuilder
+    private func dependenciesDetailRow(_ node: GameNode) -> some View {
+        let badges = visibleDependencyBadges(for: node)
+        if !badges.isEmpty {
+            HStack(alignment: .top, spacing: 8) {
+                Text("Dependencies").bold().frame(width: 100, alignment: .leading)
+                HStack(spacing: 4) {
+                    ForEach(badges) { badge in dependencyChip(for: badge) }
+                }
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -4509,10 +4539,7 @@ struct LibraryDetailView: View {
             if showDetailYear { infoRow("Year", node.year) }
             if showDetailManufacturer { infoRow("Manufacturer", node.manufacturer) }
             if showDetailBiosSet { infoRow("BIOS set", node.biosText) }
-            if showDetailCHD { infoRow("CHD", node.chdNames) }
-            if showDetailSamples { infoRow("Samples", node.samplesText) }
-            if showDetailRequiredBios { infoRow("Required BIOS", node.requiredBiosNames) }
-            if showDetailDeviceRefs { infoRow("Device refs", node.deviceRefNames) }
+            dependenciesDetailRow(node)
             if showDetailStatus { infoRow("Status", node.infoText) }
         }
     }

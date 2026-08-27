@@ -42,16 +42,24 @@ enum OneGameOneROMSettings {
     static let showOnlyKey = "ROMForge.view.show1G1ROnly"
 }
 
-/// Which of `DependencyBadge.Kind` cases show in the "Dependencies" column —
-/// jensyleo's own request (2026-08-20), alongside naming real BIOS/hardware
-/// names in each chip's own label: some collections care about BIOS/CHD
-/// dependencies but find the "Hardware" chip (routinely half a dozen
-/// device names) too busy for their taste, or vice versa. All four default
-/// to visible (today's existing behavior, unchanged) — same
-/// `@AppStorage`-backed, plain-enum-of-keys pattern as
-/// `PanelVisibilitySettings` above, read directly by `LibraryDetailView`
-/// under these same keys so the column and this settings view can never
-/// disagree about what's showing.
+/// Which of `DependencyBadge.Kind` cases show — jensyleo's own request
+/// (2026-08-20), alongside naming real BIOS/hardware names in each chip's
+/// own label: some collections care about BIOS/CHD dependencies but find
+/// the "Hardware" chip (routinely half a dozen device names) too busy for
+/// their taste, or vice versa. All four default to visible (today's
+/// existing behavior, unchanged) — same `@AppStorage`-backed,
+/// plain-enum-of-keys pattern as `PanelVisibilitySettings` above.
+///
+/// Originally named for the Games table's own "Dependencies" column, its
+/// only home at the time. Since 2026-08-27 it also governs the Detail
+/// panel's own "Dependencies" row (`LibraryDetailView
+/// .dependenciesDetailRow`) — deliberately the SAME toggle set, not a
+/// second one: jensyleo's own correction after the Detail panel first
+/// shipped with its own separate CHD/Samples/etc. toggles, which just
+/// duplicated this one under different names. Read directly by
+/// `LibraryDetailView` under these same keys, both places, so column,
+/// Detail panel, and this settings view can never disagree about what's
+/// showing.
 enum DependencyColumnSettings {
     static let showBiosKey = "ROMForge.view.showBiosBadge"
     static let showCHDKey = "ROMForge.view.showCHDBadge"
@@ -66,16 +74,22 @@ enum DependencyColumnSettings {
 /// visible (today's existing behavior, unchanged). Read directly by
 /// `LibraryDetailView` under these same keys, same one-source-of-truth
 /// pattern as `PanelVisibilitySettings`.
+///
+/// CHD/Samples/Required BIOS/Device refs deliberately have NO toggle of
+/// their own here — jensyleo's own correction, the same day: those first
+/// shipped as four separate fields, which just duplicated
+/// `DependencyColumnSettings` under different names and read as broken
+/// ("no está funcionando") since toggling one didn't affect the other.
+/// The Detail panel now shows those four as the exact same "Dependencies"
+/// chips as the Games table's own column, governed by the one existing
+/// `DependencyColumnSettings` toggle set — see
+/// `LibraryDetailView.dependenciesDetailRow`.
 enum DetailPanelGameFieldSettings {
     static let showInternalNameKey = "ROMForge.view.detail.game.showInternalName"
     static let showCloneOfKey = "ROMForge.view.detail.game.showCloneOf"
     static let showYearKey = "ROMForge.view.detail.game.showYear"
     static let showManufacturerKey = "ROMForge.view.detail.game.showManufacturer"
     static let showBiosSetKey = "ROMForge.view.detail.game.showBiosSet"
-    static let showCHDKey = "ROMForge.view.detail.game.showCHD"
-    static let showSamplesKey = "ROMForge.view.detail.game.showSamples"
-    static let showRequiredBiosKey = "ROMForge.view.detail.game.showRequiredBios"
-    static let showDeviceRefsKey = "ROMForge.view.detail.game.showDeviceRefs"
     static let showStatusKey = "ROMForge.view.detail.game.showStatus"
 }
 
@@ -242,8 +256,11 @@ private struct ViewOptionsGeneralTab: View {
     }
 }
 
-/// "Panels" subtab — which of `LibraryDetailView`'s six main panels show,
-/// unchanged from before the 2026-08-24 subtab split.
+/// "Panels" subtab — visibility and content of `LibraryDetailView`'s six
+/// main panels (Database, ROM folder, Games, Roms, Detail, Log). Every
+/// section here is named after one or more of those same six, with its
+/// on-screen location spelled out, per jensyleo's own 2026-08-27
+/// correction — see this view's own leading `Text` for the full map.
 private struct ViewOptionsPanelsTab: View {
     @AppStorage(PanelVisibilitySettings.showDatabaseTreeKey) private var showDatabaseTree = true
     @AppStorage(PanelVisibilitySettings.showRomFolderTreeKey) private var showRomFolderTree = true
@@ -260,10 +277,6 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelGameFieldSettings.showYearKey) private var showDetailYear = true
     @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
     @AppStorage(DetailPanelGameFieldSettings.showBiosSetKey) private var showDetailBiosSet = true
-    @AppStorage(DetailPanelGameFieldSettings.showCHDKey) private var showDetailCHD = true
-    @AppStorage(DetailPanelGameFieldSettings.showSamplesKey) private var showDetailSamples = true
-    @AppStorage(DetailPanelGameFieldSettings.showRequiredBiosKey) private var showDetailRequiredBios = true
-    @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
     @AppStorage(DetailPanelGameFieldSettings.showStatusKey) private var showDetailStatus = true
     @AppStorage(DetailPanelRomFieldSettings.showGameKey) private var showDetailRomGame = true
     @AppStorage(DetailPanelRomFieldSettings.showCloneOfKey) private var showDetailRomCloneOf = true
@@ -277,13 +290,24 @@ private struct ViewOptionsPanelsTab: View {
 
     var body: some View {
         Form {
-            Section("Panels") {
-                Toggle("Database", isOn: $showDatabaseTree)
-                Toggle("ROM folder", isOn: $showRomFolderTree)
-                Toggle("Games", isOn: $showGamesPanel)
-                Toggle("Roms", isOn: $showRomsPanel)
-                Toggle("Detail", isOn: $showDetailPanel)
-                Toggle("Log", isOn: $showLogPanel)
+            // jensyleo's own correction (2026-08-27): with several
+            // sections all naming their own subset of panels/fields, it
+            // became unclear which on-screen area each one actually
+            // touched ("se volvió confuso... no se está entendiendo
+            // nada"). This upfront map, plus a location in every panel
+            // name below (both here and in every following section
+            // header), is the fix — every name a toggle/section uses is
+            // now also the name printed at that exact spot on screen.
+            Text("ROMForge's library window has six panels: **Database**/**ROM folder** (left sidebar tree, whichever is selected), **Games** and **Roms** (the two tables across the top), and **Detail** and **Log** (the two areas across the bottom). Sections below are named after these same six.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Section("Panel visibility") {
+                Toggle("Database (left sidebar)", isOn: $showDatabaseTree)
+                Toggle("ROM folder (left sidebar)", isOn: $showRomFolderTree)
+                Toggle("Games (top-left table)", isOn: $showGamesPanel)
+                Toggle("Roms (top-right table)", isOn: $showRomsPanel)
+                Toggle("Detail (bottom-left)", isOn: $showDetailPanel)
+                Toggle("Log (bottom-right)", isOn: $showLogPanel)
                 Button("Reset to Defaults") {
                     showDatabaseTree = true
                     showRomFolderTree = true
@@ -292,10 +316,10 @@ private struct ViewOptionsPanelsTab: View {
                     showDetailPanel = true
                     showLogPanel = true
                 }
+                Text("Hides a whole panel, freeing its space for the ones left showing — never discards anything, and re-checking a box (or Reset to Defaults) brings it straight back where it was.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Text("Hides a panel from the library view entirely, freeing its space for the ones left showing — it never discards anything, and re-checking a box (or Reset to Defaults) brings it straight back exactly where it was.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             // jensyleo's own request (2026-08-13): "esas View Options
             // llévalas a la sección MAME de System, tiene más sentido" —
             // the "Database tree branches" toggles that briefly lived here
@@ -307,19 +331,23 @@ private struct ViewOptionsPanelsTab: View {
             // here, which is about panel layout in general. The storage
             // enum (`DatabaseFilterVisibilitySettings`, below in this
             // file) stayed regardless of where its own UI lives.
-            // "Column layouts"/"Dependencies column" (jensyleo's own
-            // request, 2026-08-25): folded in from the now-removed
-            // "Columns" subtab — see this file's own `ViewOptionsSubtab`
-            // doc comment for why.
-            Section("Panel layouts") {
-                Button("Manage Panel Presets…") {
+            Section("Games/Roms table column layouts") {
+                Button("Manage Column Presets…") {
                     NotificationCenter.default.post(name: .romForgeShowColumnPresetsSheet, object: nil)
                 }
                 Text("Save or switch between named column layouts for both tables (Games and Roms) — opens the same sheet the toolbar's own \"Column Presets…\" button used to.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("Dependencies column") {
+            // "Column layouts"/"Dependencies column" (jensyleo's own
+            // request, 2026-08-25): folded in from the now-removed
+            // "Columns" subtab — see this file's own `ViewOptionsSubtab`
+            // doc comment for why. Renamed from "Dependencies column" to
+            // plain "Dependencies" on 2026-08-27, once it stopped being
+            // column-only — see `DependencyColumnSettings`'s own doc
+            // comment for why this ended up the ONE toggle set for two
+            // different places instead of two separate ones.
+            Section("Dependencies (Games table column + Detail panel row)") {
                 Toggle("BIOS", isOn: $showBiosBadge)
                 Toggle("CHD", isOn: $showCHDBadge)
                 Toggle("Hardware", isOn: $showHardwareBadge)
@@ -330,26 +358,25 @@ private struct ViewOptionsPanelsTab: View {
                     showHardwareBadge = true
                     showSamplesBadge = true
                 }
-                Text("Which dependency chips show in the Games table's \"Dependencies\" column (hidden by default). Turning one off only hides that chip — it never affects scanning, matching, or any other column.")
+                Text("Which dependency chips show — both in the Games table's own \"Dependencies\" column and in the Detail panel's own \"Dependencies\" row, the exact same chips in both places. Turning one off hides that chip everywhere at once; it never affects scanning, matching, or any other column.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             // "Otro rezago de fase 1" (jensyleo's own request, 2026-08-27):
             // the Detail panel (bottom-left) showed a fixed set of fields
-            // with no way to hide any of them, unlike the Dependencies
-            // column above. Same toggle-per-field, "Reset to Defaults"
-            // shape, split into the panel's own two sections (game vs. rom)
-            // since a rom row's fields are a genuinely different set.
-            Section("Detail panel — game fields") {
+            // with no way to hide any of them. Same toggle-per-field,
+            // "Reset to Defaults" shape as the section above, split into
+            // the panel's own two sections (game vs. rom) since a rom
+            // row's fields are a genuinely different set. CHD/Samples/
+            // Required BIOS/Device refs are deliberately NOT toggles
+            // here — see "Dependencies" above, which now covers all four
+            // for this panel too.
+            Section("Detail panel (bottom-left) — game fields") {
                 Toggle("Internal name", isOn: $showDetailInternalName)
                 Toggle("Clone of", isOn: $showDetailGameCloneOf)
                 Toggle("Year", isOn: $showDetailYear)
                 Toggle("Manufacturer", isOn: $showDetailManufacturer)
                 Toggle("BIOS set", isOn: $showDetailBiosSet)
-                Toggle("CHD", isOn: $showDetailCHD)
-                Toggle("Samples", isOn: $showDetailSamples)
-                Toggle("Required BIOS", isOn: $showDetailRequiredBios)
-                Toggle("Device refs", isOn: $showDetailDeviceRefs)
                 Toggle("Status", isOn: $showDetailStatus)
                 Button("Reset to Defaults") {
                     showDetailInternalName = true
@@ -357,14 +384,13 @@ private struct ViewOptionsPanelsTab: View {
                     showDetailYear = true
                     showDetailManufacturer = true
                     showDetailBiosSet = true
-                    showDetailCHD = true
-                    showDetailSamples = true
-                    showDetailRequiredBios = true
-                    showDetailDeviceRefs = true
                     showDetailStatus = true
                 }
+                Text("CHD, Samples, Required BIOS, and Device refs show here too, as the same \"Dependencies\" chips as the Games table's own column — see the \"Dependencies\" section above to hide any of those.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Section("Detail panel — rom fields") {
+            Section("Detail panel (bottom-left) — rom fields") {
                 Toggle("Game", isOn: $showDetailRomGame)
                 Toggle("Clone of", isOn: $showDetailRomCloneOf)
                 Toggle("DAT", isOn: $showDetailRomDat)
@@ -381,7 +407,7 @@ private struct ViewOptionsPanelsTab: View {
                     showDetailRomMD5 = true
                     showDetailRomSHA1 = true
                 }
-                Text("Which fields show in the Detail panel (bottom-left) for the selected game and rom. A field with no value (e.g. a game with no declared year) is still skipped automatically, same as before — these toggles only control fields that DO have a value.")
+                Text("Which fields show in the Detail panel for the selected rom (below the selected game's own fields above, when both are showing). A field with no value (e.g. a rom with no computed hash yet) is still skipped automatically — these toggles only control fields that DO have a value.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
