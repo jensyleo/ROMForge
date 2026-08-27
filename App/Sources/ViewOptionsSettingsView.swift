@@ -75,22 +75,36 @@ enum DependencyColumnSettings {
 /// `LibraryDetailView` under these same keys, same one-source-of-truth
 /// pattern as `PanelVisibilitySettings`.
 ///
-/// CHD/Samples/Required BIOS/Device refs deliberately have NO toggle of
-/// their own here — jensyleo's own correction, the same day: those first
-/// shipped as four separate fields, which just duplicated
-/// `DependencyColumnSettings` under different names and read as broken
-/// ("no está funcionando") since toggling one didn't affect the other.
-/// The Detail panel now shows those four as the exact same "Dependencies"
-/// chips as the Games table's own column, governed by the one existing
-/// `DependencyColumnSettings` toggle set — see
-/// `LibraryDetailView.dependenciesDetailRow`.
+/// jensyleo's own correction (2026-08-27, second pass): the first version
+/// of this had its own small, hand-picked field list (Internal name/Clone
+/// of/Year/Manufacturer/BIOS set/Status) that didn't actually match the
+/// Games table's own real, already-customizable column list (screenshotted
+/// directly from that table's own right-click menu: Game name/File name/
+/// Expected file name/Size/1G1R/Info/Clone of/Required BIOS/CHD/Samples/
+/// BIOS/Year/Manufacturer/Device refs/Clone of (internal name)/Family/
+/// Dependencies). This now has one key per REAL column that list offers
+/// (skipping only "Game name", this panel's own always-shown headline, and
+/// "Dependencies", still governed by the shared `DependencyColumnSettings`
+/// toggle set — see `LibraryDetailView.dependenciesDetailRow`), named and
+/// ordered to match that menu exactly, so a field can never appear here
+/// under a name/order that doesn't correspond to anything a user has
+/// actually seen as a column.
 enum DetailPanelGameFieldSettings {
-    static let showInternalNameKey = "ROMForge.view.detail.game.showInternalName"
+    static let showFileNameKey = "ROMForge.view.detail.game.showFileName"
+    static let showExpectedFileNameKey = "ROMForge.view.detail.game.showExpectedFileName"
+    static let showSizeKey = "ROMForge.view.detail.game.showSize"
+    static let showOneGameOneROMKey = "ROMForge.view.detail.game.showOneGameOneROM"
+    static let showInfoKey = "ROMForge.view.detail.game.showInfo"
     static let showCloneOfKey = "ROMForge.view.detail.game.showCloneOf"
+    static let showRequiredBiosKey = "ROMForge.view.detail.game.showRequiredBios"
+    static let showCHDKey = "ROMForge.view.detail.game.showCHD"
+    static let showSamplesKey = "ROMForge.view.detail.game.showSamples"
+    static let showBiosKey = "ROMForge.view.detail.game.showBios"
     static let showYearKey = "ROMForge.view.detail.game.showYear"
     static let showManufacturerKey = "ROMForge.view.detail.game.showManufacturer"
-    static let showBiosSetKey = "ROMForge.view.detail.game.showBiosSet"
-    static let showStatusKey = "ROMForge.view.detail.game.showStatus"
+    static let showDeviceRefsKey = "ROMForge.view.detail.game.showDeviceRefs"
+    static let showCloneOfInternalNameKey = "ROMForge.view.detail.game.showCloneOfInternalName"
+    static let showFamilyKey = "ROMForge.view.detail.game.showFamily"
 }
 
 /// Same idea as `DetailPanelGameFieldSettings`, for
@@ -284,12 +298,21 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
     @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
     @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
-    @AppStorage(DetailPanelGameFieldSettings.showInternalNameKey) private var showDetailInternalName = true
+    @AppStorage(DetailPanelGameFieldSettings.showFileNameKey) private var showDetailGameFileName = true
+    @AppStorage(DetailPanelGameFieldSettings.showExpectedFileNameKey) private var showDetailExpectedFileName = true
+    @AppStorage(DetailPanelGameFieldSettings.showSizeKey) private var showDetailGameSize = true
+    @AppStorage(DetailPanelGameFieldSettings.showOneGameOneROMKey) private var showDetailOneGameOneROM = true
+    @AppStorage(DetailPanelGameFieldSettings.showInfoKey) private var showDetailInfo = true
     @AppStorage(DetailPanelGameFieldSettings.showCloneOfKey) private var showDetailGameCloneOf = true
+    @AppStorage(DetailPanelGameFieldSettings.showRequiredBiosKey) private var showDetailRequiredBios = true
+    @AppStorage(DetailPanelGameFieldSettings.showCHDKey) private var showDetailCHD = true
+    @AppStorage(DetailPanelGameFieldSettings.showSamplesKey) private var showDetailSamples = true
+    @AppStorage(DetailPanelGameFieldSettings.showBiosKey) private var showDetailBios = true
     @AppStorage(DetailPanelGameFieldSettings.showYearKey) private var showDetailYear = true
     @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
-    @AppStorage(DetailPanelGameFieldSettings.showBiosSetKey) private var showDetailBiosSet = true
-    @AppStorage(DetailPanelGameFieldSettings.showStatusKey) private var showDetailStatus = true
+    @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
+    @AppStorage(DetailPanelGameFieldSettings.showCloneOfInternalNameKey) private var showDetailCloneOfInternalName = true
+    @AppStorage(DetailPanelGameFieldSettings.showFamilyKey) private var showDetailFamily = true
     @AppStorage(DetailPanelRomFieldSettings.showFileNameKey) private var showDetailRomFileName = true
     @AppStorage(DetailPanelRomFieldSettings.showInfoKey) private var showDetailRomInfo = true
     @AppStorage(DetailPanelRomFieldSettings.showSizeKey) private var showDetailRomSize = true
@@ -376,31 +399,54 @@ private struct ViewOptionsPanelsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            // "Otro rezago de fase 1" (jensyleo's own request, 2026-08-27):
-            // the Detail panel (bottom-left) showed a fixed set of fields
-            // with no way to hide any of them. Same toggle-per-field,
-            // "Reset to Defaults" shape as the section above, split into
-            // the panel's own two sections (game vs. rom) since a rom
-            // row's fields are a genuinely different set. CHD/Samples/
-            // Required BIOS/Device refs are deliberately NOT toggles
-            // here — see "Dependencies" above, which now covers all four
-            // for this panel too.
+            // "Otro rezago de fase 1" (jensyleo's own request, 2026-08-27,
+            // second pass): "la idea es que tenga exactamente los mismos
+            // campos que se pueden configurar en las columnas" — matched
+            // against a screenshot of the Games table's own real
+            // right-click column menu this time, not approximated by hand.
+            // One toggle per real column that list offers (skipping "Game
+            // name", this panel's own always-shown headline), named and
+            // ordered to match that menu exactly. "Dependencies" is
+            // deliberately NOT a toggle here — see "Dependencies" above,
+            // which already covers it (and, within it, CHD/Samples/
+            // Required BIOS/Device refs as chips) for this panel too;
+            // those same four also get their OWN plain-text toggle below,
+            // matching the Games table itself offering both a standalone
+            // column AND the summarized "Dependencies" chip for each.
             Section("Detail panel (bottom-left) — game fields") {
-                Toggle("Internal name", isOn: $showDetailInternalName)
+                Toggle("File name", isOn: $showDetailGameFileName)
+                Toggle("Expected file name", isOn: $showDetailExpectedFileName)
+                Toggle("Size", isOn: $showDetailGameSize)
+                Toggle("1G1R", isOn: $showDetailOneGameOneROM)
+                Toggle("Info", isOn: $showDetailInfo)
                 Toggle("Clone of", isOn: $showDetailGameCloneOf)
+                Toggle("Required BIOS", isOn: $showDetailRequiredBios)
+                Toggle("CHD", isOn: $showDetailCHD)
+                Toggle("Samples", isOn: $showDetailSamples)
+                Toggle("BIOS", isOn: $showDetailBios)
                 Toggle("Year", isOn: $showDetailYear)
                 Toggle("Manufacturer", isOn: $showDetailManufacturer)
-                Toggle("BIOS set", isOn: $showDetailBiosSet)
-                Toggle("Status", isOn: $showDetailStatus)
+                Toggle("Device refs", isOn: $showDetailDeviceRefs)
+                Toggle("Clone of (internal name)", isOn: $showDetailCloneOfInternalName)
+                Toggle("Family", isOn: $showDetailFamily)
                 Button("Reset to Defaults") {
-                    showDetailInternalName = true
+                    showDetailGameFileName = true
+                    showDetailExpectedFileName = true
+                    showDetailGameSize = true
+                    showDetailOneGameOneROM = true
+                    showDetailInfo = true
                     showDetailGameCloneOf = true
+                    showDetailRequiredBios = true
+                    showDetailCHD = true
+                    showDetailSamples = true
+                    showDetailBios = true
                     showDetailYear = true
                     showDetailManufacturer = true
-                    showDetailBiosSet = true
-                    showDetailStatus = true
+                    showDetailDeviceRefs = true
+                    showDetailCloneOfInternalName = true
+                    showDetailFamily = true
                 }
-                Text("CHD, Samples, Required BIOS, and Device refs show here too, as the same \"Dependencies\" chips as the Games table's own column — see the \"Dependencies\" section above to hide any of those.")
+                Text("\"Dependencies\" shows here too, as its own row of chips — see the \"Dependencies\" section above to hide any of those.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

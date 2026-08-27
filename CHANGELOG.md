@@ -2,6 +2,21 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.1.9] - 2026-08-27
+
+### Changed — Detail panel's game fields now exactly match the Games table's real columns
+
+jensyleo's own correction, screenshotting the Games table's own right-click column menu
+directly: the previous "Detail panel — game fields" list (Internal name/Clone of/Year/
+Manufacturer/BIOS set/Status) was hand-picked and didn't correspond to that real, already-
+customizable column list at all. Replaced with one toggle per real column that menu offers —
+File name, Expected file name, Size, 1G1R, Info, Clone of, Required BIOS, CHD, Samples, BIOS,
+Year, Manufacturer, Device refs, Clone of (internal name), Family — named and ordered to match
+exactly, each showing the identical content its column does (e.g. "Size" is the game's total
+archive size, "Info" is the same status text the column's own "Info" shows). "Game name" isn't a
+toggle (this panel's own always-shown headline) and "Dependencies" stays governed by the shared
+"Dependencies" section above it, same as before.
+
 ## [0.1.8] - 2026-08-27
 
 ### Fixed — toggling a panel in Settings while the app was already running did nothing visible

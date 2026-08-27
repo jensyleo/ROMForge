@@ -521,12 +521,21 @@ struct LibraryDetailView: View {
     @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
     @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
     @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
-    @AppStorage(DetailPanelGameFieldSettings.showInternalNameKey) private var showDetailInternalName = true
+    @AppStorage(DetailPanelGameFieldSettings.showFileNameKey) private var showDetailGameFileName = true
+    @AppStorage(DetailPanelGameFieldSettings.showExpectedFileNameKey) private var showDetailExpectedFileName = true
+    @AppStorage(DetailPanelGameFieldSettings.showSizeKey) private var showDetailGameSize = true
+    @AppStorage(DetailPanelGameFieldSettings.showOneGameOneROMKey) private var showDetailOneGameOneROM = true
+    @AppStorage(DetailPanelGameFieldSettings.showInfoKey) private var showDetailInfo = true
     @AppStorage(DetailPanelGameFieldSettings.showCloneOfKey) private var showDetailGameCloneOf = true
+    @AppStorage(DetailPanelGameFieldSettings.showRequiredBiosKey) private var showDetailRequiredBios = true
+    @AppStorage(DetailPanelGameFieldSettings.showCHDKey) private var showDetailCHD = true
+    @AppStorage(DetailPanelGameFieldSettings.showSamplesKey) private var showDetailSamples = true
+    @AppStorage(DetailPanelGameFieldSettings.showBiosKey) private var showDetailBios = true
     @AppStorage(DetailPanelGameFieldSettings.showYearKey) private var showDetailYear = true
     @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
-    @AppStorage(DetailPanelGameFieldSettings.showBiosSetKey) private var showDetailBiosSet = true
-    @AppStorage(DetailPanelGameFieldSettings.showStatusKey) private var showDetailStatus = true
+    @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
+    @AppStorage(DetailPanelGameFieldSettings.showCloneOfInternalNameKey) private var showDetailCloneOfInternalName = true
+    @AppStorage(DetailPanelGameFieldSettings.showFamilyKey) private var showDetailFamily = true
     @AppStorage(DetailPanelRomFieldSettings.showFileNameKey) private var showDetailRomFileName = true
     @AppStorage(DetailPanelRomFieldSettings.showInfoKey) private var showDetailRomInfo = true
     @AppStorage(DetailPanelRomFieldSettings.showSizeKey) private var showDetailRomSize = true
@@ -4534,15 +4543,63 @@ struct LibraryDetailView: View {
     private func gameDetailSection(_ node: GameNode) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(node.gameName).font(.headline)
-            if showDetailInternalName { infoRow("Internal name", node.name) }
+            if showDetailGameFileName { infoRow("File name", node.actualFileName ?? node.name) }
+            if showDetailExpectedFileName { infoRow("Expected file name", node.expectedFileName ?? "") }
+            if showDetailGameSize { infoRow("Size", totalSizeText(for: node)) }
+            if showDetailOneGameOneROM { oneGameOneROMDetailRow(node) }
+            if showDetailInfo { infoRow("Info", node.infoText) }
             if showDetailGameCloneOf {
                 infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
             }
+            if showDetailRequiredBios { infoRow("Required BIOS", node.requiredBiosNames) }
+            if showDetailCHD { infoRow("CHD", node.chdNames) }
+            if showDetailSamples { infoRow("Samples", node.samplesText) }
+            if showDetailBios { infoRow("BIOS", node.biosText) }
             if showDetailYear { infoRow("Year", node.year) }
             if showDetailManufacturer { infoRow("Manufacturer", node.manufacturer) }
-            if showDetailBiosSet { infoRow("BIOS set", node.biosText) }
+            if showDetailDeviceRefs { infoRow("Device refs", node.deviceRefNames) }
+            if showDetailCloneOfInternalName { infoRow("Clone of (internal name)", node.cloneOf) }
+            if showDetailFamily { familyDetailRow(node) }
             dependenciesDetailRow(node)
-            if showDetailStatus { infoRow("Status", node.infoText) }
+        }
+    }
+
+    /// Labeled "1G1R" row for the Detail panel — the exact same star
+    /// `gameTreeTableContent`'s own "1G1R" column shows, just with a label
+    /// in front of it like every other row here, since `infoRow` only
+    /// takes plain text. Skipped entirely when this game isn't its
+    /// family's preferred variant, same "nothing to say, don't show the
+    /// row" convention as `infoRow`.
+    @ViewBuilder
+    private func oneGameOneROMDetailRow(_ node: GameNode) -> some View {
+        if cachedOneGameOneROMSummary.preferredGameNames.contains(node.name) {
+            HStack(spacing: 8) {
+                Text("1G1R").bold().frame(width: 100, alignment: .leading)
+                Image(systemName: "star.fill")
+                    .foregroundStyle(.yellow)
+                    .help("The preferred 1G1R variant for this family, per Settings → View Options → \"1G1R region priority\"")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Labeled "Family" row for the Detail panel — same content as
+    /// `gameTreeTableContent`'s own "Family" column (`familyIndicator`),
+    /// just with a label in front like every other row here. Skipped
+    /// entirely under the same conditions `familyIndicator` itself
+    /// resolves to `EmptyView` for (a surplus/disk row never reaches here
+    /// anyway, so only the "nothing to report" case matters in practice).
+    @ViewBuilder
+    private func familyDetailRow(_ node: GameNode) -> some View {
+        if cachedParentCloneSummary.cloneCompletionByParent[node.name] != nil
+            || cachedParentCloneSummary.clonesMissingParent.contains(node.name) {
+            HStack(spacing: 8) {
+                Text("Family").bold().frame(width: 100, alignment: .leading)
+                familyIndicator(for: node)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
