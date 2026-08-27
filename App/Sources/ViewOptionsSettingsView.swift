@@ -59,6 +59,38 @@ enum DependencyColumnSettings {
     static let showSamplesKey = "ROMForge.view.showSamplesBadge"
 }
 
+/// Which fields show in the Detail panel's game section (jensyleo's own
+/// "rezago de fase 1" request, 2026-08-27) — same "hides a field, never
+/// discards anything" configurability as `DependencyColumnSettings` above,
+/// applied to `LibraryDetailView.gameDetailSection`. All default to
+/// visible (today's existing behavior, unchanged). Read directly by
+/// `LibraryDetailView` under these same keys, same one-source-of-truth
+/// pattern as `PanelVisibilitySettings`.
+enum DetailPanelGameFieldSettings {
+    static let showInternalNameKey = "ROMForge.view.detail.game.showInternalName"
+    static let showCloneOfKey = "ROMForge.view.detail.game.showCloneOf"
+    static let showYearKey = "ROMForge.view.detail.game.showYear"
+    static let showManufacturerKey = "ROMForge.view.detail.game.showManufacturer"
+    static let showBiosSetKey = "ROMForge.view.detail.game.showBiosSet"
+    static let showCHDKey = "ROMForge.view.detail.game.showCHD"
+    static let showSamplesKey = "ROMForge.view.detail.game.showSamples"
+    static let showRequiredBiosKey = "ROMForge.view.detail.game.showRequiredBios"
+    static let showDeviceRefsKey = "ROMForge.view.detail.game.showDeviceRefs"
+    static let showStatusKey = "ROMForge.view.detail.game.showStatus"
+}
+
+/// Same idea as `DetailPanelGameFieldSettings`, for
+/// `LibraryDetailView.romDetailSection`'s own fields.
+enum DetailPanelRomFieldSettings {
+    static let showGameKey = "ROMForge.view.detail.rom.showGame"
+    static let showCloneOfKey = "ROMForge.view.detail.rom.showCloneOf"
+    static let showDatKey = "ROMForge.view.detail.rom.showDat"
+    static let showPathKey = "ROMForge.view.detail.rom.showPath"
+    static let showCRC32Key = "ROMForge.view.detail.rom.showCRC32"
+    static let showMD5Key = "ROMForge.view.detail.rom.showMD5"
+    static let showSHA1Key = "ROMForge.view.detail.rom.showSHA1"
+}
+
 /// New Settings tab, alongside "General" and "Systems" — jensyleo's own
 /// request (2026-08-12), a dedicated home for layout/visibility toggles
 /// distinct from `GeneralSettingsView`'s scanning/hashing/database-branch
@@ -223,6 +255,23 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
     @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
     @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
+    @AppStorage(DetailPanelGameFieldSettings.showInternalNameKey) private var showDetailInternalName = true
+    @AppStorage(DetailPanelGameFieldSettings.showCloneOfKey) private var showDetailGameCloneOf = true
+    @AppStorage(DetailPanelGameFieldSettings.showYearKey) private var showDetailYear = true
+    @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
+    @AppStorage(DetailPanelGameFieldSettings.showBiosSetKey) private var showDetailBiosSet = true
+    @AppStorage(DetailPanelGameFieldSettings.showCHDKey) private var showDetailCHD = true
+    @AppStorage(DetailPanelGameFieldSettings.showSamplesKey) private var showDetailSamples = true
+    @AppStorage(DetailPanelGameFieldSettings.showRequiredBiosKey) private var showDetailRequiredBios = true
+    @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
+    @AppStorage(DetailPanelGameFieldSettings.showStatusKey) private var showDetailStatus = true
+    @AppStorage(DetailPanelRomFieldSettings.showGameKey) private var showDetailRomGame = true
+    @AppStorage(DetailPanelRomFieldSettings.showCloneOfKey) private var showDetailRomCloneOf = true
+    @AppStorage(DetailPanelRomFieldSettings.showDatKey) private var showDetailRomDat = true
+    @AppStorage(DetailPanelRomFieldSettings.showPathKey) private var showDetailRomPath = true
+    @AppStorage(DetailPanelRomFieldSettings.showCRC32Key) private var showDetailRomCRC32 = true
+    @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
+    @AppStorage(DetailPanelRomFieldSettings.showSHA1Key) private var showDetailRomSHA1 = true
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
 
@@ -282,6 +331,57 @@ private struct ViewOptionsPanelsTab: View {
                     showSamplesBadge = true
                 }
                 Text("Which dependency chips show in the Games table's \"Dependencies\" column (hidden by default). Turning one off only hides that chip — it never affects scanning, matching, or any other column.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // "Otro rezago de fase 1" (jensyleo's own request, 2026-08-27):
+            // the Detail panel (bottom-left) showed a fixed set of fields
+            // with no way to hide any of them, unlike the Dependencies
+            // column above. Same toggle-per-field, "Reset to Defaults"
+            // shape, split into the panel's own two sections (game vs. rom)
+            // since a rom row's fields are a genuinely different set.
+            Section("Detail panel — game fields") {
+                Toggle("Internal name", isOn: $showDetailInternalName)
+                Toggle("Clone of", isOn: $showDetailGameCloneOf)
+                Toggle("Year", isOn: $showDetailYear)
+                Toggle("Manufacturer", isOn: $showDetailManufacturer)
+                Toggle("BIOS set", isOn: $showDetailBiosSet)
+                Toggle("CHD", isOn: $showDetailCHD)
+                Toggle("Samples", isOn: $showDetailSamples)
+                Toggle("Required BIOS", isOn: $showDetailRequiredBios)
+                Toggle("Device refs", isOn: $showDetailDeviceRefs)
+                Toggle("Status", isOn: $showDetailStatus)
+                Button("Reset to Defaults") {
+                    showDetailInternalName = true
+                    showDetailGameCloneOf = true
+                    showDetailYear = true
+                    showDetailManufacturer = true
+                    showDetailBiosSet = true
+                    showDetailCHD = true
+                    showDetailSamples = true
+                    showDetailRequiredBios = true
+                    showDetailDeviceRefs = true
+                    showDetailStatus = true
+                }
+            }
+            Section("Detail panel — rom fields") {
+                Toggle("Game", isOn: $showDetailRomGame)
+                Toggle("Clone of", isOn: $showDetailRomCloneOf)
+                Toggle("DAT", isOn: $showDetailRomDat)
+                Toggle("Path", isOn: $showDetailRomPath)
+                Toggle("CRC32", isOn: $showDetailRomCRC32)
+                Toggle("MD5", isOn: $showDetailRomMD5)
+                Toggle("SHA1", isOn: $showDetailRomSHA1)
+                Button("Reset to Defaults") {
+                    showDetailRomGame = true
+                    showDetailRomCloneOf = true
+                    showDetailRomDat = true
+                    showDetailRomPath = true
+                    showDetailRomCRC32 = true
+                    showDetailRomMD5 = true
+                    showDetailRomSHA1 = true
+                }
+                Text("Which fields show in the Detail panel (bottom-left) for the selected game and rom. A field with no value (e.g. a game with no declared year) is still skipped automatically, same as before — these toggles only control fields that DO have a value.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

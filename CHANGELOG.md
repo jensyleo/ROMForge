@@ -2,6 +2,32 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.1.4] - 2026-08-27
+
+### Added — Detail panel fields are now individually configurable
+
+Another fase-1 loose end, jensyleo's own request: the Detail panel (bottom-left — the selected
+game/rom's own info) showed a fixed set of fields with no way to hide any of them, unlike the
+Dependencies column's own per-chip toggles. Settings → View Options → Panels now has two new
+sections, "Detail panel — game fields" (Internal name, Clone of, Year, Manufacturer, BIOS set,
+CHD, Samples, Required BIOS, Device refs, Status) and "Detail panel — rom fields" (Game, Clone
+of, DAT, Path, CRC32, MD5, SHA1), each with a per-field toggle and its own "Reset to Defaults" —
+same `@AppStorage`-backed pattern as every other panel-customization setting in this app. A
+field with no value (e.g. a game with no declared year) is still skipped automatically,
+unchanged — these toggles only control fields that DO have a value.
+
+### Added — Log panel lines now colored by message type, not just error/not-error
+
+Another fase-1 loose end: the Log panel only ever distinguished red errors from everything else.
+`LogLine` now carries a `kind` (`.info`/`.success`/`.warning`/`.error`) instead of a plain
+`isError` flag — green for a whole operation's own completion summary (a finished scan with
+nothing needing attention, a clean ZIP integrity check), orange for a problem that didn't stop
+the operation (a skipped too-deep subfolder, a results-save that failed even though the scan
+itself succeeded, a cancelled scan/DAT load), red for a real failure (unchanged), and the
+default color for ordinary progress narration. A scan that finishes but finds incorrect/missing
+roms logs its "Done" summary in orange rather than green — a green "Done" would read as
+"everything's fine" when it isn't.
+
 ## [0.1.3] - 2026-08-27
 
 ### Added — real CPU/Sound chip data from MAME's `-listxml`, replacing guesswork

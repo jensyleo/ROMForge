@@ -521,6 +521,23 @@ struct LibraryDetailView: View {
     @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
     @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
     @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
+    @AppStorage(DetailPanelGameFieldSettings.showInternalNameKey) private var showDetailInternalName = true
+    @AppStorage(DetailPanelGameFieldSettings.showCloneOfKey) private var showDetailGameCloneOf = true
+    @AppStorage(DetailPanelGameFieldSettings.showYearKey) private var showDetailYear = true
+    @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
+    @AppStorage(DetailPanelGameFieldSettings.showBiosSetKey) private var showDetailBiosSet = true
+    @AppStorage(DetailPanelGameFieldSettings.showCHDKey) private var showDetailCHD = true
+    @AppStorage(DetailPanelGameFieldSettings.showSamplesKey) private var showDetailSamples = true
+    @AppStorage(DetailPanelGameFieldSettings.showRequiredBiosKey) private var showDetailRequiredBios = true
+    @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
+    @AppStorage(DetailPanelGameFieldSettings.showStatusKey) private var showDetailStatus = true
+    @AppStorage(DetailPanelRomFieldSettings.showGameKey) private var showDetailRomGame = true
+    @AppStorage(DetailPanelRomFieldSettings.showCloneOfKey) private var showDetailRomCloneOf = true
+    @AppStorage(DetailPanelRomFieldSettings.showDatKey) private var showDetailRomDat = true
+    @AppStorage(DetailPanelRomFieldSettings.showPathKey) private var showDetailRomPath = true
+    @AppStorage(DetailPanelRomFieldSettings.showCRC32Key) private var showDetailRomCRC32 = true
+    @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
+    @AppStorage(DetailPanelRomFieldSettings.showSHA1Key) private var showDetailRomSHA1 = true
     private var visibleTopPanes: [SplitPane] {
         var panes: [SplitPane] = []
         if showDatabaseTree || showRomFolderTree { panes.append(SplitPane(minLength: 150) { databaseList }) }
@@ -1497,6 +1514,20 @@ struct LibraryDetailView: View {
 
     // MARK: - Log panel
 
+    /// Text color for one `LogLine`, by `kind` — jensyleo's own request
+    /// (2026-08-27): the Log panel used to distinguish only red errors from
+    /// everything else; this extends that same idea to every message type
+    /// the view model actually reports (see `LogLineKind`'s own doc
+    /// comment for what qualifies as each).
+    private func logLineColor(for kind: LogLineKind) -> Color {
+        switch kind {
+        case .info: return .primary
+        case .success: return .green
+        case .warning: return .orange
+        case .error: return .red
+        }
+    }
+
     private var logPane: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Log")
@@ -1508,7 +1539,7 @@ struct LibraryDetailView: View {
                         ForEach(Array(viewModel.logLines.enumerated()), id: \.offset) { index, line in
                             Text(line.text)
                                 .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(line.isError ? Color.red : Color.primary)
+                                .foregroundStyle(logLineColor(for: line.kind))
                                 .textSelection(.enabled)
                                 .id(index)
                         }
@@ -4471,35 +4502,41 @@ struct LibraryDetailView: View {
     private func gameDetailSection(_ node: GameNode) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(node.gameName).font(.headline)
-            infoRow("Internal name", node.name)
-            infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
-            infoRow("Year", node.year)
-            infoRow("Manufacturer", node.manufacturer)
-            infoRow("BIOS set", node.biosText)
-            infoRow("CHD", node.chdNames)
-            infoRow("Samples", node.samplesText)
-            infoRow("Required BIOS", node.requiredBiosNames)
-            infoRow("Device refs", node.deviceRefNames)
-            infoRow("Status", node.infoText)
+            if showDetailInternalName { infoRow("Internal name", node.name) }
+            if showDetailGameCloneOf {
+                infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
+            }
+            if showDetailYear { infoRow("Year", node.year) }
+            if showDetailManufacturer { infoRow("Manufacturer", node.manufacturer) }
+            if showDetailBiosSet { infoRow("BIOS set", node.biosText) }
+            if showDetailCHD { infoRow("CHD", node.chdNames) }
+            if showDetailSamples { infoRow("Samples", node.samplesText) }
+            if showDetailRequiredBios { infoRow("Required BIOS", node.requiredBiosNames) }
+            if showDetailDeviceRefs { infoRow("Device refs", node.deviceRefNames) }
+            if showDetailStatus { infoRow("Status", node.infoText) }
         }
     }
 
     private func romDetailSection(_ entry: AuditEntry) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(entry.name).font(.headline)
-            if let game = entry.game {
+            if showDetailRomGame, let game = entry.game {
                 Text("Game: \(game)")
             }
-            if let cloneOf = entry.cloneOf {
+            if showDetailRomCloneOf, let cloneOf = entry.cloneOf {
                 Text("Clone of: \(gameDescription(forMachineName: cloneOf))")
                     .foregroundStyle(.secondary)
             }
-            Text("DAT: \(viewModel.datHeader?.name ?? system.name)")
-            Text("Path: \(entry.path?.path ?? "—")")
-                .foregroundStyle(.secondary)
-            hashLine(label: "CRC32", expected: entry.expectedCRC, actual: entry.actualCRC)
-            hashLine(label: "MD5", expected: entry.expectedMD5, actual: entry.actualMD5)
-            hashLine(label: "SHA1", expected: entry.expectedSHA1, actual: entry.actualSHA1)
+            if showDetailRomDat {
+                Text("DAT: \(viewModel.datHeader?.name ?? system.name)")
+            }
+            if showDetailRomPath {
+                Text("Path: \(entry.path?.path ?? "—")")
+                    .foregroundStyle(.secondary)
+            }
+            if showDetailRomCRC32 { hashLine(label: "CRC32", expected: entry.expectedCRC, actual: entry.actualCRC) }
+            if showDetailRomMD5 { hashLine(label: "MD5", expected: entry.expectedMD5, actual: entry.actualMD5) }
+            if showDetailRomSHA1 { hashLine(label: "SHA1", expected: entry.expectedSHA1, actual: entry.actualSHA1) }
         }
     }
 

@@ -15,15 +15,29 @@ import UniformTypeIdentifiers
 /// disabled at the user's request — ROMForge only scans and reports for
 /// now, it never touches a ROM file. Re-enable by flipping
 /// `modificationsEnabled`.
-/// One line of the Log panel — `isError` picks red instead of the default
-/// text color, jensyleo's own request (2026-08-17) after a MAME
-/// launch-failure message (previously its own separate `errorMessage`
-/// sheet) moved into this same log instead: "esto debería salir en la
-/// ventana de log... mantén el color rojo del error."
+/// What kind of information one `LogLine` reports — jensyleo's own request
+/// (2026-08-27, "otro rezago de fase 1"), extending the original
+/// error-only red highlight (2026-08-17) into a full set: `.error` stays
+/// red, `.warning` is orange (a problem that doesn't stop the operation —
+/// a skipped too-deep subfolder, a results-persistence failure that
+/// doesn't affect what's on screen), `.success` is green (a whole
+/// operation's own completion summary, not every intermediate progress
+/// line), and `.info` (the default) is the ordinary progress narration
+/// most log lines still are. The color is purely a hint — nothing reads
+/// `kind` back to decide behavior.
+enum LogLineKind: Sendable {
+    case info
+    case success
+    case warning
+    case error
+}
+
+/// One line of the Log panel — `kind` picks the text color (see
+/// `LogLineKind`).
 struct LogLine: Identifiable, Sendable {
     let id = UUID()
     let text: String
-    let isError: Bool
+    let kind: LogLineKind
 }
 
 @Observable
@@ -296,9 +310,9 @@ final class LibraryViewModel {
     /// loaded but no scan has run yet.
     var preloadedGames: [DATGame] { cachedDATFile?.games ?? [] }
 
-    func log(_ message: String, isError: Bool = false) {
+    func log(_ message: String, kind: LogLineKind = .info) {
         let timestamp = DateFormatter.logTimestamp.string(from: Date())
-        logLines.append(LogLine(text: "[\(timestamp)] \(message)", isError: isError))
+        logLines.append(LogLine(text: "[\(timestamp)] \(message)", kind: kind))
     }
 
     /// Convenience for the (much rarer) error case — same timestamped
@@ -310,7 +324,23 @@ final class LibraryViewModel {
     /// layer (`LibraryDetailView`) reports MAME's own launch failures
     /// through this too, not just this file's own scan/fix code.
     func logError(_ message: String) {
-        log(message, isError: true)
+        log(message, kind: .error)
+    }
+
+    /// Convenience for a problem that doesn't stop the operation it
+    /// happened during (a skipped too-deep subfolder, a results-save that
+    /// failed even though the scan itself succeeded) — orange, distinct
+    /// from both the ordinary `.info` narration and a real `.error`.
+    func logWarning(_ message: String) {
+        log(message, kind: .warning)
+    }
+
+    /// Convenience for a whole operation's own completion summary (a
+    /// finished scan, a clean integrity check) — green, deliberately not
+    /// used for every intermediate progress line, only the "this whole
+    /// thing is done, and done well" moment.
+    func logSuccess(_ message: String) {
+        log(message, kind: .success)
     }
 
     /// Drops every in-memory trace of the last scan — jensyleo's own report
@@ -456,7 +486,7 @@ final class LibraryViewModel {
                 try AuditDatabaseLocation.open().removeEntries(systemID: systemID, pathPrefix: folderPath)
             } catch {
                 Task { @MainActor in
-                    self?.log("Warning: couldn't persist the folder removal: \(error)")
+                    self?.logWarning("Couldn't persist the folder removal: \(error)")
                 }
             }
         }
@@ -597,7 +627,7 @@ final class LibraryViewModel {
             isCountingDATMachines = false
             datCountingProgress = nil
             datLoadProgress = nil
-            log("DAT loading cancelled.")
+            logWarning("DAT loading cancelled.")
         } catch {
             isLoadingDAT = false
             datFileReadProgress = nil
@@ -752,7 +782,7 @@ final class LibraryViewModel {
             // silently never-mentioned) that ROMForge never looked inside
             // it at all.
             let skippedTooDeepHandler: @Sendable (URL) -> Void = { [weak self] url in
-                Task { @MainActor in self?.log("Skipped (nested too deep, not scanned): \(url.path)") }
+                Task { @MainActor in self?.logWarning("Skipped (nested too deep, not scanned): \(url.path)") }
             }
             let archiveListedHandler: @Sendable (Int, Int) -> Void = { [weak self] read, total in
                 Task { @MainActor in self?.archiveListingProgress = (read, total) }
@@ -932,13 +962,22 @@ final class LibraryViewModel {
             currentlyScanningFolder = nil
             archiveListingProgress = nil
             let totalDuration = Date().timeIntervalSince(scanStart)
-            log(String(format: "Done in %.1fs: %d correct, %d incorrect, %d missing, %d surplus.", totalDuration, audit.correct, audit.incorrect, audit.missing, audit.surplus))
+            log(
+                String(
+                    format: "Done in %.1fs: %d correct, %d incorrect, %d missing, %d surplus.", totalDuration, audit.correct,
+                    audit.incorrect, audit.missing, audit.surplus
+                ),
+                // A green "Done" when the scan actually found problems would
+                // read as "everything's fine" when it isn't — success only
+                // when nothing needs the user's attention.
+                kind: (audit.incorrect > 0 || audit.missing > 0) ? .warning : .success
+            )
             do {
                 try AuditDatabaseLocation.open().saveReport(
                     audit, systemID: system.id.uuidString, datName: header.name, datVersion: header.version, scannedAt: Date()
                 )
             } catch {
-                log("Warning: couldn't persist this scan's results: \(error)")
+                logWarning("Couldn't persist this scan's results: \(error)")
             }
         } catch is CancellationError {
             isLoadingDAT = false
@@ -952,7 +991,7 @@ final class LibraryViewModel {
             scanProgress = nil
             isMatching = false
             matchProgress = nil
-            log("Scan cancelled.")
+            logWarning("Scan cancelled.")
         } catch {
             isLoadingDAT = false
             datFileReadProgress = nil
@@ -990,7 +1029,12 @@ final class LibraryViewModel {
         let verified = await detached.value
         auditReport = verified
         let mismatchCount = verified.entries.filter(\.hasInternalZipCRCMismatch).count
-        log(mismatchCount == 0 ? "ZIP integrity check done: no internal CRC inconsistencies found." : "ZIP integrity check done: \(mismatchCount) entr\(mismatchCount == 1 ? "y" : "ies") with an internal CRC mismatch.")
+        log(
+            mismatchCount == 0
+                ? "ZIP integrity check done: no internal CRC inconsistencies found."
+                : "ZIP integrity check done: \(mismatchCount) entr\(mismatchCount == 1 ? "y" : "ies") with an internal CRC mismatch.",
+            kind: mismatchCount == 0 ? .success : .warning
+        )
         do {
             if let meta = try AuditDatabaseLocation.open().loadScanMeta(systemID: system.id.uuidString) {
                 try AuditDatabaseLocation.open().saveReport(
@@ -998,7 +1042,7 @@ final class LibraryViewModel {
                 )
             }
         } catch {
-            log("Warning: couldn't persist the ZIP integrity check's results: \(error)")
+            logWarning("Couldn't persist the ZIP integrity check's results: \(error)")
         }
         isBusy = false
     }
