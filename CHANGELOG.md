@@ -2,7 +2,7 @@
 
 All notable changes to ROMForge are documented in this file.
 
-## [0.1.1] - 2026-08-27
+## [0.1.2] - 2026-08-27
 
 ### Changed — Hardware dependency tooltip now splits CPU from other devices
 
