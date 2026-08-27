@@ -83,12 +83,15 @@ enum DependencyColumnSettings {
 /// Expected file name/Size/1G1R/Info/Clone of/Required BIOS/CHD/Samples/
 /// BIOS/Year/Manufacturer/Device refs/Clone of (internal name)/Family/
 /// Dependencies). This now has one key per REAL column that list offers
-/// (skipping only "Game name", this panel's own always-shown headline, and
-/// "Dependencies", still governed by the shared `DependencyColumnSettings`
-/// toggle set — see `LibraryDetailView.dependenciesDetailRow`), named and
-/// ordered to match that menu exactly, so a field can never appear here
-/// under a name/order that doesn't correspond to anything a user has
-/// actually seen as a column.
+/// (skipping only "Game name", this panel's own always-shown headline),
+/// named to match that menu exactly, so a field can never appear here
+/// under a name that doesn't correspond to anything a user has actually
+/// seen as a column. `showDependenciesKey` added third pass (same day):
+/// jensyleo's own follow-up, "permite Dependencies en el toggle" — governs
+/// only whether the Detail panel's own "Dependencies" row shows at all;
+/// which badges appear WITHIN it (once shown) still comes from the shared
+/// `DependencyColumnSettings` toggle set, same as the Games table's own
+/// column — see `LibraryDetailView.dependenciesDetailRow`.
 enum DetailPanelGameFieldSettings {
     static let showFileNameKey = "ROMForge.view.detail.game.showFileName"
     static let showExpectedFileNameKey = "ROMForge.view.detail.game.showExpectedFileName"
@@ -105,6 +108,64 @@ enum DetailPanelGameFieldSettings {
     static let showDeviceRefsKey = "ROMForge.view.detail.game.showDeviceRefs"
     static let showCloneOfInternalNameKey = "ROMForge.view.detail.game.showCloneOfInternalName"
     static let showFamilyKey = "ROMForge.view.detail.game.showFamily"
+    static let showDependenciesKey = "ROMForge.view.detail.game.showDependencies"
+    /// Comma-joined `DetailGameField.rawValue`s, in the user's own chosen
+    /// display order — jensyleo's own request, "deja que esto sea
+    /// organizable por el usuario". A plain `String` (not a native array)
+    /// because `@AppStorage` has no built-in support for `[String]`; split/
+    /// joined by `LibraryDetailView.gameFieldOrder`/`ViewOptionsPanelsTab`'s
+    /// own reorderable list, the same two-places-agree pattern as every
+    /// other setting in this file.
+    static let fieldOrderKey = "ROMForge.view.detail.game.fieldOrder"
+}
+
+/// One row `LibraryDetailView.gameDetailSection` can show, in the order
+/// `DetailPanelGameFieldSettings.fieldOrderKey` says to — see that key's
+/// own doc comment for why order is stored as a separate, user-reorderable
+/// list rather than being fixed in code. Declaration order here is only
+/// ever used as the DEFAULT order (a fresh install, or a "Reset to
+/// Defaults") — matches the Games table's own real column menu.
+enum DetailGameField: String, CaseIterable, Identifiable, Sendable {
+    case fileName, expectedFileName, size, oneGameOneROM, info, cloneOf, requiredBios, chd, samples, bios, year,
+        manufacturer, deviceRefs, cloneOfInternalName, family, dependencies
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fileName: return "File name"
+        case .expectedFileName: return "Expected file name"
+        case .size: return "Size"
+        case .oneGameOneROM: return "1G1R"
+        case .info: return "Info"
+        case .cloneOf: return "Clone of"
+        case .requiredBios: return "Required BIOS"
+        case .chd: return "CHD"
+        case .samples: return "Samples"
+        case .bios: return "BIOS"
+        case .year: return "Year"
+        case .manufacturer: return "Manufacturer"
+        case .deviceRefs: return "Device refs"
+        case .cloneOfInternalName: return "Clone of (internal name)"
+        case .family: return "Family"
+        case .dependencies: return "Dependencies"
+        }
+    }
+}
+
+/// Parses `DetailPanelGameFieldSettings.fieldOrderKey`'s comma-joined raw
+/// string into an ordered `[DetailGameField]`, appending any case missing
+/// from the saved list (a future new field, or a pre-upgrade save that
+/// predates one) at the end — so a stale saved order never silently drops
+/// a field from view entirely, it just falls back to appearing last until
+/// the user drags it somewhere else. Shared by `LibraryDetailView` (to
+/// render in this order) and `ViewOptionsPanelsTab` (to let the user
+/// reorder it), the same two-places-agree pattern every other setting in
+/// this file already uses.
+func parseGameFieldOrder(_ raw: String) -> [DetailGameField] {
+    let saved = raw.split(separator: ",").compactMap { DetailGameField(rawValue: String($0)) }
+    let missing = DetailGameField.allCases.filter { !saved.contains($0) }
+    return saved + missing
 }
 
 /// Same idea as `DetailPanelGameFieldSettings`, for
@@ -313,6 +374,8 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
     @AppStorage(DetailPanelGameFieldSettings.showCloneOfInternalNameKey) private var showDetailCloneOfInternalName = true
     @AppStorage(DetailPanelGameFieldSettings.showFamilyKey) private var showDetailFamily = true
+    @AppStorage(DetailPanelGameFieldSettings.showDependenciesKey) private var showDetailDependencies = true
+    @AppStorage(DetailPanelGameFieldSettings.fieldOrderKey) private var gameFieldOrderRaw = DetailGameField.allCases.map(\.rawValue).joined(separator: ",")
     @AppStorage(DetailPanelRomFieldSettings.showFileNameKey) private var showDetailRomFileName = true
     @AppStorage(DetailPanelRomFieldSettings.showInfoKey) private var showDetailRomInfo = true
     @AppStorage(DetailPanelRomFieldSettings.showSizeKey) private var showDetailRomSize = true
@@ -324,6 +387,35 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelRomFieldSettings.showTypeKey) private var showDetailRomType = true
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
+
+    private var gameFieldOrder: [DetailGameField] { parseGameFieldOrder(gameFieldOrderRaw) }
+
+    /// Maps a `DetailGameField` to its own `@AppStorage`-backed `Bool`
+    /// binding — needed because the reorderable list below drives each
+    /// row's `Toggle` off a single `ForEach(gameFieldOrder)` rather than
+    /// one hardcoded `Toggle` per field, so there's no longer a `$showX`
+    /// spelled out at each call site the way `Toggle("Year", isOn:
+    /// $showDetailYear)` used to read.
+    private func visibilityBinding(for field: DetailGameField) -> Binding<Bool> {
+        switch field {
+        case .fileName: return $showDetailGameFileName
+        case .expectedFileName: return $showDetailExpectedFileName
+        case .size: return $showDetailGameSize
+        case .oneGameOneROM: return $showDetailOneGameOneROM
+        case .info: return $showDetailInfo
+        case .cloneOf: return $showDetailGameCloneOf
+        case .requiredBios: return $showDetailRequiredBios
+        case .chd: return $showDetailCHD
+        case .samples: return $showDetailSamples
+        case .bios: return $showDetailBios
+        case .year: return $showDetailYear
+        case .manufacturer: return $showDetailManufacturer
+        case .deviceRefs: return $showDetailDeviceRefs
+        case .cloneOfInternalName: return $showDetailCloneOfInternalName
+        case .family: return $showDetailFamily
+        case .dependencies: return $showDetailDependencies
+        }
+    }
 
     var body: some View {
         Form {
@@ -400,35 +492,52 @@ private struct ViewOptionsPanelsTab: View {
                     .foregroundStyle(.secondary)
             }
             // "Otro rezago de fase 1" (jensyleo's own request, 2026-08-27,
-            // second pass): "la idea es que tenga exactamente los mismos
+            // third pass): "la idea es que tenga exactamente los mismos
             // campos que se pueden configurar en las columnas" — matched
             // against a screenshot of the Games table's own real
-            // right-click column menu this time, not approximated by hand.
-            // One toggle per real column that list offers (skipping "Game
-            // name", this panel's own always-shown headline), named and
-            // ordered to match that menu exactly. "Dependencies" is
-            // deliberately NOT a toggle here — see "Dependencies" above,
-            // which already covers it (and, within it, CHD/Samples/
-            // Required BIOS/Device refs as chips) for this panel too;
-            // those same four also get their OWN plain-text toggle below,
-            // matching the Games table itself offering both a standalone
-            // column AND the summarized "Dependencies" chip for each.
+            // right-click column menu (one toggle per real column it
+            // offers, skipping only "Game name", this panel's own
+            // always-shown headline) — plus, this pass, "deja que esto sea
+            // organizable por el usuario y permite Dependencies en el
+            // toggle": drag-to-reorder (a plain `List`/`ForEach.onMove`,
+            // not `Form`'s usual static rows — macOS `List` supports
+            // reordering with no separate "Edit" mode needed), and
+            // "Dependencies" folded into this same reorderable list as its
+            // own row rather than a separately-worded exception. Which
+            // badges show WITHIN "Dependencies" once it's on is still the
+            // shared toggle set in the "Dependencies" section above —
+            // unchanged, this only adds whether the ROW itself appears (and
+            // where in the order).
             Section("Detail panel (bottom-left) — game fields") {
-                Toggle("File name", isOn: $showDetailGameFileName)
-                Toggle("Expected file name", isOn: $showDetailExpectedFileName)
-                Toggle("Size", isOn: $showDetailGameSize)
-                Toggle("1G1R", isOn: $showDetailOneGameOneROM)
-                Toggle("Info", isOn: $showDetailInfo)
-                Toggle("Clone of", isOn: $showDetailGameCloneOf)
-                Toggle("Required BIOS", isOn: $showDetailRequiredBios)
-                Toggle("CHD", isOn: $showDetailCHD)
-                Toggle("Samples", isOn: $showDetailSamples)
-                Toggle("BIOS", isOn: $showDetailBios)
-                Toggle("Year", isOn: $showDetailYear)
-                Toggle("Manufacturer", isOn: $showDetailManufacturer)
-                Toggle("Device refs", isOn: $showDetailDeviceRefs)
-                Toggle("Clone of (internal name)", isOn: $showDetailCloneOfInternalName)
-                Toggle("Family", isOn: $showDetailFamily)
+                List {
+                    ForEach(gameFieldOrder) { field in
+                        // `.toggleStyle(.switch)` isn't optional here —
+                        // jensyleo's own report, live: a plain `Toggle`
+                        // inside a macOS `List` silently renders as a
+                        // checkbox/checkmark row instead of the switch
+                        // every other toggle in this app (including this
+                        // same field's own toggle before this list existed)
+                        // uses, with no code-visible reason why. Forcing
+                        // the style keeps the reordering `List` from
+                        // looking like a different control than the
+                        // `Form`-based `Toggle`s surrounding it.
+                        // `.controlSize(.small)` — same reasoning, second
+                        // report: a `List`'s own default control scale
+                        // renders noticeably bigger than the same `Toggle`
+                        // sitting directly in a `Form` `Section`, again
+                        // with no code-visible reason why.
+                        Toggle(field.title, isOn: visibilityBinding(for: field))
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                    }
+                    .onMove { indices, newOffset in
+                        var order = gameFieldOrder
+                        order.move(fromOffsets: indices, toOffset: newOffset)
+                        gameFieldOrderRaw = order.map(\.rawValue).joined(separator: ",")
+                    }
+                }
+                .listStyle(.plain)
+                .frame(height: CGFloat(DetailGameField.allCases.count) * 22 + 8)
                 Button("Reset to Defaults") {
                     showDetailGameFileName = true
                     showDetailExpectedFileName = true
@@ -445,8 +554,10 @@ private struct ViewOptionsPanelsTab: View {
                     showDetailDeviceRefs = true
                     showDetailCloneOfInternalName = true
                     showDetailFamily = true
+                    showDetailDependencies = true
+                    gameFieldOrderRaw = DetailGameField.allCases.map(\.rawValue).joined(separator: ",")
                 }
-                Text("\"Dependencies\" shows here too, as its own row of chips — see the \"Dependencies\" section above to hide any of those.")
+                Text("Drag a row to reorder it. Which badges show inside \"Dependencies\" (once it's on here) is still the shared toggle set in the \"Dependencies\" section above.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

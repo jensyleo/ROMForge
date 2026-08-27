@@ -2,6 +2,32 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.2.0] - 2026-08-27
+
+### Added — Detail panel's game fields are now drag-to-reorder, and "Dependencies" is one of them
+
+jensyleo's own follow-up requests, same day. The field list under Settings → View Options →
+Panels → "Detail panel — game fields" is now a plain drag-to-reorder list (macOS `List` +
+`onMove`, no separate "Edit" mode needed) instead of a fixed sequence — the saved order applies
+directly to the Detail panel itself. "Dependencies" is now one of the rows in this same list
+(its own on/off toggle, reorderable like every other field) rather than being unconditionally
+appended at the end; which badges show *inside* it once it's on is still the shared toggle set
+in the "Dependencies" section above, unchanged.
+
+Two regressions caught immediately, both fixed the same session: a plain `Toggle` inside a
+macOS `List` silently renders as a checkbox instead of the switch every other toggle in this app
+uses (`.toggleStyle(.switch)` forced explicitly), and a `List`'s own default control scale
+renders visibly larger than the same `Toggle` sitting in a `Form` section (`.controlSize(.small)`
+forced to match).
+
+### Changed — Detail panel's "Dependencies" row shows full text, no hover required
+
+jensyleo's own request: a table cell has no room for real names inline, so the Games table's own
+"Dependencies" column (unchanged, still chips + a hover tooltip) is the right design there — but
+the Detail panel has a whole line to itself, so its own "Dependencies" row now prints each
+badge's full detail directly (e.g. "Hardware: CPU: Zilog Z80, Sound: Capcom QSound (custom)")
+instead of hiding it behind `.help(_:)`.
+
 ## [0.1.9] - 2026-08-27
 
 ### Changed — Detail panel's game fields now exactly match the Games table's real columns

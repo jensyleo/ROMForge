@@ -536,6 +536,8 @@ struct LibraryDetailView: View {
     @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
     @AppStorage(DetailPanelGameFieldSettings.showCloneOfInternalNameKey) private var showDetailCloneOfInternalName = true
     @AppStorage(DetailPanelGameFieldSettings.showFamilyKey) private var showDetailFamily = true
+    @AppStorage(DetailPanelGameFieldSettings.showDependenciesKey) private var showDetailDependencies = true
+    @AppStorage(DetailPanelGameFieldSettings.fieldOrderKey) private var gameFieldOrderRaw = DetailGameField.allCases.map(\.rawValue).joined(separator: ",")
     @AppStorage(DetailPanelRomFieldSettings.showFileNameKey) private var showDetailRomFileName = true
     @AppStorage(DetailPanelRomFieldSettings.showInfoKey) private var showDetailRomInfo = true
     @AppStorage(DetailPanelRomFieldSettings.showSizeKey) private var showDetailRomSize = true
@@ -2813,20 +2815,28 @@ struct LibraryDetailView: View {
         }
     }
 
-    /// The Detail panel's own "Dependencies" row — the exact same chips as
-    /// `dependenciesIndicator` (same badges, same filtering, same tooltips),
-    /// just laid out with a label like every other `infoRow` in this panel
-    /// instead of bare in a table cell. Skipped entirely when no badge
-    /// survives filtering, same "nothing to say, don't show the row"
-    /// convention as `infoRow`.
+    /// The Detail panel's own "Dependencies" row — same badges, same
+    /// filtering (`visibleDependencyBadges`) as `dependenciesIndicator`
+    /// (the Games table's own "Dependencies" column, unchanged — jensyleo's
+    /// own instruction, 2026-08-27: "en el panel... ya estaba, déjalo como
+    /// está"), but printed as plain, already-expanded text instead of
+    /// hover-tooltip chips. A table cell has no better option than a
+    /// tooltip (there's no room for the real names inline — see
+    /// `DependencyBadge`'s own doc comment on why `label` is bare), but the
+    /// Detail panel has a whole line to itself, so "Dependencies debe
+    /// mostrarse sin necesidad del tooltip" (jensyleo's own request) is
+    /// just `badge.tooltip` printed directly rather than hidden behind
+    /// `.help(_:)`.
     @ViewBuilder
     private func dependenciesDetailRow(_ node: GameNode) -> some View {
         let badges = visibleDependencyBadges(for: node)
         if !badges.isEmpty {
             HStack(alignment: .top, spacing: 8) {
                 Text("Dependencies").bold().frame(width: 100, alignment: .leading)
-                HStack(spacing: 4) {
-                    ForEach(badges) { badge in dependencyChip(for: badge) }
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(badges) { badge in
+                        Text(badge.tooltip.isEmpty ? badge.label : "\(badge.label): \(badge.tooltip)")
+                    }
                 }
             }
             .font(.caption)
@@ -4543,24 +4553,64 @@ struct LibraryDetailView: View {
     private func gameDetailSection(_ node: GameNode) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(node.gameName).font(.headline)
+            ForEach(gameFieldOrder) { field in gameDetailRow(field, for: node) }
+        }
+    }
+
+    /// `DetailPanelGameFieldSettings.fieldOrderKey` parsed into the order
+    /// `gameDetailSection` actually renders in — jensyleo's own request,
+    /// "deja que esto sea organizable por el usuario". A computed property
+    /// (not cached in `@State`) so it re-reads fresh, and therefore stays
+    /// live, every time the backing `@AppStorage` string changes — the same
+    /// "plain `@AppStorage` value, re-derived on every body evaluation"
+    /// shape every other cross-window-reactive setting in this view
+    /// already uses; see `parseGameFieldOrder`'s own doc comment for the
+    /// missing-case fallback.
+    private var gameFieldOrder: [DetailGameField] { parseGameFieldOrder(gameFieldOrderRaw) }
+
+    /// One row of `gameDetailSection`, keyed by which `DetailGameField`
+    /// `gameFieldOrder` says goes here — the switch itself is the
+    /// authoritative mapping from field identity to both its own
+    /// `@AppStorage` visibility flag and its actual content, mirroring
+    /// `gameTreeTableContent`'s own `TableColumn`s one for one (see
+    /// `DetailPanelGameFieldSettings`'s own doc comment for why).
+    @ViewBuilder
+    private func gameDetailRow(_ field: DetailGameField, for node: GameNode) -> some View {
+        switch field {
+        case .fileName:
             if showDetailGameFileName { infoRow("File name", node.actualFileName ?? node.name) }
+        case .expectedFileName:
             if showDetailExpectedFileName { infoRow("Expected file name", node.expectedFileName ?? "") }
+        case .size:
             if showDetailGameSize { infoRow("Size", totalSizeText(for: node)) }
+        case .oneGameOneROM:
             if showDetailOneGameOneROM { oneGameOneROMDetailRow(node) }
+        case .info:
             if showDetailInfo { infoRow("Info", node.infoText) }
+        case .cloneOf:
             if showDetailGameCloneOf {
                 infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
             }
+        case .requiredBios:
             if showDetailRequiredBios { infoRow("Required BIOS", node.requiredBiosNames) }
+        case .chd:
             if showDetailCHD { infoRow("CHD", node.chdNames) }
+        case .samples:
             if showDetailSamples { infoRow("Samples", node.samplesText) }
+        case .bios:
             if showDetailBios { infoRow("BIOS", node.biosText) }
+        case .year:
             if showDetailYear { infoRow("Year", node.year) }
+        case .manufacturer:
             if showDetailManufacturer { infoRow("Manufacturer", node.manufacturer) }
+        case .deviceRefs:
             if showDetailDeviceRefs { infoRow("Device refs", node.deviceRefNames) }
+        case .cloneOfInternalName:
             if showDetailCloneOfInternalName { infoRow("Clone of (internal name)", node.cloneOf) }
+        case .family:
             if showDetailFamily { familyDetailRow(node) }
-            dependenciesDetailRow(node)
+        case .dependencies:
+            if showDetailDependencies { dependenciesDetailRow(node) }
         }
     }
 
