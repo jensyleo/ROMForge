@@ -3146,6 +3146,29 @@ struct LibraryDetailView: View {
         }
     }
 
+    /// Labeled "Dump status" row for the Detail panel's rom section —
+    /// jensyleo's own request (2026-08-27) to color this like every other
+    /// verdict field: `baddump` gets `AuditStatus.badDump`'s own orange,
+    /// `nodump` gets `AuditStatus.unverifiable`'s own dimmed gray (the same
+    /// "can't verify, not wrong" reading `dumpStatusText`'s own doc comment
+    /// gives it). Skipped entirely when empty (a `good`/undeclared rom),
+    /// same "nothing to say, don't show the row" convention as `infoRow` —
+    /// this row previously always showed, even with nothing after the
+    /// label.
+    @ViewBuilder
+    private func dumpStatusDetailRow(_ entry: AuditEntry) -> some View {
+        let text = dumpStatusText(for: entry)
+        if !text.isEmpty {
+            let tint: Color = entry.romDumpStatus == .nodump ? AuditStatus.unverifiable.tint : AuditStatus.badDump.tint
+            HStack(spacing: 8) {
+                Text("Dump status").bold().frame(width: 100, alignment: .leading)
+                Text(text).foregroundStyle(tint)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
     /// `isDisk` is per-entry (a real CHD row); `isBios` is per-game (this
     /// row's own game is a MAME BIOS set, so every one of its rom rows is a
     /// BIOS file) — no per-entry "this individual rom is a BIOS file within
@@ -4607,7 +4630,9 @@ struct LibraryDetailView: View {
         case .oneGameOneROM:
             if showDetailOneGameOneROM { oneGameOneROMDetailRow(node) }
         case .info:
-            if showDetailInfo { infoRow("Info", node.infoText) }
+            if showDetailInfo {
+                coloredInfoRow("Info", node.infoText, tint: node.aggregateStatus?.tint ?? .secondary)
+            }
         case .cloneOf:
             if showDetailGameCloneOf {
                 infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
@@ -4694,7 +4719,16 @@ struct LibraryDetailView: View {
                 }
             }
             if showDetailRomInfo {
-                Text("Info: \(infoText(for: entry))")
+                // Colored to match `entry`'s own status icon — same
+                // reasoning as the game section's own "Info" row
+                // (`coloredInfoRow`): this value IS a verdict, so it gets
+                // the same `AuditStatus.tint` that verdict already has
+                // everywhere else, rather than staying the plain secondary
+                // gray every purely descriptive field here keeps.
+                HStack(spacing: 0) {
+                    Text("Info: ")
+                    Text(infoText(for: entry)).foregroundStyle(entry.status.tint)
+                }
             }
             if showDetailRomSize {
                 Text("Size: \(sizeText(for: entry))")
@@ -4706,9 +4740,7 @@ struct LibraryDetailView: View {
             if showDetailRomCRC { hashLine(label: "CRC", expected: entry.expectedCRC, actual: entry.actualCRC) }
             if showDetailRomSHA1 { hashLine(label: "SHA-1", expected: entry.expectedSHA1, actual: entry.actualSHA1) }
             if showDetailRomMD5 { hashLine(label: "MD5", expected: entry.expectedMD5, actual: entry.actualMD5) }
-            if showDetailRomDumpStatus {
-                Text("Dump status: \(dumpStatusText(for: entry))")
-            }
+            if showDetailRomDumpStatus { dumpStatusDetailRow(entry) }
             if showDetailRomType {
                 Text("Type: \(entryKindText(for: entry))")
             }
@@ -4728,6 +4760,28 @@ struct LibraryDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// Same layout as `infoRow`, but the value itself takes `tint` instead
+    /// of the row's own default secondary color — jensyleo's own request
+    /// (2026-08-27): only fields that are themselves a verdict (this
+    /// game's own "Info", a rom's own "Dump status") get colored, reusing
+    /// the exact same `AuditStatus.tint` the row's own status icon already
+    /// uses elsewhere, rather than a color invented just for this panel.
+    /// Every purely descriptive field (Year, Manufacturer, File name, …)
+    /// deliberately keeps `infoRow`'s plain secondary color — color here
+    /// means something, so it doesn't get spent on fields with nothing to
+    /// signal.
+    @ViewBuilder
+    private func coloredInfoRow(_ label: String, _ value: String, tint: Color) -> some View {
+        if !value.isEmpty {
+            HStack(spacing: 8) {
+                Text(label).bold().frame(width: 100, alignment: .leading)
+                Text(value).foregroundStyle(tint)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 

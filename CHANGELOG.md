@@ -2,6 +2,19 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.2.3] - 2026-08-27
+
+### Added — status-colored verdict fields in the Detail panel
+
+jensyleo's own request, after reviewing a proposal artifact first: fields in the Detail panel
+that are themselves a verdict now take the exact same color their row's own status icon already
+uses elsewhere (`AuditStatus.tint`) — the game section's "Info", the rom section's own "Info"
+and "Dump status" (orange for a DAT-flagged bad dump, dimmed gray for a nodump), and "Family"
+(already orange when a clone count is incomplete, unchanged). Every purely descriptive field —
+Year, Manufacturer, File name, Size, Clone of, Device refs, Dependencies, and the rest — keeps
+the plain secondary gray it always had; color here is spent only where it signals something,
+matching how the rest of the app already uses it.
+
 ## [0.2.2] - 2026-08-27
 
 ### Changed — "Hardware" now heads its own line in the Detail panel's Dependencies row
