@@ -61,16 +61,20 @@ public enum FolderScanner {
             return []
         }
 
-        // Counted in path components below `url` itself — a direct child
-        // (loose file OR game subfolder) is depth 0; that subfolder's own
-        // contents are depth 1. `maxSubfolderDepth` (1) means "one level of
-        // subfolder is fine" (the common `<game>/<file>` convention), not
-        // "one level total".
-        let rootComponentCount = url.standardizedFileURL.pathComponents.count
-
+        // Depth below `url` itself — a direct child (loose file OR game
+        // subfolder) is depth 0; that subfolder's own contents are depth 1.
+        // `maxSubfolderDepth` (1) means "one level of subfolder is fine"
+        // (the common `<game>/<file>` convention), not "one level total".
+        // Read from `enumerator.level` (already tracked, depth-first, with
+        // no string parsing) rather than re-deriving it from
+        // `pathComponents.count` on every single item — for a large
+        // collection that's a full path parse + array allocation per file
+        // for a number the enumerator already has on hand. `level` counts
+        // `url` itself as 0 and a direct child as 1, hence the `- 1` to
+        // match this function's own depth-0-for-direct-child convention.
         var files: [ScannedFile] = []
         for case let itemURL as URL in enumerator {
-            let depth = itemURL.standardizedFileURL.pathComponents.count - rootComponentCount - 1
+            let depth = enumerator.level - 1
             let values = try itemURL.resourceValues(
                 forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey]
             )

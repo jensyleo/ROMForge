@@ -2,6 +2,36 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.2.4] - 2026-08-27
+
+### Fixed — path traversal via DAT-sourced rom/game names in the rebuild planner
+
+Security audit finding: `RebuildPlanner.planRepair`/`planRebuild`/`planRebuildAsZip` built
+destination paths and zip entry names directly from `<rom name="...">`/`<machine name="...">`
+values parsed out of the loaded DAT, with no check that a name was a bare filename rather than a
+path-traversal payload (e.g. `"../../../etc/passwd"`). A maliciously crafted DAT could have
+steered a rebuild/repair write outside the destination folder the user picked. All three planner
+functions now route every DAT-sourced name through a new `RebuildPlanner.safePathComponent(_:)`
+before it's ever appended to a `URL`, collapsing any traversal down to its final path component
+and replacing a bare `.`/`..` with a safe placeholder. Currently dormant in production (rebuild/
+repair stays behind `LibraryViewModel.modificationsEnabled = false` until Phase 2 lands), fixed
+now so it can't be missed later. Covered by new regression tests in `RebuildPlannerTests.swift`.
+
+### Fixed — `removeEntries` folder-prefix deletion could match a sibling folder's name
+
+`AuditReportDatabase.removeEntries(systemID:pathPrefix:)` did a raw string-prefix match with no
+trailing-separator boundary, so a prefix like `/Roms/MAME` would also match `/Roms/MAME2`. Every
+current call site already normalized the prefix with a trailing slash before calling in, so this
+was not reachable in practice — now enforced inside the function itself so it can't be
+reintroduced by a future caller that forgets to.
+
+### Changed — `FolderScanner` depth computation no longer re-parses the full path per item
+
+Each enumerated item recomputed its folder depth via `pathComponents.count` on the full
+standardized path — a needless string-parse and array allocation per file for a number
+`FileManager.DirectoryEnumerator` already tracks. Now reads `enumerator.level` directly. No
+behavior change; verified against the existing depth-limit test suite.
+
 ## [0.2.3] - 2026-08-27
 
 ### Added — status-colored verdict fields in the Detail panel

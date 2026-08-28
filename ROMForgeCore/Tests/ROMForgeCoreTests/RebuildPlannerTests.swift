@@ -141,4 +141,42 @@ struct RebuildPlannerTests {
 
         #expect(RebuildPlanner.planRebuildAsZip(matchReport: matchReport, destination: destination).isEmpty)
     }
+
+    @Test("safePathComponent sanitizes traversal, dot and empty segments to a single safe component")
+    func safePathComponentSanitizesAdversarialInput() {
+        #expect(RebuildPlanner.safePathComponent("../x") == "x")
+        #expect(RebuildPlanner.safePathComponent("..") == "_")
+        #expect(RebuildPlanner.safePathComponent(".") == "_")
+        #expect(RebuildPlanner.safePathComponent("a/b/../c") == "c")
+        #expect(RebuildPlanner.safePathComponent("normal.zip") == "normal.zip")
+    }
+
+    @Test("planRebuild sanitizes path-traversal attempts in a DAT-sourced game/rom name so the target stays inside destination")
+    func planRebuildSanitizesPathTraversalInDATNames() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let destination = URL(fileURLWithPath: "/rebuilt")
+        let maliciousRom = DATRom(name: "../../../etc/passwd", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "../../evilgame", description: "evilgame", cloneOf: nil, romOf: nil, roms: [maliciousRom])
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: game, matches: [
+                    RomMatch(rom: maliciousRom, status: .correct(hashedFile(name: "passwd", in: folder))),
+                ]),
+            ],
+            surplusFiles: []
+        )
+
+        let plan = RebuildPlanner.planRebuild(matchReport: matchReport, destination: destination, move: false)
+
+        guard case .copy(_, let target)? = plan.first else {
+            Issue.record("expected a single copy operation")
+            return
+        }
+
+        #expect(plan.count == 1)
+        #expect(target.path.hasPrefix(destination.path))
+        #expect(!target.pathComponents.contains(".."))
+        #expect(target == destination.appendingPathComponent("evilgame").appendingPathComponent("passwd"))
+    }
 }

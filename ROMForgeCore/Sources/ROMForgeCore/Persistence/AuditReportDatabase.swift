@@ -346,6 +346,14 @@ public final class AuditReportDatabase {
     public func removeEntries(systemID: String, pathPrefix: String) throws -> Int {
         let db = try Self.open(path)
         defer { sqlite3_close(db) }
+        // Enforced here rather than left to callers: without a trailing
+        // separator, a substring-prefix match also deletes rows for any
+        // sibling folder whose name happens to start with this one (e.g.
+        // "/Roms/MAME" would also match "/Roms/MAME2"). Every current call
+        // site already normalizes this itself, but that's caller discipline
+        // this function shouldn't depend on — a future caller that forgets
+        // the trailing slash would silently reintroduce the bug.
+        let normalizedPrefix = pathPrefix.hasSuffix("/") ? pathPrefix : pathPrefix + "/"
         // `unicodeScalars.count`, not `NSString.length` — SQLite's own
         // `substr()` counts Unicode codepoints, while `NSString.length`
         // counts UTF-16 code *units*. Those diverge for any path containing
@@ -353,11 +361,11 @@ public final class AuditReportDatabase {
         // pairs count as 2 in UTF-16 but 1 codepoint in SQLite), which
         // would silently mismatch the prefix comparison below for e.g. a
         // ROM folder path with an emoji in its name.
-        let prefixLength = Int32(pathPrefix.unicodeScalars.count)
+        let prefixLength = Int32(normalizedPrefix.unicodeScalars.count)
         try Self.bindAndExec(
             db,
             "DELETE FROM audit_entries WHERE system_id = ? AND path IS NOT NULL AND substr(path, 1, ?) = ?;",
-            [.text(systemID), .int(prefixLength), .text(pathPrefix)]
+            [.text(systemID), .int(prefixLength), .text(normalizedPrefix)]
         )
         return Int(sqlite3_changes(db))
     }
