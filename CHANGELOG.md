@@ -2,6 +2,37 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.2.5] - 2026-08-31
+
+### Added — "Details" column and panel row showing descriptive MAME metadata
+
+Three new badge types show machine metadata from MAME's own `-listxml` attributes:
+- **Emulation** (driver status: good/imperfect/preliminary)
+- **Display** (orientation horizontal/vertical + type raster/vector)
+- **Players** (player count and coin slot count, or free play)
+
+Available as a new Games table column (hidden by default, like Dependencies) and a new row in
+the Detail panel (reorderable alongside the existing field order). Fully searchable, togglable
+per badge type in View Options. Built atop the same data pipeline as the existing Dependencies
+badges; no new scan overhead — parsed fields arrive in the DAT, stored in SQLite, propagated
+to the UI.
+
+### Added — "Device machines" filter in the Database tree
+
+New category separates MAME's internal device sub-machines (shared CPU/sound-chip devices,
+marked `isdevice="yes"` in `-listxml`) from real playable games. Off by default; enable in
+Settings → Systems → MAME → Database tree branches. Usable both in the pre-scan catalog view
+and against actual scan results.
+
+### Fixed — Settings window now opens as a sheet modal
+
+Settings was opening as an independent window; clicking outside it would bring the main window
+to the front (standard macOS behavior for separate windows). jensyleo's own request: Settings
+now uses `NSWindow.beginSheet()` to attach itself as a document-modal sheet, blocking
+interaction with the main window until Settings closes. Fixed a race condition in the window-
+parent resolution that sometimes left it unset at the critical moment the sheet tried to
+attach.
+
 ## [0.2.4] - 2026-08-27
 
 ### Fixed — path traversal via DAT-sourced rom/game names in the rebuild planner
