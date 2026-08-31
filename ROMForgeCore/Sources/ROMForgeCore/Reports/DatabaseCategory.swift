@@ -65,6 +65,17 @@ public enum DatabaseCategory: String, CaseIterable, Sendable {
     /// system (see that type's own doc comment) — empty otherwise, same as
     /// every other branch before its first real scan.
     case zipCRCInconsistencies = "ZIP internal CRC inconsistencies"
+    /// A MAME internal "device" sub-machine (`isdevice="yes"`) — a shared
+    /// CPU/sound chip or similar support component MAME models as its own
+    /// `<machine>` entry, not something a user picks and plays directly.
+    /// See `DATGame.isDevice`'s own doc comment for why these still get
+    /// their own audit row (never excluded outright) despite not being real
+    /// games — this category exists to let a "Database" view separate them
+    /// from actual playable games rather than have them sit unlabeled
+    /// alongside "All games". Added 2026-08-28, jensyleo's own design
+    /// decision after auditing what MAME `-listxml` attributes ROMForge was
+    /// parsing but discarding — `isDevice` was one of them.
+    case deviceMachines = "Device machines"
 
     /// Filters a flat `[AuditEntry]` list down to just the entries
     /// belonging to this category — identical logic to the original
@@ -107,6 +118,7 @@ public enum DatabaseCategory: String, CaseIterable, Sendable {
         case .unusedBiosFiles: return entries.filter { $0.isOrphanedBios }
         case .filenameCRCMismatches: return entries.filter { $0.hasFilenameCRCMismatch }
         case .zipCRCInconsistencies: return entries.filter { $0.hasInternalZipCRCMismatch }
+        case .deviceMachines: return entries.filter { $0.isDevice }
         }
     }
 }

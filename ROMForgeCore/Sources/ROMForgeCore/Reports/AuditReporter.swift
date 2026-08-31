@@ -71,11 +71,13 @@ public enum AuditReporter {
                 // only per-case parameters left.
                 let makeEntry: (AuditStatus, URL?, HashedFile?, Bool, String?) -> AuditEntry = { status, path, hashedFile, viaHeaderStrip, foundElsewhereArchiveName in
                     AuditEntry(
-                        status: status, game: game.name, gameDescription: game.description, cloneOf: game.cloneOf, isBios: game.isBios,
+                        status: status, game: game.name, gameDescription: game.description, cloneOf: game.cloneOf, isBios: game.isBios, isDevice: game.isDevice,
                         hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: rom.optional, romDumpStatus: rom.status, mergeName: rom.mergeName,
                         chdNames: chdNames, gameYear: game.year, gameManufacturer: game.manufacturer,
                         requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames,
                         cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
+                        driverStatus: game.driverStatus, displayType: game.displayType, displayRotate: game.displayRotate,
+                        players: game.players, coins: game.coins,
                         matchedViaHeaderStrip: viaHeaderStrip, foundElsewhereArchiveName: foundElsewhereArchiveName,
                         name: rom.name, path: path,
                         expectedSize: rom.size, actualSize: hashedFile?.file.size,

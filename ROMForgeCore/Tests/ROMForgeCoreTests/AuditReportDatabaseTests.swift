@@ -224,6 +224,49 @@ struct AuditReportDatabaseTests {
         #expect(reloadedWithoutChips.audioChipNames == nil)
     }
 
+    @Test("an entry's driverStatus, displayType, displayRotate, players and coins survive a save/load round trip")
+    func detailFieldsSurviveRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let withDetails = AuditEntry(
+            status: .correct, game: "mslug", driverStatus: "good", displayType: "raster", displayRotate: "0", players: "2", coins: "1",
+            name: "mslug.zip", path: URL(fileURLWithPath: "/roms/mslug.zip")
+        )
+        let withoutDetails = AuditEntry(status: .correct, game: "pacman", name: "pacman.zip", path: URL(fileURLWithPath: "/roms/pacman.zip"))
+        let report = AuditReport(entries: [withDetails, withoutDetails], correct: 2, incorrect: 0, missing: 0, surplus: 0)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedWithDetails = try #require(loaded.entries.first { $0.name == "mslug.zip" })
+        let reloadedWithoutDetails = try #require(loaded.entries.first { $0.name == "pacman.zip" })
+        #expect(reloadedWithDetails.driverStatus == "good")
+        #expect(reloadedWithDetails.displayType == "raster")
+        #expect(reloadedWithDetails.displayRotate == "0")
+        #expect(reloadedWithDetails.players == "2")
+        #expect(reloadedWithDetails.coins == "1")
+        #expect(reloadedWithoutDetails.driverStatus == nil)
+        #expect(reloadedWithoutDetails.displayType == nil)
+        #expect(reloadedWithoutDetails.displayRotate == nil)
+        #expect(reloadedWithoutDetails.players == nil)
+        #expect(reloadedWithoutDetails.coins == nil)
+    }
+
+    @Test("an entry's isDevice flag survives a save/load round trip")
+    func isDeviceSurvivesRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let device = AuditEntry(status: .correct, game: "qsound_hle", isDevice: true, name: "qsound_hle.zip", path: URL(fileURLWithPath: "/roms/qsound_hle.zip"))
+        let realGame = AuditEntry(status: .correct, game: "sf2", isDevice: false, name: "sf2.zip", path: URL(fileURLWithPath: "/roms/sf2.zip"))
+        let report = AuditReport(entries: [device, realGame], correct: 2, incorrect: 0, missing: 0, surplus: 0)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedDevice = try #require(loaded.entries.first { $0.name == "qsound_hle.zip" })
+        let reloadedRealGame = try #require(loaded.entries.first { $0.name == "sf2.zip" })
+        #expect(reloadedDevice.isDevice == true)
+        #expect(reloadedRealGame.isDevice == false)
+    }
+
     @Test("an entry's isOrphanedBios flag survives a save/load round trip")
     func isOrphanedBiosSurvivesRoundTrip() throws {
         let db = try AuditReportDatabase(path: tempDBPath())

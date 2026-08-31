@@ -67,8 +67,15 @@ struct DATLoaderTests {
         // like a real romless/abstract device would.
         #expect(dat.games.map(\.name).sorted() == ["cpu_device", "mslug", "neogeo"])
 
+        // `isDevice` propagates all the way from `machine.isDevice` (already
+        // parsed) into `DATGame` — previously dropped in this conversion
+        // despite `MAMEMachine` already carrying it, which meant nothing
+        // downstream could tell a device machine apart from a real game.
+        let device = try #require(dat.games.first { $0.name == "cpu_device" })
+        #expect(device.isDevice == true)
         let mslug = try #require(dat.games.first { $0.name == "mslug" })
         #expect(mslug.romOf == "neogeo")
+        #expect(mslug.isDevice == false)
         #expect(mslug.roms[0].crc == "1e174290")
         // MAMEMachine.chips (`<chip>`) threaded through into DATGame.chips —
         // the DAT-sourced ground truth `GameDependencies.hardwareTooltip`

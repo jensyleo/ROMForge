@@ -348,6 +348,7 @@ public enum DATLoader {
                 romOf: layout.romOf,
                 roms: layout.roms,
                 isBios: machine.isBios,
+                isDevice: machine.isDevice,
                 disks: mergedDisks(for: machine, mode: mode, dataset: dataset),
                 hasSamples: machine.hasSamples,
                 year: machine.year.isEmpty ? nil : machine.year,
@@ -355,7 +356,12 @@ public enum DATLoader {
                 mergedFamilyMachineNames: layout.mergedFamilyMachineNames,
                 biosSetNames: machine.biosSets.map(\.name),
                 deviceRefs: machine.deviceRefs,
-                chips: machine.chips.map { DATChip(type: $0.type, name: $0.name) }
+                chips: machine.chips.map { DATChip(type: $0.type, name: $0.name) },
+                driverStatus: machine.driverStatus,
+                displayType: machine.displayType,
+                displayRotate: machine.displayRotate,
+                players: machine.players,
+                coins: machine.coins
             ))
         }
         return DATFile(

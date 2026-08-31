@@ -116,6 +116,17 @@ public struct DATGame: Equatable, Sendable, Codable {
     /// True for MAME BIOS sets (`isbios="yes"`). Always false for
     /// Logiqx/ClrMamePro DATs, which have no such concept.
     public let isBios: Bool
+    /// True for a MAME internal "device" sub-machine (`isdevice="yes"`) —
+    /// a shared CPU/sound chip or similar support component MAME models as
+    /// its own `<machine>` entry, not something a user picks and plays
+    /// directly (see `MAMEMachine.isDevice`'s own doc comment). Deliberately
+    /// NOT excluded from `DATFile.games` (a device can have a real, physical
+    /// romset of its own worth auditing — see `DATLoader.datFile`'s own doc
+    /// comment for the real bug this fixed), just flagged so a "Database"
+    /// filter can separate it from an actual playable game. Always false for
+    /// Logiqx/ClrMamePro DATs and MAME software lists, neither of which has
+    /// this concept.
+    public let isDevice: Bool
     /// CHD disks this game declares. Presence alone (not verification — see
     /// `DATDisk`) is enough to answer "does this game need a CHD".
     public let disks: [DATDisk]
@@ -164,6 +175,25 @@ public struct DATGame: Equatable, Sendable, Codable {
     /// real dumped file for it, however, happens to sit in `gryzor.zip`, not
     /// `contra.zip` — a plain own-archive name search would never find it.
     public let mergedFamilyMachineNames: [String]
+    /// MAME's own emulation-quality claim for this machine (MAME
+    /// `-listxml`'s `<driver status="...">`: "good"/"imperfect"/
+    /// "preliminary") — purely descriptive, never a claim about the user's
+    /// own dump (see `AuditEntry.status` for that, an unrelated concept).
+    /// `nil` for formats/entries with no such concept.
+    public let driverStatus: String?
+    /// The machine's own `<display type="...">` ("raster"/"vector"/"lcd").
+    /// `nil` for formats/entries with no such concept.
+    public let displayType: String?
+    /// The machine's own `<display rotate="...">` ("0"/"90"/"180"/"270").
+    /// `nil` for formats/entries with no such concept.
+    public let displayRotate: String?
+    /// The machine's own `<input players="...">`. `nil` for formats/entries
+    /// with no such concept.
+    public let players: String?
+    /// The machine's own `<input coins="...">` — `"0"` for a freeplay-only
+    /// machine with no coin mechanism at all. `nil` for formats/entries with
+    /// no such concept.
+    public let coins: String?
 
     public init(
         name: String,
@@ -172,6 +202,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         romOf: String?,
         roms: [DATRom],
         isBios: Bool = false,
+        isDevice: Bool = false,
         disks: [DATDisk] = [],
         hasSamples: Bool = false,
         year: String? = nil,
@@ -179,7 +210,12 @@ public struct DATGame: Equatable, Sendable, Codable {
         mergedFamilyMachineNames: [String] = [],
         biosSetNames: [String] = [],
         deviceRefs: [String] = [],
-        chips: [DATChip] = []
+        chips: [DATChip] = [],
+        driverStatus: String? = nil,
+        displayType: String? = nil,
+        displayRotate: String? = nil,
+        players: String? = nil,
+        coins: String? = nil
     ) {
         self.name = name
         self.description = description
@@ -187,6 +223,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         self.romOf = romOf
         self.roms = roms
         self.isBios = isBios
+        self.isDevice = isDevice
         self.disks = disks
         self.hasSamples = hasSamples
         self.year = year
@@ -195,6 +232,11 @@ public struct DATGame: Equatable, Sendable, Codable {
         self.deviceRefs = deviceRefs
         self.chips = chips
         self.mergedFamilyMachineNames = mergedFamilyMachineNames
+        self.driverStatus = driverStatus
+        self.displayType = displayType
+        self.displayRotate = displayRotate
+        self.players = players
+        self.coins = coins
     }
 }
 

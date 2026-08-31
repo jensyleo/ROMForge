@@ -101,6 +101,11 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
     /// every other post-2026-08-11 addition below `.emptyGames`.
     case filenameCRCMismatches = "Filename CRC mismatches"
     case zipCRCInconsistencies = "ZIP internal CRC inconsistencies"
+    /// See `DatabaseCategory.deviceMachines` (ROMForgeCore) for what this
+    /// actually separates out — MAME's own internal shared CPU/sound-chip
+    /// sub-machines, not real playable games. Off by default, same as every
+    /// other post-2026-08-11 addition below `.emptyGames`.
+    case deviceMachines = "Device machines"
     var id: String { rawValue }
 
     /// Placeholder SF Symbols, one per category, standing in for real
@@ -134,6 +139,7 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
         case .unusedBiosFiles: return "archivebox"
         case .filenameCRCMismatches: return "questionmark.text.page"
         case .zipCRCInconsistencies: return "checkmark.shield"
+        case .deviceMachines: return "cpu.fill"
         }
     }
 
@@ -169,6 +175,7 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
         case .unusedBiosFiles: return .unusedBiosFiles
         case .filenameCRCMismatches: return .filenameCRCMismatches
         case .zipCRCInconsistencies: return .zipCRCInconsistencies
+        case .deviceMachines: return .deviceMachines
         }
     }
 }
@@ -521,6 +528,9 @@ struct LibraryDetailView: View {
     @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
     @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
     @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
+    @AppStorage(DetailColumnSettings.showDriverStatusKey) private var showDriverStatusBadge = true
+    @AppStorage(DetailColumnSettings.showDisplayKey) private var showDisplayBadge = true
+    @AppStorage(DetailColumnSettings.showPlayersKey) private var showPlayersBadge = true
     @AppStorage(DetailPanelGameFieldSettings.showFileNameKey) private var showDetailGameFileName = true
     @AppStorage(DetailPanelGameFieldSettings.showExpectedFileNameKey) private var showDetailExpectedFileName = true
     @AppStorage(DetailPanelGameFieldSettings.showSizeKey) private var showDetailGameSize = true
@@ -537,6 +547,7 @@ struct LibraryDetailView: View {
     @AppStorage(DetailPanelGameFieldSettings.showCloneOfInternalNameKey) private var showDetailCloneOfInternalName = true
     @AppStorage(DetailPanelGameFieldSettings.showFamilyKey) private var showDetailFamily = true
     @AppStorage(DetailPanelGameFieldSettings.showDependenciesKey) private var showDetailDependencies = true
+    @AppStorage(DetailPanelGameFieldSettings.showDetailsKey) private var showDetailDetails = true
     @AppStorage(DetailPanelGameFieldSettings.fieldOrderKey) private var gameFieldOrderRaw = DetailGameField.allCases.map(\.rawValue).joined(separator: ",")
     @AppStorage(DetailPanelRomFieldSettings.showFileNameKey) private var showDetailRomFileName = true
     @AppStorage(DetailPanelRomFieldSettings.showInfoKey) private var showDetailRomInfo = true
@@ -2604,6 +2615,16 @@ struct LibraryDetailView: View {
                 TableColumn("Dependencies") { (node: GameNode) in dependenciesIndicator(for: node) }
                     .customizationID("dependencies")
                     .defaultVisibility(.hidden)
+                // Separate column from "Dependencies" above (jensyleo's own
+                // decision, 2026-08-28) — descriptive machine metadata
+                // (MAME's own emulation-quality claim, display orientation,
+                // player/coin count), never something the game needs in
+                // order to run. Reads `GameNode.detailBadges` (ROMForgeCore),
+                // same "already computed by the scan/DAT load" cost-free
+                // shape as "Dependencies".
+                TableColumn("Details") { (node: GameNode) in detailsIndicator(for: node) }
+                    .customizationID("details")
+                    .defaultVisibility(.hidden)
                 // Independent of `show1G1ROnly` — jensyleo's own spec
                 // (2026-08-19, moved to its own column 2026-08-25): the
                 // star is always visible so a family's preferred variant
@@ -2894,6 +2915,103 @@ struct LibraryDetailView: View {
         case .chd: return .purple
         case .hardware: return .indigo
         case .samples: return .teal
+        }
+    }
+
+    // MARK: - "Details" column/row (descriptive metadata, separate from "Dependencies")
+
+    /// Short chips for each of `node.detailBadges` (Emulation/Display/
+    /// Players) that's both non-empty and still enabled under Settings →
+    /// View Options → "Details" (`DetailColumnSettings`) — exact mirror of
+    /// `dependenciesIndicator` above, for the separate "Details" column.
+    @ViewBuilder
+    private func detailsIndicator(for node: GameNode) -> some View {
+        let badges = visibleDetailBadges(for: node)
+        if badges.isEmpty {
+            EmptyView()
+        } else {
+            HStack(spacing: 4) {
+                ForEach(badges) { badge in detailChip(for: badge) }
+            }
+        }
+    }
+
+    /// `node.detailBadges` filtered down to the categories Settings → View
+    /// Options → Details still has switched on — the single source of truth
+    /// shared by both the Games table's "Details" column
+    /// (`detailsIndicator`, above) and the Detail panel's own "Details" row
+    /// (`detailsDetailRow`, below) — mirrors `visibleDependencyBadges`.
+    private func visibleDetailBadges(for node: GameNode) -> [DetailBadge] {
+        node.detailBadges.filter { badge in
+            switch badge.kind {
+            case .driverStatus: return showDriverStatusBadge
+            case .display: return showDisplayBadge
+            case .players: return showPlayersBadge
+            }
+        }
+    }
+
+    /// The Detail panel's own "Details" row — same badges, same filtering
+    /// (`visibleDetailBadges`) as `detailsIndicator`, printed as plain,
+    /// already-expanded text — exact mirror of `dependenciesDetailRow`.
+    @ViewBuilder
+    private func detailsDetailRow(_ node: GameNode) -> some View {
+        let badges = visibleDetailBadges(for: node)
+        if !badges.isEmpty {
+            HStack(alignment: .top, spacing: 8) {
+                Text("Details").bold().frame(width: 100, alignment: .leading)
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(badges) { badge in detailDetailLines(for: badge) }
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    /// One badge's own line(s) within `detailsDetailRow` — mirrors
+    /// `dependencyDetailLines`. None of these badges' tooltips are
+    /// currently multi-line (unlike "Hardware"'s CPU:/Sound:/Other:), but
+    /// the same multi-line handling is kept for consistency should a future
+    /// badge (e.g. controls) need it.
+    @ViewBuilder
+    private func detailDetailLines(for badge: DetailBadge) -> some View {
+        if badge.tooltip.isEmpty {
+            Text(badge.label)
+        } else if badge.tooltip.contains("\n") {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(badge.label).fontWeight(.semibold)
+                Text(badge.tooltip)
+            }
+        } else {
+            Text("\(badge.label): \(badge.tooltip)")
+        }
+    }
+
+    /// One chip for a single `DetailBadge` — mirrors `dependencyChip`.
+    @ViewBuilder
+    private func detailChip(for badge: DetailBadge) -> some View {
+        let chip = Text(badge.label)
+            .font(.caption2)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(detailBadgeTint(for: badge.kind).opacity(0.18), in: Capsule())
+        if badge.tooltip.isEmpty {
+            chip
+        } else {
+            chip.help(badge.tooltip)
+        }
+    }
+
+    /// One accent per detail category — distinct from every
+    /// `badgeTint(for:)` color above (blue/purple/indigo/teal already used
+    /// by "Dependencies") and from this app's own red/orange/green status
+    /// colors, same reasoning as `badgeTint(for:)`.
+    private func detailBadgeTint(for kind: DetailBadge.Kind) -> Color {
+        switch kind {
+        case .driverStatus: return .brown
+        case .display: return .cyan
+        case .players: return .mint
         }
     }
 
@@ -4657,6 +4775,8 @@ struct LibraryDetailView: View {
             if showDetailFamily { familyDetailRow(node) }
         case .dependencies:
             if showDetailDependencies { dependenciesDetailRow(node) }
+        case .details:
+            if showDetailDetails { detailsDetailRow(node) }
         }
     }
 

@@ -67,6 +67,23 @@ enum DependencyColumnSettings {
     static let showSamplesKey = "ROMForge.view.showSamplesBadge"
 }
 
+/// Which of `DetailBadge.Kind` cases show — same `@AppStorage`-backed,
+/// plain-enum-of-keys pattern as `DependencyColumnSettings` above, for the
+/// separate "Details" column/row. jensyleo's own decision (2026-08-28):
+/// "Details" and "Dependencies" stay two distinct columns rather than one
+/// merged concept — this describes the machine itself (MAME's own
+/// emulation-quality claim, display orientation, player/coin count), never
+/// something the game *needs* to run, so it gets its own toggle set rather
+/// than folding into `DependencyColumnSettings`. Read directly by
+/// `LibraryDetailView` under these same keys, both the Games table column
+/// and the Detail panel row, so this settings view and the actual UI can
+/// never disagree about what's showing.
+enum DetailColumnSettings {
+    static let showDriverStatusKey = "ROMForge.view.showDriverStatusBadge"
+    static let showDisplayKey = "ROMForge.view.showDisplayBadge"
+    static let showPlayersKey = "ROMForge.view.showPlayersBadge"
+}
+
 /// Which fields show in the Detail panel's game section (jensyleo's own
 /// "rezago de fase 1" request, 2026-08-27) — same "hides a field, never
 /// discards anything" configurability as `DependencyColumnSettings` above,
@@ -109,6 +126,12 @@ enum DetailPanelGameFieldSettings {
     static let showCloneOfInternalNameKey = "ROMForge.view.detail.game.showCloneOfInternalName"
     static let showFamilyKey = "ROMForge.view.detail.game.showFamily"
     static let showDependenciesKey = "ROMForge.view.detail.game.showDependencies"
+    /// Governs only whether the Detail panel's own "Details" row shows at
+    /// all — same relationship to `DetailColumnSettings` that
+    /// `showDependenciesKey` above has to `DependencyColumnSettings`: which
+    /// badges appear WITHIN it (once shown) comes from that shared toggle
+    /// set, not this one.
+    static let showDetailsKey = "ROMForge.view.detail.game.showDetails"
     /// Comma-joined `DetailGameField.rawValue`s, in the user's own chosen
     /// display order — jensyleo's own request, "deja que esto sea
     /// organizable por el usuario". A plain `String` (not a native array)
@@ -127,7 +150,7 @@ enum DetailPanelGameFieldSettings {
 /// Defaults") — matches the Games table's own real column menu.
 enum DetailGameField: String, CaseIterable, Identifiable, Hashable, Sendable {
     case fileName, expectedFileName, size, oneGameOneROM, info, cloneOf, requiredBios, chd, samples, bios, year,
-        manufacturer, deviceRefs, cloneOfInternalName, family, dependencies
+        manufacturer, deviceRefs, cloneOfInternalName, family, dependencies, details
 
     var id: String { rawValue }
 
@@ -149,6 +172,7 @@ enum DetailGameField: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .cloneOfInternalName: return "Clone of (internal name)"
         case .family: return "Family"
         case .dependencies: return "Dependencies"
+        case .details: return "Details"
         }
     }
 }
@@ -359,6 +383,9 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
     @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
     @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
+    @AppStorage(DetailColumnSettings.showDriverStatusKey) private var showDriverStatusBadge = true
+    @AppStorage(DetailColumnSettings.showDisplayKey) private var showDisplayBadge = true
+    @AppStorage(DetailColumnSettings.showPlayersKey) private var showPlayersBadge = true
     @AppStorage(DetailPanelGameFieldSettings.showFileNameKey) private var showDetailGameFileName = true
     @AppStorage(DetailPanelGameFieldSettings.showExpectedFileNameKey) private var showDetailExpectedFileName = true
     @AppStorage(DetailPanelGameFieldSettings.showSizeKey) private var showDetailGameSize = true
@@ -375,6 +402,7 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelGameFieldSettings.showCloneOfInternalNameKey) private var showDetailCloneOfInternalName = true
     @AppStorage(DetailPanelGameFieldSettings.showFamilyKey) private var showDetailFamily = true
     @AppStorage(DetailPanelGameFieldSettings.showDependenciesKey) private var showDetailDependencies = true
+    @AppStorage(DetailPanelGameFieldSettings.showDetailsKey) private var showDetailDetails = true
     @AppStorage(DetailPanelGameFieldSettings.fieldOrderKey) private var gameFieldOrderRaw = DetailGameField.allCases.map(\.rawValue).joined(separator: ",")
     @AppStorage(DetailPanelRomFieldSettings.showFileNameKey) private var showDetailRomFileName = true
     @AppStorage(DetailPanelRomFieldSettings.showInfoKey) private var showDetailRomInfo = true
@@ -414,6 +442,7 @@ private struct ViewOptionsPanelsTab: View {
         case .cloneOfInternalName: return $showDetailCloneOfInternalName
         case .family: return $showDetailFamily
         case .dependencies: return $showDetailDependencies
+        case .details: return $showDetailDetails
         }
     }
 
@@ -505,6 +534,26 @@ private struct ViewOptionsPanelsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // "Details" is deliberately a separate column/section from
+            // "Dependencies" above (jensyleo's own decision, 2026-08-28):
+            // descriptive machine metadata (MAME's own emulation-quality
+            // claim, display orientation, player/coin count) rather than
+            // something the game needs in order to run — keeping the two
+            // names distinct keeps "Dependencies" meaning exactly what it
+            // always has, rather than diluting it with unrelated metadata.
+            Section("Details (Games table column + Detail panel row)") {
+                Toggle("Emulation status", isOn: $showDriverStatusBadge)
+                Toggle("Display", isOn: $showDisplayBadge)
+                Toggle("Players", isOn: $showPlayersBadge)
+                Button("Reset to Defaults") {
+                    showDriverStatusBadge = true
+                    showDisplayBadge = true
+                    showPlayersBadge = true
+                }
+                Text("Which detail chips show — both in the Games table's own \"Details\" column and in the Detail panel's own \"Details\" row. Descriptive machine metadata from the DAT (MAME's own emulation status, screen orientation, player/coin count) — never a dependency the game needs to run (see \"Dependencies\" above for that). Turning one off hides that chip everywhere at once; it never affects scanning, matching, or any other column.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             // "Otro rezago de fase 1" (jensyleo's own request, 2026-08-27,
             // third pass): "la idea es que tenga exactamente los mismos
             // campos que se pueden configurar en las columnas" — matched
@@ -573,9 +622,10 @@ private struct ViewOptionsPanelsTab: View {
                     showDetailCloneOfInternalName = true
                     showDetailFamily = true
                     showDetailDependencies = true
+                    showDetailDetails = true
                     gameFieldOrderRaw = DetailGameField.allCases.map(\.rawValue).joined(separator: ",")
                 }
-                Text("Use the arrows to reorder a row. Which badges show inside \"Dependencies\" (once it's on here) is still the shared toggle set in the \"Dependencies\" section above.")
+                Text("Use the arrows to reorder a row. Which badges show inside \"Dependencies\"/\"Details\" (once each is on here) are still the shared toggle sets in the \"Dependencies\"/\"Details\" sections above.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

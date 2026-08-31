@@ -31,6 +31,9 @@ struct MAMEListXMLParserTests {
             <device_ref name="hd6301"/>
             <chip type="cpu" tag="maincpu" name="Motorola 68000" clock="12000000"/>
             <chip type="audio" tag="ymsnd" name="Yamaha YM2610" clock="8000000"/>
+            <driver status="good" emulation="good" color="good" sound="good" graphic="good"/>
+            <display tag="screen" type="raster" rotate="0" width="304" height="224" refresh="59.185606"/>
+            <input players="2" coins="1"/>
         </machine>
         <machine name="mslugx" cloneof="mslug" romof="mslug">
             <description>Metal Slug X</description>
@@ -62,6 +65,11 @@ struct MAMEListXMLParserTests {
             MAMEChip(type: "cpu", name: "Motorola 68000"), MAMEChip(type: "audio", name: "Yamaha YM2610"),
         ])
         #expect(parent.hasSamples == true)
+        #expect(parent.driverStatus == "good")
+        #expect(parent.displayType == "raster")
+        #expect(parent.displayRotate == "0")
+        #expect(parent.players == "2")
+        #expect(parent.coins == "1")
         #expect(parent.roms.first { $0.name == "v1.v1" }?.status == .baddump)
         #expect(parent.roms.first { $0.name == "038-p1.p1" }?.status == .good)
 

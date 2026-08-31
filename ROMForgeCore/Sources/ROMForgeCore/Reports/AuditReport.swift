@@ -112,6 +112,15 @@ public struct AuditEntry: Equatable, Sendable {
     /// True when `game` is a MAME BIOS set — lets a UI offer a "Bios files"
     /// filter, RomCenter-style. Always false for surplus files.
     public let isBios: Bool
+    /// True when `game` is a MAME internal "device" sub-machine
+    /// (`isdevice="yes"`) — a shared CPU/sound chip or similar support
+    /// component, not something a user picks and plays directly. See
+    /// `DATGame.isDevice`'s own doc comment. Lets a "Database" category
+    /// separate a device's own audit row from an actual playable game's,
+    /// without excluding it from the audit entirely (a device can have a
+    /// real, physical romset of its own worth checking). Always false for
+    /// surplus files and for every non-MAME DAT format.
+    public let isDevice: Bool
     /// True when `game` declares a CHD disk in the DAT — presence-only, not
     /// verification: ROMForge doesn't check whether a matching `.chd` file
     /// actually exists or hash-verify it yet (`CHDHeaderReader`/`CHDMatcher`
@@ -191,6 +200,24 @@ public struct AuditEntry: Equatable, Sendable {
     public let cpuChipNames: String?
     /// Same as `cpuChipNames`, for `<chip type="audio">`.
     public let audioChipNames: String?
+    /// MAME's own emulation-quality claim for `game` (`<driver status="...">`:
+    /// "good"/"imperfect"/"preliminary") — purely descriptive information
+    /// about MAME itself, never a claim about whether the user's own dump is
+    /// correct (that's `status`, above, an entirely different concept).
+    /// `nil` when `game` declares none, or for every non-MAME DAT format.
+    public let driverStatus: String?
+    /// `game`'s own `<display type="...">` ("raster"/"vector"/"lcd"). `nil`
+    /// under the same conditions as `driverStatus`.
+    public let displayType: String?
+    /// `game`'s own `<display rotate="...">` ("0"/"90"/"180"/"270" — screen
+    /// orientation). `nil` under the same conditions as `driverStatus`.
+    public let displayRotate: String?
+    /// `game`'s own `<input players="...">`. `nil` under the same
+    /// conditions as `driverStatus`.
+    public let players: String?
+    /// `game`'s own `<input coins="...">` — `"0"` for a freeplay-only
+    /// machine. `nil` under the same conditions as `driverStatus`.
+    public let coins: String?
     /// True when this rom's local file only matched once a detected copier
     /// header (iNES/Lynx/copier512 — see `HeaderSkipRule`) was stripped from
     /// it, rather than matching the DAT's declared hash byte-for-byte as-is.
@@ -307,6 +334,7 @@ public struct AuditEntry: Equatable, Sendable {
         gameDescription: String? = nil,
         cloneOf: String? = nil,
         isBios: Bool = false,
+        isDevice: Bool = false,
         hasCHD: Bool = false,
         hasSamples: Bool = false,
         isBadDump: Bool = false,
@@ -320,6 +348,11 @@ public struct AuditEntry: Equatable, Sendable {
         deviceRefNames: String? = nil,
         cpuChipNames: String? = nil,
         audioChipNames: String? = nil,
+        driverStatus: String? = nil,
+        displayType: String? = nil,
+        displayRotate: String? = nil,
+        players: String? = nil,
+        coins: String? = nil,
         matchedViaHeaderStrip: Bool = false,
         isDisk: Bool = false,
         foundElsewhereArchiveName: String? = nil,
@@ -345,6 +378,7 @@ public struct AuditEntry: Equatable, Sendable {
         self.gameDescription = gameDescription
         self.cloneOf = cloneOf
         self.isBios = isBios
+        self.isDevice = isDevice
         self.hasCHD = hasCHD
         self.hasSamples = hasSamples
         self.isBadDump = isBadDump
@@ -358,6 +392,11 @@ public struct AuditEntry: Equatable, Sendable {
         self.deviceRefNames = deviceRefNames
         self.cpuChipNames = cpuChipNames
         self.audioChipNames = audioChipNames
+        self.driverStatus = driverStatus
+        self.displayType = displayType
+        self.displayRotate = displayRotate
+        self.players = players
+        self.coins = coins
         self.matchedViaHeaderStrip = matchedViaHeaderStrip
         self.isDisk = isDisk
         self.foundElsewhereArchiveName = foundElsewhereArchiveName
@@ -384,10 +423,11 @@ public struct AuditEntry: Equatable, Sendable {
     /// never to change anything else about it.
     public func markedOrphanedBios() -> AuditEntry {
         AuditEntry(
-            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
+            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios, isDevice: isDevice,
             hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
-            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
+            driverStatus: driverStatus, displayType: displayType, displayRotate: displayRotate, players: players, coins: coins, matchedViaHeaderStrip: matchedViaHeaderStrip,
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: true, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
@@ -402,10 +442,11 @@ public struct AuditEntry: Equatable, Sendable {
     /// above.
     public func markedFilenameCRCMismatch() -> AuditEntry {
         AuditEntry(
-            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
+            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios, isDevice: isDevice,
             hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
-            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
+            driverStatus: driverStatus, displayType: displayType, displayRotate: displayRotate, players: players, coins: coins, matchedViaHeaderStrip: matchedViaHeaderStrip,
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: true, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
@@ -420,10 +461,11 @@ public struct AuditEntry: Equatable, Sendable {
     /// above.
     public func markedInternalZipCRCMismatch() -> AuditEntry {
         AuditEntry(
-            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios,
+            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios, isDevice: isDevice,
             hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
-            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
+            driverStatus: driverStatus, displayType: displayType, displayRotate: displayRotate, players: players, coins: coins, matchedViaHeaderStrip: matchedViaHeaderStrip,
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: true,

@@ -122,7 +122,32 @@ public final class AuditReportDatabase {
     // recomputes either (the DAT itself was already re-parsed with `<chip>`
     // support by the time this version ships), so the wipe below applies
     // here too.
-    private static let currentSchemaVersion: Int32 = 20
+    // v21 (2026-08-28): new `AuditEntry.driverStatus` / `.displayType` /
+    // `.displayRotate` / `.players` / `.coins` — MAME `-listxml`'s own
+    // `<driver status="...">`/`<display type="..." rotate="...">`/
+    // `<input players="..." coins="...">` elements, ground truth for the new
+    // "Details" column (descriptive machine metadata, kept deliberately
+    // separate from the "Dependencies" column — see `DetailBadge`'s own doc
+    // comment). Same unpersisted-new-field class as v20 above: left
+    // unpersisted, a fresh scan would show the real values but they'd
+    // silently revert to blank on the next app relaunch. New
+    // `driver_status` / `display_type` / `display_rotate` / `players` /
+    // `coins` columns; only a fresh rescan recomputes any of them (the DAT
+    // itself was already re-parsed with `<driver>`/`<display>`/`<input>`
+    // support by the time this version ships), so the wipe below applies
+    // here too.
+    // v22 (2026-08-28): new `AuditEntry.isDevice` — MAME `-listxml`'s own
+    // `isdevice="yes"` attribute (already parsed into `MAMEMachine.isDevice`
+    // but previously dropped before ever reaching `DATGame`/`AuditEntry`),
+    // ground truth for a new "Device machines" Database category that
+    // separates MAME's internal shared CPU/sound-chip sub-machines from
+    // actual playable games — see `DatabaseCategory.deviceMachines`'s own
+    // doc comment. Same unpersisted-new-field class as v20/v21 above: left
+    // unpersisted, a fresh scan would show the real split but it would
+    // silently revert to blank on the next app relaunch. New `is_device`
+    // column; only a fresh rescan recomputes it, so the wipe below applies
+    // here too.
+    private static let currentSchemaVersion: Int32 = 22
 
     private let path: String
 
@@ -171,6 +196,9 @@ public final class AuditReportDatabase {
                     .textOrNull(entry.expectedCRC), .textOrNull(entry.expectedMD5), .textOrNull(entry.expectedSHA1),
                     .textOrNull(entry.actualCRC), .textOrNull(entry.actualMD5), .textOrNull(entry.actualSHA1),
                     .textOrNull(entry.cpuChipNames), .textOrNull(entry.audioChipNames),
+                    .textOrNull(entry.driverStatus), .textOrNull(entry.displayType), .textOrNull(entry.displayRotate),
+                    .textOrNull(entry.players), .textOrNull(entry.coins),
+                    .int(entry.isDevice ? 1 : 0),
                 ]
             }
             try Self.bindAndExecMany(
@@ -184,8 +212,10 @@ public final class AuditReportDatabase {
                     has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
                     name, path, expected_size, actual_size,
                     expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
-                    cpu_chip_names, audio_chip_names
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    cpu_chip_names, audio_chip_names,
+                    driver_status, display_type, display_rotate, players, coins,
+                    is_device
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 rowValues
             )
@@ -219,7 +249,9 @@ public final class AuditReportDatabase {
                    expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
                    is_optional, duplicate_primary_path, is_orphaned_bios,
                    has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
-                   cpu_chip_names, audio_chip_names
+                   cpu_chip_names, audio_chip_names,
+                   driver_status, display_type, display_rotate, players, coins,
+                   is_device
             FROM audit_entries WHERE system_id = ?;
             """,
             [.text(systemID)]
@@ -234,6 +266,7 @@ public final class AuditReportDatabase {
                     gameDescription: Self.columnText(statement, 2),
                     cloneOf: Self.columnText(statement, 3),
                     isBios: sqlite3_column_int(statement, 4) != 0,
+                    isDevice: sqlite3_column_int(statement, 40) != 0,
                     hasCHD: sqlite3_column_int(statement, 5) != 0,
                     hasSamples: sqlite3_column_int(statement, 6) != 0,
                     isBadDump: sqlite3_column_int(statement, 7) != 0,
@@ -247,6 +280,11 @@ public final class AuditReportDatabase {
                     deviceRefNames: Self.columnText(statement, 14),
                     cpuChipNames: Self.columnText(statement, 33),
                     audioChipNames: Self.columnText(statement, 34),
+                    driverStatus: Self.columnText(statement, 35),
+                    displayType: Self.columnText(statement, 36),
+                    displayRotate: Self.columnText(statement, 37),
+                    players: Self.columnText(statement, 38),
+                    coins: Self.columnText(statement, 39),
                     isDisk: sqlite3_column_int(statement, 15) != 0,
                     foundElsewhereArchiveName: Self.columnText(statement, 16),
                     requiredByGameDescription: Self.columnText(statement, 17),
@@ -511,6 +549,12 @@ public final class AuditReportDatabase {
                 device_ref_names TEXT,
                 cpu_chip_names TEXT,
                 audio_chip_names TEXT,
+                driver_status TEXT,
+                display_type TEXT,
+                display_rotate TEXT,
+                players TEXT,
+                coins TEXT,
+                is_device INTEGER NOT NULL DEFAULT 0,
                 is_disk INTEGER NOT NULL DEFAULT 0,
                 found_elsewhere_archive_name TEXT,
                 required_by_game_description TEXT,
@@ -647,6 +691,14 @@ public final class AuditReportDatabase {
         // v20: see `currentSchemaVersion`'s own doc comment above.
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN cpu_chip_names TEXT;")
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN audio_chip_names TEXT;")
+        // v21: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN driver_status TEXT;")
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN display_type TEXT;")
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN display_rotate TEXT;")
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN players TEXT;")
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN coins TEXT;")
+        // v22: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN is_device INTEGER NOT NULL DEFAULT 0;")
         if currentVersion > 0 {
             try? exec(db, "DELETE FROM audit_entries;")
             try? exec(db, "DELETE FROM scans;")

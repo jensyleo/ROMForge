@@ -281,6 +281,24 @@ public struct GameNode: Identifiable, Sendable {
         if entries.contains(where: \.isBios) { return "Yes" }
         return sourceGame?.isBios == true ? "Yes" : ""
     }
+    /// MAME's own emulation-quality claim (`<driver status="...">`) —
+    /// descriptive metadata about MAME itself, never about this collection's
+    /// own dump — see `AuditEntry.driverStatus`'s own doc comment.
+    public var driverStatus: String {
+        firstNonEmpty(\.driverStatus) ?? sourceGame?.driverStatus ?? ""
+    }
+    public var displayType: String {
+        firstNonEmpty(\.displayType) ?? sourceGame?.displayType ?? ""
+    }
+    public var displayRotate: String {
+        firstNonEmpty(\.displayRotate) ?? sourceGame?.displayRotate ?? ""
+    }
+    public var players: String {
+        firstNonEmpty(\.players) ?? sourceGame?.players ?? ""
+    }
+    public var coins: String {
+        firstNonEmpty(\.coins) ?? sourceGame?.coins ?? ""
+    }
 
     /// Every rom in a game shares the same game-level metadata (year,
     /// manufacturer, clone parent, etc.), so the first entry that actually

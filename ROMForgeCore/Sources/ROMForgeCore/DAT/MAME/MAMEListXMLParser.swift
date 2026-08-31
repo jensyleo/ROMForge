@@ -152,6 +152,11 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
     private var deviceRefs: [String] = []
     private var chips: [MAMEChip] = []
     private var hasSamples = false
+    private var driverStatus: String?
+    private var displayType: String?
+    private var displayRotate: String?
+    private var players: String?
+    private var coins: String?
 
     func parser(
         _ parser: XMLParser,
@@ -180,6 +185,34 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
             deviceRefs = []
             chips = []
             hasSamples = false
+            driverStatus = nil
+            displayType = nil
+            displayRotate = nil
+            players = nil
+            coins = nil
+        case "driver":
+            // Descriptive only — never a real `AuditStatus`/severity: MAME's
+            // own claim about how well its emulation of this machine works
+            // ("good"/"imperfect"/"preliminary"), nothing about whether the
+            // user's own dump is correct. Exactly one `<driver>` per
+            // `<machine>` in real `-listxml` output, so a plain overwrite
+            // (no append) is correct.
+            guard inMachine else { break }
+            driverStatus = attributeDict["status"]
+        case "display":
+            // Real `-listxml` output can declare more than one `<display>`
+            // for a multi-monitor machine (rare, e.g. some Neo-Geo/rotary
+            // cabinets) — only the first is kept, same "good enough for a
+            // glance" tradeoff `GameDependencies.hardwareTooltip` already
+            // makes elsewhere in this codebase rather than modeling every
+            // display as its own list.
+            guard inMachine, displayType == nil else { break }
+            displayType = attributeDict["type"]
+            displayRotate = attributeDict["rotate"]
+        case "input":
+            guard inMachine else { break }
+            players = attributeDict["players"]
+            coins = attributeDict["coins"]
         case "biosset":
             guard inMachine, let biosName = attributeDict["name"] else { break }
             biosSets.append(MAMEBiosSet(name: biosName, description: attributeDict["description"] ?? ""))
@@ -262,7 +295,12 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
                     disks: disks,
                     deviceRefs: deviceRefs,
                     chips: chips,
-                    hasSamples: hasSamples
+                    hasSamples: hasSamples,
+                    driverStatus: driverStatus,
+                    displayType: displayType,
+                    displayRotate: displayRotate,
+                    players: players,
+                    coins: coins
                 )
             )
             machinesSeen += 1

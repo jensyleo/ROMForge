@@ -71,7 +71,19 @@ final class AppSettingsWindowController: NSObject, NSWindowDelegate {
         window.delegate = self
         self.window = window
 
-        guard let parent = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: \.isVisible) else {
+        // `NSApp.keyWindow`/`.mainWindow` can both be `nil` at the exact
+        // moment this runs — jensyleo's own report (2026-08-31): triggering
+        // "Settings…" from the menu bar sometimes left neither set yet (the
+        // menu closing hadn't finished reasserting the main window's key
+        // status), so this used to silently fall through to the "no window"
+        // branch below and show an ordinary, non-modal window instead of a
+        // sheet — the exact "click outside and it lets me back into the
+        // app" bug this whole class exists to prevent (see this type's own
+        // doc comment above). Falling back to any other visible, non-panel
+        // window of ours (excluding this controller's own window) covers
+        // that gap without weakening the intent: still the real main
+        // window in every actual case this is ever called from.
+        guard let parent = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && $0 !== window && $0.canBecomeMain }) else {
             // No window to attach a sheet to (e.g. every window closed) —
             // an ordinary window is still strictly better than silently
             // doing nothing.

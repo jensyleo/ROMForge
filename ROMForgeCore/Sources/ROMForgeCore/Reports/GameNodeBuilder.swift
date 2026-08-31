@@ -153,6 +153,10 @@ public enum GameNodeBuilder {
         // confusing case (Mario Kart Arcade GP) this fixes.
         case .gamesRequiringBIOS: categoryFiltered = games.filter { $0.resolvedBiosMachineName(gamesByName: gamesByName) != nil }
         case .gamesWithDeviceRefs: categoryFiltered = games.filter { !$0.deviceRefs.isEmpty }
+        // Unlike the scan-result-only branches above, `isDevice` is a plain
+        // DAT-declared fact (`isdevice="yes"`) — answerable before any scan
+        // ever runs, same as `.biosFiles`/`.gamesWithCHD` above.
+        case .deviceMachines: categoryFiltered = games.filter(\.isDevice)
         }
         return categoryFiltered.map { game in
             GameNode(

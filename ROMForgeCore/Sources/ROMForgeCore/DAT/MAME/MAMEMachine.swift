@@ -73,6 +73,30 @@ public struct MAMEMachine: Equatable, Sendable {
     /// True when the machine declares any `<sample>` — presence-only, like
     /// `disks`; ROMForge doesn't audit sample files on disk.
     public let hasSamples: Bool
+    /// The `<driver status="...">` MAME reports for its OWN emulation of
+    /// this machine ("good"/"imperfect"/"preliminary") — purely descriptive
+    /// metadata about MAME itself, never a claim about whether the user's
+    /// own dump is correct (that's `AuditEntry.status`, an entirely
+    /// different, unrelated concept). `nil` for every non-MAME DAT format,
+    /// which has no such concept, and for a machine `-listxml` reports none
+    /// for.
+    public let driverStatus: String?
+    /// The `<display type="...">` this machine reports — "raster", "vector",
+    /// or "lcd". `nil` for a machine with no display (e.g. some mechanical
+    /// machines) or a non-MAME DAT.
+    public let displayType: String?
+    /// The `<display rotate="...">` this machine reports — "0"/"90"/"180"/
+    /// "270", i.e. screen orientation (0/180 = horizontal, 90/270 =
+    /// vertical). `nil` under the same conditions as `displayType`.
+    public let displayRotate: String?
+    /// The `<input players="...">` this machine reports, e.g. "2" for a
+    /// two-player game. `nil` for a non-MAME DAT or a machine `-listxml`
+    /// reports none for.
+    public let players: String?
+    /// The `<input coins="...">` this machine reports — how many coin slots
+    /// it uses (`"0"` for a freeplay-only machine, no coin mechanism at
+    /// all). `nil` under the same conditions as `players`.
+    public let coins: String?
 
     public init(
         name: String,
@@ -88,7 +112,12 @@ public struct MAMEMachine: Equatable, Sendable {
         disks: [MAMEDisk],
         deviceRefs: [String],
         chips: [MAMEChip] = [],
-        hasSamples: Bool = false
+        hasSamples: Bool = false,
+        driverStatus: String? = nil,
+        displayType: String? = nil,
+        displayRotate: String? = nil,
+        players: String? = nil,
+        coins: String? = nil
     ) {
         self.name = name
         self.description = description
@@ -104,6 +133,11 @@ public struct MAMEMachine: Equatable, Sendable {
         self.deviceRefs = deviceRefs
         self.chips = chips
         self.hasSamples = hasSamples
+        self.driverStatus = driverStatus
+        self.displayType = displayType
+        self.displayRotate = displayRotate
+        self.players = players
+        self.coins = coins
     }
 }
 

@@ -10,16 +10,25 @@ import Testing
 @Suite("DatabaseCategory")
 struct DatabaseCategoryTests {
     private func entry(
-        status: AuditStatus, game: String?, cloneOf: String? = nil, isBios: Bool = false,
+        status: AuditStatus, game: String?, cloneOf: String? = nil, isBios: Bool = false, isDevice: Bool = false,
         hasCHD: Bool = false, hasSamples: Bool = false, isBadDump: Bool = false,
         romDumpStatus: RomDumpStatus? = nil,
         requiredBiosNames: String? = nil, deviceRefNames: String? = nil, name: String = "rom.bin"
     ) -> AuditEntry {
         AuditEntry(
-            status: status, game: game, cloneOf: cloneOf, isBios: isBios, hasCHD: hasCHD,
+            status: status, game: game, cloneOf: cloneOf, isBios: isBios, isDevice: isDevice, hasCHD: hasCHD,
             hasSamples: hasSamples, isBadDump: isBadDump, romDumpStatus: romDumpStatus, requiredBiosNames: requiredBiosNames,
             deviceRefNames: deviceRefNames, name: name, path: nil
         )
+    }
+
+    @Test(".deviceMachines includes only entries whose game is a MAME internal device sub-machine")
+    func deviceMachinesFiltersByIsDevice() {
+        let entries = [
+            entry(status: .correct, game: "qsound_hle", isDevice: true),
+            entry(status: .correct, game: "sf2"),
+        ]
+        #expect(DatabaseCategory.deviceMachines.apply(to: entries).map(\.game) == ["qsound_hle"])
     }
 
     @Test(".allGames returns everything unfiltered")
