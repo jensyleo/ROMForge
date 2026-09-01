@@ -4,6 +4,17 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added — Fase 2 Step 4: Make Self-Contained (non-merged direction)
+
+New toolbar action "Make Self-Contained…" copies in every rom the matcher already found
+genuinely present elsewhere in the scan (`.foundElsewhere` — a BIOS/parent's own archive) into
+each game's own archive, via `RebuildPlanner.planConvertToNonMerged` + the new
+`RebuildOperation.addEntryToZip` (adds one entry into an EXISTING zip using ZIPFoundation's
+`.update` access mode, every other entry untouched). Deliberately the only merge-mode
+conversion direction offered — "Split"/"Merged" both need to REMOVE an entry from an existing
+archive, a central-directory-rewrite capability not built yet (same gap "Remove useless roms"
+in Settings → Fix is honestly marked "not yet connected" for).
+
 ### Added — Fase 2 Step 1: Rebuild to Folder
 
 Copies (or moves) every matched ROM into `<destination>/<game name>/<rom name>`, organized as

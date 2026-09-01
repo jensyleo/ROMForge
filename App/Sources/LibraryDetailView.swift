@@ -323,44 +323,78 @@ private extension View {
             }
     }
 
-    /// Fase 2 Step 7's own confirmation dialog, factored out of `body` for
-    /// the same reason `columnPresetNotificationHandlers` above is — piling
-    /// a second `.confirmationDialog` directly onto `body`'s already-huge
-    /// modifier chain made the type-checker time out ("unable to type-check
-    /// this expression in reasonable time").
-    func removeUselessFilesConfirmation(
-        isPresented: Binding<Bool>,
-        count: Int,
-        onDelete: @escaping () -> Void
+    /// Every Fase 2 write action's own confirmation dialog (Rebuild to
+    /// Folder, Remove Useless Files, Repair from Sibling Sets, Make
+    /// Self-Contained), bundled into ONE modifier and factored out of
+    /// `body` — piling each `.confirmationDialog` directly onto `body`'s
+    /// already-huge modifier chain made the type-checker time out ("unable
+    /// to type-check this expression in reasonable time"); even splitting
+    /// them into several SEPARATE extracted modifiers (as Steps 1/3/4/7
+    /// each got when they were added one at a time) eventually hit the same
+    /// wall once there were enough of them chained on `body` at once — one
+    /// modifier covering all four is what actually stayed under the
+    /// type-checker's budget.
+    func fase2Confirmations(
+        rebuildDestination: URL?,
+        rebuildOperationCount: Int,
+        showRebuild: Binding<Bool>,
+        onCopy: @escaping () -> Void,
+        onMove: @escaping () -> Void,
+        onCancelRebuild: @escaping () -> Void,
+        showRemoveUselessFiles: Binding<Bool>,
+        removeUselessFilesCount: Int,
+        onRemoveUselessFiles: @escaping () -> Void,
+        showRepair: Binding<Bool>,
+        repairCount: Int,
+        onRepair: @escaping () -> Void,
+        showMakeSelfContained: Binding<Bool>,
+        makeSelfContainedCount: Int,
+        onMakeSelfContained: @escaping () -> Void
     ) -> some View {
-        confirmationDialog(
-            "Permanently Delete \(count) File\(count == 1 ? "" : "s")?",
-            isPresented: isPresented,
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive, action: onDelete)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("These files are recognized as nothing the current DAT declares — not needed by this game or any other. This cannot be undone.")
-        }
-    }
-
-    /// Fase 2 Step 3's own confirmation dialog, factored out the same way.
-    func repairFromSiblingSetsConfirmation(
-        isPresented: Binding<Bool>,
-        count: Int,
-        onRepair: @escaping () -> Void
-    ) -> some View {
-        confirmationDialog(
-            "Repair \(count) Missing ROM\(count == 1 ? "" : "s") from Sibling Sets?",
-            isPresented: isPresented,
-            titleVisibility: .visible
-        ) {
-            Button("Repair") { onRepair() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Each rom is copied from a parent/clone set that already has the exact same content — never invented, never taken from a set that needs it too.")
-        }
+        self
+            .confirmationDialog(
+                "Rebuild \(rebuildOperationCount) File\(rebuildOperationCount == 1 ? "" : "s")?",
+                isPresented: showRebuild,
+                titleVisibility: .visible
+            ) {
+                Button("Copy", action: onCopy)
+                Button("Move (removes from source)", role: .destructive, action: onMove)
+                Button("Cancel", role: .cancel, action: onCancelRebuild)
+            } message: {
+                if let rebuildDestination {
+                    Text("Every matched ROM will be organized as one subfolder per game inside \"\(rebuildDestination.lastPathComponent)\". Existing files there are never overwritten.")
+                }
+            }
+            .confirmationDialog(
+                "Permanently Delete \(removeUselessFilesCount) File\(removeUselessFilesCount == 1 ? "" : "s")?",
+                isPresented: showRemoveUselessFiles,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive, action: onRemoveUselessFiles)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("These files are recognized as nothing the current DAT declares — not needed by this game or any other. This cannot be undone.")
+            }
+            .confirmationDialog(
+                "Repair \(repairCount) Missing ROM\(repairCount == 1 ? "" : "s") from Sibling Sets?",
+                isPresented: showRepair,
+                titleVisibility: .visible
+            ) {
+                Button("Repair", action: onRepair)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Each rom is copied from a parent/clone set that already has the exact same content — never invented, never taken from a set that needs it too.")
+            }
+            .confirmationDialog(
+                "Copy \(makeSelfContainedCount) Inherited ROM\(makeSelfContainedCount == 1 ? "" : "s") into Their Own Archives?",
+                isPresented: showMakeSelfContained,
+                titleVisibility: .visible
+            ) {
+                Button("Copy", action: onMakeSelfContained)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Each rom is already genuinely present elsewhere in this scan (a BIOS or parent set) — this only adds a copy into each game's own archive, it never removes anything from where it already is.")
+            }
     }
 }
 
@@ -1075,6 +1109,10 @@ struct LibraryDetailView: View {
     /// confirm shape as the two above.
     @State private var repairFromSiblingSetsCount = 0
     @State private var showRepairFromSiblingSetsConfirmation = false
+    /// Fase 2 Step 4 "Make Self-Contained…" state — same preview-then-
+    /// confirm shape as the others above.
+    @State private var makeSelfContainedCount = 0
+    @State private var showMakeSelfContainedConfirmation = false
     /// Which "ROM folder" row is currently being ⌘-dragged, if any — see
     /// `ColumnPresetsPanel.draggingName`'s own doc comment
     /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
@@ -1265,6 +1303,20 @@ struct LibraryDetailView: View {
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startRepairFromSiblingSets()
+            },
+            // Fase 2 Step 4 (non-merged direction only — see
+            // `RebuildPlanner.planConvertToNonMerged`'s own doc comment for
+            // why "split"/"merged" aren't offered yet): copies in every rom
+            // the matcher already found genuinely present elsewhere in the
+            // scan but not yet inside a game's own archive.
+            ToolbarAction(
+                id: "makeSelfContained", title: "Make Self-Contained…", systemImage: "shippingbox.and.arrow.backward",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Copy every inherited rom (BIOS/parent) into each game's own archive, so it needs nothing else to run"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startMakeSelfContained()
             },
             // "Show Only 1G1R" moved to Settings → View Options → "1G1R"
             // (jensyleo's own request, 2026-08-24) — now a persisted
@@ -1508,28 +1560,22 @@ struct LibraryDetailView: View {
         .sheet(isPresented: $isShowingDATCompareSheet) {
             datVersionCompareSheetContent
         }
-        .confirmationDialog(
-            "Rebuild \(rebuildOperationCount) File\(rebuildOperationCount == 1 ? "" : "s")?",
-            isPresented: $showRebuildConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Copy") { commitRebuildToFolder(move: false) }
-            Button("Move (removes from source)", role: .destructive) { commitRebuildToFolder(move: true) }
-            Button("Cancel", role: .cancel) { rebuildDestination = nil }
-        } message: {
-            if let rebuildDestination {
-                Text("Every matched ROM will be organized as one subfolder per game inside \"\(rebuildDestination.lastPathComponent)\". Existing files there are never overwritten.")
-            }
-        }
-        .removeUselessFilesConfirmation(
-            isPresented: $showRemoveUselessFilesConfirmation,
-            count: removeUselessFilesCount,
-            onDelete: commitRemoveUselessFiles
-        )
-        .repairFromSiblingSetsConfirmation(
-            isPresented: $showRepairFromSiblingSetsConfirmation,
-            count: repairFromSiblingSetsCount,
-            onRepair: commitRepairFromSiblingSets
+        .fase2Confirmations(
+            rebuildDestination: rebuildDestination,
+            rebuildOperationCount: rebuildOperationCount,
+            showRebuild: $showRebuildConfirmation,
+            onCopy: { commitRebuildToFolder(move: false) },
+            onMove: { commitRebuildToFolder(move: true) },
+            onCancelRebuild: { rebuildDestination = nil },
+            showRemoveUselessFiles: $showRemoveUselessFilesConfirmation,
+            removeUselessFilesCount: removeUselessFilesCount,
+            onRemoveUselessFiles: commitRemoveUselessFiles,
+            showRepair: $showRepairFromSiblingSetsConfirmation,
+            repairCount: repairFromSiblingSetsCount,
+            onRepair: commitRepairFromSiblingSets,
+            showMakeSelfContained: $showMakeSelfContainedConfirmation,
+            makeSelfContainedCount: makeSelfContainedCount,
+            onMakeSelfContained: commitMakeSelfContained
         )
     }
 
@@ -1594,6 +1640,21 @@ struct LibraryDetailView: View {
 
     private func commitRepairFromSiblingSets() {
         Task { await viewModel.repairFromSiblingSets(system: system) }
+    }
+
+    /// Previews the count before showing the confirmation dialog — same
+    /// dry-run-before-write caution as every other Fase 2 action.
+    private func startMakeSelfContained() {
+        makeSelfContainedCount = viewModel.planMakeSelfContainedPreviewCount()
+        guard makeSelfContainedCount > 0 else {
+            viewModel.logWarning("Nothing to copy — every game in this scan is already self-contained.")
+            return
+        }
+        showMakeSelfContainedConfirmation = true
+    }
+
+    private func commitMakeSelfContained() {
+        Task { await viewModel.makeSelfContained(system: system) }
     }
 
     private var header: some View {

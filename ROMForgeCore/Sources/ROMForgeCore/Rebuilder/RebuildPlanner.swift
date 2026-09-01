@@ -287,4 +287,50 @@ public enum RebuildPlanner {
         }
         return operations
     }
+
+    /// Makes every game in the scan self-contained by copying in any rom
+    /// the matcher already found genuinely present elsewhere in the scan
+    /// (`.foundElsewhere` — see that case's own doc comment) but not yet
+    /// inside THIS game's own archive — Fase 2 Step 4, the "non-merged"
+    /// direction only.
+    ///
+    /// Deliberately the ONLY direction of merge-mode conversion this planner
+    /// offers. "Split" (strip an inherited rom back OUT of a clone's own
+    /// archive, relying on the parent again) and "Merged" (fold every
+    /// clone's own roms into the parent's archive and produce no archive
+    /// for the clone at all) both need to REMOVE an entry from an existing
+    /// archive — the same central-directory-rewrite gap "Remove useless
+    /// roms" in Settings → Fix is honestly marked "not yet connected" for.
+    /// "Non-merged" is the one direction that only ever ADDS a rom, never
+    /// removes one, so it's the one direction actually safe to ship before
+    /// that gap is closed. Same "never invent a destination" rule as
+    /// `planCrossSetRepair`: a game with no existing anchor of its own is
+    /// skipped.
+    public static func planConvertToNonMerged(matchReport: MatchReport) -> [RebuildOperation] {
+        var operations: [RebuildOperation] = []
+        for gameResult in matchReport.games {
+            guard let anchor = existingAnchor(for: gameResult) else { continue }
+            for romMatch in gameResult.matches {
+                guard case .foundElsewhere(let donor) = romMatch.status else { continue }
+                guard !isArchivePath(donor.file.url) || isZipPath(donor.file.url) else { continue }
+                let outputEntryName = safePathComponent(romMatch.rom.name)
+                switch anchor {
+                case .zip(let targetArchive):
+                    operations.append(.addEntryToZip(
+                        targetArchive: targetArchive,
+                        entryName: outputEntryName,
+                        source: archiveEntrySource(forDonor: donor, outputEntryName: outputEntryName)
+                    ))
+                case .looseFolder(let folder):
+                    let destination = folder.appendingPathComponent(outputEntryName)
+                    if isZipPath(donor.file.url) {
+                        operations.append(.extractZipEntry(archive: donor.file.url, entryName: donor.file.name, to: destination))
+                    } else {
+                        operations.append(.copy(from: donor.file.url, to: destination))
+                    }
+                }
+            }
+        }
+        return operations
+    }
 }

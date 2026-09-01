@@ -406,4 +406,57 @@ struct RebuildExecutorTests {
 
         #expect(RebuildPlanner.planCrossSetRepair(matchReport: matchReport).isEmpty)
     }
+
+    // MARK: - Convert to non-merged (Fase 2 Step 4)
+
+    @Test("makes a clone self-contained by copying its parent's rom (found elsewhere) into the clone's own zip")
+    func convertToNonMergedCopiesFoundElsewhereRomIntoOwnZip() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentZip = root.appendingPathComponent("parent.zip")
+        try makeZip(at: parentZip, entries: [("shared.bin", "shared-content")])
+        let cloneZip = root.appendingPathComponent("clone.zip")
+        try makeZip(at: cloneZip, entries: [("clone-only.bin", "clone-only-content")])
+
+        let sharedRom = DATRom(name: "shared.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let cloneOnlyRom = DATRom(name: "clone-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [sharedRom])
+        let cloneGame = DATGame(name: "Clone", description: "Clone", cloneOf: "Parent", romOf: "Parent", roms: [cloneOnlyRom, sharedRom])
+
+        let parentHashedFile = HashedFile(file: ScannedFile(url: parentZip, name: "shared.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0"))
+        let cloneOnlyHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "clone-only.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: parentGame, matches: [RomMatch(rom: sharedRom, status: .correct(parentHashedFile))]),
+                // Under the clone's own configured merge mode, "shared.bin" is
+                // satisfied by the PARENT's archive — `.foundElsewhere` — while
+                // the clone's own zip only has its own unique rom so far.
+                GameMatchResult(game: cloneGame, matches: [
+                    RomMatch(rom: cloneOnlyRom, status: .correct(cloneOnlyHashedFile)),
+                    RomMatch(rom: sharedRom, status: .foundElsewhere(parentHashedFile)),
+                ]),
+            ],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planConvertToNonMerged(matchReport: matchReport)
+        #expect(operations == [.addEntryToZip(targetArchive: cloneZip, entryName: "shared.bin", source: ArchiveEntrySource(source: parentZip, entryName: "shared.bin", sourceArchiveEntryName: "shared.bin"))])
+
+        try RebuildExecutor.execute(operations)
+
+        let archive = try Archive(url: cloneZip, accessMode: .read)
+        #expect(archive["clone-only.bin"] != nil, "the clone's own pre-existing rom must survive")
+        guard let entry = archive["shared.bin"] else {
+            Issue.record("clone's own zip should now contain the copied-in \"shared.bin\" entry")
+            return
+        }
+        var extracted = Data()
+        _ = try archive.extract(entry) { extracted.append($0) }
+        #expect(String(data: extracted, encoding: .utf8) == "shared-content")
+        // The parent's own zip — the donor — must survive completely untouched.
+        let parentArchive = try Archive(url: parentZip, accessMode: .read)
+        #expect(parentArchive["shared.bin"] != nil)
+    }
 }

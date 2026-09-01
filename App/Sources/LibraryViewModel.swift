@@ -1243,6 +1243,58 @@ final class LibraryViewModel {
         await scan(system: system)
     }
 
+    /// How many roms "Make Self-Contained…" would actually copy in, without
+    /// touching disk — same preview-before-confirm pattern as every other
+    /// Fase 2 action. Returns `0` before any scan has run.
+    func planMakeSelfContainedPreviewCount() -> Int {
+        guard let matchReport else { return 0 }
+        return RebuildPlanner.planConvertToNonMerged(matchReport: matchReport).count
+    }
+
+    /// Copies every rom the matcher found genuinely present elsewhere in
+    /// the scan (`.foundElsewhere`) into each game's own archive — Fase 2
+    /// Step 4, "non-merged" direction only (see `RebuildPlanner
+    /// .planConvertToNonMerged`'s own doc comment for why "split"/"merged"
+    /// aren't offered yet). Each planned operation is attempted
+    /// independently (same reasoning as every other Fase 2 batch action
+    /// above) so one failure doesn't abort the rest.
+    func makeSelfContained(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("This is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            let operations = RebuildPlanner.planConvertToNonMerged(matchReport: matchReport)
+            var succeeded = 0
+            var failed = 0
+            for operation in operations {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Copied \(succeeded) inherited rom(s) into their own archives; \(failed) failed (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Copied \(succeeded) inherited rom(s) into their own archives.")
+        } else {
+            logWarning("Nothing to copy — every game in this scan is already self-contained.")
+        }
+        await scan(system: system)
+    }
+
     private nonisolated static let archivedRenameExtensions: Set<String> = ["zip", "7z"]
 
     private nonisolated static func partitionArchivedRenames(_ operations: [RebuildOperation]) -> (eligible: [RebuildOperation], skipped: [RebuildOperation]) {

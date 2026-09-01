@@ -646,7 +646,30 @@ suite.
       didn't hold and a real collection's `.zip` could be destroyed by this
       action.
 
-### 11.6 Settings → Fix tab
+### 11.6 Make Self-Contained (Step 4 — "non-merged" direction only)
+- [ ] Using the same parent/clone pair from 11.4, this time in the OTHER
+      direction: pick a rom the CLONE inherits from the PARENT (i.e. the
+      clone's own zip does NOT have it, but the parent's zip does — a
+      genuinely shared rom under Split-mode-style layout). Scan and confirm
+      the clone shows this rom as **matched** (not missing) but the Games
+      table/Detail panel indicates it came from elsewhere (check whichever
+      status label ROMForge shows for `.foundElsewhere` in your build —
+      note it here).
+- [ ] Click **"Make Self-Contained…"** in the toolbar.
+- [ ] Confirm the preview count is accurate, then confirm it.
+- [ ] Rescan, then inspect the clone's own zip directly
+      (`unzip -l clone.zip`) — confirm the inherited rom is now genuinely
+      IN the clone's own archive too, alongside every rom it already had.
+- [ ] Confirm the PARENT's zip is completely untouched — this action only
+      ever ADDS, it should never remove the rom from where it already was.
+- [ ] Note in this checklist which direction (Split/Non-merged/Merged)
+      your MAME merge-mode Setting was actually configured to during this
+      test, since "Make Self-Contained" only implements the non-merged
+      direction — if you test with Merged or Split configured, note
+      whether `.foundElsewhere` still appears the way this test expects,
+      or whether the merge mode setting changes what gets flagged.
+
+### 11.7 Settings → Fix tab
 - [ ] Open Settings → **Fix** — confirm every toggle from the ROADMAP's own
       "ClrMamePro Fix panel" review is present, and that the ones marked
       "not yet connected" in the UI's own caption text are visibly
