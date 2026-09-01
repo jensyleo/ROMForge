@@ -7,14 +7,24 @@
 import Foundation
 
 /// One file, from disk, to be packed into a `.createArchive` operation under
-/// `entryName`.
+/// `entryName` (the NAME IT GETS in the new archive being built).
 public struct ArchiveEntrySource: Equatable, Sendable {
+    /// A loose file's own path, OR — when `sourceArchiveEntryName` is set —
+    /// the `.zip` archive that actually holds the bytes, one entry among
+    /// (usually) several others that must NOT be pulled in along with it.
     public let source: URL
     public let entryName: String
+    /// Non-nil when `source` is itself a `.zip` and this rom's real content
+    /// is one entry inside it (named here) rather than `source` being a
+    /// loose file on its own — see this whole type's own doc comment for
+    /// why this distinction has to exist at all. `nil` for a genuinely
+    /// loose source file.
+    public let sourceArchiveEntryName: String?
 
-    public init(source: URL, entryName: String) {
+    public init(source: URL, entryName: String, sourceArchiveEntryName: String? = nil) {
         self.source = source
         self.entryName = entryName
+        self.sourceArchiveEntryName = sourceArchiveEntryName
     }
 }
 
@@ -25,6 +35,17 @@ public enum RebuildOperation: Equatable, Sendable {
     case rename(from: URL, to: URL)
     case copy(from: URL, to: URL)
     case move(from: URL, to: URL)
+    /// Extracts one named entry out of a `.zip` — the ONLY correct way to
+    /// pull a single rom out of a multi-rom archive onto disk as its own
+    /// file. jensyleo's own report (2026-09-01), caught before any real-ROM
+    /// testing: `.copy`/`.move` on a zip-entry `HashedFile`'s own `.file.url`
+    /// would copy/move the WHOLE containing `.zip` (that URL IS the
+    /// archive's own path — see `CollectionHasher`'s own construction of a
+    /// zip-entry `ScannedFile`), silently producing N corrupt "rom" files
+    /// (each secretly the entire original zip) for an N-rom archive instead
+    /// of the actual per-rom content. `RebuildPlanner` now routes every
+    /// zip-sourced rom through this case instead.
+    case extractZipEntry(archive: URL, entryName: String, to: URL)
     /// Packs loose files from disk into a new ZIP archive (one set == one game).
     case createArchive(entries: [ArchiveEntrySource], to: URL)
     /// Packs loose files into a TorrentZip-compliant archive (Fase 2 Step 2).

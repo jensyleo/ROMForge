@@ -6,6 +6,7 @@
 
 import Foundation
 import Testing
+import ZIPFoundation
 @testable import ROMForgeCore
 
 @Suite("RebuildExecutor")
@@ -14,6 +15,19 @@ struct RebuildExecutorTests {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    /// Builds a real `.zip` with the given entry name → content pairs, for
+    /// tests that need a genuine archived-rom scenario (as opposed to every
+    /// other test in this file, which uses loose files).
+    private func makeZip(at url: URL, entries: [(name: String, content: String)]) throws {
+        let archive = try Archive(url: url, accessMode: .create)
+        for entry in entries {
+            let data = Data(entry.content.utf8)
+            try archive.addEntry(with: entry.name, type: .file, uncompressedSize: Int64(data.count), compressionMethod: .deflate) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
     }
 
     @Test("renames a file in place")
@@ -212,5 +226,104 @@ struct RebuildExecutorTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("junk.bin").path))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("needed.bin").path))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("nodump.bin").path))
+    }
+
+    // MARK: - Zip-sourced roms (jensyleo's own report, 2026-09-01 — see
+    // `RebuildOperation.extractZipEntry`'s own doc comment for the bug this
+    // whole section guards against: a naive `.copy`/`.move`/`.delete` on a
+    // zip-entry `HashedFile`'s own `.file.url` silently touches the WHOLE
+    // containing archive instead of the one rom entry it actually names).
+
+    @Test("rebuilds a rom that lives inside a zip by extracting just that entry, not copying the whole archive")
+    func rebuildExtractsSingleEntryFromZip() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("gamea.zip")
+        try makeZip(at: zipURL, entries: [
+            ("a.bin", "AAAA-content"),
+            ("b.bin", "BBBB-content"),
+        ])
+        let destination = root.appendingPathComponent("rebuilt")
+
+        let romA = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let romB = DATRom(name: "b.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let gameA = DATGame(name: "Game A", description: "Game A", cloneOf: nil, romOf: nil, roms: [romA, romB])
+
+        func zipEntryFile(name: String) -> HashedFile {
+            HashedFile(file: ScannedFile(url: zipURL, name: name, size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        }
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: gameA, matches: [
+                RomMatch(rom: romA, status: .correct(zipEntryFile(name: "a.bin"))),
+                RomMatch(rom: romB, status: .correct(zipEntryFile(name: "b.bin"))),
+            ])],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planRebuild(matchReport: matchReport, destination: destination, move: false)
+        #expect(operations == [
+            .extractZipEntry(archive: zipURL, entryName: "a.bin", to: destination.appendingPathComponent("Game A/a.bin")),
+            .extractZipEntry(archive: zipURL, entryName: "b.bin", to: destination.appendingPathComponent("Game A/b.bin")),
+        ])
+        try RebuildExecutor.execute(operations)
+
+        let extractedA = try String(contentsOf: destination.appendingPathComponent("Game A/a.bin"), encoding: .utf8)
+        let extractedB = try String(contentsOf: destination.appendingPathComponent("Game A/b.bin"), encoding: .utf8)
+        #expect(extractedA == "AAAA-content", "must be that entry's own content, not the whole zip's bytes")
+        #expect(extractedB == "BBBB-content")
+        // The source zip itself must be untouched — `move: false`.
+        #expect(FileManager.default.fileExists(atPath: zipURL.path))
+    }
+
+    @Test("rebuilds as TorrentZip from zip-sourced roms by reading each entry's real bytes")
+    func rebuildAsZipReadsRealEntryBytesFromSourceZip() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceZipURL = root.appendingPathComponent("gamea.zip")
+        try makeZip(at: sourceZipURL, entries: [("a.bin", "AAAA-content")])
+        let destination = root.appendingPathComponent("rebuilt_zip")
+
+        let romA = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let gameA = DATGame(name: "Game A", description: "Game A", cloneOf: nil, romOf: nil, roms: [romA])
+        let hashedFile = HashedFile(file: ScannedFile(url: sourceZipURL, name: "a.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: gameA, matches: [RomMatch(rom: romA, status: .correct(hashedFile))])],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planRebuildAsZip(matchReport: matchReport, destination: destination)
+        try RebuildExecutor.execute(operations)
+
+        let rebuiltZipURL = destination.appendingPathComponent("Game A.zip")
+        let archive = try Archive(url: rebuiltZipURL, accessMode: .read)
+        guard let entry = archive["a.bin"] else {
+            Issue.record("rebuilt zip is missing its own \"a.bin\" entry")
+            return
+        }
+        var extracted = Data()
+        _ = try archive.extract(entry) { extracted.append($0) }
+        #expect(String(data: extracted, encoding: .utf8) == "AAAA-content", "must be that entry's own content, not the whole source zip's bytes")
+    }
+
+    @Test("never plans a delete for a surplus file living inside a zip (would destroy the whole archive)")
+    func neverPlansDeleteForZipSourcedSurplusFile() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("mixed.zip")
+        try makeZip(at: zipURL, entries: [("junk.bin", "junk-content"), ("needed.bin", "needed-content")])
+
+        let surplusInZip = SurplusFile(file: HashedFile(file: ScannedFile(url: zipURL, name: "junk.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")))
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusInZip])
+
+        let operations = RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport)
+        #expect(operations.isEmpty, "a zip-sourced surplus entry must never be planned for deletion — no entry-level delete support yet")
+
+        try RebuildExecutor.execute(operations)
+        #expect(FileManager.default.fileExists(atPath: zipURL.path), "the archive, and every OTHER rom inside it, must survive untouched")
     }
 }

@@ -27,6 +27,8 @@ public enum RebuildExecutor {
             try relocate(from: source, to: destination, fileManager: fileManager) {
                 try fileManager.copyItem(at: source, to: destination)
             }
+        case .extractZipEntry(let archiveURL, let entryName, let destination):
+            try extractZipEntry(archive: archiveURL, entryName: entryName, to: destination, fileManager: fileManager)
         case .createArchive(let entries, let destination):
             try createArchive(entries: entries, at: destination, fileManager: fileManager)
         case .createTorrentZipArchive(let entries, let destination):
@@ -37,6 +39,68 @@ public enum RebuildExecutor {
             }
             try fileManager.removeItem(at: target)
         }
+    }
+
+    /// Pulls one named entry out of a `.zip` onto disk as its own standalone
+    /// file — see `RebuildOperation.extractZipEntry`'s own doc comment for
+    /// why a plain `fileManager.copyItem`/`.moveItem` on the containing
+    /// archive's own URL would be wrong here.
+    private static func extractZipEntry(
+        archive archiveURL: URL,
+        entryName: String,
+        to destination: URL,
+        fileManager: FileManager
+    ) throws {
+        guard fileManager.fileExists(atPath: archiveURL.path) else {
+            throw RebuildError.sourceMissing(archiveURL)
+        }
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw RebuildError.destinationExists(destination)
+        }
+        let parent = destination.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: parent.path) {
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+        let archive: Archive
+        do {
+            archive = try Archive(url: archiveURL, accessMode: .read)
+        } catch {
+            throw RebuildError.underlying("Could not open ZIP archive at \(archiveURL.path)")
+        }
+        guard let entry = archive[entryName] else {
+            throw RebuildError.sourceMissing(archiveURL.appendingPathComponent(entryName))
+        }
+        do {
+            _ = try archive.extract(entry, to: destination)
+        } catch {
+            throw RebuildError.underlying(error.localizedDescription)
+        }
+    }
+
+    /// Reads one `ArchiveEntrySource`'s actual bytes — straight off disk for
+    /// a loose file, or extracted from inside its containing `.zip` when
+    /// `sourceArchiveEntryName` says this source is an archive entry, not a
+    /// standalone file (same distinction `extractZipEntry` exists for).
+    private static func readEntryData(_ entry: ArchiveEntrySource) throws -> Data {
+        guard let innerEntryName = entry.sourceArchiveEntryName else {
+            return try Data(contentsOf: entry.source)
+        }
+        let archive: Archive
+        do {
+            archive = try Archive(url: entry.source, accessMode: .read)
+        } catch {
+            throw RebuildError.underlying("Could not open ZIP archive at \(entry.source.path)")
+        }
+        guard let zipEntry = archive[innerEntryName] else {
+            throw RebuildError.sourceMissing(entry.source.appendingPathComponent(innerEntryName))
+        }
+        var data = Data()
+        do {
+            _ = try archive.extract(zipEntry) { data.append($0) }
+        } catch {
+            throw RebuildError.underlying(error.localizedDescription)
+        }
+        return data
     }
 
     private static func createArchive(
@@ -67,7 +131,14 @@ public enum RebuildExecutor {
         }
         do {
             for entry in entries {
-                try archive.addEntry(with: entry.entryName, fileURL: entry.source, compressionMethod: .deflate)
+                if entry.sourceArchiveEntryName != nil {
+                    let data = try readEntryData(entry)
+                    try archive.addEntry(with: entry.entryName, type: .file, uncompressedSize: Int64(data.count), compressionMethod: .deflate) { position, size in
+                        data.subdata(in: Int(position)..<Int(position) + size)
+                    }
+                } else {
+                    try archive.addEntry(with: entry.entryName, fileURL: entry.source, compressionMethod: .deflate)
+                }
             }
         } catch {
             throw RebuildError.underlying(error.localizedDescription)
@@ -97,7 +168,7 @@ public enum RebuildExecutor {
 
         var torrentEntries: [TorrentZipEntry] = []
         for entry in entries {
-            let data = try Data(contentsOf: entry.source)
+            let data = try readEntryData(entry)
             torrentEntries.append(TorrentZipEntry(name: entry.entryName, data: data))
         }
         try TorrentZipWriter.write(torrentEntries, to: destination)
