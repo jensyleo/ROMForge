@@ -288,6 +288,42 @@ private final class GamesByNameCache {
     }
 }
 
+/// The five column-preset notifications' listener side, bundled into one
+/// `View` extension — see the doc comment where this is applied (inside
+/// `LibraryDetailView.body`) for why this isn't five inline `.onReceive`
+/// calls instead.
+private extension View {
+    func columnPresetNotificationHandlers(
+        onApply: @escaping (String) -> Void,
+        onSave: @escaping (String) -> Void,
+        onDelete: @escaping (String) -> Void,
+        onRename: @escaping (String, String) -> Void,
+        onSetOrder: @escaping ([String]) -> Void
+    ) -> some View {
+        self
+            .onReceive(NotificationCenter.default.publisher(for: .romForgeApplyColumnPreset)) { note in
+                guard let name = note.userInfo?["name"] as? String else { return }
+                onApply(name)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .romForgeSaveColumnPreset)) { note in
+                guard let name = note.userInfo?["name"] as? String else { return }
+                onSave(name)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .romForgeDeleteColumnPreset)) { note in
+                guard let name = note.userInfo?["name"] as? String else { return }
+                onDelete(name)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .romForgeRenameColumnPreset)) { note in
+                guard let oldName = note.userInfo?["oldName"] as? String, let newName = note.userInfo?["newName"] as? String else { return }
+                onRename(oldName, newName)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .romForgeSetColumnPresetOrder)) { note in
+                guard let order = note.userInfo?["order"] as? [String] else { return }
+                onSetOrder(order)
+            }
+    }
+}
+
 struct LibraryDetailView: View {
     let system: RomSystem
     /// Called with the full, updated folder list whenever the user adds a
@@ -387,6 +423,67 @@ struct LibraryDetailView: View {
         }
         let enabledRaw = UserDefaults.standard.string(forKey: DatabaseFilterVisibilitySettings.storageKey) ?? DatabaseFilterVisibilitySettings.defaultRawValue
         return (DatabaseFilterVisibilitySettings.enabledFilters(from: enabledRaw).first ?? .allGames, nil)
+    }
+
+    /// `.onChange(of: selectedDatabaseFilter)`'s own handler — pulled out
+    /// into a named function (not an inline closure) purely so the Swift
+    /// type-checker doesn't have to fold it into the same already-huge
+    /// modifier-chain expression `body` builds; inlined here it started
+    /// timing out compilation ("unable to type-check this expression in
+    /// reasonable time") once nearby `.onReceive`/`.sheet` modifiers were
+    /// added/removed for Fase 2 work (2026-08-31) — no behavior change,
+    /// same statements as before.
+    /// `.onChange(of: viewModel.cachedDATFile)`'s own handler — pulled out
+    /// for the same type-checker-timeout reason as
+    /// `handleSelectedDatabaseFilterChange()` just below; no behavior
+    /// change, same statements as before.
+    private func handleCachedDATFileChange() {
+        // Reads `DATFile.hasClones` (computed once from the raw,
+        // pre-layout-planning machine list) rather than re-deriving it
+        // from `.games` here — jensyleo's own report (2026-08-04): a
+        // real bug found live, `.games.contains { $0.cloneOf != nil }`
+        // is structurally guaranteed `false` whenever the DAT happened
+        // to load under Rom merge mode "Merged" (which excludes every
+        // clone from that list entirely, by design), regardless of
+        // whether the system actually has clones — see `DATFile.hasClones`'s
+        // own doc comment for the full story of what that silently broke.
+        if let dat = viewModel.cachedDATFile {
+            onDATAnalyzed?(dat.hasClones)
+        }
+        // Real regression found live (2026-08-24): the star/"Show Only
+        // 1G1R" hiding never showed up for a system that hadn't been
+        // scanned yet — `onAppear`'s own
+        // `refreshCachedGameDataAfterAuditReportChangeAsync()` call
+        // runs before `startPreloadDAT` has actually finished loading
+        // the DAT, so it computes `cachedOneGameOneROMSummary` from an
+        // still-empty `preloadedGames`. Nothing recomputed it again
+        // once the DAT genuinely finished loading — this `onChange`
+        // fires exactly then, so it's the right place to redo that
+        // computation for real, same as `.onChange(of: regionOrderRaw)`
+        // already does for a region-priority change.
+        refreshCachedGameDataAfterAuditReportChangeAsync()
+    }
+
+    private func handleSelectedDatabaseFilterChange() {
+        if selectedDatabaseFilter != nil { selectedRomFolder = nil }
+        selectedGameID = nil; selectedRomID = nil
+        selectedGameFamilyRootMachineName = nil
+        // Real bug found live by jensyleo (2026-08-11): clicking a
+        // "Database" category (All games/Clones/Bios files/…) still
+        // called the SYNCHRONOUS `recomputeCachedGameDataSync()` here —
+        // the exact same class of main-thread-blocking freeze already
+        // fixed for "Rom files" folder clicks back on 2026-08-03 (see
+        // `triggerCachedGameDataRecompute()`'s own doc comment), just
+        // never applied to this sibling trigger. Blocking the main
+        // thread on a full MAME DAT's ~43,000 games doesn't just freeze
+        // the UI — a click landing *during* that block gets queued by
+        // AppKit rather than dropped, so it's delivered late once the
+        // block finally ends, reading as "the app didn't receive my
+        // click" or "I had to click twice" (jensyleo's own reports,
+        // same day). Switched to the same detached-with-generation-guard
+        // pattern the folder path already uses.
+        triggerCachedGameDataRecompute()
+        persistLastSelection()
     }
 
     /// Called from `.onChange(of: selectedDatabaseFilter)`/`.onChange(of:
@@ -913,19 +1010,33 @@ struct LibraryDetailView: View {
     }
 
     @State private var columnPresets: [String: ColumnPreset] = Self.loadColumnPresets()
-    /// jensyleo's own report (2026-08-26): a fase 1 leftover — the sheet
-    /// listed presets `.keys.sorted()` (alphabetical, the only order a
-    /// plain `[String: ColumnPreset]` dictionary can offer), with no way
-    /// to put a frequently-used preset near the top. A separate `[String]`
-    /// holds the user's own drag order; reconciled against the real keys
-    /// on every read (`orderedPresetNames`) rather than trusted blindly,
-    /// same "merge saved order with current reality" shape already used
-    /// for the toolbar's own saved item order.
+    /// jensyleo's own report (2026-08-26): a fase 1 leftover — presets
+    /// listed `.keys.sorted()` (alphabetical, the only order a plain
+    /// `[String: ColumnPreset]` dictionary can offer), with no way to put a
+    /// frequently-used preset near the top. A separate `[String]` holds the
+    /// user's own order; reconciled against the real keys on every read
+    /// (`loadOrderedColumnPresetNames()`) rather than trusted blindly, same
+    /// "merge saved order with current reality" shape already used for the
+    /// toolbar's own saved item order.
     @State private var columnPresetOrder: [String] = Self.loadColumnPresetOrder()
-    @State private var isShowingColumnPresetsSheet = false
     @State private var isShowingDATCompareSheet = false
-    private static let columnPresetsKey = "ROMForge.columnPresets"
-    private static let columnPresetOrderKey = "ROMForge.columnPresetOrder"
+    /// Fase 2 Step 1 "Rebuild to Folder…" state — `rebuildDestination`/
+    /// `rebuildOperationCount` are set together right after the user picks a
+    /// folder (`startRebuildToFolder()`), then read by the confirmation
+    /// dialog's own buttons before either is cleared.
+    @State private var rebuildDestination: URL?
+    @State private var rebuildOperationCount = 0
+    @State private var showRebuildConfirmation = false
+    /// Which "ROM folder" row is currently being ⌘-dragged, if any — see
+    /// `ColumnPresetsPanel.draggingName`'s own doc comment
+    /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
+    /// from `ReorderGripHandle` itself.
+    @State private var draggingRomFolderIndex: Int?
+    @State private var dragPreviewRomFolderIndex: Int?
+    @State private var dragRomFolderOffset: CGFloat = 0
+    @State private var romFolderRowFrames: [Int: CGRect] = [:]
+    static let columnPresetsKey = "ROMForge.columnPresets"
+    static let columnPresetOrderKey = "ROMForge.columnPresetOrder"
 
     private static func loadColumnPresets() -> [String: ColumnPreset] {
         guard let data = UserDefaults.standard.data(forKey: columnPresetsKey),
@@ -943,20 +1054,24 @@ struct LibraryDetailView: View {
         UserDefaults.standard.stringArray(forKey: columnPresetOrderKey) ?? []
     }
 
-    private func persistColumnPresetOrder() {
-        UserDefaults.standard.set(columnPresetOrder, forKey: Self.columnPresetOrderKey)
+    /// The only thing Settings' own inline preset UI (`ViewOptionsSettingsView
+    /// .ColumnPresetsPanel`, a different window entirely) needs from this
+    /// view's private preset storage — the display names, in the same
+    /// reconciled order `orderedPresetNames` computes below, without
+    /// exposing `ColumnPreset` itself (Settings never touches the actual
+    /// column data, only names, by design — every real action still routes
+    /// back here as a notification).
+    static func loadOrderedColumnPresetNames() -> [String] {
+        let presets = loadColumnPresets()
+        let order = loadColumnPresetOrder()
+        let existing = Set(presets.keys)
+        let kept = order.filter { existing.contains($0) }
+        let missing = presets.keys.filter { !order.contains($0) }.sorted()
+        return kept + missing
     }
 
-    /// The saved order, with any preset it doesn't mention (created since
-    /// the user last reordered, or a fresh install with no saved order at
-    /// all) appended alphabetically at the end, and any name it mentions
-    /// that no longer exists (deleted/renamed) dropped — never trusts
-    /// `columnPresetOrder` to already be in sync with `columnPresets`.
-    private var orderedPresetNames: [String] {
-        let existing = Set(columnPresets.keys)
-        let kept = columnPresetOrder.filter { existing.contains($0) }
-        let missing = columnPresets.keys.filter { !columnPresetOrder.contains($0) }.sorted()
-        return kept + missing
+    private func persistColumnPresetOrder() {
+        UserDefaults.standard.set(columnPresetOrder, forKey: Self.columnPresetOrderKey)
     }
 
     private func saveColumnPreset(named name: String) {
@@ -970,16 +1085,6 @@ struct LibraryDetailView: View {
             columnPresetOrder.append(name)
             persistColumnPresetOrder()
         }
-    }
-
-    /// Applies a drag reorder from the sheet's own `List` — operates on
-    /// `orderedPresetNames` (what the sheet actually displayed when the
-    /// drag happened), not the raw, possibly-stale `columnPresetOrder`.
-    private func moveColumnPresets(from source: IndexSet, to destination: Int) {
-        var names = orderedPresetNames
-        names.move(fromOffsets: source, toOffset: destination)
-        columnPresetOrder = names
-        persistColumnPresetOrder()
     }
 
     private func applyColumnPreset(named name: String) {
@@ -1071,6 +1176,19 @@ struct LibraryDetailView: View {
             },
             ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
                 launchSelectedGameInMAME()
+            },
+            // Fase 2 Step 1: "classic rebuild" — copies every matched ROM
+            // into a chosen folder as `<game name>/<rom name>`. Gated the
+            // same way as "fix" above; the destination-folder picker and
+            // count-preview confirmation live in `startRebuildToFolder()`.
+            ToolbarAction(
+                id: "rebuildToFolder", title: "Rebuild to Folder…", systemImage: "shippingbox",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Copy (or move) every matched ROM into a chosen folder, organized as one subfolder per game"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRebuildToFolder()
             },
             // "Show Only 1G1R" moved to Settings → View Options → "1G1R"
             // (jensyleo's own request, 2026-08-24) — now a persisted
@@ -1251,27 +1369,7 @@ struct LibraryDetailView: View {
         .onChange(of: regionOrderRaw) {
             refreshCachedGameDataAfterAuditReportChangeAsync()
         }
-        .onChange(of: selectedDatabaseFilter) {
-            if selectedDatabaseFilter != nil { selectedRomFolder = nil }
-            selectedGameID = nil; selectedRomID = nil
-            selectedGameFamilyRootMachineName = nil
-            // Real bug found live by jensyleo (2026-08-11): clicking a
-            // "Database" category (All games/Clones/Bios files/…) still
-            // called the SYNCHRONOUS `recomputeCachedGameDataSync()` here —
-            // the exact same class of main-thread-blocking freeze already
-            // fixed for "Rom files" folder clicks back on 2026-08-03 (see
-            // `triggerCachedGameDataRecompute()`'s own doc comment), just
-            // never applied to this sibling trigger. Blocking the main
-            // thread on a full MAME DAT's ~43,000 games doesn't just freeze
-            // the UI — a click landing *during* that block gets queued by
-            // AppKit rather than dropped, so it's delivered late once the
-            // block finally ends, reading as "the app didn't receive my
-            // click" or "I had to click twice" (jensyleo's own reports,
-            // same day). Switched to the same detached-with-generation-guard
-            // pattern the folder path already uses.
-            triggerCachedGameDataRecompute()
-            persistLastSelection()
-        }
+        .onChange(of: selectedDatabaseFilter) { handleSelectedDatabaseFilterChange() }
         .onChange(of: selectedGameID) { selectedRomID = nil }
         .onChange(of: selectedRomFolder) {
             selectedGameID = nil; selectedRomID = nil
@@ -1292,32 +1390,7 @@ struct LibraryDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: SavedViewStatePurger.scanResultsPurgedNotification)) { _ in
             viewModel.clearScanResults()
         }
-        .onChange(of: viewModel.cachedDATFile) {
-            // Reads `DATFile.hasClones` (computed once from the raw,
-            // pre-layout-planning machine list) rather than re-deriving it
-            // from `.games` here — jensyleo's own report (2026-08-04): a
-            // real bug found live, `.games.contains { $0.cloneOf != nil }`
-            // is structurally guaranteed `false` whenever the DAT happened
-            // to load under Rom merge mode "Merged" (which excludes every
-            // clone from that list entirely, by design), regardless of
-            // whether the system actually has clones — see `DATFile.hasClones`'s
-            // own doc comment for the full story of what that silently broke.
-            if let dat = viewModel.cachedDATFile {
-                onDATAnalyzed?(dat.hasClones)
-            }
-            // Real regression found live (2026-08-24): the star/"Show Only
-            // 1G1R" hiding never showed up for a system that hadn't been
-            // scanned yet — `onAppear`'s own
-            // `refreshCachedGameDataAfterAuditReportChangeAsync()` call
-            // runs before `startPreloadDAT` has actually finished loading
-            // the DAT, so it computes `cachedOneGameOneROMSummary` from an
-            // still-empty `preloadedGames`. Nothing recomputed it again
-            // once the DAT genuinely finished loading — this `onChange`
-            // fires exactly then, so it's the right place to redo that
-            // computation for real, same as `.onChange(of: regionOrderRaw)`
-            // already does for a region-priority change.
-            refreshCachedGameDataAfterAuditReportChangeAsync()
-        }
+        .onChange(of: viewModel.cachedDATFile) { handleCachedDATFileChange() }
         .onAppear {
             viewModel.loadPersistedReport(system: system)
             refreshCachedGameDataAfterAuditReportChangeAsync()
@@ -1334,26 +1407,43 @@ struct LibraryDetailView: View {
             UserDefaults.standard.removeObject(forKey: Self.gameColumnCustomizationKey)
             UserDefaults.standard.removeObject(forKey: Self.romColumnCustomizationKey)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .romForgeShowColumnPresetsSheet)) { _ in
-            isShowingColumnPresetsSheet = true
-        }
         .onChange(of: viewModel.auditReport) { onAuditReportChanged?() }
-        .sheet(isPresented: $isShowingColumnPresetsSheet) {
-            ColumnPresetsSheet(
-                presetNames: orderedPresetNames,
-                onApply: { name in
-                    applyColumnPreset(named: name)
-                    isShowingColumnPresetsSheet = false
-                },
-                onSave: { name in saveColumnPreset(named: name) },
-                onUpdate: { name in saveColumnPreset(named: name) },
-                onRename: { oldName, newName in renameColumnPreset(from: oldName, to: newName) },
-                onDelete: { name in deleteColumnPreset(named: name) },
-                onMove: { source, destination in moveColumnPresets(from: source, to: destination) }
-            )
-        }
+        // Column-preset management lives inline in Settings → View Options →
+        // Panels now (jensyleo's own request, 2026-08-31 — see
+        // `.romForgeApplyColumnPreset`'s own doc comment in `ROMForgeApp.swift`
+        // for why: a separate sheet meant closing+reopening Settings' own
+        // sheet around it, which felt sluggish no matter how fast that
+        // round-trip itself was made). This view still owns every real
+        // mutation — Settings' UI only ever asks for one via these five
+        // notifications, never touches `columnPresets`/`columnPresetOrder`
+        // directly. Bundled into one `View` extension (not five chained
+        // `.onReceive` calls inline here) so the type-checker sees a single
+        // opaque-`some View`-returning call at this spot rather than five
+        // more closures piled onto an already-huge modifier chain — inlined,
+        // this started timing out compilation ("unable to type-check this
+        // expression in reasonable time").
+        .columnPresetNotificationHandlers(
+            onApply: { applyColumnPreset(named: $0) },
+            onSave: { saveColumnPreset(named: $0) },
+            onDelete: { deleteColumnPreset(named: $0) },
+            onRename: { renameColumnPreset(from: $0, to: $1) },
+            onSetOrder: { columnPresetOrder = $0; persistColumnPresetOrder() }
+        )
         .sheet(isPresented: $isShowingDATCompareSheet) {
             datVersionCompareSheetContent
+        }
+        .confirmationDialog(
+            "Rebuild \(rebuildOperationCount) File\(rebuildOperationCount == 1 ? "" : "s")?",
+            isPresented: $showRebuildConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Copy") { commitRebuildToFolder(move: false) }
+            Button("Move (removes from source)", role: .destructive) { commitRebuildToFolder(move: true) }
+            Button("Cancel", role: .cancel) { rebuildDestination = nil }
+        } message: {
+            if let rebuildDestination {
+                Text("Every matched ROM will be organized as one subfolder per game inside \"\(rebuildDestination.lastPathComponent)\". Existing files there are never overwritten.")
+            }
         }
     }
 
@@ -1362,6 +1452,32 @@ struct LibraryDetailView: View {
         if let cachedDATFile = viewModel.cachedDATFile {
             DATVersionCompareSheet(currentDAT: cachedDATFile, systemName: system.name)
         }
+    }
+
+    /// Opens the destination-folder picker, then previews the operation
+    /// count before showing the confirmation dialog — same dry-run-before-
+    /// write caution as every other Fase 2 action.
+    private func startRebuildToFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a destination folder for the rebuilt ROM sets"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        rebuildDestination = destination
+        rebuildOperationCount = viewModel.planRebuildPreviewCount(destination: destination, move: false)
+        guard rebuildOperationCount > 0 else {
+            viewModel.logWarning("Nothing to rebuild — no matched ROMs in the current scan.")
+            rebuildDestination = nil
+            return
+        }
+        showRebuildConfirmation = true
+    }
+
+    private func commitRebuildToFolder(move: Bool) {
+        guard let rebuildDestination else { return }
+        Task { await viewModel.rebuildToFolder(system: system, destination: rebuildDestination, move: move) }
+        self.rebuildDestination = nil
     }
 
     private var header: some View {
@@ -1958,6 +2074,21 @@ struct LibraryDetailView: View {
         .listStyle(.sidebar)
         .onAppear { syncLocalRomFolderOrder() }
         .onChange(of: system.romFolderURLs) { syncLocalRomFolderOrder() }
+        .onPreferenceChange(ReorderRowFramePreferenceKey.self) { romFolderRowFrames = $0 }
+        .reorderGhostOverlay(
+            draggingIndex: draggingRomFolderIndex,
+            dragOffset: dragRomFolderOffset,
+            rowFrames: romFolderRowFrames
+        ) { index in
+            HStack(spacing: 4) {
+                Label(
+                    localRomFolderOrder.indices.contains(index) ? localRomFolderOrder[index].lastPathComponent : "",
+                    systemImage: "externaldrive"
+                )
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+        }
     }
 
     /// jensyleo's own final call (2026-08-12), after three drag-and-drop
@@ -2008,31 +2139,23 @@ struct LibraryDetailView: View {
             // a disabled-but-still-visible chevron on an edge row implied
             // there might be somewhere left for it to go; hiding it
             // outright says so more directly.
-            Group {
-                if let index, index > 0 {
-                    Button {
-                        moveRomFolder(url, by: -1)
-                    } label: {
-                        Image(systemName: "chevron.up")
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Move up")
-                }
-            }
-            Group {
-                if let index, index < localRomFolderOrder.count - 1 {
-                    Button {
-                        moveRomFolder(url, by: 1)
-                    } label: {
-                        Image(systemName: "chevron.down")
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Move down")
-                }
+            // jensyleo's own request (2026-08-31): ⌘-drag this grip to
+            // reorder — see `ReorderGripHandle`'s own doc comment for why
+            // ⌘ specifically (this exact row's three prior plain-drag
+            // attempts, each losing to the row's own tap/selection gesture,
+            // are the case study that comment cites). Evolved from an
+            // earlier "Move Up"/"Move Down" menu on the same icon, itself
+            // evolved from the original chevron-up/chevron-down pair.
+            if let index {
+                ReorderGripHandle(
+                    index: index,
+                    count: localRomFolderOrder.count,
+                    rowHeight: ReorderGripHandle.measuredRowPitch(at: index, rowFrames: romFolderRowFrames, fallback: 32),
+                    draggingIndex: $draggingRomFolderIndex,
+                    dragPreviewIndex: $dragPreviewRomFolderIndex,
+                    dragOffset: $dragRomFolderOffset,
+                    onCommit: { from, to in moveRomFolder(from: from, to: to) }
+                )
             }
         }
         .contentShape(Rectangle())
@@ -2045,12 +2168,27 @@ struct LibraryDetailView: View {
         // A real selection background, not just bold text — see
         // `controlActiveState`'s own doc comment for why this is blue
         // while this window is key and gray otherwise, matching native
-        // List/NSTableView selection rather than a static color.
+        // List/NSTableView selection rather than a static color. A row
+        // being ⌘-dragged (jensyleo's own report, 2026-08-31: "no resalta
+        // la línea que se va a mover") always wins over the plain selection
+        // tint — it's the more useful thing to see while actively dragging,
+        // even for the currently-selected row.
         .listRowBackground(
-            selectedRomFolder == url
-                ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
-                : Color.clear
+            index != nil && draggingRomFolderIndex == index
+                ? Color.accentColor.opacity(0.35)
+                : selectedRomFolder == url
+                    ? (controlActiveState == .inactive ? Color.gray.opacity(0.35) : Color.accentColor.opacity(0.85))
+                    : Color.clear
         )
+        .reorderDropIndicator(index.flatMap {
+            ReorderGripHandle.dropIndicatorEdge(
+                for: $0,
+                draggingIndex: draggingRomFolderIndex,
+                dragPreviewIndex: dragPreviewRomFolderIndex
+            )
+        })
+        .opacity(index != nil && draggingRomFolderIndex == index ? 0.35 : 1)
+        .reportReorderFrame(index ?? -1)
         .foregroundStyle(selectedRomFolder == url && controlActiveState != .inactive ? Color.white : Color.primary)
         .contextMenu {
             Button("Remove Folder", role: .destructive) {
@@ -2074,12 +2212,9 @@ struct LibraryDetailView: View {
     /// its own doc comment for why) and *also* calls `onAddFolder` to
     /// persist the same order back through `system`/the store, but that
     /// second part is no longer what the user visibly waits on.
-    private func moveRomFolder(_ url: URL, by offset: Int) {
+    private func moveRomFolder(from index: Int, to newIndex: Int) {
         var folders = localRomFolderOrder
-        guard let index = folders.firstIndex(of: url) else { return }
-        let newIndex = index + offset
-        guard folders.indices.contains(newIndex) else { return }
-        folders.swapAt(index, newIndex)
+        folders.moveElement(from: index, to: newIndex)
         localRomFolderOrder = folders
         // jensyleo's own report (2026-08-13): "se siente igual" — moving
         // the render to `localRomFolderOrder` (above) didn't actually

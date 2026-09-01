@@ -415,6 +415,13 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelRomFieldSettings.showTypeKey) private var showDetailRomType = true
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
+    /// Which game-field row is currently being ⌘-dragged, if any — see
+    /// `ColumnPresetsPanel.draggingName`'s own doc comment for why this
+    /// lives one level up from `ReorderGripHandle` itself.
+    @State private var draggingIndex: Int?
+    @State private var dragPreviewIndex: Int?
+    @State private var dragOffset: CGFloat = 0
+    @State private var rowFrames: [Int: CGRect] = [:]
 
     private var gameFieldOrder: [DetailGameField] { parseGameFieldOrder(gameFieldOrderRaw) }
 
@@ -455,8 +462,7 @@ private struct ViewOptionsPanelsTab: View {
     /// guards it either way rather than trusting that alone).
     private func moveGameField(from index: Int, to newIndex: Int) {
         var order = gameFieldOrder
-        guard order.indices.contains(newIndex) else { return }
-        order.swapAt(index, newIndex)
+        order.moveElement(from: index, to: newIndex)
         gameFieldOrderRaw = order.map(\.rawValue).joined(separator: ",")
     }
 
@@ -504,10 +510,18 @@ private struct ViewOptionsPanelsTab: View {
             // enum (`DatabaseFilterVisibilitySettings`, below in this
             // file) stayed regardless of where its own UI lives.
             Section("Games/Roms table column layouts") {
-                Button("Manage Column Presets…") {
-                    NotificationCenter.default.post(name: .romForgeShowColumnPresetsSheet, object: nil)
-                }
-                Text("Save or switch between named column layouts for both tables (Games and Roms) — opens the same sheet the toolbar's own \"Column Presets…\" button used to.")
+                // Inline, not a separate sheet (jensyleo's own request,
+                // 2026-08-31) — a sheet here meant closing Settings' own
+                // sheet first and reopening it after, playing the native
+                // sheet slide/fade animation twice each way; felt sluggish
+                // no matter how fast that round-trip itself was. This panel
+                // has no access to `LibraryDetailView`'s own preset storage
+                // or live table state (different window entirely) — every
+                // real action routes back there as one of five
+                // notifications (`.romForgeApplyColumnPreset` and siblings,
+                // see their own doc comment in `ROMForgeApp.swift`).
+                ColumnPresetsPanel()
+                Text("Save or switch between named column layouts for both tables (Games and Roms).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -590,20 +604,30 @@ private struct ViewOptionsPanelsTab: View {
                     HStack {
                         Toggle(field.title, isOn: visibilityBinding(for: field))
                         Spacer()
-                        Button {
-                            moveGameField(from: index, to: index - 1)
-                        } label: {
-                            Image(systemName: "chevron.up")
-                        }
-                        .disabled(index == 0)
-                        Button {
-                            moveGameField(from: index, to: index + 1)
-                        } label: {
-                            Image(systemName: "chevron.down")
-                        }
-                        .disabled(index == gameFieldOrder.count - 1)
+                        // jensyleo's own request (2026-08-31): ⌘-drag this
+                        // grip to reorder — see `ReorderGripHandle`'s own
+                        // doc comment for why ⌘ specifically.
+                        ReorderGripHandle(
+                            index: index,
+                            count: gameFieldOrder.count,
+                            rowHeight: ReorderGripHandle.measuredRowPitch(at: index, rowFrames: rowFrames, fallback: 28),
+                            draggingIndex: $draggingIndex,
+                            dragPreviewIndex: $dragPreviewIndex,
+                            dragOffset: $dragOffset,
+                            onCommit: { from, to in moveGameField(from: from, to: to) }
+                        )
                     }
-                    .buttonStyle(.borderless)
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 4)
+                    .background(draggingIndex == index ? Color.accentColor.opacity(0.15) : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .reorderDropIndicator(ReorderGripHandle.dropIndicatorEdge(
+                        for: index,
+                        draggingIndex: draggingIndex,
+                        dragPreviewIndex: dragPreviewIndex
+                    ))
+                    .opacity(draggingIndex == index ? 0.35 : 1)
+                    .reportReorderFrame(index)
                 }
                 Button("Reset to Defaults") {
                     showDetailGameFileName = true
@@ -670,6 +694,22 @@ private struct ViewOptionsPanelsTab: View {
         }
         .formStyle(.grouped)
         .padding()
+        // Anchored to the whole `Form`, not the "game fields" `Section`
+        // alone — jensyleo's own report (2026-09-01): the ghost never
+        // appeared in the "Region priority" tab (identical `Section`-in-
+        // `Form` structure). A `Section` inside a `Form` has no reliable
+        // frame of its own to host an `.overlay` on; the `Form` itself
+        // does. See `ReorderGripHandle`'s own doc comment for the same
+        // lesson learned once already for `List`.
+        .onPreferenceChange(ReorderRowFramePreferenceKey.self) { rowFrames = $0 }
+        .reorderGhostOverlay(draggingIndex: draggingIndex, dragOffset: dragOffset, rowFrames: rowFrames) { index in
+            HStack {
+                Text(gameFieldOrder.indices.contains(index) ? gameFieldOrder[index].title : "")
+                Spacer()
+            }
+            .padding(.vertical, 2)
+            .padding(.horizontal, 4)
+        }
         .alert("Saved Views Purged", isPresented: $didPurgeViews) {
             Button("OK") {}
         } message: {
@@ -691,7 +731,13 @@ private struct ViewOptionsPanelsTab: View {
 private struct ViewOptions1G1RTab: View {
     @AppStorage(OneGameOneROMSettings.showOnlyKey) private var show1G1ROnly = false
     @AppStorage(RegionOrderSettings.storageKey) private var regionOrderRaw = RegionOrderSettings.defaultRawValue
-
+    /// Which region row is currently being ⌘-dragged, if any — see
+    /// `ColumnPresetsPanel.draggingName`'s own doc comment for why this
+    /// lives one level up from `ReorderGripHandle` itself.
+    @State private var draggingIndex: Int?
+    @State private var dragPreviewIndex: Int?
+    @State private var dragOffset: CGFloat = 0
+    @State private var rowFrames: [Int: CGRect] = [:]
     var body: some View {
         Form {
             Section("1G1R filter") {
@@ -701,34 +747,39 @@ private struct ViewOptions1G1RTab: View {
                     .foregroundStyle(.secondary)
             }
             Section("Region priority") {
-                // Plain up/down reordering rather than a draggable `List` —
-                // this app has no existing draggable-list-in-a-Form
-                // pattern to follow (the "ROM folder" ⌘-drag reordering
-                // lives in a `List` inside `LibraryDetailView`'s own
-                // sidebar, a different context entirely), and a short,
-                // fixed-length list of region names doesn't need anything
-                // more elaborate than "move this one up/down one slot".
+                // ⌘-drag the grip to reorder — see `ReorderGripHandle`'s
+                // own doc comment for why ⌘ specifically, and why not a
+                // plain draggable `List` (this app has no existing
+                // draggable-list-in-a-`Form` pattern to follow).
                 ForEach(Array(RegionOrderSettings.order(from: regionOrderRaw).enumerated()), id: \.element) { index, region in
                     HStack {
                         Text("\(index + 1). \(region)")
                         Spacer()
-                        Button {
-                            regionOrderRaw = RegionOrderSettings.rawValue(
-                                for: RegionOrderSettings.moved(RegionOrderSettings.order(from: regionOrderRaw), fromOffsets: [index], toOffset: index - 1)
-                            )
-                        } label: {
-                            Image(systemName: "chevron.up")
-                        }
-                        .disabled(index == 0)
-                        Button {
-                            regionOrderRaw = RegionOrderSettings.rawValue(
-                                for: RegionOrderSettings.moved(RegionOrderSettings.order(from: regionOrderRaw), fromOffsets: [index], toOffset: index + 2)
-                            )
-                        } label: {
-                            Image(systemName: "chevron.down")
-                        }
-                        .disabled(index == RegionOrderSettings.order(from: regionOrderRaw).count - 1)
+                        ReorderGripHandle(
+                            index: index,
+                            count: RegionOrderSettings.order(from: regionOrderRaw).count,
+                            rowHeight: ReorderGripHandle.measuredRowPitch(at: index, rowFrames: rowFrames, fallback: 24),
+                            draggingIndex: $draggingIndex,
+                            dragPreviewIndex: $dragPreviewIndex,
+                            dragOffset: $dragOffset,
+                            onCommit: { from, to in
+                                var current = RegionOrderSettings.order(from: regionOrderRaw)
+                                current.moveElement(from: from, to: to)
+                                regionOrderRaw = RegionOrderSettings.rawValue(for: current)
+                            }
+                        )
                     }
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 4)
+                    .background(draggingIndex == index ? Color.accentColor.opacity(0.15) : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .reorderDropIndicator(ReorderGripHandle.dropIndicatorEdge(
+                        for: index,
+                        draggingIndex: draggingIndex,
+                        dragPreviewIndex: dragPreviewIndex
+                    ))
+                    .opacity(draggingIndex == index ? 0.35 : 1)
+                    .reportReorderFrame(index)
                 }
                 Button("Reset to Defaults") {
                     regionOrderRaw = RegionOrderSettings.defaultRawValue
@@ -740,6 +791,22 @@ private struct ViewOptions1G1RTab: View {
         }
         .formStyle(.grouped)
         .padding()
+        // Anchored to the whole `Form`, not the "Region priority" `Section`
+        // alone — jensyleo's own report (2026-09-01): the drag ghost never
+        // appeared here. A `Section` inside a `Form` has no reliable frame
+        // of its own to host an `.overlay` on; the `Form` itself does. See
+        // `ReorderGripHandle`'s own doc comment for the same lesson
+        // already learned once for `List`.
+        .onPreferenceChange(ReorderRowFramePreferenceKey.self) { rowFrames = $0 }
+        .reorderGhostOverlay(draggingIndex: draggingIndex, dragOffset: dragOffset, rowFrames: rowFrames) { index in
+            let order = RegionOrderSettings.order(from: regionOrderRaw)
+            HStack {
+                Text(order.indices.contains(index) ? "\(index + 1). \(order[index])" : "")
+                Spacer()
+            }
+            .padding(.vertical, 2)
+            .padding(.horizontal, 4)
+        }
     }
 }
 
@@ -944,5 +1011,157 @@ enum SavedViewStatePurger {
         // from a background thread would deliver it there too.
         NotificationCenter.default.post(name: scanResultsPurgedNotification, object: nil)
         return clearedSystemCount
+    }
+}
+
+/// Inline column-preset management for Settings → View Options → "Games/Roms
+/// table column layouts" — jensyleo's own request (2026-08-31), replacing a
+/// separate sheet (see `.romForgeApplyColumnPreset`'s own doc comment in
+/// `ROMForgeApp.swift` for why). This view owns no preset data itself —
+/// `presetNames` is a local snapshot reloaded after every action, purely so
+/// this list updates immediately without waiting on `LibraryDetailView`'s
+/// own `@State` (a different window's view tree entirely) to somehow push a
+/// change back here. `LibraryDetailView` is still the sole source of truth;
+/// see `LibraryDetailView.loadOrderedColumnPresetNames()`'s own doc comment.
+private struct ColumnPresetsPanel: View {
+    @State private var presetNames: [String] = LibraryDetailView.loadOrderedColumnPresetNames()
+    /// Which row is currently being ⌘-dragged, if any, and where it would
+    /// land right now — see `ReorderGripHandle`'s own doc comment for why
+    /// the backing `presetNames` array only actually reorders once, when
+    /// the drag ends, rather than live as it crosses each row.
+    @State private var draggingIndex: Int?
+    @State private var dragPreviewIndex: Int?
+    @State private var dragOffset: CGFloat = 0
+    @State private var rowFrames: [Int: CGRect] = [:]
+    @State private var newPresetName = ""
+    @State private var renamingName: String?
+    @State private var renameText = ""
+    @State private var pendingDelete: String?
+
+    private func reload() {
+        presetNames = LibraryDetailView.loadOrderedColumnPresetNames()
+    }
+
+    private func post(_ name: Notification.Name, userInfo: [AnyHashable: Any]) {
+        NotificationCenter.default.post(name: name, object: nil, userInfo: userInfo)
+        reload()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if presetNames.isEmpty {
+                Text("No saved presets yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(presetNames.enumerated()), id: \.element) { index, name in
+                HStack {
+                    if renamingName == name {
+                        TextField("Preset name", text: $renameText)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { commitRename(from: name) }
+                        Button("Save") { commitRename(from: name) }
+                        Button("Cancel") { renamingName = nil }
+                    } else {
+                        Text(name)
+                        Spacer()
+                        Button("Apply") {
+                            post(.romForgeApplyColumnPreset, userInfo: ["name": name])
+                        }
+                        Button("Update") {
+                            post(.romForgeSaveColumnPreset, userInfo: ["name": name])
+                        }
+                        Button {
+                            renamingName = name
+                            renameText = name
+                        } label: {
+                            Image(systemName: "pencil")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Rename")
+                        Button(role: .destructive) {
+                            pendingDelete = name
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        // jensyleo's own request (2026-08-31): ⌘-drag this
+                        // grip to reorder — see `ReorderGripHandle`'s own
+                        // doc comment for why ⌘ specifically. Evolved from
+                        // an earlier "Move Up"/"Move Down" menu on the same
+                        // icon.
+                        ReorderGripHandle(
+                            index: index,
+                            count: presetNames.count,
+                            rowHeight: ReorderGripHandle.measuredRowPitch(at: index, rowFrames: rowFrames, fallback: 28),
+                            draggingIndex: $draggingIndex,
+                            dragPreviewIndex: $dragPreviewIndex,
+                            dragOffset: $dragOffset,
+                            onCommit: { from, to in move(from, to: to) }
+                        )
+                    }
+                }
+                .padding(.vertical, 2)
+                .padding(.horizontal, 4)
+                .background(draggingIndex == index ? Color.accentColor.opacity(0.15) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .reorderDropIndicator(ReorderGripHandle.dropIndicatorEdge(
+                    for: index,
+                    draggingIndex: draggingIndex,
+                    dragPreviewIndex: dragPreviewIndex
+                ))
+                .opacity(draggingIndex == index ? 0.35 : 1)
+                .reportReorderFrame(index)
+            }
+            Divider()
+            HStack {
+                TextField("New preset name", text: $newPresetName)
+                    .textFieldStyle(.roundedBorder)
+                Button("Save Current Layout") {
+                    let trimmed = newPresetName.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.isEmpty else { return }
+                    post(.romForgeSaveColumnPreset, userInfo: ["name": trimmed])
+                    newPresetName = ""
+                }
+                .disabled(newPresetName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .onPreferenceChange(ReorderRowFramePreferenceKey.self) { rowFrames = $0 }
+        .reorderGhostOverlay(draggingIndex: draggingIndex, dragOffset: dragOffset, rowFrames: rowFrames) { index in
+            HStack {
+                Text(presetNames.indices.contains(index) ? presetNames[index] : "")
+                Spacer()
+            }
+            .padding(.vertical, 2)
+            .padding(.horizontal, 4)
+        }
+        .confirmationDialog(
+            "Delete \"\(pendingDelete ?? "")\"?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                guard let pendingDelete else { return }
+                post(.romForgeDeleteColumnPreset, userInfo: ["name": pendingDelete])
+                self.pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("This can't be undone.")
+        }
+    }
+
+    private func commitRename(from oldName: String) {
+        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+        renamingName = nil
+        guard !trimmed.isEmpty, trimmed != oldName, !presetNames.contains(trimmed) else { return }
+        post(.romForgeRenameColumnPreset, userInfo: ["oldName": oldName, "newName": trimmed])
+    }
+
+    private func move(_ index: Int, to newIndex: Int) {
+        var names = presetNames
+        names.moveElement(from: index, to: newIndex)
+        presetNames = names
+        NotificationCenter.default.post(name: .romForgeSetColumnPresetOrder, object: nil, userInfo: ["order": names])
     }
 }

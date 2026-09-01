@@ -89,4 +89,56 @@ struct RebuildExecutorTests {
             try RebuildExecutor.execute([.move(from: source, to: destination)])
         }
     }
+
+    /// Fase 2 Step 1 end-to-end: `RebuildPlanner.planRebuild` against a
+    /// synthetic two-game `MatchReport` with real files on disk, then
+    /// actually executed — covers the full "classic rebuild" path
+    /// `LibraryViewModel.rebuildToFolder(system:destination:move:)` drives,
+    /// not just the planner's pure output (already covered in
+    /// `RebuildPlannerTests`).
+    @Test("rebuilds a multi-game MatchReport into <destination>/<game>/<rom> for every matched rom")
+    func rebuildsMultiGameMatchReportEndToEnd() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceFolder = root.appendingPathComponent("source")
+        let destination = root.appendingPathComponent("rebuilt")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+
+        func hashedFile(name: String) -> HashedFile {
+            let url = sourceFolder.appendingPathComponent(name)
+            try? Data(name.utf8).write(to: url)
+            return HashedFile(file: ScannedFile(url: url, name: name, size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        }
+
+        let romA = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let gameA = DATGame(name: "Game A", description: "Game A", cloneOf: nil, romOf: nil, roms: [romA])
+        let romB1 = DATRom(name: "b1.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let romB2 = DATRom(name: "b2.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let missingRom = DATRom(name: "missing.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let gameB = DATGame(name: "Game B", description: "Game B", cloneOf: nil, romOf: nil, roms: [romB1, romB2, missingRom])
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: gameA, matches: [RomMatch(rom: romA, status: .correct(hashedFile(name: "a.bin")))]),
+                GameMatchResult(game: gameB, matches: [
+                    RomMatch(rom: romB1, status: .correct(hashedFile(name: "b1.bin"))),
+                    RomMatch(rom: romB2, status: .correct(hashedFile(name: "b2.bin"))),
+                    RomMatch(rom: missingRom, status: .missing),
+                ]),
+            ],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planRebuild(matchReport: matchReport, destination: destination, move: false)
+        #expect(operations.count == 3)
+        try RebuildExecutor.execute(operations)
+
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Game A/a.bin").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Game B/b1.bin").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Game B/b2.bin").path))
+        #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("Game B/missing.bin").path))
+        // Copy (not move): sources must survive.
+        #expect(FileManager.default.fileExists(atPath: sourceFolder.appendingPathComponent("a.bin").path))
+    }
 }

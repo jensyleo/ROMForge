@@ -2,6 +2,26 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.2.6] - 2026-09-01
+
+### Fixed — Drag reordering in Settings panels now visually consistent
+
+Fixed ⌘-drag reordering ghost overlay and drop-line indicator landing on different rows in
+Form-based lists (Settings → View Options → game fields, 1G1R region priority). Root cause:
+a row's own measured frame height doesn't equal the on-screen pitch between consecutive rows
+in `.formStyle(.grouped)` — the true distance was calculated and is now used uniformly.
+Ghost overlay now positioned on Form level rather than Section level (coordinate propagation
+fix). Affects all four reorderable list sites: ROM folder sidebar, Column Presets, game field
+order, region priority.
+
+### Added — Write access gate for Rebuild/Repair (Fase 2, Step 0)
+
+New Settings section (General → "Write access") with an explicit toggle protected by a
+confirmation dialog explaining file modification implications. `LibraryViewModel.modificationsEnabled`
+now reads this gate in real-time from `UserDefaults` (default: disabled). All existing write
+protection points (Fix toolbar button, RebuildPlanner entry points) check this gate. Unblocks
+Fase 2 implementation when user explicitly enables it.
+
 ## [0.2.5] - 2026-08-31
 
 ### Added — "Details" column and panel row showing descriptive MAME metadata

@@ -45,8 +45,10 @@ struct LogLine: Identifiable, Sendable {
 final class LibraryViewModel {
     /// Single switch gating every file-modifying operation. `fix()` checks
     /// this before doing anything, so there's no path to a rename/move even
-    /// if the disabled Fix button were somehow triggered anyway.
-    static let modificationsEnabled = false
+    /// if the disabled Fix button were somehow triggered anyway. Reads live
+    /// from `UserDefaults` (via `ModificationsEnabledSettings`) so toggling
+    /// it in Settings takes effect immediately without restart.
+    static var modificationsEnabled: Bool { ModificationsEnabledSettings.isEnabled }
 
     var datHeader: DATHeader?
     var auditReport: AuditReport?
@@ -1077,6 +1079,60 @@ final class LibraryViewModel {
             }
         } catch {
             logError(String(describing: error))
+        }
+    }
+
+    /// How many file operations a "Rebuild to Folder…" against `destination`
+    /// would actually plan, without touching disk — used to show the user a
+    /// real count ("Rebuild 214 files?") before they commit, same caution
+    /// pattern as everything else Phase 2 writes. Returns `0` before any
+    /// scan has run, same as every other write action's own "scan first"
+    /// guard.
+    func planRebuildPreviewCount(destination: URL, move: Bool) -> Int {
+        guard let matchReport else { return 0 }
+        return RebuildPlanner.planRebuild(matchReport: matchReport, destination: destination, move: move).count
+    }
+
+    /// Copies (or moves, if `move`) every matched ROM into
+    /// `destination/<game name>/<rom name>` — Fase 2 Step 1's "classic
+    /// rebuild". Each planned operation is executed independently so one
+    /// failure (e.g. a pre-existing file at the destination) doesn't abort
+    /// the rest — `RebuildExecutor.execute(_:)` itself stops at the first
+    /// thrown error, which is right for `fix()`'s much smaller, single-file
+    /// renames but wrong here where the user wants "do everything you can,
+    /// then tell me what didn't work."
+    func rebuildToFolder(system: RomSystem, destination: URL, move: Bool) async {
+        guard Self.modificationsEnabled else {
+            logError("Rebuilding is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            let operations = RebuildPlanner.planRebuild(matchReport: matchReport, destination: destination, move: move)
+            var succeeded = 0
+            var failed = 0
+            for operation in operations {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        let verb = move ? "moved" : "copied"
+        if failed > 0 {
+            logWarning("Rebuild finished: \(succeeded) file(s) \(verb) to \"\(destination.lastPathComponent)\", \(failed) failed (see above for which).")
+        } else {
+            logSuccess("Rebuild complete: \(succeeded) file(s) \(verb) to \"\(destination.lastPathComponent)\".")
         }
     }
 

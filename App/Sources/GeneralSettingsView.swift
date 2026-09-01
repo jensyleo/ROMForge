@@ -16,9 +16,26 @@ struct GeneralSettingsView: View {
     @AppStorage(HashAlgorithmSettings.md5Key) private var computeMD5 = true
     @AppStorage(HashAlgorithmSettings.sha1Key) private var computeSHA1 = true
     @AppStorage("ROMForge.scan.autoScanOnAdd") private var autoScanOnAdd = false
+    @AppStorage(ModificationsEnabledSettings.storageKey) private var modificationsEnabled = false
+    @State private var showModificationsConfirmation = false
 
     var body: some View {
         Form {
+            Section("Write access") {
+                Toggle("Enable file modifications", isOn: Binding(
+                    get: { modificationsEnabled },
+                    set: { newValue in
+                        if newValue && !modificationsEnabled {
+                            showModificationsConfirmation = true
+                        } else {
+                            modificationsEnabled = newValue
+                        }
+                    }
+                ))
+                Text("Allows rebuilding, repairing, renaming, and moving ROM files. Disabled by default for safety. Files are never overwritten — failed operations leave the originals untouched.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Scanning") {
                 Toggle("Auto-scan when adding a folder", isOn: $autoScanOnAdd)
                 Text("Automatically begins scanning a newly-added ROM folder immediately after adding it, rather than waiting for a manual \"Scan Folder\" click.")
@@ -48,6 +65,16 @@ struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .confirmationDialog(
+            "Enable File Modifications?",
+            isPresented: $showModificationsConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Enable", role: .destructive) { modificationsEnabled = true }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("ROMForge will be able to rename, move, and rebuild ROM files on disk to match the loaded DAT. Files are never overwritten — a failed operation leaves the original untouched — but this is real, on-disk file activity. You can turn this back off at any time.")
+        }
     }
 }
 
@@ -114,5 +141,19 @@ enum HashAlgorithmSettings {
         if defaults.object(forKey: md5Key) == nil || defaults.bool(forKey: md5Key) { result.insert(.md5) }
         if defaults.object(forKey: sha1Key) == nil || defaults.bool(forKey: sha1Key) { result.insert(.sha1) }
         return result.isEmpty ? .all : result
+    }
+}
+
+/// Write-permission gate for Phase 2 (rebuild/repair/rename/move/delete) — jensyleo's
+/// own design (2026-08-31): all destructive operations require this to be explicitly
+/// enabled first, with a one-time confirmation dialog explaining what turning it on
+/// means. Defaults to `false` (read-only mode) so the app stays safe until the user
+/// deliberately opts in.
+enum ModificationsEnabledSettings {
+    static let storageKey = "ROMForge.modifications.enabled"
+
+    /// Returns the persisted enabled state — always `false` on first install.
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: storageKey)
     }
 }

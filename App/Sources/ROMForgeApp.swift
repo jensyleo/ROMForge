@@ -19,13 +19,27 @@ import SwiftUI
 /// callback down through `ContentView` for something this infrequent.
 extension Notification.Name {
     static let romForgeResetColumnSizes = Notification.Name("ROMForge.resetColumnSizes")
-    /// Posted by Settings → View Options → "Columns"'s "Manage Column
-    /// Presets…" button (`ViewOptionsSettingsView`, a separate `Scene` from
-    /// `LibraryDetailView`'s own window) — same reasoning as
-    /// `romForgeResetColumnSizes` just above: `LibraryDetailView` alone
-    /// owns the actual preset list/sheet state, so Settings can only ever
-    /// ask it to open the sheet, never show the sheet itself.
-    static let romForgeShowColumnPresetsSheet = Notification.Name("ROMForge.showColumnPresetsSheet")
+    /// Column-preset management moved inline into Settings → View Options →
+    /// Panels (jensyleo's own request, 2026-08-31: presenting it as a
+    /// separate sheet on the main window meant closing Settings' own sheet
+    /// first and reopening it after, which played the native sheet slide/
+    /// fade animation twice each way and read as sluggish no matter how
+    /// fast the actual `close`/`reopen` round-trip itself was made). These
+    /// five notifications are how that inline UI (which lives in the
+    /// Settings window, with no access to the main window's own live
+    /// `@State`) asks `LibraryDetailView` — the sole owner of
+    /// `columnPresets`/`columnPresetOrder` and the actual table column
+    /// customization being saved/applied — to perform each action, exactly
+    /// the same `NotificationCenter` broadcast shape as
+    /// `romForgeResetColumnSizes` above. Each carries the acted-on name(s)
+    /// in `userInfo`; see `ViewOptionsSettingsView.ColumnPresetsPanel` (the
+    /// poster) and `LibraryDetailView`'s own `.onReceive` handlers (the
+    /// listener) for the exact keys.
+    static let romForgeApplyColumnPreset = Notification.Name("ROMForge.applyColumnPreset")
+    static let romForgeSaveColumnPreset = Notification.Name("ROMForge.saveColumnPreset")
+    static let romForgeDeleteColumnPreset = Notification.Name("ROMForge.deleteColumnPreset")
+    static let romForgeRenameColumnPreset = Notification.Name("ROMForge.renameColumnPreset")
+    static let romForgeSetColumnPresetOrder = Notification.Name("ROMForge.setColumnPresetOrder")
 }
 
 @main

@@ -91,13 +91,22 @@ final class AppSettingsWindowController: NSObject, NSWindowDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        parent.beginSheet(window)
+        // `NSAnimationContext`'s zero-duration group is the documented way
+        // to suppress `beginSheet`'s own built-in slide/fade — jensyleo's
+        // own report (2026-08-31): the native animation read as sluggish.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            parent.beginSheet(window)
+        }
     }
 
-    private func close() {
+    func close() {
         guard let window else { return }
         if let sheetParent = window.sheetParent {
-            sheetParent.endSheet(window)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                sheetParent.endSheet(window)
+            }
         } else {
             window.close()
         }
