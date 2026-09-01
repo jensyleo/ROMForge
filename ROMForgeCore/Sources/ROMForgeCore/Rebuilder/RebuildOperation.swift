@@ -27,4 +27,6 @@ public enum RebuildOperation: Equatable, Sendable {
     case move(from: URL, to: URL)
     /// Packs loose files from disk into a new ZIP archive (one set == one game).
     case createArchive(entries: [ArchiveEntrySource], to: URL)
+    /// Packs loose files into a TorrentZip-compliant archive (Fase 2 Step 2).
+    case createTorrentZipArchive(entries: [ArchiveEntrySource], to: URL)
 }

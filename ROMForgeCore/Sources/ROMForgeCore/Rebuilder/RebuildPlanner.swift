@@ -103,7 +103,7 @@ public enum RebuildPlanner {
             }
             guard !entries.isEmpty else { continue }
             let archiveURL = destination.appendingPathComponent("\(safePathComponent(gameResult.game.name)).zip")
-            operations.append(.createArchive(entries: entries, to: archiveURL))
+            operations.append(.createTorrentZipArchive(entries: entries, to: archiveURL))
         }
         return operations
     }

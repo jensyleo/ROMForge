@@ -29,6 +29,8 @@ public enum RebuildExecutor {
             }
         case .createArchive(let entries, let destination):
             try createArchive(entries: entries, at: destination, fileManager: fileManager)
+        case .createTorrentZipArchive(let entries, let destination):
+            try createTorrentZipArchive(entries: entries, at: destination, fileManager: fileManager)
         }
     }
 
@@ -65,6 +67,35 @@ public enum RebuildExecutor {
         } catch {
             throw RebuildError.underlying(error.localizedDescription)
         }
+    }
+
+    /// Writes entries as a TorrentZip-compliant archive — Fase 2 Step 2.
+    /// Like `createArchive()` but conforms to TorrentZip spec for rebuilds
+    /// that need byte-for-byte reproducibility (checksums match across tools).
+    private static func createTorrentZipArchive(
+        entries: [ArchiveEntrySource],
+        at destination: URL,
+        fileManager: FileManager
+    ) throws {
+        for entry in entries {
+            guard fileManager.fileExists(atPath: entry.source.path) else {
+                throw RebuildError.sourceMissing(entry.source)
+            }
+        }
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw RebuildError.destinationExists(destination)
+        }
+        let parent = destination.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: parent.path) {
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+
+        var torrentEntries: [TorrentZipEntry] = []
+        for entry in entries {
+            let data = try Data(contentsOf: entry.source)
+            torrentEntries.append(TorrentZipEntry(name: entry.entryName, data: data))
+        }
+        try TorrentZipWriter.write(torrentEntries, to: destination)
     }
 
     private static func relocate(
