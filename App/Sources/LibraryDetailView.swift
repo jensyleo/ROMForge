@@ -1218,6 +1218,83 @@ struct LibraryDetailView: View {
         persistColumnPresetOrder()
     }
 
+    /// Every Fase 2 write action, as the "Fix" toolbar button's own
+    /// dropdown menu — see `detailToolbarActions`'s own "fix" entry for
+    /// why they live here instead of each getting a separate toolbar
+    /// button. Each sub-action's own `isEnabled`/gating logic is unchanged
+    /// from when it was a standalone button; only where it's declared
+    /// moved.
+    private var fixSubActions: [ToolbarAction] {
+        [
+            ToolbarAction(
+                id: "fixMisnamed", title: "Fix Misnamed ROMs",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Rename misnamed ROMs to match the DAT"
+                    : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
+            ) {
+                Task { await viewModel.fix(system: system) }
+            },
+            // Fase 2 Step 1: "classic rebuild" — copies every matched ROM
+            // into a chosen folder as `<game name>/<rom name>`. Gated the
+            // same way as "Fix Misnamed ROMs" above; the destination-folder
+            // picker and count-preview confirmation live in
+            // `startRebuildToFolder()`.
+            ToolbarAction(
+                id: "rebuildToFolder", title: "Rebuild to Folder…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Copy (or move) every matched ROM into a chosen folder, organized as one subfolder per game"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRebuildToFolder()
+            },
+            // Fase 2 Step 3: repairs a missing rom by borrowing it from a
+            // sibling parent/clone set that already has it — never invents
+            // a new location, never touches a set with no existing anchor
+            // of its own (see `RebuildPlanner.planCrossSetRepair`'s own doc
+            // comment).
+            ToolbarAction(
+                id: "repairFromSiblingSets", title: "Repair from Sibling Sets…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Fill in a missing rom by copying it from a sibling parent/clone set that already has it"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRepairFromSiblingSets()
+            },
+            // Fase 2 Step 4 (non-merged direction only — see
+            // `RebuildPlanner.planConvertToNonMerged`'s own doc comment for
+            // why "split"/"merged" aren't offered yet): copies in every rom
+            // the matcher already found genuinely present elsewhere in the
+            // scan but not yet inside a game's own archive.
+            ToolbarAction(
+                id: "makeSelfContained", title: "Make Self-Contained…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Copy every inherited rom (BIOS/parent) into each game's own archive, so it needs nothing else to run"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startMakeSelfContained()
+            },
+            // Fase 2 Step 7: permanently deletes every file the DAT
+            // recognizes nothing about at all (today's "surplus"/unknown-
+            // file status, including one unrecognized entry inside an
+            // otherwise-good zip). The most destructive action in the app —
+            // its own confirmation dialog is deliberately separate from
+            // every other Fase 2 confirmation.
+            ToolbarAction(
+                id: "removeUselessFiles", title: "Remove Useless Files…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Permanently delete every file the DAT recognizes nothing about at all"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRemoveUselessFiles()
+            },
+        ]
+    }
+
     /// This view's own contribution to the shared toolbar's "detail"
     /// region — same 9 actions (and the same enabled/help logic) the old
     /// SwiftUI `.toolbar` block used to declare directly; recomputed on
@@ -1251,72 +1328,25 @@ struct LibraryDetailView: View {
             ) {
                 viewModel.startScan(system: system)
             },
+            // A single "Fix" dropdown button gathers every Fase 2 write
+            // action under one icon — jensyleo's own request (2026-09-01):
+            // "no crees un icono por cada fix, crea un submenu en el icono
+            // FIX" (each write action was getting its own separate toolbar
+            // button, one per Fase 2 step landed). `subActions` makes this
+            // an `NSMenuToolbarItem` (see `ToolbarAction.subActions`'s own
+            // doc comment) — clicking it shows this menu instead of running
+            // an action directly.
             ToolbarAction(
                 id: "fix", title: "Fix", systemImage: "wrench.and.screwdriver",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
                 help: LibraryViewModel.modificationsEnabled
-                    ? "Rename misnamed ROMs to match the DAT"
-                    : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
-            ) {
-                Task { await viewModel.fix(system: system) }
-            },
+                    ? "Rebuild, repair, and remove-file actions for this scan"
+                    : "Disabled for now — ROMForge only scans and reports, it won't touch your files",
+                action: {},
+                subActions: fixSubActions
+            ),
             ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
                 launchSelectedGameInMAME()
-            },
-            // Fase 2 Step 1: "classic rebuild" — copies every matched ROM
-            // into a chosen folder as `<game name>/<rom name>`. Gated the
-            // same way as "fix" above; the destination-folder picker and
-            // count-preview confirmation live in `startRebuildToFolder()`.
-            ToolbarAction(
-                id: "rebuildToFolder", title: "Rebuild to Folder…", systemImage: "shippingbox",
-                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
-                help: LibraryViewModel.modificationsEnabled
-                    ? "Copy (or move) every matched ROM into a chosen folder, organized as one subfolder per game"
-                    : "Disabled for now — enable file modifications in Settings → General first"
-            ) {
-                startRebuildToFolder()
-            },
-            // Fase 2 Step 7: permanently deletes every file the DAT
-            // recognizes nothing about at all (today's "surplus"/unknown-
-            // file status). The most destructive action in the app — its
-            // own confirmation dialog below is deliberately separate from
-            // every other Fase 2 confirmation, never folded into "Fix".
-            ToolbarAction(
-                id: "removeUselessFiles", title: "Remove Useless Files…", systemImage: "trash",
-                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
-                help: LibraryViewModel.modificationsEnabled
-                    ? "Permanently delete every file the DAT recognizes nothing about at all"
-                    : "Disabled for now — enable file modifications in Settings → General first"
-            ) {
-                startRemoveUselessFiles()
-            },
-            // Fase 2 Step 3: repairs a missing rom by borrowing it from a
-            // sibling parent/clone set that already has it — never invents
-            // a new location, never touches a set with no existing anchor
-            // of its own (see `RebuildPlanner.planCrossSetRepair`'s own doc
-            // comment).
-            ToolbarAction(
-                id: "repairFromSiblingSets", title: "Repair from Sibling Sets…", systemImage: "arrow.triangle.branch",
-                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
-                help: LibraryViewModel.modificationsEnabled
-                    ? "Fill in a missing rom by copying it from a sibling parent/clone set that already has it"
-                    : "Disabled for now — enable file modifications in Settings → General first"
-            ) {
-                startRepairFromSiblingSets()
-            },
-            // Fase 2 Step 4 (non-merged direction only — see
-            // `RebuildPlanner.planConvertToNonMerged`'s own doc comment for
-            // why "split"/"merged" aren't offered yet): copies in every rom
-            // the matcher already found genuinely present elsewhere in the
-            // scan but not yet inside a game's own archive.
-            ToolbarAction(
-                id: "makeSelfContained", title: "Make Self-Contained…", systemImage: "shippingbox.and.arrow.backward",
-                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
-                help: LibraryViewModel.modificationsEnabled
-                    ? "Copy every inherited rom (BIOS/parent) into each game's own archive, so it needs nothing else to run"
-                    : "Disabled for now — enable file modifications in Settings → General first"
-            ) {
-                startMakeSelfContained()
             },
             // "Show Only 1G1R" moved to Settings → View Options → "1G1R"
             // (jensyleo's own request, 2026-08-24) — now a persisted

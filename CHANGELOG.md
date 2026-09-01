@@ -4,6 +4,15 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Changed — Fase 2 write actions consolidated under one "Fix" toolbar dropdown
+
+Every Fase 2 write action ("Rebuild to Folder…", "Repair from Sibling Sets…", "Make
+Self-Contained…", "Remove Useless Files…") previously had its own separate toolbar button —
+now they all live as menu items under a single "Fix" dropdown button, alongside "Fix Misnamed
+ROMs" (the original action). New `ToolbarAction.subActions` support in `ROMForgeToolbar.swift`
+turns a toolbar button into an `NSMenuToolbarItem` when non-empty. jensyleo's own request
+(2026-09-01): "no crees un icono por cada fix, crea un submenu en el icono FIX."
+
 ### Added — Fase 2 Step 7 completed: entry-level "Remove Useless Files"
 
 Closed a gap from earlier in this same unreleased cycle: a zip-internal unrecognized entry was

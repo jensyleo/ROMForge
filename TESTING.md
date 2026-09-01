@@ -549,7 +549,7 @@ in-place archive rewriting) and this is their first real-ROM test pass.
       its own subfolder (so you have a genuine loose-file source, not just
       zips) — re-scan that folder and confirm it's still Correct as loose
       files.
-- [ ] Click **"Rebuild to Folder…"** in the toolbar.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Rebuild to Folder…"**.
 - [ ] Choose a NEW empty destination folder (e.g.
       `~/Desktop/ROMForge-Fase2-Test/rebuilt-loose/`).
 - [ ] Confirm the dialog shows an accurate file count before you commit, and
@@ -604,7 +604,7 @@ suite.
       `zip -d parent.zip sharedrom.bin` (adjust for the real rom name).
 - [ ] Scan — confirm the parent now shows that one rom as **Missing**, and
       the clone still shows it (and everything else) as Correct.
-- [ ] Click **"Repair from Sibling Sets…"** in the toolbar.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Repair from Sibling Sets…"**.
 - [ ] Confirm the preview count matches the number of missing roms you
       expect it to actually be able to fix (1, in this simple case).
 - [ ] Confirm it — check the log for a success message, then **rescan**.
@@ -627,7 +627,7 @@ suite.
       random content the DAT can't possibly declare).
 - [ ] Scan — confirm it shows up as Surplus/unrecognized in the Database
       tree.
-- [ ] Click **"Remove Useless Files…"** — confirm the preview count is
+- [ ] Click the **"Fix"** toolbar dropdown → **"Remove Useless Files…"** — confirm the preview count is
       exactly right (don't confirm yet if it looks wrong).
 - [ ] Confirm the deletion. Rescan — confirm the file is gone and the
       unrecognized-file count drops accordingly.
@@ -659,7 +659,7 @@ suite.
       table/Detail panel indicates it came from elsewhere (check whichever
       status label ROMForge shows for `.foundElsewhere` in your build —
       note it here).
-- [ ] Click **"Make Self-Contained…"** in the toolbar.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Make Self-Contained…"**.
 - [ ] Confirm the preview count is accurate, then confirm it.
 - [ ] Rescan, then inspect the clone's own zip directly
       (`unzip -l clone.zip`) — confirm the inherited rom is now genuinely

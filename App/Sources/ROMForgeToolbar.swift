@@ -28,6 +28,16 @@ struct ToolbarAction: Identifiable {
     /// else (tooltip, customization palette) regardless of this flag.
     var showsLabel: Bool = true
     let action: () -> Void
+    /// Non-empty makes this a single dropdown/pulldown toolbar button (an
+    /// `NSMenuToolbarItem`) showing these as a menu instead of running
+    /// `action` directly on click — jensyleo's own request (2026-09-01):
+    /// every Fase 2 write action ("Rebuild to Folder…", "Remove Useless
+    /// Files…", etc.) should live under ONE "Fix" icon's own menu rather
+    /// than each getting its own separate toolbar button. `action` is never
+    /// called when this is non-empty (kept as a required, harmless no-op
+    /// rather than making the whole type's `action` optional just for this
+    /// one case).
+    var subActions: [ToolbarAction] = []
 }
 
 /// Owns the window's real `NSToolbar` and keeps it in sync with the
@@ -116,11 +126,27 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         let isEnabled: Bool
         let help: String
         let showsLabel: Bool
+        /// `(id, title, isEnabled)` per sub-action — included so a dropdown
+        /// item's own menu gets rebuilt whenever any sub-action's enabled
+        /// state changes (e.g. `modificationsEnabled` toggling in Settings),
+        /// not just when the top-level button's own properties change.
+        let subActions: [SubActionSignature]
         init(_ action: ToolbarAction) {
             title = action.title
             isEnabled = action.isEnabled
             help = action.help
             showsLabel = action.showsLabel
+            subActions = action.subActions.map(SubActionSignature.init)
+        }
+    }
+    private struct SubActionSignature: Equatable {
+        let id: String
+        let title: String
+        let isEnabled: Bool
+        init(_ action: ToolbarAction) {
+            id = action.id
+            title = action.title
+            isEnabled = action.isEnabled
         }
     }
     private var lastAppliedSignatureByID: [String: ActionSignature] = [:]
@@ -295,7 +321,13 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         let previousIDs = Set(itemsByRegion[region]?.map(\.id) ?? [])
         let newIDs = newActions.map(\.id)
         itemsByRegion[region] = newActions
-        for action in newActions { actionsByID[action.id] = action }
+        for action in newActions {
+            actionsByID[action.id] = action
+            // Sub-actions are registered the same flat way top-level ones
+            // are — `performSubAction(_:)` looks them up by id exactly like
+            // `performAction(_:)` does for a plain button.
+            for sub in action.subActions { actionsByID[sub.id] = sub }
+        }
 
         guard let toolbar else { return }
         reconcile(region: region, previousIDs: previousIDs, newIDs: newIDs, toolbar: toolbar)
@@ -317,7 +349,27 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
             if let systemImage = spec.systemImage {
                 item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: spec.title)
             }
+            if let menuItem = item as? NSMenuToolbarItem {
+                menuItem.menu = Self.buildMenu(for: spec.subActions, target: self)
+            }
         }
+    }
+
+    /// Builds the dropdown `NSMenu` for one `NSMenuToolbarItem` — shared by
+    /// both the initial `itemForItemIdentifier(...)` creation and every
+    /// later refresh in `setRegion` above, so the two never drift apart on
+    /// how a sub-action becomes a menu item.
+    private static func buildMenu(for subActions: [ToolbarAction], target: ROMForgeToolbarController) -> NSMenu {
+        let menu = NSMenu()
+        for sub in subActions {
+            let menuItem = NSMenuItem(title: sub.title, action: #selector(performSubAction(_:)), keyEquivalent: "")
+            menuItem.target = target
+            menuItem.isEnabled = sub.isEnabled
+            menuItem.toolTip = sub.help
+            menuItem.representedObject = sub.id
+            menu.addItem(menuItem)
+        }
+        return menu
     }
 
     // jensyleo's own report (2026-08-19): the button order came out
@@ -435,13 +487,26 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
     // which is what jensyleo pointed at as the reference to copy.
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         guard let spec = actionsByID[itemIdentifier.rawValue] else { return nil }
-        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        // A non-empty `subActions` becomes a dropdown/pulldown button
+        // (`NSMenuToolbarItem`) instead of a plain clickable one — see
+        // `ToolbarAction.subActions`'s own doc comment. Clicking it shows
+        // the menu `Self.buildMenu` builds; there is no separate "default
+        // click" action distinct from picking a menu item.
+        let item: NSToolbarItem
+        if spec.subActions.isEmpty {
+            item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.target = self
+            item.action = #selector(performAction(_:))
+        } else {
+            let menuItem = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+            menuItem.menu = Self.buildMenu(for: spec.subActions, target: self)
+            menuItem.showsIndicator = true
+            item = menuItem
+        }
         item.label = spec.showsLabel ? spec.title : ""
         item.paletteLabel = spec.title
         item.toolTip = spec.help
         item.isEnabled = spec.isEnabled
-        item.target = self
-        item.action = #selector(performAction(_:))
         if let systemImage = spec.systemImage {
             item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: spec.title)
         }
@@ -450,6 +515,11 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
 
     @objc private func performAction(_ sender: NSToolbarItem) {
         actionsByID[sender.itemIdentifier.rawValue]?.action()
+    }
+
+    @objc private func performSubAction(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        actionsByID[id]?.action()
     }
 }
 
