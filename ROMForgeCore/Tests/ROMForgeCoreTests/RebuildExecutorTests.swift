@@ -632,8 +632,15 @@ struct RebuildExecutorTests {
         #expect(operations == [.rename(from: zipURL, to: expectedURL)])
 
         try RebuildExecutor.execute(operations)
-        #expect(!FileManager.default.fileExists(atPath: zipURL.path))
+        // NOT `!fileExists(atPath: zipURL.path)` — on the default macOS
+        // volume (case-insensitive, case-PRESERVING APFS), "lowercase-
+        // game.zip" and "LOWERCASE-GAME.zip" are the same file, so that
+        // check would report "still exists" even after a fully successful
+        // case-only rename. The real proof the rename actually changed
+        // the on-disk case is the directory listing itself.
         #expect(FileManager.default.fileExists(atPath: expectedURL.path))
+        let siblingNames = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        #expect(siblingNames.contains("LOWERCASE-GAME.zip"), "the on-disk name itself must be uppercase now, not just case-insensitively reachable")
         let archive = try Archive(url: expectedURL, accessMode: .read)
         #expect(archive["a.bin"] != nil, "contents must survive the rename untouched")
     }
@@ -841,27 +848,32 @@ struct RebuildExecutorTests {
         let root = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // The parent's zip already has an entry under the exact name the
-        // clone's own unique rom would need — the collision that makes the
-        // add step fail.
+        // The parent's zip already has its own real, declared rom (so it
+        // has an anchor of its own to migrate INTO) PLUS an entry under
+        // the exact name the clone's own unique rom would need — the
+        // collision that makes the add step fail.
         let parentZip = root.appendingPathComponent("parent.zip")
-        try makeZip(at: parentZip, entries: [("clone-only.bin", "unrelated-existing-content")])
+        try makeZip(at: parentZip, entries: [
+            ("parent-real.bin", "parent-real-content"),
+            ("clone-only.bin", "unrelated-existing-content"),
+        ])
         let cloneZip = root.appendingPathComponent("clone.zip")
         try makeZip(at: cloneZip, entries: [("clone-only.bin", "clone-only-content")])
 
-        let parentRom = DATRom(name: "unrelated.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let parentRealRom = DATRom(name: "parent-real.bin", size: 1, crc: nil, md5: nil, sha1: nil)
         let cloneOnlyRom = DATRom(name: "clone-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
-        // Parent's own DAT doesn't even declare "clone-only.bin" as one of
-        // its roms — the existing entry under that name is genuinely
+        // Parent's own DAT doesn't declare "clone-only.bin" as one of its
+        // roms at all — the existing entry under that name is genuinely
         // unrelated, exactly the "something else entirely" collision case.
-        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [parentRom])
+        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [parentRealRom])
         let cloneGame = DATGame(name: "Clone", description: "Clone", cloneOf: "Parent", romOf: "Parent", roms: [cloneOnlyRom])
 
+        let parentHashedFile = HashedFile(file: ScannedFile(url: parentZip, name: "parent-real.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
         let cloneHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "clone-only.bin", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "0", sha1: "0"))
 
         let matchReport = MatchReport(
             games: [
-                GameMatchResult(game: parentGame, matches: [RomMatch(rom: parentRom, status: .missing)]),
+                GameMatchResult(game: parentGame, matches: [RomMatch(rom: parentRealRom, status: .correct(parentHashedFile))]),
                 GameMatchResult(game: cloneGame, matches: [RomMatch(rom: cloneOnlyRom, status: .correct(cloneHashedFile))]),
             ],
             surplusFiles: []

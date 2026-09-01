@@ -243,8 +243,24 @@ public enum RebuildExecutor {
         guard fileManager.fileExists(atPath: source.path) else {
             throw RebuildError.sourceMissing(source)
         }
-        guard !fileManager.fileExists(atPath: destination.path) else {
-            throw RebuildError.destinationExists(destination)
+        // A rename that only changes CASE (e.g. Fase 2 Step 9's "Sets
+        // case"/"Roms case" set to Uppercase/Lowercase) targets the exact
+        // same path on the case-insensitive-but-case-preserving default
+        // macOS volume (APFS) — `source` and `destination` are literally
+        // the same file there, so `fileManager.fileExists(atPath:
+        // destination.path)` below would find "the destination" (really
+        // just the source, under its current case) and wrongly refuse
+        // the rename as a collision. jensyleo's own report (2026-09-01),
+        // caught by the test suite before any real-ROM testing: without
+        // this exemption, every real Mac user's own "Uppercase"/
+        // "Lowercase" case-policy run would fail on every single rename.
+        // A genuine cross-file collision (different actual path) still
+        // gets rejected exactly as before.
+        let isCaseOnlyRename = source.path.lowercased() == destination.path.lowercased() && source.path != destination.path
+        if !isCaseOnlyRename {
+            guard !fileManager.fileExists(atPath: destination.path) else {
+                throw RebuildError.destinationExists(destination)
+            }
         }
         let parent = destination.deletingLastPathComponent()
         if !fileManager.fileExists(atPath: parent.path) {

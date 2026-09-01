@@ -4,6 +4,18 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Fixed — critical: case-only rename always failed on the default macOS volume
+
+Caught by finally running the automated test suite (a stale, hours-old SwiftPM lock had been
+silently queuing every `swift test` invocation this whole session — see below) before manual
+testing began. Every Fase 2 Step 9 "Sets case" rename to Uppercase/Lowercase would have failed
+on any real Mac: the default APFS volume is case-insensitive-but-case-preserving, so
+"game.zip" and "GAME.zip" are the same file — `RebuildExecutor`'s own pre-rename "does the
+destination already exist" collision guard saw the source's own path (under its current case)
+and refused the rename as a false collision, on every single attempt. Fixed by exempting a
+same-path-different-case rename from that guard specifically; a genuine cross-file collision
+is still rejected exactly as before.
+
 ### Fixed — Settings window reopening automatically on the next launch
 
 jensyleo's own report (2026-09-01): quitting the app while Settings was open reopened it
