@@ -409,6 +409,28 @@ private extension View {
                 Text("Each entry keeps its own content — only its name inside the zip changes, to match what the DAT declares.")
             }
     }
+
+    /// Fase 2 Step 4 (split direction)'s own confirmation dialog — its own
+    /// separate modifier rather than a 4th/5th parameter pair added to
+    /// `fase2Confirmations` above, whose parameter list is already at the
+    /// point another addition risks the same type-checker timeout that
+    /// modifier itself exists to avoid.
+    func fase2Step4SplitConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Strip \(count) Redundant ROM\(count == 1 ? "" : "s") from Clone Archives?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Strip", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each rom is confirmed present, correctly, in its own parent set's archive — removing it from the clone relies on that parent archive being available whenever this clone is used.")
+        }
+    }
 }
 
 struct LibraryDetailView: View {
@@ -1130,6 +1152,14 @@ struct LibraryDetailView: View {
     /// then-confirm shape as the others above.
     @State private var renameRomsInArchiveCount = 0
     @State private var showRenameRomsInArchiveConfirmation = false
+    /// Fase 2 Step 4 "Strip Redundant ROMs (Split)…" state — same preview-
+    /// then-confirm shape as the others above. Its own separate
+    /// `.confirmationDialog` modifier (`fase2Step4SplitConfirmation`) rather
+    /// than folded into `fase2Confirmations` — that modifier's own
+    /// parameter list was already at the type-checker's practical limit
+    /// (see its own doc comment).
+    @State private var convertToSplitCount = 0
+    @State private var showConvertToSplitConfirmation = false
     /// Which "ROM folder" row is currently being ⌘-dragged, if any — see
     /// `ColumnPresetsPanel.draggingName`'s own doc comment
     /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
@@ -1280,11 +1310,12 @@ struct LibraryDetailView: View {
             ) {
                 startRepairFromSiblingSets()
             },
-            // Fase 2 Step 4 (non-merged direction only — see
-            // `RebuildPlanner.planConvertToNonMerged`'s own doc comment for
-            // why "split"/"merged" aren't offered yet): copies in every rom
+            // Fase 2 Step 4, "non-merged" direction — copies in every rom
             // the matcher already found genuinely present elsewhere in the
-            // scan but not yet inside a game's own archive.
+            // scan but not yet inside a game's own archive. "Split" is the
+            // sibling action below; "Merged" isn't offered yet (see
+            // `RebuildPlanner.planConvertToNonMerged`'s own doc comment for
+            // why).
             ToolbarAction(
                 id: "makeSelfContained", title: "Make Self-Contained…",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
@@ -1307,6 +1338,20 @@ struct LibraryDetailView: View {
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startRenameRomsInArchive()
+            },
+            // Fase 2 Step 4, "split" direction — the inverse of "Make
+            // Self-Contained…" above: strips a rom back out of a clone's
+            // own archive once the parent already has the exact same
+            // content correctly (see `RebuildPlanner.planConvertToSplit`'s
+            // own doc comment). Never touches the parent's own archive.
+            ToolbarAction(
+                id: "convertToSplit", title: "Strip Redundant ROMs (Split)…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Remove a rom from a clone's own archive once its parent already has the exact same content"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startConvertToSplit()
             },
             // Fase 2 Step 7: permanently deletes every file the DAT
             // recognizes nothing about at all (today's "surplus"/unknown-
@@ -1641,6 +1686,11 @@ struct LibraryDetailView: View {
             renameRomsInArchiveCount: renameRomsInArchiveCount,
             onRenameRomsInArchive: commitRenameRomsInArchive
         )
+        .fase2Step4SplitConfirmation(
+            isPresented: $showConvertToSplitConfirmation,
+            count: convertToSplitCount,
+            onConfirm: commitConvertToSplit
+        )
     }
 
     @ViewBuilder
@@ -1734,6 +1784,21 @@ struct LibraryDetailView: View {
 
     private func commitRenameRomsInArchive() {
         Task { await viewModel.renameRomsInArchive(system: system) }
+    }
+
+    /// Previews the strip count before showing the confirmation dialog —
+    /// same dry-run-before-write caution as every other Fase 2 action.
+    private func startConvertToSplit() {
+        convertToSplitCount = viewModel.planConvertToSplitPreviewCount()
+        guard convertToSplitCount > 0 else {
+            viewModel.logWarning("Nothing to strip — no clone in this scan has a rom already, exactly, in its parent's own archive.")
+            return
+        }
+        showConvertToSplitConfirmation = true
+    }
+
+    private func commitConvertToSplit() {
+        Task { await viewModel.convertToSplit(system: system) }
     }
 
     private var header: some View {

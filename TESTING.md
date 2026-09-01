@@ -697,7 +697,32 @@ suite.
         same count).
   - [ ] The zip file itself still opens correctly (Finder double-click).
 
-### 11.8 Settings → Fix tab
+### 11.8 Strip Redundant ROMs — Split direction (Step 4, the inverse of 11.6)
+- [ ] Using the same parent/clone pair, set your MAME merge-mode Setting to
+      **Non-merged** (or just leave a clone with the shared rom physically
+      duplicated in its own zip — this test doesn't depend on the merge
+      mode actually being enforced, only on the CLONE genuinely already
+      having a copy).
+- [ ] Confirm (via `unzip -l clone.zip`) the clone's own zip really does
+      contain a copy of the shared rom, physically — not just showing as
+      matched via `.foundElsewhere`.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Strip Redundant ROMs
+      (Split)…"**.
+- [ ] Confirm the preview count is accurate, then confirm it.
+- [ ] Rescan, then `unzip -l clone.zip` again — confirm the shared rom is
+      now **gone** from the clone's own archive, and every OTHER rom the
+      clone had is still there.
+- [ ] Confirm the PARENT's zip is completely untouched (`unzip -l
+      parent.zip` — same entries, same CRCs as before).
+- [ ] Rescan and check how the clone's family now reports — the clone
+      should still show that rom as matched (now via whatever status this
+      build uses for "found in parent's archive", not "correct" locally
+      anymore) rather than Missing.
+- [ ] Separately: confirm running "Strip Redundant ROMs (Split)…" again
+      right after (nothing left to strip) reports a 0 count and makes no
+      further changes — a clean no-op on an already-stripped scan.
+
+### 11.9 Settings → Fix tab
 - [ ] Open Settings → **Fix** — confirm every toggle from the ROADMAP's own
       "ClrMamePro Fix panel" review is present, and that the ones marked
       "not yet connected" in the UI's own caption text are visibly

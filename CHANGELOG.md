@@ -4,6 +4,17 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added — Fase 2 Step 4 "Split" direction: Strip Redundant ROMs
+
+New toolbar action "Strip Redundant ROMs (Split)…" removes a rom from a clone's own archive
+once its parent already has the exact same content correctly — the inverse of "Make
+Self-Contained…" (which only adds; this one only removes, and only a clone's own copy, never
+the parent's). `RebuildPlanner.planConvertToSplit` reuses `RebuildOperation.removeEntryFromZip`
+from Step 7. Closes the entry-removal gap that previously left "Split" undocumented as blocked
+— `Archive.remove(_:)` already covers exactly what this needed. "Merged" (fold a clone's roms
+into the parent AND delete the clone's whole archive) remains unimplemented — a genuinely
+higher-risk, multi-step, non-atomic sequence not yet designed.
+
 ### Added — Fase 2 Step 6: Rename ROMs Inside Archives (entry-level)
 
 New toolbar action "Rename ROMs Inside Archives…" renames a misnamed rom ENTRY inside an

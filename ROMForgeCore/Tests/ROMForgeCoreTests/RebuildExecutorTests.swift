@@ -540,4 +540,75 @@ struct RebuildExecutorTests {
 
         #expect(RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport).isEmpty)
     }
+
+    // MARK: - Convert to split (Fase 2 Step 4, split direction)
+
+    @Test("strips a redundant rom from a clone's own zip when the parent already has the exact same content")
+    func convertToSplitRemovesRedundantRomFromCloneZip() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentZip = root.appendingPathComponent("parent.zip")
+        try makeZip(at: parentZip, entries: [("shared.bin", "shared-content")])
+        let cloneZip = root.appendingPathComponent("clone.zip")
+        try makeZip(at: cloneZip, entries: [("clone-only.bin", "clone-only-content"), ("shared.bin", "shared-content")])
+
+        let sharedRom = DATRom(name: "shared.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let cloneOnlyRom = DATRom(name: "clone-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [sharedRom])
+        let cloneGame = DATGame(name: "Clone", description: "Clone", cloneOf: "Parent", romOf: "Parent", roms: [cloneOnlyRom, sharedRom])
+
+        let parentHashedFile = HashedFile(file: ScannedFile(url: parentZip, name: "shared.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0"))
+        let cloneSharedHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "shared.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0"))
+        let cloneOnlyHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "clone-only.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: parentGame, matches: [RomMatch(rom: sharedRom, status: .correct(parentHashedFile))]),
+                GameMatchResult(game: cloneGame, matches: [
+                    RomMatch(rom: cloneOnlyRom, status: .correct(cloneOnlyHashedFile)),
+                    RomMatch(rom: sharedRom, status: .correct(cloneSharedHashedFile)),
+                ]),
+            ],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planConvertToSplit(matchReport: matchReport)
+        #expect(operations == [.removeEntryFromZip(archive: cloneZip, entryName: "shared.bin")])
+
+        try RebuildExecutor.execute(operations)
+
+        let cloneArchive = try Archive(url: cloneZip, accessMode: .read)
+        #expect(cloneArchive["shared.bin"] == nil, "the redundant entry must be gone from the clone")
+        #expect(cloneArchive["clone-only.bin"] != nil, "the clone's own unique rom must survive")
+        // The parent's own zip — the only remaining copy — must survive completely untouched.
+        let parentArchive = try Archive(url: parentZip, accessMode: .read)
+        #expect(parentArchive["shared.bin"] != nil)
+    }
+
+    @Test("never strips a rom from a clone when the parent doesn't actually have it")
+    func convertToSplitNeverStripsWhenParentLacksTheRom() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let cloneZip = root.appendingPathComponent("clone.zip")
+        try makeZip(at: cloneZip, entries: [("shared.bin", "shared-content")])
+
+        let sharedRom = DATRom(name: "shared.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [sharedRom])
+        let cloneGame = DATGame(name: "Clone", description: "Clone", cloneOf: "Parent", romOf: "Parent", roms: [sharedRom])
+
+        let cloneHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "shared.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [
+                // Parent doesn't have it at all — .missing.
+                GameMatchResult(game: parentGame, matches: [RomMatch(rom: sharedRom, status: .missing)]),
+                GameMatchResult(game: cloneGame, matches: [RomMatch(rom: sharedRom, status: .correct(cloneHashedFile))]),
+            ],
+            surplusFiles: []
+        )
+
+        #expect(RebuildPlanner.planConvertToSplit(matchReport: matchReport).isEmpty)
+    }
 }

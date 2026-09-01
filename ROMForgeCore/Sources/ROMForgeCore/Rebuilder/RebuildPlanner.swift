@@ -336,18 +336,20 @@ public enum RebuildPlanner {
     /// inside THIS game's own archive — Fase 2 Step 4, the "non-merged"
     /// direction only.
     ///
-    /// Deliberately the ONLY direction of merge-mode conversion this planner
-    /// offers. "Split" (strip an inherited rom back OUT of a clone's own
-    /// archive, relying on the parent again) and "Merged" (fold every
-    /// clone's own roms into the parent's archive and produce no archive
-    /// for the clone at all) both need to REMOVE an entry from an existing
-    /// archive — the same central-directory-rewrite gap "Remove useless
-    /// roms" in Settings → Fix is honestly marked "not yet connected" for.
-    /// "Non-merged" is the one direction that only ever ADDS a rom, never
-    /// removes one, so it's the one direction actually safe to ship before
-    /// that gap is closed. Same "never invent a destination" rule as
-    /// `planCrossSetRepair`: a game with no existing anchor of its own is
-    /// skipped.
+    /// The "Split" direction now also exists (`planConvertToSplit`, below)
+    /// — the entry-removal gap this doc comment originally cited as
+    /// blocking it was closed once `Archive.remove(_:)`/`.addEntry`
+    /// (ZIPFoundation, `.update` access mode) turned out to already cover
+    /// exactly that. "Merged" (fold every clone's own roms into the
+    /// parent's archive AND delete the clone's own archive entirely) is
+    /// still not offered — unlike Split's single-entry removal, it needs a
+    /// whole multi-step, non-atomic sequence (copy every unique rom in,
+    /// confirm each succeeded, THEN delete the clone's whole archive) with
+    /// real partial-failure risk (a clone's archive deleted before every
+    /// one of its roms is confirmed safely in the parent would be a
+    /// genuine, unrecoverable data loss) that hasn't been designed yet.
+    /// Same "never invent a destination" rule as `planCrossSetRepair`: a
+    /// game with no existing anchor of its own is skipped.
     public static func planConvertToNonMerged(matchReport: MatchReport) -> [RebuildOperation] {
         var operations: [RebuildOperation] = []
         for gameResult in matchReport.games {
@@ -374,5 +376,54 @@ public enum RebuildPlanner {
             }
         }
         return operations
+    }
+
+    /// Strips a rom back OUT of a clone's own archive when the PARENT
+    /// already has the exact same content correctly — Fase 2 Step 4, the
+    /// "split" direction. The inverse of `planConvertToNonMerged`: that one
+    /// only ever ADDS a rom into a game's own archive; this one only ever
+    /// REMOVES one, and only when the parent's own archive already,
+    /// genuinely has it (never leaves BOTH copies gone — the parent's own
+    /// copy is never touched by this function). Only removes from a `.zip`
+    /// clone archive (no `.7z`-entry removal support); never touches the
+    /// parent's own archive, and never produces an operation for the
+    /// parent itself. A family with no identifiable parent (every game in
+    /// it has `cloneOf != nil` — shouldn't happen with a well-formed DAT,
+    /// but not this planner's job to fix) is skipped entirely.
+    public static func planConvertToSplit(matchReport: MatchReport) -> [RebuildOperation] {
+        func familyKey(for game: DATGame) -> String { game.cloneOf ?? game.name }
+        let families = Dictionary(grouping: matchReport.games, by: { familyKey(for: $0.game) })
+
+        var operations: [RebuildOperation] = []
+        for family in families.values where family.count > 1 {
+            guard let parent = family.first(where: { $0.game.cloneOf == nil }) else { continue }
+            for gameResult in family where gameResult.game.cloneOf != nil {
+                for romMatch in gameResult.matches {
+                    let hashedFile: HashedFile?
+                    switch romMatch.status {
+                    case .correct(let file, _), .misnamed(let file, _): hashedFile = file
+                    default: hashedFile = nil
+                    }
+                    guard let hashedFile, isZipPath(hashedFile.file.url) else { continue }
+                    guard parentAlreadyHas(romMatch.rom, in: parent) else { continue }
+                    operations.append(.removeEntryFromZip(archive: hashedFile.file.url, entryName: hashedFile.file.name))
+                }
+            }
+        }
+        return operations
+    }
+
+    /// True when `parent` already has `rom`'s exact content correctly on
+    /// disk — the guard `planConvertToSplit` uses before ever stripping a
+    /// clone's own copy of it.
+    private static func parentAlreadyHas(_ rom: DATRom, in parent: GameMatchResult) -> Bool {
+        for match in parent.matches {
+            guard datRomsShareContent(match.rom, rom) else { continue }
+            switch match.status {
+            case .correct, .misnamed: return true
+            default: continue
+            }
+        }
+        return false
     }
 }

@@ -1351,6 +1351,57 @@ final class LibraryViewModel {
         await scan(system: system)
     }
 
+    /// How many redundant roms "Strip Redundant ROMs (Split)…" would
+    /// actually remove, without touching disk. Returns `0` before any scan
+    /// has run.
+    func planConvertToSplitPreviewCount() -> Int {
+        guard let matchReport else { return 0 }
+        return RebuildPlanner.planConvertToSplit(matchReport: matchReport).count
+    }
+
+    /// Strips a rom back out of a clone's own archive when the parent
+    /// already has the exact same content correctly — Fase 2 Step 4, the
+    /// "split" direction (the inverse of `makeSelfContained` above). Each
+    /// planned operation is attempted independently (same reasoning as
+    /// every other Fase 2 batch action) so one failure doesn't abort the
+    /// rest.
+    func convertToSplit(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("This is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            let operations = RebuildPlanner.planConvertToSplit(matchReport: matchReport)
+            var succeeded = 0
+            var failed = 0
+            for operation in operations {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Stripped \(succeeded) redundant rom(s) from clone archives; \(failed) failed (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Stripped \(succeeded) redundant rom(s) from clone archives.")
+        } else {
+            logWarning("Nothing to strip — no clone in this scan has a rom already, exactly, in its parent's own archive.")
+        }
+        await scan(system: system)
+    }
+
     private nonisolated static let archivedRenameExtensions: Set<String> = ["zip", "7z"]
 
     private nonisolated static func partitionArchivedRenames(_ operations: [RebuildOperation]) -> (eligible: [RebuildOperation], skipped: [RebuildOperation]) {
