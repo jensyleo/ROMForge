@@ -349,7 +349,10 @@ private extension View {
         onRepair: @escaping () -> Void,
         showMakeSelfContained: Binding<Bool>,
         makeSelfContainedCount: Int,
-        onMakeSelfContained: @escaping () -> Void
+        onMakeSelfContained: @escaping () -> Void,
+        showRenameRomsInArchive: Binding<Bool>,
+        renameRomsInArchiveCount: Int,
+        onRenameRomsInArchive: @escaping () -> Void
     ) -> some View {
         self
             .confirmationDialog(
@@ -394,6 +397,16 @@ private extension View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Each rom is already genuinely present elsewhere in this scan (a BIOS or parent set) — this only adds a copy into each game's own archive, it never removes anything from where it already is.")
+            }
+            .confirmationDialog(
+                "Rename \(renameRomsInArchiveCount) ROM\(renameRomsInArchiveCount == 1 ? "" : "s") Inside Their Archives?",
+                isPresented: showRenameRomsInArchive,
+                titleVisibility: .visible
+            ) {
+                Button("Rename", action: onRenameRomsInArchive)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Each entry keeps its own content — only its name inside the zip changes, to match what the DAT declares.")
             }
     }
 }
@@ -1113,6 +1126,10 @@ struct LibraryDetailView: View {
     /// confirm shape as the others above.
     @State private var makeSelfContainedCount = 0
     @State private var showMakeSelfContainedConfirmation = false
+    /// Fase 2 Step 6 "Rename ROMs Inside Archives…" state — same preview-
+    /// then-confirm shape as the others above.
+    @State private var renameRomsInArchiveCount = 0
+    @State private var showRenameRomsInArchiveConfirmation = false
     /// Which "ROM folder" row is currently being ⌘-dragged, if any — see
     /// `ColumnPresetsPanel.draggingName`'s own doc comment
     /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
@@ -1276,6 +1293,20 @@ struct LibraryDetailView: View {
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startMakeSelfContained()
+            },
+            // Fase 2 Step 6 (entry-level half — the archive-level half is
+            // "Fix Misnamed ROMs" above): renames a misnamed rom entry
+            // inside an otherwise-correctly-named zip via add-then-remove
+            // (see `RebuildPlanner.planRenameRomsInArchive`'s own doc
+            // comment).
+            ToolbarAction(
+                id: "renameRomsInArchive", title: "Rename ROMs Inside Archives…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Rename a misnamed rom entry inside an otherwise-correctly-named zip to match the DAT"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRenameRomsInArchive()
             },
             // Fase 2 Step 7: permanently deletes every file the DAT
             // recognizes nothing about at all (today's "surplus"/unknown-
@@ -1605,7 +1636,10 @@ struct LibraryDetailView: View {
             onRepair: commitRepairFromSiblingSets,
             showMakeSelfContained: $showMakeSelfContainedConfirmation,
             makeSelfContainedCount: makeSelfContainedCount,
-            onMakeSelfContained: commitMakeSelfContained
+            onMakeSelfContained: commitMakeSelfContained,
+            showRenameRomsInArchive: $showRenameRomsInArchiveConfirmation,
+            renameRomsInArchiveCount: renameRomsInArchiveCount,
+            onRenameRomsInArchive: commitRenameRomsInArchive
         )
     }
 
@@ -1685,6 +1719,21 @@ struct LibraryDetailView: View {
 
     private func commitMakeSelfContained() {
         Task { await viewModel.makeSelfContained(system: system) }
+    }
+
+    /// Previews the rename count before showing the confirmation dialog —
+    /// same dry-run-before-write caution as every other Fase 2 action.
+    private func startRenameRomsInArchive() {
+        renameRomsInArchiveCount = viewModel.planRenameRomsInArchivePreviewCount()
+        guard renameRomsInArchiveCount > 0 else {
+            viewModel.logWarning("Nothing to rename — no misnamed rom entries inside a zip in this scan.")
+            return
+        }
+        showRenameRomsInArchiveConfirmation = true
+    }
+
+    private func commitRenameRomsInArchive() {
+        Task { await viewModel.renameRomsInArchive(system: system) }
     }
 
     private var header: some View {

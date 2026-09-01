@@ -4,6 +4,15 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added — Fase 2 Step 6: Rename ROMs Inside Archives (entry-level)
+
+New toolbar action "Rename ROMs Inside Archives…" renames a misnamed rom ENTRY inside an
+otherwise-correctly-named `.zip` — the entry-level half of "Rename files/roms" ("Fix Misnamed
+ROMs" already handles the archive-level half). `RebuildPlanner.planRenameRomsInArchive`
+implements this as add-then-remove (add the bytes under the new name first, then remove the
+stale old-named entry), reusing `RebuildOperation.addEntryToZip`/`.removeEntryFromZip` from
+Steps 3/4/7. Settings → Fix's "Rename roms inside archives" toggle is now wired.
+
 ### Changed — Fase 2 write actions consolidated under one "Fix" toolbar dropdown
 
 Every Fase 2 write action ("Rebuild to Folder…", "Repair from Sibling Sets…", "Make

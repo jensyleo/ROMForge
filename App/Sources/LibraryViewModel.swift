@@ -1295,6 +1295,62 @@ final class LibraryViewModel {
         await scan(system: system)
     }
 
+    /// How many rom entries "Rename ROMs Inside Archives…" would actually
+    /// rename, without touching disk. `RebuildPlanner.planRenameRomsInArchive`
+    /// returns TWO operations per rename (add the new name, then remove the
+    /// old one — see that function's own doc comment) — this counts pairs,
+    /// not raw operations, so the number shown matches what the user
+    /// actually asked for.
+    func planRenameRomsInArchivePreviewCount() -> Int {
+        guard let matchReport else { return 0 }
+        return RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport).count / 2
+    }
+
+    /// Renames a misnamed rom entry inside an otherwise-correctly-named zip
+    /// — Fase 2 Step 6's entry-level half (the archive-level half is
+    /// already what "Fix Misnamed ROMs" does). Each rename's own add+remove
+    /// pair is executed together so one failure doesn't leave the archive
+    /// with neither the old nor the new entry — see `RebuildPlanner
+    /// .planRenameRomsInArchive`'s own doc comment for why add always comes
+    /// before remove.
+    func renameRomsInArchive(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("Renaming is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            let operations = RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport)
+            var succeeded = 0
+            var failed = 0
+            for pairStart in stride(from: 0, to: operations.count, by: 2) {
+                let pair = Array(operations[pairStart..<Swift.min(pairStart + 2, operations.count)])
+                do {
+                    try RebuildExecutor.execute(pair)
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Renamed \(succeeded) rom(s) inside their archives; \(failed) failed (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Renamed \(succeeded) rom(s) inside their archives.")
+        } else {
+            logWarning("Nothing to rename — no misnamed rom entries inside a zip in this scan.")
+        }
+        await scan(system: system)
+    }
+
     private nonisolated static let archivedRenameExtensions: Set<String> = ["zip", "7z"]
 
     private nonisolated static func partitionArchivedRenames(_ operations: [RebuildOperation]) -> (eligible: [RebuildOperation], skipped: [RebuildOperation]) {

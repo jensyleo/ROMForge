@@ -673,7 +673,31 @@ suite.
       whether `.foundElsewhere` still appears the way this test expects,
       or whether the merge mode setting changes what gets flagged.
 
-### 11.7 Settings → Fix tab
+### 11.7 Rename ROMs Inside Archives (Step 6 — entry-level)
+- [ ] Using one of your real `.zip` sets, rename ONE internal entry to a
+      wrong name without changing the zip's own filename — e.g.
+      `printf '' > /tmp/dummy && cd /path/to/set && mv game.zip
+      /tmp/backup.zip && unzip /tmp/backup.zip -d /tmp/extracted && cd
+      /tmp/extracted && mv correct-rom-name.bin wrong-rom-name.bin && zip
+      ../game.zip * && mv ../game.zip /path/to/set/` (adjust names/paths to
+      your real set — the point is: the zip's own OUTER filename stays
+      correct, only the ENTRY name inside it changes).
+- [ ] Scan — confirm this specific rom now shows **Incorrect** (misnamed),
+      not Missing.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Rename ROMs Inside
+      Archives…"**.
+- [ ] Confirm the preview count is accurate, then confirm it.
+- [ ] Rescan — confirm the rom is now **Correct**.
+- [ ] Verify directly with `unzip -l game.zip`:
+  - [ ] The wrong name is **gone**.
+  - [ ] The correct name is **present**, with the exact same CRC as the
+        original content (confirms the rename preserved the actual bytes,
+        not a truncated/corrupted re-add).
+  - [ ] Every OTHER entry in that same zip is **unchanged** (same CRCs,
+        same count).
+  - [ ] The zip file itself still opens correctly (Finder double-click).
+
+### 11.8 Settings → Fix tab
 - [ ] Open Settings → **Fix** — confirm every toggle from the ROADMAP's own
       "ClrMamePro Fix panel" review is present, and that the ones marked
       "not yet connected" in the UI's own caption text are visibly

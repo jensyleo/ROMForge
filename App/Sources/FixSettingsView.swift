@@ -49,8 +49,7 @@ struct FixSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Rename roms inside archives", isOn: $renameRoms)
-                    .disabled(true)
-                Text("Not yet connected — no action reads this toggle yet, even though the underlying ZIP remove/add capability it would need already exists (see \"Remove useless roms inside archives\" below, which does use it).")
+                Text("Renames a misnamed rom entry inside an otherwise-correctly-named zip via the toolbar's own \"Rename ROMs Inside Archives…\" action, which always confirms regardless of this toggle.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

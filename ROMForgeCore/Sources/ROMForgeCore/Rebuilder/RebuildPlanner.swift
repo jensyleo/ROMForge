@@ -62,6 +62,39 @@ public enum RebuildPlanner {
         return operations
     }
 
+    /// Renames a misnamed rom ENTRY inside an otherwise-correctly-named
+    /// `.zip` — the entry-level half of "Rename files/roms" (Fase 2 Step 6)
+    /// `planRepair` above can't do (its own `.rename` targets the
+    /// containing zip's OWN path, which is exactly wrong for renaming one
+    /// entry inside it; `LibraryViewModel.fix()`'s own
+    /// `partitionArchivedRenames` already filters those back out before
+    /// they ever reach disk). Implemented as add-then-remove — add the
+    /// bytes under the new entry name FIRST (reading them via
+    /// `RebuildExecutor.readEntryData`'s own `.update`-mode extraction
+    /// while the old entry still exists), then remove the stale old-named
+    /// entry — so the rom's own content is never briefly absent from the
+    /// archive mid-operation if the add step fails.
+    public static func planRenameRomsInArchive(matchReport: MatchReport) -> [RebuildOperation] {
+        var operations: [RebuildOperation] = []
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                guard case .misnamed(let hashedFile, _) = romMatch.status else { continue }
+                guard isZipPath(hashedFile.file.url) else { continue }
+                let currentEntryName = hashedFile.file.name
+                let expectedEntryName = safePathComponent(romMatch.rom.name)
+                guard currentEntryName != expectedEntryName else { continue }
+                let zipURL = hashedFile.file.url
+                operations.append(.addEntryToZip(
+                    targetArchive: zipURL,
+                    entryName: expectedEntryName,
+                    source: ArchiveEntrySource(source: zipURL, entryName: expectedEntryName, sourceArchiveEntryName: currentEntryName)
+                ))
+                operations.append(.removeEntryFromZip(archive: zipURL, entryName: currentEntryName))
+            }
+        }
+        return operations
+    }
+
     /// Copies (or moves) every matched ROM — correct or misnamed — into
     /// `destination`, organized as `<destination>/<game name>/<rom name>`.
     /// Missing ROMs are skipped; there is nothing local to move. A rom whose

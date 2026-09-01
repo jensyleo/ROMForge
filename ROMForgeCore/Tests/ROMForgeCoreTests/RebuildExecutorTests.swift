@@ -476,4 +476,68 @@ struct RebuildExecutorTests {
         let parentArchive = try Archive(url: parentZip, accessMode: .read)
         #expect(parentArchive["shared.bin"] != nil)
     }
+
+    // MARK: - Rename roms inside archives (Fase 2 Step 6)
+
+    @Test("renames a misnamed rom entry inside a zip via add-then-remove, preserving its content and every sibling entry")
+    func renamesRomEntryInsideZip() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("game.zip")
+        try makeZip(at: zipURL, entries: [("wrong-name.bin", "the-real-content"), ("other.bin", "other-content")])
+
+        let rom = DATRom(name: "correct-name.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let otherRom = DATRom(name: "other.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom, otherRom])
+
+        let misnamedFile = HashedFile(file: ScannedFile(url: zipURL, name: "wrong-name.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0"))
+        let otherFile = HashedFile(file: ScannedFile(url: zipURL, name: "other.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [
+                RomMatch(rom: rom, status: .misnamed(misnamedFile)),
+                RomMatch(rom: otherRom, status: .correct(otherFile)),
+            ])],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport)
+        #expect(operations == [
+            .addEntryToZip(targetArchive: zipURL, entryName: "correct-name.bin", source: ArchiveEntrySource(source: zipURL, entryName: "correct-name.bin", sourceArchiveEntryName: "wrong-name.bin")),
+            .removeEntryFromZip(archive: zipURL, entryName: "wrong-name.bin"),
+        ])
+        try RebuildExecutor.execute(operations)
+
+        let archive = try Archive(url: zipURL, accessMode: .read)
+        #expect(archive["wrong-name.bin"] == nil, "the old-named entry must be gone")
+        #expect(archive["other.bin"] != nil, "the untouched sibling entry must survive")
+        guard let renamed = archive["correct-name.bin"] else {
+            Issue.record("zip should now contain the renamed entry")
+            return
+        }
+        var extracted = Data()
+        _ = try archive.extract(renamed) { extracted.append($0) }
+        #expect(String(data: extracted, encoding: .utf8) == "the-real-content", "the renamed entry must keep its original content")
+    }
+
+    @Test("never plans a rename for a rom already using its expected entry name")
+    func doesNotRenameAlreadyCorrectlyNamedEntry() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("game.zip")
+        try makeZip(at: zipURL, entries: [("correct-name.bin", "content")])
+
+        let rom = DATRom(name: "correct-name.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "correct-name.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .misnamed(hashedFile))])],
+            surplusFiles: []
+        )
+
+        #expect(RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport).isEmpty)
+    }
 }

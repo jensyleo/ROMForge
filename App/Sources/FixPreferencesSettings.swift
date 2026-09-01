@@ -89,10 +89,7 @@ public enum FixPreferencesSettings {
     /// That same action already covers BOTH loose files and a zip-internal
     /// entry uniformly (`RebuildPlanner.planRemoveUselessFiles` routes each
     /// through `.delete`/`.removeEntryFromZip` as appropriate) — there's no
-    /// separate toggle to gate the archive-entry half specifically, unlike
-    /// `renameRomsKey` below (renaming an archive entry needs different
-    /// underlying machinery than renaming a loose file; removing one
-    /// doesn't).
+    /// separate toggle to gate the archive-entry half specifically.
     public static let removeUselessFilesKey = "fixPreferences.removeUselessFiles"
     public static let removeUselessFilesDefault = false
 
@@ -118,17 +115,17 @@ public enum FixPreferencesSettings {
     public static let removeUselessRomsKey = "fixPreferences.removeUselessRoms"
     public static let removeUselessRomsDefault = false
 
-    // MARK: - Shell only — not yet connected to any real action
-
-    /// Renaming one entry INSIDE a zip in place (remove the old name, add
-    /// the same bytes back under the new one) is now technically possible —
-    /// `Archive.remove(_:)`/`.addEntry` (ZIPFoundation, `.update` access
-    /// mode) are exactly what Step 3/4/7's own archive-entry operations
-    /// already use — but no planner function actually does this yet (no
-    /// `RebuildPlanner.planRenameRomsInArchive` exists to wire this toggle
-    /// to). **Not yet connected.**
+    /// Renames a misnamed rom entry inside an otherwise-correctly-named zip
+    /// (remove the old name, add the same bytes back under the new one) —
+    /// **wired**: `LibraryViewModel.renameRomsInArchive(system:)` +
+    /// `RebuildPlanner.planRenameRomsInArchive`. Its own standalone toolbar
+    /// action ("Rename ROMs Inside Archives…") always confirms regardless
+    /// of this toggle, same relationship `removeUselessFilesKey` above has
+    /// with its own toolbar action.
     public static let renameRomsKey = "fixPreferences.renameRoms"
     public static let renameRomsDefault = false
+
+    // MARK: - Shell only — not yet connected to any real action
 
     /// Searching user-configured "scavenging" folders for a same-hash file
     /// before reporting a rom missing — needs a new scavenging-folder-list
