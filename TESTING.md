@@ -511,6 +511,157 @@ collection yet — everything below needs your own MAME set.
 
 ---
 
+## 11. Fase 2 — Rebuild/Repair (write actions, added 2026-09-01)
+
+⚠️ **Every test in this section modifies files on disk.** Work on a
+**disposable copy** of real ROMs, never your only copy of a collection —
+several of these actions are genuinely destructive (permanent deletion,
+in-place archive rewriting) and this is their first real-ROM test pass.
+
+**Setup once, used by every subsection below:**
+- [ ] Pick 3-4 small real MAME sets you own legally, including at least one
+      parent/clone PAIR (e.g. a game and one of its clones/bootlegs sharing
+      some ROMs) — the clone-sharing case is what Step 3 (11.4) needs.
+      Prefer small ROMs (a few KB–MB each) so copy/rebuild is fast to verify.
+- [ ] Copy them into a scratch folder, e.g.
+      `~/Desktop/ROMForge-Fase2-Test/roms/` — **never point any of this
+      section's actions at your real, permanent collection.**
+- [ ] Add that scratch folder as a ROM folder under your MAME system in
+      ROMForge, and do one normal **Scan Folder** first — confirm it reports
+      **Correct** for all of them before touching anything else. If it
+      doesn't, fix the setup (wrong DAT version, wrong ROMs) before
+      continuing — every test below assumes a clean, fully-Correct starting
+      point.
+- [ ] Settings → General → **Write access** → enable **"Enable file
+      modifications"** (confirm the warning dialog). Every action in this
+      section is disabled/grayed out in the toolbar until this is on.
+
+### 11.0 Write-access gate itself
+- [ ] With Write access OFF (the default), confirm every Fase 2 toolbar
+      button below ("Rebuild to Folder…", "Remove Useless Files…", "Repair
+      from Sibling Sets…") is visibly **disabled**, and hovering shows a
+      tooltip explaining it's off in Settings.
+- [ ] Turn it back off, then on again — confirm the buttons re-enable
+      immediately without needing to relaunch or rescan.
+
+### 11.1 Rebuild to Folder — loose files (Step 1)
+- [ ] From your scratch scan, extract one game's `.zip` into loose files in
+      its own subfolder (so you have a genuine loose-file source, not just
+      zips) — re-scan that folder and confirm it's still Correct as loose
+      files.
+- [ ] Click **"Rebuild to Folder…"** in the toolbar.
+- [ ] Choose a NEW empty destination folder (e.g.
+      `~/Desktop/ROMForge-Fase2-Test/rebuilt-loose/`).
+- [ ] Confirm the dialog shows an accurate file count before you commit, and
+      choose **"Copy"** (not "Move", for this first pass).
+- [ ] Confirm the destination now has one subfolder per game
+      (`<destination>/<game name>/<rom name>`), and that your ORIGINAL loose
+      files are untouched (still present at the source).
+- [ ] Add the destination as a new ROM folder and **Scan Folder** it —
+      confirm it reports **Correct** for everything just rebuilt.
+- [ ] Repeat once more choosing **"Move (removes from source)"** instead —
+      confirm this time the source files are gone and only the destination
+      has them.
+
+### 11.2 Rebuild to Folder — zip-sourced roms (Step 1, the critical case)
+This is the case a real bug was caught and fixed for before this test pass
+existed (see CHANGELOG's "critical" fix entry) — a zip-sourced rom was
+previously at risk of silently rebuilding as a corrupt copy of the WHOLE
+zip instead of just that one rom. This subsection exists specifically to
+confirm that fix holds up against real ROMs, not just the synthetic test
+suite.
+- [ ] Using your scratch folder's real `.zip` sets (untouched, still zipped
+      — most MAME collections are exactly this), click **"Rebuild to
+      Folder…"** again with a fresh empty destination.
+- [ ] After it completes, for at least one multi-rom game: open the
+      REBUILT files (now loose, per Step 1's own layout) and confirm each
+      one's file SIZE and content look like an actual individual ROM —
+      **not** the same size as the original `.zip` file repeated for every
+      rom in that game (the exact shape of the bug that was fixed).
+- [ ] Scan the rebuilt destination and confirm **Correct** for every rom —
+      this is the real proof the extracted bytes are actually right, not
+      just "the right size by coincidence."
+
+### 11.3 Rebuild as TorrentZip (Step 2)
+- [ ] Currently reached the same way as 11.1/11.2 above (rebuild always
+      produces TorrentZip-conformant `.zip` output per game, per
+      `RebuildPlanner.planRebuildAsZip`) — if a later build adds a visible
+      "output format" choice in the UI, use that instead and note here
+      which one you tested.
+- [ ] Confirm each rebuilt `.zip` opens correctly in Finder (double-click)
+      and in `unzip -l`/The Unarchiver — a valid, standard zip.
+- [ ] `unzip -v <rebuilt.zip>` — confirm it lists every rom entry with a
+      plausible CRC (compare against the DAT's own declared CRC for that
+      rom if you want to cross-check by hand).
+- [ ] Rescan the rebuilt zip — confirm **Correct**.
+
+### 11.4 Repair from Sibling Sets (Step 3)
+- [ ] Using your parent/clone pair from the setup step: pick one rom that's
+      genuinely SHARED between the parent and the clone (same CRC — check
+      the DAT, or just pick a rom neither set's own description marks as
+      unique). Temporarily rename or delete that rom's file from the
+      PARENT's own zip (keep the clone's copy of it intact) — e.g.
+      `zip -d parent.zip sharedrom.bin` (adjust for the real rom name).
+- [ ] Scan — confirm the parent now shows that one rom as **Missing**, and
+      the clone still shows it (and everything else) as Correct.
+- [ ] Click **"Repair from Sibling Sets…"** in the toolbar.
+- [ ] Confirm the preview count matches the number of missing roms you
+      expect it to actually be able to fix (1, in this simple case).
+- [ ] Confirm it — check the log for a success message, then **rescan**.
+- [ ] Confirm the parent set is now **Correct** again, and inspect the
+      parent's own `.zip` directly (`unzip -l parent.zip`) — confirm the
+      borrowed rom is really IN there now, alongside every rom it already
+      had (nothing else in that zip should have changed).
+- [ ] Confirm the clone's own zip is completely untouched (same file count,
+      same CRCs) — it's a donor, never a target.
+- [ ] Separately: pick a game with EVERY rom missing (temporarily move its
+      entire zip out of the scan folder) and confirm "Repair from Sibling
+      Sets…" does **NOT** try to repair it even if a sibling has a matching
+      rom — there's no existing "anchor" for that game, so it should be
+      silently skipped (see the preview count: it should not include this
+      game's missing roms).
+
+### 11.5 Remove Useless Files (Step 7 — the most destructive item here)
+- [ ] Drop one genuinely unrecognized loose file into your scratch ROM
+      folder (e.g. a renamed text file with a `.bin` extension containing
+      random content the DAT can't possibly declare).
+- [ ] Scan — confirm it shows up as Surplus/unrecognized in the Database
+      tree.
+- [ ] Click **"Remove Useless Files…"** — confirm the preview count is
+      exactly right (don't confirm yet if it looks wrong).
+- [ ] Confirm the deletion. Rescan — confirm the file is gone and the
+      unrecognized-file count drops accordingly.
+- [ ] **The critical real-ROM check**: add an extra, unrecognized entry
+      INSIDE one of your real `.zip` sets alongside its legitimate roms
+      (`zip <game>.zip somejunk.txt`) — scan, confirm it's flagged as
+      surplus/unrecognized same as above, then run "Remove Useless
+      Files…" again.
+- [ ] Confirm the preview count for THIS run does **NOT** include that
+      zip-internal junk entry (it should be silently excluded — no
+      entry-level delete support yet, see CHANGELOG's "critical" fix entry)
+      — and after confirming, verify with `unzip -l <game>.zip` that the
+      zip, the junk entry, AND every real rom next to it are **all still
+      there, completely untouched**. This is the single most important
+      check in this whole section: a wrong result here would mean the fix
+      didn't hold and a real collection's `.zip` could be destroyed by this
+      action.
+
+### 11.6 Settings → Fix tab
+- [ ] Open Settings → **Fix** — confirm every toggle from the ROADMAP's own
+      "ClrMamePro Fix panel" review is present, and that the ones marked
+      "not yet connected" in the UI's own caption text are visibly
+      disabled (can't be toggled on) rather than silently doing nothing.
+- [ ] Toggle **"Rename files to match the DAT"** OFF, then rename a real
+      rom's file to something wrong and run the regular **Fix** toolbar
+      action — confirm it does NOT rename it back (logs a message that
+      renaming is off in Settings instead).
+- [ ] Toggle it back ON, run **Fix** again — confirm it now renames the
+      file back correctly, same as before this setting existed.
+- [ ] Quit and relaunch ROMForge — confirm every toggle you set (on or off)
+      persisted correctly.
+
+---
+
 ## After finishing
 
 Update this file's checkboxes as you go (`- [ ]` → `- [x]`), and note the
