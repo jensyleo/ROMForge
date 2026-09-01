@@ -38,6 +38,38 @@ public enum RebuildExecutor {
                 throw RebuildError.sourceMissing(target)
             }
             try fileManager.removeItem(at: target)
+        case .addEntryToZip(let targetArchive, let entryName, let source):
+            try addEntryToZip(targetArchive: targetArchive, entryName: entryName, source: source, fileManager: fileManager)
+        }
+    }
+
+    /// Adds one entry to an EXISTING `.zip`, leaving every other entry in it
+    /// untouched — see `RebuildOperation.addEntryToZip`'s own doc comment.
+    private static func addEntryToZip(
+        targetArchive: URL,
+        entryName: String,
+        source: ArchiveEntrySource,
+        fileManager: FileManager
+    ) throws {
+        guard fileManager.fileExists(atPath: targetArchive.path) else {
+            throw RebuildError.sourceMissing(targetArchive)
+        }
+        let data = try readEntryData(source)
+        let archive: Archive
+        do {
+            archive = try Archive(url: targetArchive, accessMode: .update)
+        } catch {
+            throw RebuildError.underlying("Could not open ZIP archive for update at \(targetArchive.path)")
+        }
+        guard archive[entryName] == nil else {
+            throw RebuildError.destinationExists(targetArchive.appendingPathComponent(entryName))
+        }
+        do {
+            try archive.addEntry(with: entryName, type: .file, uncompressedSize: Int64(data.count), compressionMethod: .deflate) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        } catch {
+            throw RebuildError.underlying(error.localizedDescription)
         }
     }
 

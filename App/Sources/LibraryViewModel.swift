@@ -1193,6 +1193,56 @@ final class LibraryViewModel {
         await scan(system: system)
     }
 
+    /// How many missing roms "Repair from Sibling Sets…" would actually fill
+    /// in, without touching disk — same preview-before-confirm pattern as
+    /// every other Fase 2 action. Returns `0` before any scan has run.
+    func planRepairFromSiblingSetsPreviewCount() -> Int {
+        guard let matchReport else { return 0 }
+        return RebuildPlanner.planCrossSetRepair(matchReport: matchReport).count
+    }
+
+    /// Fills in a missing rom by copying it from a sibling parent/clone set
+    /// that already has the exact same content — Fase 2 Step 3. Each
+    /// planned operation is attempted independently (same reasoning as
+    /// `removeUselessFiles`/`rebuildToFolder` above) so one failure doesn't
+    /// abort the rest.
+    func repairFromSiblingSets(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("Repairing is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            let operations = RebuildPlanner.planCrossSetRepair(matchReport: matchReport)
+            var succeeded = 0
+            var failed = 0
+            for operation in operations {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Repaired \(succeeded) rom(s) from sibling sets; \(failed) failed (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Repaired \(succeeded) rom(s) from sibling sets.")
+        } else {
+            logWarning("Nothing to repair from sibling sets — no missing rom has a matching donor in this scan.")
+        }
+        await scan(system: system)
+    }
+
     private nonisolated static let archivedRenameExtensions: Set<String> = ["zip", "7z"]
 
     private nonisolated static func partitionArchivedRenames(_ operations: [RebuildOperation]) -> (eligible: [RebuildOperation], skipped: [RebuildOperation]) {

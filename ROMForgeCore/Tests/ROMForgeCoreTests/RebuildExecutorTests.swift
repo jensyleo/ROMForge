@@ -326,4 +326,84 @@ struct RebuildExecutorTests {
         try RebuildExecutor.execute(operations)
         #expect(FileManager.default.fileExists(atPath: zipURL.path), "the archive, and every OTHER rom inside it, must survive untouched")
     }
+
+    // MARK: - Cross-set repair (Fase 2 Step 3)
+
+    @Test("repairs a missing rom by borrowing it from a sibling clone's own zip, adding it into the broken set's existing zip in place")
+    func crossSetRepairAddsMissingRomFromSiblingZipIntoOwnZip() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // "Game A" (parent) is missing "shared.bin"; "Game A Clone" (its
+        // clone) already has the exact same rom, correctly, in its own zip.
+        let parentZip = root.appendingPathComponent("gamea.zip")
+        try makeZip(at: parentZip, entries: [("a-only.bin", "A-only-content")])
+        let cloneZip = root.appendingPathComponent("gameaclone.zip")
+        try makeZip(at: cloneZip, entries: [("shared.bin", "shared-content")])
+
+        let sharedRom = DATRom(name: "shared.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let aOnlyRom = DATRom(name: "a-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let gameA = DATGame(name: "Game A", description: "Game A", cloneOf: nil, romOf: nil, roms: [aOnlyRom, sharedRom])
+        let gameAClone = DATGame(name: "Game A Clone", description: "Game A Clone", cloneOf: "Game A", romOf: "Game A", roms: [sharedRom])
+
+        func hashed(url: URL, name: String) -> HashedFile {
+            HashedFile(file: ScannedFile(url: url, name: name, size: 1), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0"))
+        }
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: gameA, matches: [
+                    RomMatch(rom: aOnlyRom, status: .correct(hashed(url: parentZip, name: "a-only.bin"))),
+                    RomMatch(rom: sharedRom, status: .missing),
+                ]),
+                GameMatchResult(game: gameAClone, matches: [
+                    RomMatch(rom: sharedRom, status: .correct(hashed(url: cloneZip, name: "shared.bin"))),
+                ]),
+            ],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planCrossSetRepair(matchReport: matchReport)
+        #expect(operations.count == 1)
+        try RebuildExecutor.execute(operations)
+
+        let archive = try Archive(url: parentZip, accessMode: .read)
+        guard let entry = archive["shared.bin"] else {
+            Issue.record("Game A's own zip should now contain the borrowed \"shared.bin\" entry")
+            return
+        }
+        var extracted = Data()
+        _ = try archive.extract(entry) { extracted.append($0) }
+        #expect(String(data: extracted, encoding: .utf8) == "shared-content")
+        // The original entry the borrowed rom already had must still exist too.
+        #expect(archive["a-only.bin"] != nil)
+        // The donor's own zip must survive completely untouched.
+        #expect(FileManager.default.fileExists(atPath: cloneZip.path))
+    }
+
+    @Test("never repairs a game with no existing anchor of its own, even if a sibling has the missing rom")
+    func crossSetRepairSkipsGameWithNoExistingAnchor() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let cloneZip = root.appendingPathComponent("gameaclone.zip")
+        try makeZip(at: cloneZip, entries: [("shared.bin", "shared-content")])
+
+        let sharedRom = DATRom(name: "shared.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        // "Game A" has EVERY rom missing — no anchor to add a borrowed rom into.
+        let gameA = DATGame(name: "Game A", description: "Game A", cloneOf: nil, romOf: nil, roms: [sharedRom])
+        let gameAClone = DATGame(name: "Game A Clone", description: "Game A Clone", cloneOf: "Game A", romOf: "Game A", roms: [sharedRom])
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: gameA, matches: [RomMatch(rom: sharedRom, status: .missing)]),
+                GameMatchResult(game: gameAClone, matches: [
+                    RomMatch(rom: sharedRom, status: .correct(HashedFile(file: ScannedFile(url: cloneZip, name: "shared.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0")))),
+                ]),
+            ],
+            surplusFiles: []
+        )
+
+        #expect(RebuildPlanner.planCrossSetRepair(matchReport: matchReport).isEmpty)
+    }
 }

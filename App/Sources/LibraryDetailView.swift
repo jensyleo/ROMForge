@@ -344,6 +344,24 @@ private extension View {
             Text("These files are recognized as nothing the current DAT declares — not needed by this game or any other. This cannot be undone.")
         }
     }
+
+    /// Fase 2 Step 3's own confirmation dialog, factored out the same way.
+    func repairFromSiblingSetsConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onRepair: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Repair \(count) Missing ROM\(count == 1 ? "" : "s") from Sibling Sets?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Repair") { onRepair() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each rom is copied from a parent/clone set that already has the exact same content — never invented, never taken from a set that needs it too.")
+        }
+    }
 }
 
 struct LibraryDetailView: View {
@@ -1053,6 +1071,10 @@ struct LibraryDetailView: View {
     /// confirm shape as the rebuild state above, its own separate dialog.
     @State private var removeUselessFilesCount = 0
     @State private var showRemoveUselessFilesConfirmation = false
+    /// Fase 2 Step 3 "Repair from Sibling Sets…" state — same preview-then-
+    /// confirm shape as the two above.
+    @State private var repairFromSiblingSetsCount = 0
+    @State private var showRepairFromSiblingSetsConfirmation = false
     /// Which "ROM folder" row is currently being ⌘-dragged, if any — see
     /// `ColumnPresetsPanel.draggingName`'s own doc comment
     /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
@@ -1229,6 +1251,20 @@ struct LibraryDetailView: View {
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startRemoveUselessFiles()
+            },
+            // Fase 2 Step 3: repairs a missing rom by borrowing it from a
+            // sibling parent/clone set that already has it — never invents
+            // a new location, never touches a set with no existing anchor
+            // of its own (see `RebuildPlanner.planCrossSetRepair`'s own doc
+            // comment).
+            ToolbarAction(
+                id: "repairFromSiblingSets", title: "Repair from Sibling Sets…", systemImage: "arrow.triangle.branch",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Fill in a missing rom by copying it from a sibling parent/clone set that already has it"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRepairFromSiblingSets()
             },
             // "Show Only 1G1R" moved to Settings → View Options → "1G1R"
             // (jensyleo's own request, 2026-08-24) — now a persisted
@@ -1490,6 +1526,11 @@ struct LibraryDetailView: View {
             count: removeUselessFilesCount,
             onDelete: commitRemoveUselessFiles
         )
+        .repairFromSiblingSetsConfirmation(
+            isPresented: $showRepairFromSiblingSetsConfirmation,
+            count: repairFromSiblingSetsCount,
+            onRepair: commitRepairFromSiblingSets
+        )
     }
 
     @ViewBuilder
@@ -1538,6 +1579,21 @@ struct LibraryDetailView: View {
 
     private func commitRemoveUselessFiles() {
         Task { await viewModel.removeUselessFiles(system: system) }
+    }
+
+    /// Previews the repair count before showing the confirmation dialog —
+    /// same dry-run-before-write caution as every other Fase 2 action.
+    private func startRepairFromSiblingSets() {
+        repairFromSiblingSetsCount = viewModel.planRepairFromSiblingSetsPreviewCount()
+        guard repairFromSiblingSetsCount > 0 else {
+            viewModel.logWarning("Nothing to repair from sibling sets — no missing rom has a matching donor in this scan.")
+            return
+        }
+        showRepairFromSiblingSetsConfirmation = true
+    }
+
+    private func commitRepairFromSiblingSets() {
+        Task { await viewModel.repairFromSiblingSets(system: system) }
     }
 
     private var header: some View {

@@ -56,4 +56,14 @@ public enum RebuildOperation: Equatable, Sendable {
     /// comment for the exact criterion); never for a file some other game
     /// still needs.
     case delete(URL)
+    /// Adds one entry, read from a DIFFERENT source (a loose file, or one
+    /// entry inside another `.zip`), into an EXISTING `.zip` — Fase 2 Step
+    /// 3's "cross-set repair" (borrowing a rom from a sibling parent/clone
+    /// set that already has it). Uses ZIPFoundation's `.update` access mode
+    /// to rewrite the target archive's own central directory in place,
+    /// rather than the extract-rewrite-repack round trip `createArchive`/
+    /// `createTorrentZipArchive` need when building a BRAND NEW archive —
+    /// this one already exists and every other entry in it must survive
+    /// untouched.
+    case addEntryToZip(targetArchive: URL, entryName: String, source: ArchiveEntrySource)
 }
