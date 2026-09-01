@@ -4,6 +4,18 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Fixed — Settings window reopening automatically on the next launch
+
+jensyleo's own report (2026-09-01): quitting the app while Settings was open reopened it
+automatically the next time the app launched. Caused by macOS's own window state restoration
+("Resume") — a plain `NSWindow`'s `isRestorable` defaults to `true`, and this window (a
+hand-built `NSWindow`, not a SwiftUI scene) never opted out. Set `window.isRestorable = false`
+in `AppSettingsWindowController.show(store:)` — this window is always rebuilt fresh from
+`SystemLibraryStore` anyway, so restoring an archived copy of it never made sense, and doing so
+also broke the window's own "app-modal sheet" design (a restored copy has no sheet parent to
+attach to). Verified live: quit while Settings was open, relaunched, confirmed it no longer
+reopens.
+
 ### Added — Fase 2 Step 4 "Merged" direction completed: Merge Clones
 
 New toolbar action "Merge Clones (Merged)…" folds each clone's own unique roms into its

@@ -68,6 +68,17 @@ final class AppSettingsWindowController: NSObject, NSWindowDelegate {
         // instead of rebuilding `AppSettingsView`'s whole tab state from
         // scratch on every open.
         window.isReleasedWhenClosed = false
+        // jensyleo's own report (2026-09-01): quitting the app while this
+        // window was open (as a sheet on the main window) reopened it
+        // automatically on the NEXT launch — macOS's own window state
+        // restoration ("Resume"), which any plain `NSWindow` opts into by
+        // default (`isRestorable` defaults to `true`). This window is
+        // rebuilt fresh from `SystemLibraryStore` every time `show(store:)`
+        // actually runs; nothing about restoring it from an archived state
+        // makes sense, and it fights this whole class's own "app-modal
+        // sheet" design (a restored copy has no sheet parent to attach
+        // to, so it would reopen as a bare floating window instead).
+        window.isRestorable = false
         window.delegate = self
         self.window = window
 
