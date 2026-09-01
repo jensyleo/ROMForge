@@ -1402,6 +1402,143 @@ final class LibraryViewModel {
         await scan(system: system)
     }
 
+    /// How many renames "Apply Case Policy…" would actually make, without
+    /// touching disk — `Sets case` operations count one-for-one; `Roms
+    /// case` operations come in add-then-remove pairs (see
+    /// `RebuildPlanner.planApplyRomsCasePolicy`'s own doc comment), counted
+    /// as one rename each, same as `planRenameRomsInArchivePreviewCount`.
+    /// Reads both policies live from `UserDefaults` — Fase 2 Step 9 has no
+    /// separate "preview" of just one half.
+    func planApplyCasePolicyPreviewCount() -> Int {
+        guard let matchReport else { return 0 }
+        let setsPolicy = FileCasePolicy(rawValue: UserDefaults.standard.string(forKey: FixPreferencesSettings.setsCasePolicyKey) ?? "") ?? FixPreferencesSettings.setsCasePolicyDefault
+        let romsPolicy = FileCasePolicy(rawValue: UserDefaults.standard.string(forKey: FixPreferencesSettings.romsCasePolicyKey) ?? "") ?? FixPreferencesSettings.romsCasePolicyDefault
+        let setsCount = RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: setsPolicy).count
+        let romsCount = RebuildPlanner.planApplyRomsCasePolicy(matchReport: matchReport, policy: romsPolicy).count / 2
+        return setsCount + romsCount
+    }
+
+    /// Renames archive filenames ("Sets case") and/or rom entry names
+    /// ("Roms case") to match whichever `FileCasePolicy` is configured for
+    /// each in Settings → Fix — Fase 2 Step 9. Both policies are applied
+    /// together in one action (matching ClrMamePro's own single "Fix" pass
+    /// applying every configured policy at once) — either half is simply a
+    /// no-op if its own policy is `.dontTouch`.
+    func applyCasePolicy(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("Renaming is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let setsPolicy = FileCasePolicy(rawValue: UserDefaults.standard.string(forKey: FixPreferencesSettings.setsCasePolicyKey) ?? "") ?? FixPreferencesSettings.setsCasePolicyDefault
+        let romsPolicy = FileCasePolicy(rawValue: UserDefaults.standard.string(forKey: FixPreferencesSettings.romsCasePolicyKey) ?? "") ?? FixPreferencesSettings.romsCasePolicyDefault
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            for operation in RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: setsPolicy) {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            let romsOperations = RebuildPlanner.planApplyRomsCasePolicy(matchReport: matchReport, policy: romsPolicy)
+            for pairStart in stride(from: 0, to: romsOperations.count, by: 2) {
+                let pair = Array(romsOperations[pairStart..<Swift.min(pairStart + 2, romsOperations.count)])
+                do {
+                    try RebuildExecutor.execute(pair)
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Renamed \(succeeded) item(s) for case policy; \(failed) failed (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Renamed \(succeeded) item(s) for case policy.")
+        } else {
+            logWarning("Nothing to rename — every set/rom already matches its configured case policy (or both policies are \"Don't Touch\").")
+        }
+        await scan(system: system)
+    }
+
+    /// Live `CorruptedFilesPolicy` + quarantine folder as currently
+    /// configured in Settings → Fix — shared by the preview count and the
+    /// real action below so they can never disagree about which policy
+    /// they're each looking at.
+    private func currentCorruptedFilesPolicy() -> (policy: CorruptedFilesPolicy, quarantineFolder: URL?) {
+        let policy = CorruptedFilesPolicy(rawValue: UserDefaults.standard.string(forKey: FixPreferencesSettings.corruptedFilesPolicyKey) ?? "") ?? FixPreferencesSettings.corruptedFilesPolicyDefault
+        let path = UserDefaults.standard.string(forKey: FixPreferencesSettings.corruptedFilesMoveToPathKey)
+        let quarantineFolder = path.map { URL(fileURLWithPath: $0) }
+        return (policy, quarantineFolder)
+    }
+
+    /// How many corrupted files "Handle Corrupted Files…" would actually
+    /// act on, without touching disk — same preview-before-confirm pattern
+    /// as every other Fase 2 action. Returns `0` before any scan has run,
+    /// when the configured policy is "Don't Touch", or (for "Move to")
+    /// when no quarantine folder is configured yet.
+    func planCorruptedFilesPolicyPreviewCount() -> Int {
+        guard let matchReport else { return 0 }
+        let (policy, quarantineFolder) = currentCorruptedFilesPolicy()
+        return RebuildPlanner.planCorruptedFilesPolicy(matchReport: matchReport, policy: policy, quarantineFolder: quarantineFolder).count
+    }
+
+    /// Applies whichever `CorruptedFilesPolicy` is configured in Settings →
+    /// Fix to every rom `ZipIntegrityAuditor` confirms is internally
+    /// corrupt — Fase 2 Step 8. Each corrupted file's own operation GROUP
+    /// (one for `.delete`, two for `.moveTo` — see `RebuildPlanner
+    /// .planCorruptedFilesPolicy`'s own doc comment) is executed together,
+    /// so one failure doesn't leave a file half-quarantined.
+    func applyCorruptedFilesPolicy(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("This is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (policy, quarantineFolder) = currentCorruptedFilesPolicy()
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            let groups = RebuildPlanner.planCorruptedFilesPolicy(matchReport: matchReport, policy: policy, quarantineFolder: quarantineFolder)
+            var succeeded = 0
+            var failed = 0
+            for group in groups {
+                do {
+                    try RebuildExecutor.execute(group)
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Handled \(succeeded) corrupted file(s); \(failed) failed (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Handled \(succeeded) corrupted file(s).")
+        } else {
+            logWarning("Nothing to handle — no internally-corrupt rom found, or the configured policy has nothing to do.")
+        }
+        await scan(system: system)
+    }
+
     private nonisolated static let archivedRenameExtensions: Set<String> = ["zip", "7z"]
 
     private nonisolated static func partitionArchivedRenames(_ operations: [RebuildOperation]) -> (eligible: [RebuildOperation], skipped: [RebuildOperation]) {

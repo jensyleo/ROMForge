@@ -722,7 +722,47 @@ suite.
       right after (nothing left to strip) reports a 0 count and makes no
       further changes — a clean no-op on an already-stripped scan.
 
-### 11.9 Settings → Fix tab
+### 11.9 Apply Case Policy (Step 9)
+- [ ] In Settings → **Fix** → "Case", set **Sets case** to **Uppercase**.
+      Leave **Roms case** at "Don't Touch" for this first pass.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Apply Case Policy…"**.
+- [ ] Confirm the preview count matches the number of zip-per-game archives
+      in your scratch folder that AREN'T already all-uppercase, then
+      confirm it.
+- [ ] Rescan — confirm every `.zip` filename is now uppercase (extension
+      stays `.zip`, lowercase), and every game still shows **Correct**.
+- [ ] Now set **Sets case** back to **Datafile Case** and **Roms case** to
+      **Lowercase**, and run "Apply Case Policy…" again.
+- [ ] Confirm the archive filenames now match the DAT's own declared game
+      names exactly, and (via `unzip -l`) every internal entry name is now
+      lowercase.
+- [ ] Confirm content is untouched throughout — rescan after each pass and
+      confirm 100% Correct, never Missing/Incorrect from this action alone.
+
+### 11.10 Handle Corrupted Files (Step 8)
+- [ ] Using a real `.zip` set, corrupt its **local header's** own CRC32
+      field for one entry (the "10.7 ZIP internal CRC cross-check" section
+      above already documents the hex-editor technique — a mismatch
+      between the local header and the central directory, not a
+      whole-file corruption).
+- [ ] In Settings → **Fix** → "Corrupted files", set the policy to **Move
+      to…** and choose a quarantine folder.
+- [ ] Right-click that game in the Games table → **"Verify ZIP
+      Integrity"** (or however your build surfaces this — see section 10.7)
+      to confirm it's flagged.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Handle Corrupted Files…"**.
+- [ ] Confirm the preview count is accurate, then confirm it.
+- [ ] Verify: the corrupted entry is now GONE from the original zip
+      (`unzip -l`), and a copy of it now exists in your chosen quarantine
+      folder.
+- [ ] Confirm every OTHER entry in that same zip is untouched.
+- [ ] Repeat with the policy set to **Delete** instead (on a fresh copy of
+      the corrupted zip) — confirm the entry is removed and NOT placed
+      anywhere.
+- [ ] Confirm setting the policy to **Don't Touch** and running the action
+      again reports a 0 count and makes no changes.
+
+### 11.11 Settings → Fix tab
 - [ ] Open Settings → **Fix** — confirm every toggle from the ROADMAP's own
       "ClrMamePro Fix panel" review is present, and that the ones marked
       "not yet connected" in the UI's own caption text are visibly

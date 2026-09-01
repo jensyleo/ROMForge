@@ -426,4 +426,131 @@ public enum RebuildPlanner {
         }
         return false
     }
+
+    /// Applies `policy` to one current name, returning the target name a
+    /// case-policy rename should produce — shared by both `Sets case` and
+    /// `Roms case` (Fase 2 Step 9), which differ only in WHAT name they
+    /// apply this to (an archive's own filename vs. one entry's name
+    /// inside it) and what "the DAT's own declared name" means for
+    /// `.datafileCase` in each (a game's name vs. a rom's name) — the
+    /// transform itself is identical either way. `nil` when `policy` is
+    /// `.dontTouch` or the target would be identical to `current` already
+    /// (nothing to rename).
+    private static func caseTransformTarget(current: String, datafileDeclaredName: String, policy: FileCasePolicy) -> String? {
+        let target: String
+        switch policy {
+        case .dontTouch: return nil
+        case .uppercase: target = current.uppercased()
+        case .lowercase: target = current.lowercased()
+        case .datafileCase: target = safePathComponent(datafileDeclaredName)
+        }
+        return target == current ? nil : target
+    }
+
+    /// Renames a game's own archive filename to match `policy` — Fase 2
+    /// Step 9's "Sets case". Only applies to a `.zip`-anchored game (see
+    /// `existingAnchor`'s own doc comment) — a loose-file collection has no
+    /// single "set" filename for this to mean anything about. The file
+    /// extension itself is never touched, only the basename.
+    public static func planApplySetsCasePolicy(matchReport: MatchReport, policy: FileCasePolicy) -> [RebuildOperation] {
+        guard policy != .dontTouch else { return [] }
+        var operations: [RebuildOperation] = []
+        for gameResult in matchReport.games {
+            guard case .zip(let currentURL)? = existingAnchor(for: gameResult) else { continue }
+            let currentBasename = currentURL.deletingPathExtension().lastPathComponent
+            guard let targetBasename = caseTransformTarget(current: currentBasename, datafileDeclaredName: gameResult.game.name, policy: policy) else { continue }
+            let targetURL = currentURL.deletingLastPathComponent()
+                .appendingPathComponent(targetBasename)
+                .appendingPathExtension(currentURL.pathExtension)
+            operations.append(.rename(from: currentURL, to: targetURL))
+        }
+        return operations
+    }
+
+    /// Renames every matched rom's own entry name inside its `.zip` to
+    /// match `policy` — Fase 2 Step 9's "Roms case". Same add-then-remove
+    /// shape as `planRenameRomsInArchive`, just driven by a case transform
+    /// instead of a DAT-name mismatch. A `.7z`-sourced or loose rom is
+    /// skipped (no 7z-entry rewrite support; a loose file's case is really
+    /// a "Sets case"-shaped rename, not this one).
+    public static func planApplyRomsCasePolicy(matchReport: MatchReport, policy: FileCasePolicy) -> [RebuildOperation] {
+        guard policy != .dontTouch else { return [] }
+        var operations: [RebuildOperation] = []
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                let hashedFile: HashedFile?
+                switch romMatch.status {
+                case .correct(let file, _), .misnamed(let file, _): hashedFile = file
+                default: hashedFile = nil
+                }
+                guard let hashedFile, isZipPath(hashedFile.file.url) else { continue }
+                let currentEntryName = hashedFile.file.name
+                guard let targetEntryName = caseTransformTarget(current: currentEntryName, datafileDeclaredName: romMatch.rom.name, policy: policy) else { continue }
+                let zipURL = hashedFile.file.url
+                operations.append(.addEntryToZip(
+                    targetArchive: zipURL,
+                    entryName: targetEntryName,
+                    source: ArchiveEntrySource(source: zipURL, entryName: targetEntryName, sourceArchiveEntryName: currentEntryName)
+                ))
+                operations.append(.removeEntryFromZip(archive: zipURL, entryName: currentEntryName))
+            }
+        }
+        return operations
+    }
+
+    /// Applies `policy` to every rom `ZipIntegrityAuditor` confirms is
+    /// internally corrupt (a `.zip`'s own local-header vs central-directory
+    /// CRC32 disagree for that one entry) — Fase 2 Step 8. Bridges Fase 1's
+    /// read-only `AuditReport` (built here via `AuditReporter.generate`,
+    /// which is itself already derived straight from `matchReport` — see
+    /// its own doc comment) to Fase 2's write-capable `RebuildOperation`s,
+    /// rather than duplicating `ZipIntegrityAuditor`'s own detection logic.
+    ///
+    /// Returns one operation GROUP per corrupted file — `.delete` is a
+    /// group of one (`.removeEntryFromZip`); `.moveTo` is a group of two
+    /// (extract the entry out to `quarantineFolder` FIRST, then remove it
+    /// from the archive — same "never briefly lose the only copy" ordering
+    /// `planRenameRomsInArchive` uses) — so a caller can execute and count
+    /// "N corrupted files handled" accurately, the same way
+    /// `LibraryViewModel.renameRomsInArchive` already does for its own
+    /// two-operation renames, rather than miscounting raw operations.
+    ///
+    /// Only a `.correct` rom (on-disk entry name matches the DAT's declared
+    /// name exactly) is eligible — a `.misnamed` rom that's ALSO internally
+    /// corrupt is a rare double-fault this planner doesn't try to handle in
+    /// one pass; fix the name first, rescan, then run this again. `nil`
+    /// `quarantineFolder` under `.moveTo` skips every entry (nowhere
+    /// configured to move them to) rather than silently falling back to
+    /// `.delete`.
+    public static func planCorruptedFilesPolicy(
+        matchReport: MatchReport,
+        policy: CorruptedFilesPolicy,
+        quarantineFolder: URL?
+    ) -> [[RebuildOperation]] {
+        guard policy != .dontTouch else { return [] }
+        guard let auditReport = try? AuditReporter.generate(from: matchReport) else { return [] }
+        let flagged = ZipIntegrityAuditor.verifyingIntegrity(in: auditReport).entries
+            .filter { $0.hasInternalZipCRCMismatch && $0.status == .correct }
+
+        var groups: [[RebuildOperation]] = []
+        for entry in flagged {
+            guard let path = entry.path, isZipPath(path) else { continue }
+            let entryName = safePathComponent(entry.name)
+            switch policy {
+            case .dontTouch:
+                continue
+            case .delete:
+                groups.append([.removeEntryFromZip(archive: path, entryName: entryName)])
+            case .moveTo:
+                guard let quarantineFolder else { continue }
+                let gameName = entry.game.map(safePathComponent) ?? "unknown"
+                let destination = quarantineFolder.appendingPathComponent("\(gameName)_\(entryName)")
+                groups.append([
+                    .extractZipEntry(archive: path, entryName: entryName, to: destination),
+                    .removeEntryFromZip(archive: path, entryName: entryName),
+                ])
+            }
+        }
+        return groups
+    }
 }

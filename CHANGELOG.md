@@ -4,6 +4,27 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added — Fase 2 Step 8: Handle Corrupted Files
+
+New toolbar action "Handle Corrupted Files…" applies the "Corrupted files" policy (Don't
+Touch/Delete/Move to) configured in Settings → Fix to every rom `ZipIntegrityAuditor` confirms
+is internally corrupt. `RebuildPlanner.planCorruptedFilesPolicy` bridges Fase 1's read-only
+`AuditReport` to Fase 2's write-capable `RebuildOperation`s via `AuditReporter.generate(from:)`
+(itself already built straight from `MatchReport`) — the bridging gap previously cited as
+blocking this is closed. "Move to" extracts the entry to a quarantine folder before removing
+it from its archive; "Delete" removes it directly. Settings → Fix's "Corrupted files" policy
+and its "Move to" folder picker are now wired.
+
+### Added — Fase 2 Step 9: Apply Case Policy
+
+New toolbar action "Apply Case Policy…" renames archive filenames ("Sets case") and/or rom
+entry names inside a zip ("Roms case") to match whichever `FileCasePolicy` (Don't
+Touch/Uppercase/Lowercase/Datafile Case) is configured for each independently in Settings →
+Fix. `RebuildPlanner.planApplySetsCasePolicy`/`planApplyRomsCasePolicy` reuse the exact
+rename/add-then-remove machinery Steps 3/4/6/7 already built. Both policy pickers in Settings
+→ Fix are now wired (previously "not yet connected"). `CorruptedFilesPolicy`/`FileCasePolicy`
+moved from the App target into `ROMForgeCore` so `RebuildPlanner` can plan directly from them.
+
 ### Added — Fase 2 Step 4 "Split" direction: Strip Redundant ROMs
 
 New toolbar action "Strip Redundant ROMs (Split)…" removes a rom from a clone's own archive

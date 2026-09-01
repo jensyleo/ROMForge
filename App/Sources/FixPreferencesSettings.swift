@@ -5,50 +5,7 @@
 // or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
 
 import Foundation
-
-/// How a confirmed-bad archive is handled — the "Corrupted files" three-way
-/// policy from ClrMamePro's own Fix panel (see ROADMAP.md's own review of
-/// it). Persisted as its raw string, same pattern as every other enum
-/// setting in this app.
-public enum CorruptedFilesPolicy: String, CaseIterable, Identifiable, Sendable {
-    case dontTouch
-    case delete
-    case moveTo
-
-    public var id: String { rawValue }
-
-    public var title: String {
-        switch self {
-        case .dontTouch: return "Don't Touch"
-        case .delete: return "Delete"
-        case .moveTo: return "Move to…"
-        }
-    }
-}
-
-/// How a rename target's case is chosen — applied independently to
-/// archive-level names ("Sets case") and entry-level names inside an
-/// archive ("Roms case"). "Datafile case" means: whatever case the DAT's
-/// own declared name already uses, verbatim — distinct from "Don't touch"
-/// (leave the existing on-disk name's case alone, even if it disagrees with
-/// the DAT).
-public enum FileCasePolicy: String, CaseIterable, Identifiable, Sendable {
-    case dontTouch
-    case uppercase
-    case lowercase
-    case datafileCase
-
-    public var id: String { rawValue }
-
-    public var title: String {
-        switch self {
-        case .dontTouch: return "Don't Touch"
-        case .uppercase: return "Uppercase"
-        case .lowercase: return "Lowercase"
-        case .datafileCase: return "Datafile Case"
-        }
-    }
-}
+import ROMForgeCore
 
 /// Every persisted preference behind the Settings → "Fix" tab (Fase 2 Step
 /// 5) — one flat namespace of `UserDefaults` keys, same shape as every
@@ -62,12 +19,15 @@ public enum FileCasePolicy: String, CaseIterable, Identifiable, Sendable {
 public enum FixPreferencesSettings {
     // MARK: - Wired to a real action
 
-    /// Runs `ZipIntegrityAuditor` as a Fix pre-pass. **Not yet connected**
-    /// — `ZipIntegrityAuditor` operates on the flat, entry-based
-    /// `AuditReport` (Fase 1's read-only audit), while `fix()` operates on
-    /// `MatchReport` (the per-rom match result Fase 2 writes from); bridging
-    /// the two is real work not yet done, so this toggle persists but
-    /// nothing reads it yet.
+    /// Runs `ZipIntegrityAuditor` as a `fix()` pre-pass specifically.
+    /// **Not yet connected to `fix()`** — the underlying bridge between
+    /// `AuditReport` (Fase 1's flat, entry-based read-only audit) and
+    /// `MatchReport` (`fix()`'s own input) does now exist (see
+    /// `RebuildPlanner.planCorruptedFilesPolicy`, which uses exactly this
+    /// bridge via `AuditReporter.generate(from:)`), but nothing wires THIS
+    /// toggle specifically into `fix()`'s own rename pass yet — use the
+    /// standalone "Handle Corrupted Files…" toolbar action
+    /// (`corruptedFilesPolicyKey` below) to act on corrupted files today.
     public static let testArchivesKey = "fixPreferences.testArchives"
     public static let testArchivesDefault = false
 
@@ -94,9 +54,12 @@ public enum FixPreferencesSettings {
     public static let removeUselessFilesDefault = false
 
     /// What happens to a file `ZipIntegrityAuditor` confirms is internally
-    /// corrupt (local-header/central-directory CRC mismatch). **Not yet
-    /// connected** — blocked on the same `AuditReport`/`MatchReport`
-    /// bridging gap as `testArchivesKey` above.
+    /// corrupt (local-header/central-directory CRC mismatch) — **wired**:
+    /// `LibraryViewModel.applyCorruptedFilesPolicy(system:)` +
+    /// `RebuildPlanner.planCorruptedFilesPolicy`, via the standalone
+    /// "Handle Corrupted Files…" toolbar action (always confirms
+    /// regardless of this toggle's own value — same relationship every
+    /// other policy toggle on this tab has with its own action).
     public static let corruptedFilesPolicyKey = "fixPreferences.corruptedFilesPolicy"
     public static let corruptedFilesPolicyDefault = CorruptedFilesPolicy.moveTo
     /// Destination folder path for `.moveTo` — this app doesn't run

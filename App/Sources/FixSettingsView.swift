@@ -5,6 +5,7 @@
 // or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
 
 import AppKit
+import ROMForgeCore
 import SwiftUI
 
 /// Settings → "Fix" tab — Fase 2 Step 5. Parallels ClrMamePro's own
@@ -83,7 +84,7 @@ struct FixSettingsView: View {
                         Button("Choose…") { chooseCorruptedFilesFolder() }
                     }
                 }
-                Text("Only takes effect when \"Test archives before fixing\" above is on — this policy applies to whatever that pass flags as internally inconsistent. \"Move to\" (the default) is reversible; \"Delete\" asks for a one-time confirmation the first time you switch to it.")
+                Text("Applied by the toolbar's own \"Fix\" dropdown → \"Handle Corrupted Files…\", which always confirms before touching anything (regardless of \"Test archives before fixing\" above, which is a separate, not-yet-connected pre-pass toggle). \"Move to\" needs a folder chosen above; \"Delete\" permanently removes the entry from its archive.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -99,8 +100,7 @@ struct FixSettingsView: View {
                         Text(policy.title).tag(policy)
                     }
                 }
-                .disabled(true)
-                Text("\"Sets case\" not yet connected — reuses the rename machinery above once it's wired to a real action. \"Roms case\" additionally needs the same central-directory rewrite noted elsewhere on this tab.")
+                Text("Applied by the toolbar's own \"Fix\" dropdown → \"Apply Case Policy…\", which always confirms before renaming anything and respects whichever policy is chosen here for each of the two independently. \"Sets case\" only applies to a zip-per-game archive's own filename; \"Roms case\" only applies to a rom entry living inside a zip.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -431,6 +431,44 @@ private extension View {
             Text("Each rom is confirmed present, correctly, in its own parent set's archive — removing it from the clone relies on that parent archive being available whenever this clone is used.")
         }
     }
+
+    /// Fase 2 Step 9's own confirmation dialog, its own separate modifier
+    /// for the same reason `fase2Step4SplitConfirmation` above is.
+    func applyCasePolicyConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Rename \(count) Item\(count == 1 ? "" : "s") for Case Policy?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Rename", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Applies the \"Sets case\"/\"Roms case\" policy configured in Settings → Fix. Only the name changes — every rom's own content is untouched.")
+        }
+    }
+
+    /// Fase 2 Step 8's own confirmation dialog, its own separate modifier
+    /// for the same reason `fase2Step4SplitConfirmation` above is.
+    func handleCorruptedFilesConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Handle \(count) Corrupted File\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Handle", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Applies the \"Corrupted files\" policy configured in Settings → Fix (Delete or Move to a quarantine folder) to every rom confirmed internally corrupt.")
+        }
+    }
 }
 
 struct LibraryDetailView: View {
@@ -1160,6 +1198,15 @@ struct LibraryDetailView: View {
     /// (see its own doc comment).
     @State private var convertToSplitCount = 0
     @State private var showConvertToSplitConfirmation = false
+    /// Fase 2 Step 9 "Apply Case Policy…" state — same preview-then-confirm
+    /// shape, own separate confirmation modifier for the same reason.
+    @State private var applyCasePolicyCount = 0
+    @State private var showApplyCasePolicyConfirmation = false
+    /// Fase 2 Step 8 "Handle Corrupted Files…" state — same preview-then-
+    /// confirm shape, own separate confirmation modifier for the same
+    /// reason.
+    @State private var handleCorruptedFilesCount = 0
+    @State private var showHandleCorruptedFilesConfirmation = false
     /// Which "ROM folder" row is currently being ⌘-dragged, if any — see
     /// `ColumnPresetsPanel.draggingName`'s own doc comment
     /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
@@ -1352,6 +1399,32 @@ struct LibraryDetailView: View {
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startConvertToSplit()
+            },
+            // Fase 2 Step 9: renames archive filenames ("Sets case") and/or
+            // rom entry names ("Roms case") to match whichever policy is
+            // configured for each in Settings → Fix. Either half is a
+            // no-op if its own policy there is "Don't Touch".
+            ToolbarAction(
+                id: "applyCasePolicy", title: "Apply Case Policy…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Rename archive filenames and/or rom entries to match the case policy configured in Settings → Fix"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startApplyCasePolicy()
+            },
+            // Fase 2 Step 8: applies whichever "Corrupted files" policy is
+            // configured in Settings → Fix to every rom
+            // `ZipIntegrityAuditor` confirms is internally corrupt (see
+            // `RebuildPlanner.planCorruptedFilesPolicy`'s own doc comment).
+            ToolbarAction(
+                id: "handleCorruptedFiles", title: "Handle Corrupted Files…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Apply the \"Corrupted files\" policy configured in Settings → Fix to every internally-corrupt rom"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startHandleCorruptedFiles()
             },
             // Fase 2 Step 7: permanently deletes every file the DAT
             // recognizes nothing about at all (today's "surplus"/unknown-
@@ -1691,6 +1764,16 @@ struct LibraryDetailView: View {
             count: convertToSplitCount,
             onConfirm: commitConvertToSplit
         )
+        .applyCasePolicyConfirmation(
+            isPresented: $showApplyCasePolicyConfirmation,
+            count: applyCasePolicyCount,
+            onConfirm: commitApplyCasePolicy
+        )
+        .handleCorruptedFilesConfirmation(
+            isPresented: $showHandleCorruptedFilesConfirmation,
+            count: handleCorruptedFilesCount,
+            onConfirm: commitHandleCorruptedFiles
+        )
     }
 
     @ViewBuilder
@@ -1799,6 +1882,36 @@ struct LibraryDetailView: View {
 
     private func commitConvertToSplit() {
         Task { await viewModel.convertToSplit(system: system) }
+    }
+
+    /// Previews the rename count before showing the confirmation dialog —
+    /// same dry-run-before-write caution as every other Fase 2 action.
+    private func startApplyCasePolicy() {
+        applyCasePolicyCount = viewModel.planApplyCasePolicyPreviewCount()
+        guard applyCasePolicyCount > 0 else {
+            viewModel.logWarning("Nothing to rename — every set/rom already matches its configured case policy (or both policies are \"Don't Touch\").")
+            return
+        }
+        showApplyCasePolicyConfirmation = true
+    }
+
+    private func commitApplyCasePolicy() {
+        Task { await viewModel.applyCasePolicy(system: system) }
+    }
+
+    /// Previews the count before showing the confirmation dialog — same
+    /// dry-run-before-write caution as every other Fase 2 action.
+    private func startHandleCorruptedFiles() {
+        handleCorruptedFilesCount = viewModel.planCorruptedFilesPolicyPreviewCount()
+        guard handleCorruptedFilesCount > 0 else {
+            viewModel.logWarning("Nothing to handle — no internally-corrupt rom found, or the configured policy has nothing to do.")
+            return
+        }
+        showHandleCorruptedFilesConfirmation = true
+    }
+
+    private func commitHandleCorruptedFiles() {
+        Task { await viewModel.applyCorruptedFilesPolicy(system: system) }
     }
 
     private var header: some View {

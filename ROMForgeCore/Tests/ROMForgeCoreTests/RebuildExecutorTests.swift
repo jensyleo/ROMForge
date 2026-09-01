@@ -611,4 +611,174 @@ struct RebuildExecutorTests {
 
         #expect(RebuildPlanner.planConvertToSplit(matchReport: matchReport).isEmpty)
     }
+
+    // MARK: - Case policy (Fase 2 Step 9)
+
+    @Test("renames a zip-per-game archive's own filename to uppercase, leaving its extension and contents untouched")
+    func setsCasePolicyUppercasesArchiveFilename() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("lowercase-game.zip")
+        try makeZip(at: zipURL, entries: [("a.bin", "content")])
+
+        let rom = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Lowercase Game", description: "Lowercase Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "a.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        let operations = RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: .uppercase)
+        let expectedURL = root.appendingPathComponent("LOWERCASE-GAME.zip")
+        #expect(operations == [.rename(from: zipURL, to: expectedURL)])
+
+        try RebuildExecutor.execute(operations)
+        #expect(!FileManager.default.fileExists(atPath: zipURL.path))
+        #expect(FileManager.default.fileExists(atPath: expectedURL.path))
+        let archive = try Archive(url: expectedURL, accessMode: .read)
+        #expect(archive["a.bin"] != nil, "contents must survive the rename untouched")
+    }
+
+    @Test("never plans a sets-case rename when the policy is dontTouch or the name already matches")
+    func setsCasePolicyDontTouchAndAlreadyMatchingProduceNoOperations() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("ALREADY-UPPER.zip")
+        try makeZip(at: zipURL, entries: [("a.bin", "content")])
+        let rom = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Already Upper", description: "Already Upper", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "a.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        #expect(RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: .dontTouch).isEmpty)
+        #expect(RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: .uppercase).isEmpty, "already uppercase — nothing to rename")
+    }
+
+    @Test("renames a rom entry inside a zip to lowercase via add-then-remove, preserving content and siblings")
+    func romsCasePolicyLowercasesEntryName() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("game.zip")
+        try makeZip(at: zipURL, entries: [("UPPER.BIN", "the-content"), ("sibling.bin", "sibling-content")])
+
+        let rom = DATRom(name: "UPPER.BIN", size: 1, crc: nil, md5: nil, sha1: nil)
+        let siblingRom = DATRom(name: "sibling.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom, siblingRom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "UPPER.BIN", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let siblingFile = HashedFile(file: ScannedFile(url: zipURL, name: "sibling.bin", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [
+                RomMatch(rom: rom, status: .correct(hashedFile)),
+                RomMatch(rom: siblingRom, status: .correct(siblingFile)),
+            ])],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planApplyRomsCasePolicy(matchReport: matchReport, policy: .lowercase)
+        #expect(operations == [
+            .addEntryToZip(targetArchive: zipURL, entryName: "upper.bin", source: ArchiveEntrySource(source: zipURL, entryName: "upper.bin", sourceArchiveEntryName: "UPPER.BIN")),
+            .removeEntryFromZip(archive: zipURL, entryName: "UPPER.BIN"),
+        ])
+        try RebuildExecutor.execute(operations)
+
+        let archive = try Archive(url: zipURL, accessMode: .read)
+        #expect(archive["UPPER.BIN"] == nil)
+        #expect(archive["sibling.bin"] != nil, "the untouched sibling entry must survive")
+        guard let renamed = archive["upper.bin"] else {
+            Issue.record("zip should now contain the lowercased entry")
+            return
+        }
+        var extracted = Data()
+        _ = try archive.extract(renamed) { extracted.append($0) }
+        #expect(String(data: extracted, encoding: .utf8) == "the-content")
+    }
+
+    // MARK: - Corrupted files policy (Fase 2 Step 8)
+
+    /// Same technique `ZipLocalHeaderCRCVerifierTests` uses: flip one bit of
+    /// the very first local header's own CRC32 field (byte offset 14 from
+    /// the start of the file — true for any single-entry archive,
+    /// TorrentZip or plain ZIPFoundation) without touching the central
+    /// directory, producing the exact "something edited one copy and not
+    /// the other" internal mismatch `ZipIntegrityAuditor` exists to catch.
+    private func corruptLocalHeaderCRC(at url: URL) throws {
+        var data = try Data(contentsOf: url)
+        data[14] = data[14] ^ 0xFF
+        try data.write(to: url)
+    }
+
+    @Test("corrupted files policy .delete removes the flagged entry, siblings in other archives untouched")
+    func corruptedFilesPolicyDeleteRemovesFlaggedEntry() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("game.zip")
+        try makeZip(at: zipURL, entries: [("foo.bin", "content")])
+        try corruptLocalHeaderCRC(at: zipURL)
+
+        let rom = DATRom(name: "foo.bin", size: 7, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "foo.bin", size: 7), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        let groups = RebuildPlanner.planCorruptedFilesPolicy(matchReport: matchReport, policy: .delete, quarantineFolder: nil)
+        #expect(groups == [[.removeEntryFromZip(archive: zipURL, entryName: "foo.bin")]])
+
+        for group in groups { try RebuildExecutor.execute(group) }
+        let archive = try Archive(url: zipURL, accessMode: .read)
+        #expect(archive["foo.bin"] == nil)
+    }
+
+    @Test("corrupted files policy .moveTo extracts the entry to the quarantine folder, then removes it")
+    func corruptedFilesPolicyMoveToQuarantinesEntry() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("game.zip")
+        try makeZip(at: zipURL, entries: [("foo.bin", "content")])
+        try corruptLocalHeaderCRC(at: zipURL)
+        let quarantine = root.appendingPathComponent("quarantine")
+
+        let rom = DATRom(name: "foo.bin", size: 7, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "foo.bin", size: 7), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        let groups = RebuildPlanner.planCorruptedFilesPolicy(matchReport: matchReport, policy: .moveTo, quarantineFolder: quarantine)
+        #expect(groups.count == 1)
+        #expect(groups[0].count == 2)
+
+        for group in groups { try RebuildExecutor.execute(group) }
+        let archive = try Archive(url: zipURL, accessMode: .read)
+        #expect(archive["foo.bin"] == nil, "the flagged entry must be gone from the archive")
+        #expect(FileManager.default.fileExists(atPath: quarantine.appendingPathComponent("game_foo.bin").path), "the quarantined copy must exist")
+    }
+
+    @Test("corrupted files policy plans nothing for .dontTouch or when no archive is actually corrupted")
+    func corruptedFilesPolicyNoOpCases() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("game.zip")
+        try makeZip(at: zipURL, entries: [("foo.bin", "content")])
+        try corruptLocalHeaderCRC(at: zipURL)
+
+        let rom = DATRom(name: "foo.bin", size: 7, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "foo.bin", size: 7), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let corruptedReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        #expect(RebuildPlanner.planCorruptedFilesPolicy(matchReport: corruptedReport, policy: .dontTouch, quarantineFolder: nil).isEmpty)
+
+        // A second, genuinely clean archive — nothing should be flagged.
+        let cleanZipURL = root.appendingPathComponent("clean.zip")
+        try makeZip(at: cleanZipURL, entries: [("bar.bin", "content")])
+        let cleanRom = DATRom(name: "bar.bin", size: 7, crc: nil, md5: nil, sha1: nil)
+        let cleanGame = DATGame(name: "clean", description: "Clean", cloneOf: nil, romOf: nil, roms: [cleanRom])
+        let cleanHashedFile = HashedFile(file: ScannedFile(url: cleanZipURL, name: "bar.bin", size: 7), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let cleanReport = MatchReport(games: [GameMatchResult(game: cleanGame, matches: [RomMatch(rom: cleanRom, status: .correct(cleanHashedFile))])], surplusFiles: [])
+
+        #expect(RebuildPlanner.planCorruptedFilesPolicy(matchReport: cleanReport, policy: .delete, quarantineFolder: nil).isEmpty)
+    }
 }
