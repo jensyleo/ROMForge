@@ -18,6 +18,11 @@ Publicar GitHub/
 # Local-only pending-task list (never published)
 TODO.md
 
+# Local-only Spanish translation of TESTING.md for jensyleo's own manual
+# testing — repo docs stay English-only for publishing; TESTING.md itself
+# is the tracked, English source of truth.
+TESTING.es.md
+
 # Secrets / local environment
 .env
 .env.*
