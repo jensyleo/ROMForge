@@ -156,22 +156,31 @@ public enum RebuildPlanner {
     /// its own explicit confirmation, separate from the general write-access
     /// gate (`LibraryViewModel.modificationsEnabled`).
     ///
-    /// A surplus entry living INSIDE a `.zip`/`.7z` is excluded entirely,
-    /// never planned as a `.delete` — jensyleo's own report (2026-09-01),
-    /// caught before any real-ROM testing: `SurplusFile.file.file.url` for
-    /// an archived entry is the containing archive's OWN path (see
-    /// `CollectionHasher`'s own construction of a zip/7z-entry
-    /// `ScannedFile`), so deleting it would permanently destroy the WHOLE
-    /// archive — including every OTHER, legitimately-needed rom sitting
-    /// next to that one unrecognized entry. Removing a single entry from
-    /// inside an otherwise-kept archive needs a central-directory rewrite
-    /// not built yet (same gap "Remove useless roms" in Settings → Fix is
-    /// honestly marked "not yet connected" for) — until then, only a
-    /// genuinely loose surplus file is ever safe to plan here.
+    /// A surplus entry living INSIDE a `.zip` is removed as just that one
+    /// entry (`.removeEntryFromZip`), never as a `.delete` of the whole
+    /// archive — jensyleo's own report (2026-09-01), caught before any
+    /// real-ROM testing: `SurplusFile.file.file.url` for an archived entry
+    /// is the containing archive's OWN path (see `CollectionHasher`'s own
+    /// construction of a zip-entry `ScannedFile`), so a plain `.delete` on
+    /// it would have permanently destroyed the WHOLE archive — including
+    /// every OTHER, legitimately-needed rom sitting next to that one
+    /// unrecognized entry. `.removeEntryFromZip` uses ZIPFoundation's
+    /// `.update` access mode to remove exactly that one entry and nothing
+    /// else. A `.7z`-sourced surplus entry is still excluded entirely — no
+    /// 7z-entry removal support (`SevenZipRunner` doesn't expose one).
     public static func planRemoveUselessFiles(matchReport: MatchReport) -> [RebuildOperation] {
         matchReport.surplusFiles
-            .filter { $0.requiredByGameDescription == nil && !$0.matchesNodumpRomName && !isArchivePath($0.file.file.url) }
-            .map { .delete($0.file.file.url) }
+            .filter { $0.requiredByGameDescription == nil && !$0.matchesNodumpRomName }
+            .compactMap { surplus in
+                let url = surplus.file.file.url
+                if isZipPath(url) {
+                    return .removeEntryFromZip(archive: url, entryName: surplus.file.file.name)
+                } else if isArchivePath(url) {
+                    return nil
+                } else {
+                    return .delete(url)
+                }
+            }
     }
 
     /// Where a game's rom collection actually lives — the base every

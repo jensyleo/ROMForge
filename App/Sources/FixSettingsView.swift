@@ -50,7 +50,7 @@ struct FixSettingsView: View {
                     .foregroundStyle(.secondary)
                 Toggle("Rename roms inside archives", isOn: $renameRoms)
                     .disabled(true)
-                Text("Not yet connected — renaming an entry inside a ZIP needs rewriting its central directory in place, not a simple filesystem rename.")
+                Text("Not yet connected — no action reads this toggle yet, even though the underlying ZIP remove/add capability it would need already exists (see \"Remove useless roms inside archives\" below, which does use it).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -61,8 +61,7 @@ struct FixSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Remove useless roms inside archives", isOn: $removeUselessRoms)
-                    .disabled(true)
-                Text("Not yet connected — needs the same central-directory rewrite \"Rename roms inside archives\" above is blocked on.")
+                Text("Same underlying action as the toggle above — \"Remove Useless Files…\" already removes a zip-internal unrecognized entry without touching anything else in that archive. Kept as its own toggle to mirror ClrMamePro's own panel; there's nothing to configure differently between the two yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

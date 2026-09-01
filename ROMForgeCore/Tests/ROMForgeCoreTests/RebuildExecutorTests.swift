@@ -309,8 +309,8 @@ struct RebuildExecutorTests {
         #expect(String(data: extracted, encoding: .utf8) == "AAAA-content", "must be that entry's own content, not the whole source zip's bytes")
     }
 
-    @Test("never plans a delete for a surplus file living inside a zip (would destroy the whole archive)")
-    func neverPlansDeleteForZipSourcedSurplusFile() throws {
+    @Test("removes only the unrecognized entry from inside a zip, never the whole archive")
+    func removesOnlyUnrecognizedEntryFromZip() throws {
         let root = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -321,10 +321,27 @@ struct RebuildExecutorTests {
         let matchReport = MatchReport(games: [], surplusFiles: [surplusInZip])
 
         let operations = RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport)
-        #expect(operations.isEmpty, "a zip-sourced surplus entry must never be planned for deletion — no entry-level delete support yet")
+        #expect(operations == [.removeEntryFromZip(archive: zipURL, entryName: "junk.bin")])
 
         try RebuildExecutor.execute(operations)
-        #expect(FileManager.default.fileExists(atPath: zipURL.path), "the archive, and every OTHER rom inside it, must survive untouched")
+        #expect(FileManager.default.fileExists(atPath: zipURL.path), "the archive itself must survive")
+        let archive = try Archive(url: zipURL, accessMode: .read)
+        #expect(archive["junk.bin"] == nil, "the unrecognized entry must be gone")
+        #expect(archive["needed.bin"] != nil, "every OTHER rom in the same archive must survive untouched")
+    }
+
+    @Test("still excludes a 7z-sourced surplus entry entirely — no 7z-entry removal support")
+    func excludesSevenZipSourcedSurplusFile() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sevenZipURL = root.appendingPathComponent("mixed.7z")
+        try Data("fake 7z content".utf8).write(to: sevenZipURL)
+
+        let surplusInSevenZip = SurplusFile(file: HashedFile(file: ScannedFile(url: sevenZipURL, name: "junk.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")))
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusInSevenZip])
+
+        #expect(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport).isEmpty)
     }
 
     // MARK: - Cross-set repair (Fase 2 Step 3)

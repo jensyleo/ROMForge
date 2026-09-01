@@ -66,4 +66,13 @@ public enum RebuildOperation: Equatable, Sendable {
     /// this one already exists and every other entry in it must survive
     /// untouched.
     case addEntryToZip(targetArchive: URL, entryName: String, source: ArchiveEntrySource)
+    /// Removes one entry from an EXISTING `.zip`, leaving every other entry
+    /// in it untouched — "Remove useless roms" (Fase 2 Step 7, entry-level)
+    /// and the entry-removal half of "Rename roms inside archives" (Step
+    /// 6). Uses ZIPFoundation's `.update` access mode + `Archive.remove(_:)`
+    /// — jensyleo's own find (2026-09-01, after the whole-archive-deletion
+    /// bug was caught): the entry-removal capability this whole area was
+    /// originally documented as blocked on already exists in the ZIP
+    /// library this app already depends on for `.addEntryToZip`.
+    case removeEntryFromZip(archive: URL, entryName: String)
 }

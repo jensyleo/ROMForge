@@ -4,6 +4,16 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added — Fase 2 Step 7 completed: entry-level "Remove Useless Files"
+
+Closed a gap from earlier in this same unreleased cycle: a zip-internal unrecognized entry was
+being excluded entirely from "Remove Useless Files…" (a conservative choice at the time, since
+whole-archive-only deletion was the only capability available). New `RebuildOperation
+.removeEntryFromZip` uses ZIPFoundation's `Archive.remove(_:)` under `.update` access mode to
+remove exactly that one entry — every other rom sharing the same archive is untouched. Settings
+→ Fix's "Remove useless roms inside archives" toggle is now accurate (previously honestly
+marked "not yet connected").
+
 ### Added — Fase 2 Step 4: Make Self-Contained (non-merged direction)
 
 New toolbar action "Make Self-Contained…" copies in every rom the matcher already found

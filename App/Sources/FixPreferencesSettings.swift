@@ -86,6 +86,13 @@ public enum FixPreferencesSettings {
     /// Files…" toolbar action) — this toggle only exists so the *auto*-Fix
     /// pass can optionally skip prompting for it every single time; the
     /// standalone toolbar action always confirms regardless of this value.
+    /// That same action already covers BOTH loose files and a zip-internal
+    /// entry uniformly (`RebuildPlanner.planRemoveUselessFiles` routes each
+    /// through `.delete`/`.removeEntryFromZip` as appropriate) — there's no
+    /// separate toggle to gate the archive-entry half specifically, unlike
+    /// `renameRomsKey` below (renaming an archive entry needs different
+    /// underlying machinery than renaming a loose file; removing one
+    /// doesn't).
     public static let removeUselessFilesKey = "fixPreferences.removeUselessFiles"
     public static let removeUselessFilesDefault = false
 
@@ -101,20 +108,27 @@ public enum FixPreferencesSettings {
     /// user-picked folder setting here.
     public static let corruptedFilesMoveToPathKey = "fixPreferences.corruptedFilesMoveToPath"
 
-    // MARK: - Shell only — not yet connected to any real action
-
-    /// Rewriting a ZIP's own central directory to rename one entry in place
-    /// — needs new low-level ZIP-writing code beyond what `TorrentZipWriter`
-    /// exposes today. **Not yet connected.**
-    public static let renameRomsKey = "fixPreferences.renameRoms"
-    public static let renameRomsDefault = false
-
-    /// Same delete action as `removeUselessFilesKey`, but for one entry
-    /// inside an otherwise-kept archive rather than a whole loose file —
-    /// needs the same central-directory rewrite `renameRomsKey` is blocked
-    /// on. **Not yet connected.**
+    /// Same underlying action as `removeUselessFilesKey` above — that
+    /// toggle's own action already covers a zip-internal entry as well as
+    /// a whole loose file, via `RebuildOperation.removeEntryFromZip`
+    /// (`Archive.remove(_:)` under ZIPFoundation's `.update` access mode).
+    /// Kept as its own separate `@AppStorage` key only to mirror
+    /// ClrMamePro's own panel having two separate checkboxes here — there's
+    /// no plan to actually gate anything differently between the two.
     public static let removeUselessRomsKey = "fixPreferences.removeUselessRoms"
     public static let removeUselessRomsDefault = false
+
+    // MARK: - Shell only — not yet connected to any real action
+
+    /// Renaming one entry INSIDE a zip in place (remove the old name, add
+    /// the same bytes back under the new one) is now technically possible —
+    /// `Archive.remove(_:)`/`.addEntry` (ZIPFoundation, `.update` access
+    /// mode) are exactly what Step 3/4/7's own archive-entry operations
+    /// already use — but no planner function actually does this yet (no
+    /// `RebuildPlanner.planRenameRomsInArchive` exists to wire this toggle
+    /// to). **Not yet connected.**
+    public static let renameRomsKey = "fixPreferences.renameRoms"
+    public static let renameRomsDefault = false
 
     /// Searching user-configured "scavenging" folders for a same-hash file
     /// before reporting a rom missing — needs a new scavenging-folder-list

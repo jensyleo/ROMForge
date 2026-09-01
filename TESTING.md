@@ -636,15 +636,19 @@ suite.
       (`zip <game>.zip somejunk.txt`) — scan, confirm it's flagged as
       surplus/unrecognized same as above, then run "Remove Useless
       Files…" again.
-- [ ] Confirm the preview count for THIS run does **NOT** include that
-      zip-internal junk entry (it should be silently excluded — no
-      entry-level delete support yet, see CHANGELOG's "critical" fix entry)
-      — and after confirming, verify with `unzip -l <game>.zip` that the
-      zip, the junk entry, AND every real rom next to it are **all still
-      there, completely untouched**. This is the single most important
-      check in this whole section: a wrong result here would mean the fix
-      didn't hold and a real collection's `.zip` could be destroyed by this
-      action.
+- [ ] Confirm the preview count for THIS run DOES include that zip-internal
+      junk entry (entry-level removal is supported — `Archive.remove(_:)`
+      under ZIPFoundation's `.update` access mode). Confirm it, then verify
+      with `unzip -l <game>.zip`:
+  - [ ] The junk entry is **gone**.
+  - [ ] Every real rom that was already in that zip is **still there,
+        completely untouched** (same CRCs as before). This is the single
+        most important check in this whole section: a wrong result here
+        would mean an unrelated rom got corrupted or lost while removing
+        the one entry next to it.
+  - [ ] The zip file itself still opens correctly (Finder double-click,
+        `unzip -l`) — a valid archive, not corrupted by the in-place
+        rewrite.
 
 ### 11.6 Make Self-Contained (Step 4 — "non-merged" direction only)
 - [ ] Using the same parent/clone pair from 11.4, this time in the OTHER

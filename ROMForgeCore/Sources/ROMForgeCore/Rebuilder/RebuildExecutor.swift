@@ -40,6 +40,34 @@ public enum RebuildExecutor {
             try fileManager.removeItem(at: target)
         case .addEntryToZip(let targetArchive, let entryName, let source):
             try addEntryToZip(targetArchive: targetArchive, entryName: entryName, source: source, fileManager: fileManager)
+        case .removeEntryFromZip(let archiveURL, let entryName):
+            try removeEntryFromZip(archive: archiveURL, entryName: entryName, fileManager: fileManager)
+        }
+    }
+
+    /// Removes one entry from an EXISTING `.zip` — see
+    /// `RebuildOperation.removeEntryFromZip`'s own doc comment.
+    private static func removeEntryFromZip(
+        archive archiveURL: URL,
+        entryName: String,
+        fileManager: FileManager
+    ) throws {
+        guard fileManager.fileExists(atPath: archiveURL.path) else {
+            throw RebuildError.sourceMissing(archiveURL)
+        }
+        let archive: Archive
+        do {
+            archive = try Archive(url: archiveURL, accessMode: .update)
+        } catch {
+            throw RebuildError.underlying("Could not open ZIP archive for update at \(archiveURL.path)")
+        }
+        guard let entry = archive[entryName] else {
+            throw RebuildError.sourceMissing(archiveURL.appendingPathComponent(entryName))
+        }
+        do {
+            try archive.remove(entry)
+        } catch {
+            throw RebuildError.underlying(error.localizedDescription)
         }
     }
 
