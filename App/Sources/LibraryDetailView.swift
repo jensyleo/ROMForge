@@ -469,6 +469,28 @@ private extension View {
             Text("Applies the \"Corrupted files\" policy configured in Settings → Fix (Delete or Move to a quarantine folder) to every rom confirmed internally corrupt.")
         }
     }
+
+    /// Fase 2 Step 4 (Merged direction)'s own confirmation dialog, its own
+    /// separate modifier for the same reason `fase2Step4SplitConfirmation`
+    /// above is. Its own wording is deliberately more explicit than every
+    /// other Fase 2 confirmation — this is the only action that deletes a
+    /// WHOLE archive rather than one entry inside it.
+    func convertToMergedConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Merge \(count) Clone\(count == 1 ? "" : "s") Into Their Parent — Deleting Each Clone's Own Archive?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Merge and Delete", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each clone's own unique roms are copied into its parent's archive FIRST — the clone's own archive is only deleted afterward, and only if every one of its roms was copied successfully. A clone whose migration fails partway through is left completely untouched.")
+        }
+    }
 }
 
 struct LibraryDetailView: View {
@@ -1207,6 +1229,11 @@ struct LibraryDetailView: View {
     /// reason.
     @State private var handleCorruptedFilesCount = 0
     @State private var showHandleCorruptedFilesConfirmation = false
+    /// Fase 2 Step 4 "Merge Clones (Merged)…" state — same preview-then-
+    /// confirm shape, own separate confirmation modifier for the same
+    /// reason.
+    @State private var convertToMergedCount = 0
+    @State private var showConvertToMergedConfirmation = false
     /// Which "ROM folder" row is currently being ⌘-dragged, if any — see
     /// `ColumnPresetsPanel.draggingName`'s own doc comment
     /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
@@ -1425,6 +1452,22 @@ struct LibraryDetailView: View {
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startHandleCorruptedFiles()
+            },
+            // Fase 2 Step 4, "Merged" direction — the only Fase 2 action
+            // that deletes a WHOLE archive rather than one entry inside
+            // it. Safe by construction, not by a separate check: each
+            // clone's own delete is the LAST operation in its own group
+            // (see `RebuildPlanner.planConvertToMerged`'s own doc
+            // comment), so it only ever runs once every rom that clone
+            // needed migrated into its parent has already succeeded.
+            ToolbarAction(
+                id: "convertToMerged", title: "Merge Clones (Merged)…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Fold each clone's own unique roms into its parent's archive, then delete the clone's whole archive"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startConvertToMerged()
             },
             // Fase 2 Step 7: permanently deletes every file the DAT
             // recognizes nothing about at all (today's "surplus"/unknown-
@@ -1774,6 +1817,11 @@ struct LibraryDetailView: View {
             count: handleCorruptedFilesCount,
             onConfirm: commitHandleCorruptedFiles
         )
+        .convertToMergedConfirmation(
+            isPresented: $showConvertToMergedConfirmation,
+            count: convertToMergedCount,
+            onConfirm: commitConvertToMerged
+        )
     }
 
     @ViewBuilder
@@ -1912,6 +1960,21 @@ struct LibraryDetailView: View {
 
     private func commitHandleCorruptedFiles() {
         Task { await viewModel.applyCorruptedFilesPolicy(system: system) }
+    }
+
+    /// Previews the merge count before showing the confirmation dialog —
+    /// same dry-run-before-write caution as every other Fase 2 action.
+    private func startConvertToMerged() {
+        convertToMergedCount = viewModel.planConvertToMergedPreviewCount()
+        guard convertToMergedCount > 0 else {
+            viewModel.logWarning("Nothing to merge — no clone in this scan qualifies (see the toolbar action's own help text for what disqualifies one).")
+            return
+        }
+        showConvertToMergedConfirmation = true
+    }
+
+    private func commitConvertToMerged() {
+        Task { await viewModel.convertToMerged(system: system) }
     }
 
     private var header: some View {

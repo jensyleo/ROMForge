@@ -762,7 +762,42 @@ suite.
 - [ ] Confirm setting the policy to **Don't Touch** and running the action
       again reports a 0 count and makes no changes.
 
-### 11.11 Settings → Fix tab
+### 11.11 Merge Clones — Merged direction (Step 4, the last remaining direction)
+
+⚠️ This is the only Fase 2 action that deletes a WHOLE archive, not just
+one entry. Work on your disposable scratch copy — never your real
+collection — for this one especially.
+
+- [ ] Using your parent/clone pair, confirm the CLONE has at least one rom
+      that's genuinely its OWN (not shared with the parent) still
+      physically in its own zip.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Merge Clones (Merged)…"**.
+- [ ] Confirm the preview count is accurate, read the confirmation
+      dialog's own wording carefully, then confirm it.
+- [ ] Rescan, then:
+  - [ ] Confirm the CLONE's own `.zip` file is now **completely gone** from
+        disk.
+  - [ ] `unzip -l parent.zip` — confirm the parent's zip now contains BOTH
+        its own original roms AND the clone's own unique rom(s), and that
+        every CRC matches what it was before (content preserved exactly).
+  - [ ] Confirm the clone still shows as matched in the Games table
+        (now via whatever status your build shows for "found in parent's
+        archive" — `.foundElsewhere` — since it has no archive of its own
+        anymore).
+- [ ] Separately, test the safety guarantee directly: pick a DIFFERENT
+      clone, and before merging, manually add an entry to the PARENT's own
+      zip using the exact name one of that clone's own unique roms would
+      need (`zip parent.zip -j /path/to/some/unrelated/file` renamed to
+      collide). Run "Merge Clones (Merged)…" again.
+  - [ ] Confirm the log reports that clone's own merge FAILED (not
+        succeeded).
+  - [ ] Confirm that clone's own `.zip` file **still exists**, completely
+        untouched — the whole point of the ordering safety design.
+  - [ ] Confirm the parent's zip is unchanged except for the earlier,
+        deliberately-added colliding entry — nothing else from the clone
+        leaked in partway.
+
+### 11.12 Settings → Fix tab
 - [ ] Open Settings → **Fix** — confirm every toggle from the ROADMAP's own
       "ClrMamePro Fix panel" review is present, and that the ones marked
       "not yet connected" in the UI's own caption text are visibly

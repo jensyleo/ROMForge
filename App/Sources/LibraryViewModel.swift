@@ -1539,6 +1539,62 @@ final class LibraryViewModel {
         await scan(system: system)
     }
 
+    /// How many clones "Merge Clones (Merged)…" would actually fold into
+    /// their parent and delete, without touching disk. Returns `0` before
+    /// any scan has run. See `RebuildPlanner.planConvertToMerged`'s own
+    /// doc comment for exactly which clones qualify.
+    func planConvertToMergedPreviewCount() -> Int {
+        guard let matchReport else { return 0 }
+        return RebuildPlanner.planConvertToMerged(matchReport: matchReport).count
+    }
+
+    /// Folds every clone's own unique roms into its parent's archive, then
+    /// deletes the clone's whole archive — Fase 2 Step 4, the "Merged"
+    /// direction. Each clone's own operation GROUP (every add, THEN that
+    /// clone's own delete, listed last) is executed together — the delete
+    /// only ever runs if every add before it in the SAME group already
+    /// succeeded (see `RebuildPlanner.planConvertToMerged`'s own doc
+    /// comment for why this ordering alone is the whole safety argument,
+    /// no separate verification pass needed). A failed group means that
+    /// ONE clone's archive survives, untouched; every other clone's own
+    /// group is unaffected.
+    func convertToMerged(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("This is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            let groups = RebuildPlanner.planConvertToMerged(matchReport: matchReport)
+            var succeeded = 0
+            var failed = 0
+            for group in groups {
+                do {
+                    try RebuildExecutor.execute(group)
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Merged \(succeeded) clone(s) into their parent; \(failed) failed partway through and were left untouched (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Merged \(succeeded) clone(s) into their parent.")
+        } else {
+            logWarning("Nothing to merge — no clone in this scan qualifies (see the toolbar action's own help text for what disqualifies one).")
+        }
+        await scan(system: system)
+    }
+
     private nonisolated static let archivedRenameExtensions: Set<String> = ["zip", "7z"]
 
     private nonisolated static func partitionArchivedRenames(_ operations: [RebuildOperation]) -> (eligible: [RebuildOperation], skipped: [RebuildOperation]) {

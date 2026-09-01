@@ -781,4 +781,171 @@ struct RebuildExecutorTests {
 
         #expect(RebuildPlanner.planCorruptedFilesPolicy(matchReport: cleanReport, policy: .delete, quarantineFolder: nil).isEmpty)
     }
+
+    // MARK: - Convert to merged (Fase 2 Step 4, Merged direction)
+
+    @Test("merges a clone's own unique rom into the parent, then deletes the clone's whole archive")
+    func convertToMergedFoldsUniqueRomIntoParentThenDeletesClone() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentZip = root.appendingPathComponent("parent.zip")
+        try makeZip(at: parentZip, entries: [("parent-only.bin", "parent-only-content")])
+        let cloneZip = root.appendingPathComponent("clone.zip")
+        try makeZip(at: cloneZip, entries: [("clone-only.bin", "clone-only-content")])
+
+        let parentOnlyRom = DATRom(name: "parent-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let cloneOnlyRom = DATRom(name: "clone-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [parentOnlyRom])
+        let cloneGame = DATGame(name: "Clone", description: "Clone", cloneOf: "Parent", romOf: "Parent", roms: [cloneOnlyRom])
+
+        let parentHashedFile = HashedFile(file: ScannedFile(url: parentZip, name: "parent-only.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let cloneHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "clone-only.bin", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: parentGame, matches: [RomMatch(rom: parentOnlyRom, status: .correct(parentHashedFile))]),
+                GameMatchResult(game: cloneGame, matches: [RomMatch(rom: cloneOnlyRom, status: .correct(cloneHashedFile))]),
+            ],
+            surplusFiles: []
+        )
+
+        let groups = RebuildPlanner.planConvertToMerged(matchReport: matchReport)
+        #expect(groups.count == 1)
+        #expect(groups[0].last == .delete(cloneZip), "the clone's own delete must be the LAST operation in its group")
+
+        for group in groups { try RebuildExecutor.execute(group) }
+
+        #expect(!FileManager.default.fileExists(atPath: cloneZip.path), "the clone's whole archive must be gone")
+        let parentArchive = try Archive(url: parentZip, accessMode: .read)
+        #expect(parentArchive["parent-only.bin"] != nil, "the parent's own pre-existing rom must survive")
+        guard let migrated = parentArchive["clone-only.bin"] else {
+            Issue.record("parent's own zip should now contain the migrated \"clone-only.bin\" entry")
+            return
+        }
+        var extracted = Data()
+        _ = try archive_extract(parentArchive, migrated, into: &extracted)
+        #expect(String(data: extracted, encoding: .utf8) == "clone-only-content")
+    }
+
+    /// The critical safety case: if adding a clone's rom into the parent
+    /// fails (here, because the parent's archive already has an entry
+    /// under that exact name, from something else entirely, so
+    /// `.addEntryToZip`'s own `archive[entryName] == nil` guard throws),
+    /// `RebuildExecutor.execute(_:)` must stop at that failure — the
+    /// clone's own `.delete`, listed AFTER it in the same group, must
+    /// never run. Confirms `planConvertToMerged`'s whole safety argument
+    /// (ordering, not a separate verification pass) actually holds.
+    @Test("never deletes a clone's archive if migrating one of its roms into the parent fails")
+    func convertToMergedNeverDeletesCloneIfMigrationFails() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // The parent's zip already has an entry under the exact name the
+        // clone's own unique rom would need — the collision that makes the
+        // add step fail.
+        let parentZip = root.appendingPathComponent("parent.zip")
+        try makeZip(at: parentZip, entries: [("clone-only.bin", "unrelated-existing-content")])
+        let cloneZip = root.appendingPathComponent("clone.zip")
+        try makeZip(at: cloneZip, entries: [("clone-only.bin", "clone-only-content")])
+
+        let parentRom = DATRom(name: "unrelated.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let cloneOnlyRom = DATRom(name: "clone-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        // Parent's own DAT doesn't even declare "clone-only.bin" as one of
+        // its roms — the existing entry under that name is genuinely
+        // unrelated, exactly the "something else entirely" collision case.
+        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [parentRom])
+        let cloneGame = DATGame(name: "Clone", description: "Clone", cloneOf: "Parent", romOf: "Parent", roms: [cloneOnlyRom])
+
+        let cloneHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "clone-only.bin", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: parentGame, matches: [RomMatch(rom: parentRom, status: .missing)]),
+                GameMatchResult(game: cloneGame, matches: [RomMatch(rom: cloneOnlyRom, status: .correct(cloneHashedFile))]),
+            ],
+            surplusFiles: []
+        )
+
+        let groups = RebuildPlanner.planConvertToMerged(matchReport: matchReport)
+        #expect(groups.count == 1)
+
+        for group in groups {
+            // Mirrors how LibraryViewModel would run this: one group at a
+            // time, catching (not propagating) a failure so the rest of
+            // the scan's OTHER clones still get their own chance.
+            try? RebuildExecutor.execute(group)
+        }
+
+        #expect(FileManager.default.fileExists(atPath: cloneZip.path), "the clone's own archive must survive — its migration never fully succeeded")
+        let cloneArchive = try Archive(url: cloneZip, accessMode: .read)
+        #expect(cloneArchive["clone-only.bin"] != nil, "the clone's own rom must still be there, untouched")
+    }
+
+    @Test("skips a clone entirely when its own archive also holds an unaccounted-for surplus file")
+    func convertToMergedSkipsCloneWithSurplusFile() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentZip = root.appendingPathComponent("parent.zip")
+        try makeZip(at: parentZip, entries: [("parent-only.bin", "content")])
+        let cloneZip = root.appendingPathComponent("clone.zip")
+        try makeZip(at: cloneZip, entries: [("clone-only.bin", "content"), ("mystery-junk.bin", "junk")])
+
+        let parentOnlyRom = DATRom(name: "parent-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let cloneOnlyRom = DATRom(name: "clone-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [parentOnlyRom])
+        let cloneGame = DATGame(name: "Clone", description: "Clone", cloneOf: "Parent", romOf: "Parent", roms: [cloneOnlyRom])
+
+        let parentHashedFile = HashedFile(file: ScannedFile(url: parentZip, name: "parent-only.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let cloneHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "clone-only.bin", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "0", sha1: "0"))
+        let surplusFile = SurplusFile(file: HashedFile(file: ScannedFile(url: cloneZip, name: "mystery-junk.bin", size: 1), hash: FileHash(crc32: "cccccccc", md5: "0", sha1: "0")))
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: parentGame, matches: [RomMatch(rom: parentOnlyRom, status: .correct(parentHashedFile))]),
+                GameMatchResult(game: cloneGame, matches: [RomMatch(rom: cloneOnlyRom, status: .correct(cloneHashedFile))]),
+            ],
+            surplusFiles: [surplusFile]
+        )
+
+        #expect(RebuildPlanner.planConvertToMerged(matchReport: matchReport).isEmpty)
+    }
+
+    @Test("skips a clone entirely when it has a hash-mismatched rom in its own archive")
+    func convertToMergedSkipsCloneWithHashMismatch() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let parentZip = root.appendingPathComponent("parent.zip")
+        try makeZip(at: parentZip, entries: [("parent-only.bin", "content")])
+        let cloneZip = root.appendingPathComponent("clone.zip")
+        try makeZip(at: cloneZip, entries: [("bad.bin", "wrong-content")])
+
+        let parentOnlyRom = DATRom(name: "parent-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let badRom = DATRom(name: "bad.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let parentGame = DATGame(name: "Parent", description: "Parent", cloneOf: nil, romOf: nil, roms: [parentOnlyRom])
+        let cloneGame = DATGame(name: "Clone", description: "Clone", cloneOf: "Parent", romOf: "Parent", roms: [badRom])
+
+        let parentHashedFile = HashedFile(file: ScannedFile(url: parentZip, name: "parent-only.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let badHashedFile = HashedFile(file: ScannedFile(url: cloneZip, name: "bad.bin", size: 1), hash: FileHash(crc32: "ffffffff", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: parentGame, matches: [RomMatch(rom: parentOnlyRom, status: .correct(parentHashedFile))]),
+                GameMatchResult(game: cloneGame, matches: [RomMatch(rom: badRom, status: .hashMismatch(badHashedFile))]),
+            ],
+            surplusFiles: []
+        )
+
+        #expect(RebuildPlanner.planConvertToMerged(matchReport: matchReport).isEmpty)
+    }
+}
+
+/// Small local helper so the "fold roms into parent" test above can read
+/// an entry's content without repeating the `var data = Data(); try
+/// archive.extract(entry) { data.append($0) }` boilerplate every other
+/// test in this file already spells out inline.
+private func archive_extract(_ archive: Archive, _ entry: Entry, into data: inout Data) throws {
+    _ = try archive.extract(entry) { data.append($0) }
 }

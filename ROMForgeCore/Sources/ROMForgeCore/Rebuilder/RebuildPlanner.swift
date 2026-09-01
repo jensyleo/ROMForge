@@ -553,4 +553,81 @@ public enum RebuildPlanner {
         }
         return groups
     }
+
+    /// Folds every clone's own unique roms into its parent's archive, then
+    /// deletes the clone's whole archive — Fase 2 Step 4, the "Merged"
+    /// direction. The one direction of merge-mode conversion that deletes
+    /// a whole archive, not just one entry — the real design work this was
+    /// deferred for until now.
+    ///
+    /// Safety comes from ORDER, not from a separate verification pass:
+    /// each clone gets its own operation GROUP with every
+    /// `.addEntryToZip` (copying one unique rom into the parent) listed
+    /// BEFORE that clone's own `.delete` — the LAST operation in the
+    /// group. `RebuildExecutor.execute(_:)` runs a group strictly in
+    /// order and stops at the first failure (see its own doc comment), so
+    /// the delete can only ever run once every single add before it in
+    /// the SAME group has already succeeded. A `.addEntryToZip` failure
+    /// (e.g. `RebuildError.destinationExists`, if two clones happen to
+    /// share a uniquely-named rom neither the parent nor the other clone
+    /// declares) aborts that one clone's whole group before its delete —
+    /// that clone's archive survives, just not merged this pass.
+    ///
+    /// Two more guards keep this conservative:
+    /// - A clone whose own archive ALSO holds a genuinely unaccounted-for
+    ///   surplus file (`matchReport.surplusFiles`) is skipped entirely —
+    ///   deleting that archive would silently destroy content this
+    ///   function has no way to preserve elsewhere.
+    /// - A clone with a `.hashMismatch`/`.nodump` rom whose own file sits
+    ///   in the clone's own archive is skipped entirely too — content this
+    ///   function can't safely fold into the parent (a mismatch's real
+    ///   bytes don't match what the DAT declares; a nodump placeholder is
+    ///   never truly "the rom") is content it also won't gamble on
+    ///   discarding.
+    ///
+    /// Same "never invent a destination"/never-touch-the-parent's-own-copy
+    /// spirit as `planConvertToNonMerged`/`planConvertToSplit`: a family
+    /// with no identifiable zip-anchored parent, or a clone with no zip
+    /// anchor of its own, produces no group for that clone.
+    public static func planConvertToMerged(matchReport: MatchReport) -> [[RebuildOperation]] {
+        func familyKey(for game: DATGame) -> String { game.cloneOf ?? game.name }
+        let families = Dictionary(grouping: matchReport.games, by: { familyKey(for: $0.game) })
+        let surplusZipPaths = Set(matchReport.surplusFiles.map { $0.file.file.url })
+
+        var groups: [[RebuildOperation]] = []
+        for family in families.values where family.count > 1 {
+            guard let parent = family.first(where: { $0.game.cloneOf == nil }),
+                  case .zip(let parentZip)? = existingAnchor(for: parent)
+            else { continue }
+
+            for gameResult in family where gameResult.game.cloneOf != nil {
+                guard case .zip(let cloneZip)? = existingAnchor(for: gameResult), cloneZip != parentZip else { continue }
+                guard !surplusZipPaths.contains(cloneZip) else { continue }
+
+                var hasUnsafeContent = false
+                var group: [RebuildOperation] = []
+                for romMatch in gameResult.matches {
+                    switch romMatch.status {
+                    case .correct(let hashedFile, _), .misnamed(let hashedFile, _):
+                        guard hashedFile.file.url == cloneZip else { continue }
+                        guard !parentAlreadyHas(romMatch.rom, in: parent) else { continue }
+                        let outputName = safePathComponent(romMatch.rom.name)
+                        group.append(.addEntryToZip(
+                            targetArchive: parentZip,
+                            entryName: outputName,
+                            source: archiveEntrySource(forDonor: hashedFile, outputEntryName: outputName)
+                        ))
+                    case .hashMismatch(let hashedFile), .nodump(let hashedFile):
+                        if hashedFile.file.url == cloneZip { hasUnsafeContent = true }
+                    case .missing, .foundElsewhere:
+                        continue
+                    }
+                }
+                guard !hasUnsafeContent else { continue }
+                group.append(.delete(cloneZip))
+                groups.append(group)
+            }
+        }
+        return groups
+    }
 }

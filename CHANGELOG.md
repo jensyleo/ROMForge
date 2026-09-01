@@ -4,6 +4,20 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added — Fase 2 Step 4 "Merged" direction completed: Merge Clones
+
+New toolbar action "Merge Clones (Merged)…" folds each clone's own unique roms into its
+parent's archive, then deletes the clone's whole archive — completing all three merge-mode
+directions (Non-Merged, Split, Merged). The only Fase 2 action that deletes a whole archive
+rather than one entry; safe by construction, not by a separate verification pass:
+`RebuildPlanner.planConvertToMerged` puts every `.addEntryToZip` for a clone BEFORE that
+clone's own `.delete`, always last, in one operation group — `RebuildExecutor.execute(_:)`
+runs a group strictly in order and stops at the first failure, so the delete can only run once
+every add before it has already succeeded. A clone whose own archive also holds an
+unaccounted-for surplus file, or a hash-mismatched/nodump rom, is skipped entirely rather than
+risking silent data loss. 4 new tests cover the successful merge, the critical failure-safety
+case (a collision aborts the group before the delete, clone survives), and both skip guards.
+
 ### Added — Fase 2 Step 8: Handle Corrupted Files
 
 New toolbar action "Handle Corrupted Files…" applies the "Corrupted files" policy (Don't
