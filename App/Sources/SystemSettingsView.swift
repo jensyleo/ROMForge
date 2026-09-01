@@ -53,12 +53,14 @@ struct SystemSettingsView: View {
 private enum SettingsTab: CaseIterable, Hashable {
     case general
     case viewOptions
+    case fix
     case systems
 
     var title: String {
         switch self {
         case .general: return "General"
         case .viewOptions: return "View Options"
+        case .fix: return "Fix"
         case .systems: return "Systems"
         }
     }
@@ -67,6 +69,7 @@ private enum SettingsTab: CaseIterable, Hashable {
         switch self {
         case .general: return "gearshape"
         case .viewOptions: return "sidebar.squares.leading"
+        case .fix: return "wrench.and.screwdriver"
         case .systems: return "list.bullet"
         }
     }
@@ -137,6 +140,8 @@ struct AppSettingsView: View {
                 // own doc comment for why this is separate from "General".
                 case .viewOptions:
                     ViewOptionsSettingsView(store: store)
+                case .fix:
+                    FixSettingsView()
                 case .systems:
                     SystemSettingsView(store: store)
                 }

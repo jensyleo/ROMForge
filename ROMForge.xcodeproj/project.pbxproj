@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		002C45DAD57BC2AF0569D3AE /* FixSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11F867C07E24EFB731C5F7FB /* FixSettingsView.swift */; };
 		0AA487A4699E1108E953429A /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9EE4ECE2D8DE8CDFA6DF116 /* AboutView.swift */; };
 		0F326920CA633DD00DF90C14 /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AF5E59423C50255DF1D7EF5 /* LibraryViewModel.swift */; };
 		0F753E72D2E0E3FEF7B12FF9 /* PerSystemCacheLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 721393D0E79A20CD4B94187B /* PerSystemCacheLocation.swift */; };
@@ -24,6 +25,7 @@
 		82557607A153CBC6620AD965 /* AddSystemSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED73B38CE35E0F7EBF9FC04 /* AddSystemSheet.swift */; };
 		907320C993FECCA24C345E3A /* AuditDatabaseLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B4882EA7D477CBBA9EF251 /* AuditDatabaseLocation.swift */; };
 		96AA2748397ECE61FAEE86CF /* ViewOptionsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761EA24305EDCAB8CED72F85 /* ViewOptionsSettingsView.swift */; };
+		9A5A41E64857B84A27B96803 /* FixPreferencesSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D593D1CFD6BE38A2EB56A71B /* FixPreferencesSettings.swift */; };
 		A08F38B4D50B743461CC0FE4 /* RomSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B83D53C17A0DFDD37D54C31 /* RomSystem.swift */; };
 		AA7AE7D56326898C8DFB4672 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1372BABD452501D71DD8AA0F /* ContentView.swift */; };
 		B2488D604D85AE45EA71665B /* SystemLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50A0994C67BF13852388B258 /* SystemLibraryStore.swift */; };
@@ -36,13 +38,14 @@
 		EE9A59BAA1300521B2FC6FE8 /* ROMForgeCore in Frameworks */ = {isa = PBXBuildFile; productRef = DDED3982451B4586143EA9CB /* ROMForgeCore */; };
 		F11B7A85F70997D8B0450AEF /* DATCacheLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9039F226FCCD8C81E944D24E /* DATCacheLocation.swift */; };
 		FDCB652827A1A8D6ED8355E5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AD79A7E63931F13FC7AC066B /* Assets.xcassets */; };
-D7AC9E1EF5BC4695B03265AD /* ReorderGripHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1A0E961F7A4740A37E65BA /* ReorderGripHandle.swift */; };
+		FF89F8AE90F4595D3A951548 /* ReorderGripHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAAFF59F7B442756184353D6 /* ReorderGripHandle.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0D102156AFF72C050E4CEB36 /* Engine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Engine; path = App/Resources/Engine; sourceTree = SOURCE_ROOT; };
 		0E89007B9A4A2D6332585F7A /* ROMForgeToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ROMForgeToolbar.swift; sourceTree = "<group>"; };
 		0ED73B38CE35E0F7EBF9FC04 /* AddSystemSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddSystemSheet.swift; sourceTree = "<group>"; };
+		11F867C07E24EFB731C5F7FB /* FixSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixSettingsView.swift; sourceTree = "<group>"; };
 		1372BABD452501D71DD8AA0F /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		187586C78239370B87A663DB /* MAMEDATGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MAMEDATGenerator.swift; sourceTree = "<group>"; };
 		2E3BFBAE577A2D4DB03DB6A7 /* ROMForgeCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ROMForgeCore; path = ROMForgeCore; sourceTree = SOURCE_ROOT; };
@@ -66,11 +69,12 @@ D7AC9E1EF5BC4695B03265AD /* ReorderGripHandle.swift in Sources */ = {isa = PBXBu
 		B5EDDD10C30F710396CF2035 /* LibraryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDetailView.swift; sourceTree = "<group>"; };
 		BF16F1AECA2EB734A49293D4 /* DATVersionCompareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DATVersionCompareSheet.swift; sourceTree = "<group>"; };
 		C9EE4ECE2D8DE8CDFA6DF116 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		CAAFF59F7B442756184353D6 /* ReorderGripHandle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReorderGripHandle.swift; sourceTree = "<group>"; };
+		D593D1CFD6BE38A2EB56A71B /* FixPreferencesSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixPreferencesSettings.swift; sourceTree = "<group>"; };
 		ED1FCD0569402C6A540E9B62 /* ScanCacheLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanCacheLocation.swift; sourceTree = "<group>"; };
 		F218483DF62578B9B0922725 /* AutosavingSplitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutosavingSplitView.swift; sourceTree = "<group>"; };
 		F6DE5954224E708C87143BC3 /* ROMForgeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ROMForgeApp.swift; sourceTree = "<group>"; };
 		FF7269EDA21ADE2E1218B119 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
-BC1A0E961F7A4740A37E65BA /* ReorderGripHandle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReorderGripHandle.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -138,10 +142,11 @@ BC1A0E961F7A4740A37E65BA /* ReorderGripHandle.swift */ = {isa = PBXFileReference
 				A32B3BA6A55020245FB53967 /* AuditStatusTint.swift */,
 				F218483DF62578B9B0922725 /* AutosavingSplitView.swift */,
 				71E6DC5AAD37DF54B9ABB9EC /* CollectionReportExporter.swift */,
-					BC1A0E961F7A4740A37E65BA /* ReorderGripHandle.swift */,
 				1372BABD452501D71DD8AA0F /* ContentView.swift */,
 				9039F226FCCD8C81E944D24E /* DATCacheLocation.swift */,
 				BF16F1AECA2EB734A49293D4 /* DATVersionCompareSheet.swift */,
+				D593D1CFD6BE38A2EB56A71B /* FixPreferencesSettings.swift */,
+				11F867C07E24EFB731C5F7FB /* FixSettingsView.swift */,
 				FF7269EDA21ADE2E1218B119 /* GeneralSettingsView.swift */,
 				35B02C170603F4152FC5015B /* HelpView.swift */,
 				5634A617727F2CBB88450CA9 /* KeyboardShortcutsView.swift */,
@@ -150,6 +155,7 @@ BC1A0E961F7A4740A37E65BA /* ReorderGripHandle.swift */ = {isa = PBXFileReference
 				187586C78239370B87A663DB /* MAMEDATGenerator.swift */,
 				7490CFF027A1F83BA177B10A /* MAMELauncher.swift */,
 				721393D0E79A20CD4B94187B /* PerSystemCacheLocation.swift */,
+				CAAFF59F7B442756184353D6 /* ReorderGripHandle.swift */,
 				91A1D34EB271B09EC4E51CBC /* ROMFolderPicker.swift */,
 				F6DE5954224E708C87143BC3 /* ROMForgeApp.swift */,
 				0E89007B9A4A2D6332585F7A /* ROMForgeToolbar.swift */,
@@ -241,7 +247,6 @@ BC1A0E961F7A4740A37E65BA /* ReorderGripHandle.swift */ = {isa = PBXFileReference
 				0AA487A4699E1108E953429A /* AboutView.swift in Sources */,
 				82557607A153CBC6620AD965 /* AddSystemSheet.swift in Sources */,
 				3CB18CB3A05EB91DA14C1713 /* AppSettingsWindowController.swift in Sources */,
-				D7AC9E1EF5BC4695B03265AD /* ReorderGripHandle.swift in Sources */,
 				907320C993FECCA24C345E3A /* AuditDatabaseLocation.swift in Sources */,
 				C1874E5C9735B7B05E7A2D4F /* AuditStatusTint.swift in Sources */,
 				3C43105693E7103A9E92ACFB /* AutosavingSplitView.swift in Sources */,
@@ -249,6 +254,8 @@ BC1A0E961F7A4740A37E65BA /* ReorderGripHandle.swift */ = {isa = PBXFileReference
 				AA7AE7D56326898C8DFB4672 /* ContentView.swift in Sources */,
 				F11B7A85F70997D8B0450AEF /* DATCacheLocation.swift in Sources */,
 				680C87FDCE9583B2BB053807 /* DATVersionCompareSheet.swift in Sources */,
+				9A5A41E64857B84A27B96803 /* FixPreferencesSettings.swift in Sources */,
+				002C45DAD57BC2AF0569D3AE /* FixSettingsView.swift in Sources */,
 				369D4E1C9FF35EF3E772074D /* GeneralSettingsView.swift in Sources */,
 				1A7E127037E33A75E61E584A /* HelpView.swift in Sources */,
 				CCCE0C6C6168154B587B9B55 /* KeyboardShortcutsView.swift in Sources */,
@@ -260,6 +267,7 @@ BC1A0E961F7A4740A37E65BA /* ReorderGripHandle.swift */ = {isa = PBXFileReference
 				BEE29CD13FE782DDF87D1646 /* ROMFolderPicker.swift in Sources */,
 				CCD0DDEA12EAF392C08AA14E /* ROMForgeApp.swift in Sources */,
 				BFBEE1C97682BAD476AFF5A4 /* ROMForgeToolbar.swift in Sources */,
+				FF89F8AE90F4595D3A951548 /* ReorderGripHandle.swift in Sources */,
 				A08F38B4D50B743461CC0FE4 /* RomSystem.swift in Sources */,
 				597E983D99C09FE82C8EDBC1 /* ScanCacheLocation.swift in Sources */,
 				B2488D604D85AE45EA71665B /* SystemLibraryStore.swift in Sources */,

@@ -29,4 +29,10 @@ public enum RebuildOperation: Equatable, Sendable {
     case createArchive(entries: [ArchiveEntrySource], to: URL)
     /// Packs loose files into a TorrentZip-compliant archive (Fase 2 Step 2).
     case createTorrentZipArchive(entries: [ArchiveEntrySource], to: URL)
+    /// Permanently removes a single file — "Remove useless files" (Fase 2
+    /// Step 7). Only ever planned for a file the DAT recognizes nothing
+    /// about at all (see `RebuildPlanner.planRemoveUselessFiles`'s own doc
+    /// comment for the exact criterion); never for a file some other game
+    /// still needs.
+    case delete(URL)
 }

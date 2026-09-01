@@ -31,6 +31,11 @@ public enum RebuildExecutor {
             try createArchive(entries: entries, at: destination, fileManager: fileManager)
         case .createTorrentZipArchive(let entries, let destination):
             try createTorrentZipArchive(entries: entries, at: destination, fileManager: fileManager)
+        case .delete(let target):
+            guard fileManager.fileExists(atPath: target.path) else {
+                throw RebuildError.sourceMissing(target)
+            }
+            try fileManager.removeItem(at: target)
         }
     }
 

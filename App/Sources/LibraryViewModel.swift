@@ -1061,6 +1061,11 @@ final class LibraryViewModel {
         isBusy = true
         defer { isBusy = false }
 
+        guard UserDefaults.standard.object(forKey: FixPreferencesSettings.renameFilesKey) as? Bool ?? FixPreferencesSettings.renameFilesDefault else {
+            logWarning("\"Rename files to match the DAT\" is off in Settings → Fix — nothing to do.")
+            return
+        }
+
         do {
             let skippedCount = try await Task.detached(priority: .userInitiated) {
                 let allOperations = RebuildPlanner.planRepair(matchReport: matchReport)
@@ -1134,6 +1139,58 @@ final class LibraryViewModel {
         } else {
             logSuccess("Rebuild complete: \(succeeded) file(s) \(verb) to \"\(destination.lastPathComponent)\".")
         }
+    }
+
+    /// How many files "Remove Useless Files…" would actually delete, without
+    /// touching disk — the same preview-before-confirm pattern as
+    /// `planRebuildPreviewCount`. Returns `0` before any scan has run.
+    func planRemoveUselessFilesPreviewCount() -> Int {
+        guard let matchReport else { return 0 }
+        return RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport).count
+    }
+
+    /// Permanently deletes every file the DAT recognizes nothing about at
+    /// all — Fase 2 Step 7, the single most destructive action in the whole
+    /// app. `LibraryDetailView`'s own toolbar action always shows its own
+    /// confirmation dialog before calling this; there is no "undo" once it
+    /// runs. Each deletion is attempted independently (same reasoning as
+    /// `rebuildToFolder` above) so one locked/already-gone file doesn't
+    /// abort the rest.
+    func removeUselessFiles(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("Removing files is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else {
+            logError("Scan first.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            let operations = RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport)
+            var succeeded = 0
+            var failed = 0
+            for operation in operations {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Removed \(succeeded) useless file(s); \(failed) failed (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Removed \(succeeded) useless file(s).")
+        } else {
+            logWarning("Nothing to remove — no unrecognized files in the current scan.")
+        }
+        await scan(system: system)
     }
 
     private nonisolated static let archivedRenameExtensions: Set<String> = ["zip", "7z"]

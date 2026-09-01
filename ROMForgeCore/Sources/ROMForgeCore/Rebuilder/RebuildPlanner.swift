@@ -107,4 +107,21 @@ public enum RebuildPlanner {
         }
         return operations
     }
+
+    /// Deletes every file the DAT recognizes nothing about at all — Fase 2
+    /// Step 7 ("Remove useless files"). Deliberately narrow: only a
+    /// `SurplusFile` with `requiredByGameDescription == nil` (no OTHER game
+    /// in the DAT claims this file's content either) AND
+    /// `matchesNodumpRomName == false` (its name doesn't even match a
+    /// declared-`nodump` placeholder some tool might have created on
+    /// purpose) qualifies — genuinely unrecognized junk, never a file that's
+    /// merely misplaced or belongs to a sibling set. The most destructive
+    /// item in the whole Fase 2 checklist; callers must gate this behind
+    /// its own explicit confirmation, separate from the general write-access
+    /// gate (`LibraryViewModel.modificationsEnabled`).
+    public static func planRemoveUselessFiles(matchReport: MatchReport) -> [RebuildOperation] {
+        matchReport.surplusFiles
+            .filter { $0.requiredByGameDescription == nil && !$0.matchesNodumpRomName }
+            .map { .delete($0.file.file.url) }
+    }
 }

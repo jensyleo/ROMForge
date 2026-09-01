@@ -141,4 +141,76 @@ struct RebuildExecutorTests {
         // Copy (not move): sources must survive.
         #expect(FileManager.default.fileExists(atPath: sourceFolder.appendingPathComponent("a.bin").path))
     }
+
+    @Test("rebuilds as TorrentZip archives with correct structure (Fase 2 Step 2)")
+    func rebuildsTorrentZipMultiGameEndToEnd() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceFolder = root.appendingPathComponent("source")
+        let destination = root.appendingPathComponent("rebuilt_zip")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+
+        func hashedFile(name: String) -> HashedFile {
+            let url = sourceFolder.appendingPathComponent(name)
+            try? Data(name.utf8).write(to: url)
+            return HashedFile(file: ScannedFile(url: url, name: name, size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        }
+
+        let romA = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let gameA = DATGame(name: "Game A", description: "Game A", cloneOf: nil, romOf: nil, roms: [romA])
+        let romB = DATRom(name: "b.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let gameB = DATGame(name: "Game B", description: "Game B", cloneOf: nil, romOf: nil, roms: [romB])
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: gameA, matches: [RomMatch(rom: romA, status: .correct(hashedFile(name: "a.bin")))]),
+                GameMatchResult(game: gameB, matches: [RomMatch(rom: romB, status: .correct(hashedFile(name: "b.bin")))]),
+            ],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planRebuildAsZip(matchReport: matchReport, destination: destination)
+        #expect(operations.count == 2)
+        try RebuildExecutor.execute(operations)
+
+        // Verify .zip files were created
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Game A.zip").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Game B.zip").path))
+
+        // Verify zips are valid (can be read back) — basic sanity check
+        let zipA = destination.appendingPathComponent("Game A.zip")
+        let zipData = try Data(contentsOf: zipA)
+        #expect(zipData.count > 0, "ZIP file should contain data")
+        #expect(zipData.starts(with: [0x50, 0x4b, 0x03, 0x04]), "ZIP file should start with PK signature")
+    }
+
+    @Test("removes only genuinely unrecognized surplus files, never one another game still needs (Fase 2 Step 7)")
+    func removesOnlyGenuinelyUnrecognizedSurplusFiles() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        func hashedFile(name: String) -> HashedFile {
+            let url = root.appendingPathComponent(name)
+            try? Data(name.utf8).write(to: url)
+            return HashedFile(file: ScannedFile(url: url, name: name, size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        }
+
+        // Genuinely unrecognized junk — the only one that should be deleted.
+        let junk = SurplusFile(file: hashedFile(name: "junk.bin"))
+        // Needed by another game's own archive (Split-mode leftover) — must survive.
+        let neededElsewhere = SurplusFile(file: hashedFile(name: "needed.bin"), requiredByGameDescription: "Some Other Game")
+        // Name matches a declared-nodump placeholder — must survive.
+        let nodumpNamed = SurplusFile(file: hashedFile(name: "nodump.bin"), matchesNodumpRomName: true)
+
+        let matchReport = MatchReport(games: [], surplusFiles: [junk, neededElsewhere, nodumpNamed])
+
+        let operations = RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport)
+        #expect(operations == [.delete(root.appendingPathComponent("junk.bin"))])
+
+        try RebuildExecutor.execute(operations)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("junk.bin").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("needed.bin").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("nodump.bin").path))
+    }
 }

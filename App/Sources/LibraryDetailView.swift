@@ -322,6 +322,28 @@ private extension View {
                 onSetOrder(order)
             }
     }
+
+    /// Fase 2 Step 7's own confirmation dialog, factored out of `body` for
+    /// the same reason `columnPresetNotificationHandlers` above is — piling
+    /// a second `.confirmationDialog` directly onto `body`'s already-huge
+    /// modifier chain made the type-checker time out ("unable to type-check
+    /// this expression in reasonable time").
+    func removeUselessFilesConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onDelete: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Permanently Delete \(count) File\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive, action: onDelete)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("These files are recognized as nothing the current DAT declares — not needed by this game or any other. This cannot be undone.")
+        }
+    }
 }
 
 struct LibraryDetailView: View {
@@ -1027,6 +1049,10 @@ struct LibraryDetailView: View {
     @State private var rebuildDestination: URL?
     @State private var rebuildOperationCount = 0
     @State private var showRebuildConfirmation = false
+    /// Fase 2 Step 7 "Remove Useless Files…" state — same preview-then-
+    /// confirm shape as the rebuild state above, its own separate dialog.
+    @State private var removeUselessFilesCount = 0
+    @State private var showRemoveUselessFilesConfirmation = false
     /// Which "ROM folder" row is currently being ⌘-dragged, if any — see
     /// `ColumnPresetsPanel.draggingName`'s own doc comment
     /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
@@ -1189,6 +1215,20 @@ struct LibraryDetailView: View {
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startRebuildToFolder()
+            },
+            // Fase 2 Step 7: permanently deletes every file the DAT
+            // recognizes nothing about at all (today's "surplus"/unknown-
+            // file status). The most destructive action in the app — its
+            // own confirmation dialog below is deliberately separate from
+            // every other Fase 2 confirmation, never folded into "Fix".
+            ToolbarAction(
+                id: "removeUselessFiles", title: "Remove Useless Files…", systemImage: "trash",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Permanently delete every file the DAT recognizes nothing about at all"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRemoveUselessFiles()
             },
             // "Show Only 1G1R" moved to Settings → View Options → "1G1R"
             // (jensyleo's own request, 2026-08-24) — now a persisted
@@ -1445,6 +1485,11 @@ struct LibraryDetailView: View {
                 Text("Every matched ROM will be organized as one subfolder per game inside \"\(rebuildDestination.lastPathComponent)\". Existing files there are never overwritten.")
             }
         }
+        .removeUselessFilesConfirmation(
+            isPresented: $showRemoveUselessFilesConfirmation,
+            count: removeUselessFilesCount,
+            onDelete: commitRemoveUselessFiles
+        )
     }
 
     @ViewBuilder
@@ -1478,6 +1523,21 @@ struct LibraryDetailView: View {
         guard let rebuildDestination else { return }
         Task { await viewModel.rebuildToFolder(system: system, destination: rebuildDestination, move: move) }
         self.rebuildDestination = nil
+    }
+
+    /// Previews the delete count before showing the confirmation dialog —
+    /// same dry-run-before-write caution as every other Fase 2 action.
+    private func startRemoveUselessFiles() {
+        removeUselessFilesCount = viewModel.planRemoveUselessFilesPreviewCount()
+        guard removeUselessFilesCount > 0 else {
+            viewModel.logWarning("Nothing to remove — no unrecognized files in the current scan.")
+            return
+        }
+        showRemoveUselessFilesConfirmation = true
+    }
+
+    private func commitRemoveUselessFiles() {
+        Task { await viewModel.removeUselessFiles(system: system) }
     }
 
     private var header: some View {

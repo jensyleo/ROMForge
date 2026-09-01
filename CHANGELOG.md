@@ -2,6 +2,38 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [Unreleased]
+
+### Added — Fase 2 Step 1: Rebuild to Folder
+
+Copies (or moves) every matched ROM into `<destination>/<game name>/<rom name>`, organized as
+one subfolder per game. Destination picker, operation-count preview, and a confirmation dialog
+before anything touches disk. Toolbar action "Rebuild to Folder…", gated behind Write access.
+
+### Added — Fase 2 Step 2: Rebuild as TorrentZip archives
+
+New `RebuildOperation.createTorrentZipArchive` case packs each game's matched ROMs into a
+TorrentZip-compliant `.zip` (byte-exact, reproducible output) instead of a plain ZIPFoundation
+archive. `RebuildPlanner.planRebuildAsZip` now generates this operation type.
+
+### Added — Fase 2 Step 5: Settings → "Fix" tab (shell + first wired policies)
+
+New Settings tab parallel to ClrMamePro's own Preferences → Fix panel. Every policy from that
+panel now has a persisted toggle here (`FixPreferencesSettings`) — Test archives, Rename
+files/roms, Remove useless files/roms, Corrupted files policy (Don't touch/Delete/Move to),
+Sets/Roms case policy, and further items (Find missing roms, dummy roms, samples, zip comments,
+unzip-and-rezip, multiple formats, thread count) shown but visibly disabled with a "not yet
+connected" caption until their own underlying infrastructure exists. "Rename files" is wired to
+the existing Fix action's rename step.
+
+### Added — Fase 2 Step 7: Remove Useless Files
+
+New toolbar action "Remove Useless Files…" permanently deletes every file the DAT recognizes
+nothing about at all (`RebuildPlanner.planRemoveUselessFiles`) — never a file another game's
+own archive still needs, never a file whose name matches a declared-`nodump` placeholder. Its
+own explicit confirmation dialog, separate from every other Fase 2 confirmation and from the
+general Write access gate.
+
 ## [0.2.6] - 2026-09-01
 
 ### Fixed — Drag reordering in Settings panels now visually consistent
