@@ -797,7 +797,31 @@ collection — for this one especially.
         deliberately-added colliding entry — nothing else from the clone
         leaked in partway.
 
-### 11.12 Settings → Fix tab
+### 11.12 Repair from Maintenance Folder (optional, read-only donor folder)
+- [ ] Open Settings → **General** → "Maintenance folder (optional)". Confirm it shows "Not set"
+      by default, with "Choose Folder…" and no "Clear" button until one is set.
+- [ ] Click "Choose Folder…", pick any empty scratch folder (e.g.
+      `~/Desktop/ROMForge-Fase2-Test/maintenance/`). Confirm the path now displays, and a "Clear"
+      button appears.
+- [ ] Take one rom your scratch collection is currently showing **Missing** (or make one missing:
+      move a real rom's file out of its zip). Drop a copy of the exact same rom's real content
+      into the Maintenance folder, under **any filename you like** — the point of this test is
+      that the name is irrelevant, only the bytes matter.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Repair from Maintenance Folder…"**.
+- [ ] Confirm the preview count is accurate (1, in this simple case), then confirm it.
+- [ ] Rescan, then `unzip -l` the game's own zip — confirm the missing rom is now genuinely
+      **present**, under its own DAT-declared name (not the donor file's own filename), with the
+      correct content.
+- [ ] Confirm the file you dropped into the Maintenance folder is **completely untouched** —
+      still there, unrenamed, unmoved — the whole point of it being read-only.
+- [ ] Clear the Maintenance folder setting (the "Clear" button in Settings) and confirm "Repair
+      from Maintenance Folder…" now logs "No Maintenance folder configured…" instead of silently
+      doing nothing.
+- [ ] Separately: with the Maintenance folder set again but genuinely empty (or containing only
+      unrelated content), confirm the action reports a 0 preview count and makes no changes —
+      never a false match.
+
+### 11.13 Settings → Fix tab
 - [ ] Open Settings → **Fix** — confirm every toggle from the ROADMAP's own
       "ClrMamePro Fix panel" review is present, and that the ones marked
       "not yet connected" in the UI's own caption text are visibly

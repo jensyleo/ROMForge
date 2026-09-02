@@ -424,6 +424,92 @@ struct RebuildExecutorTests {
         #expect(RebuildPlanner.planCrossSetRepair(matchReport: matchReport).isEmpty)
     }
 
+    // MARK: - Repair from Maintenance Folder
+
+    @Test("repairs a missing rom by borrowing it, by content, from an external Maintenance-folder donor")
+    func repairFromMaintenanceFolderAddsMissingRomFromDonorContent() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let gameZip = root.appendingPathComponent("game.zip")
+        try makeZip(at: gameZip, entries: [("a-only.bin", "A-only-content")])
+
+        // The donor file lives entirely outside the scan — a different
+        // folder, a different (irrelevant) filename — and is matched
+        // purely by content (size + CRC), never by name.
+        let donorURL = root.appendingPathComponent("maintenance/some-random-dump-name.bin")
+        try FileManager.default.createDirectory(at: donorURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("shared-content".utf8).write(to: donorURL)
+
+        let sharedRom = DATRom(name: "shared.bin", size: Int64("shared-content".utf8.count), crc: "deadbeef", md5: nil, sha1: nil)
+        let aOnlyRom = DATRom(name: "a-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game A", description: "Game A", cloneOf: nil, romOf: nil, roms: [aOnlyRom, sharedRom])
+
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: game, matches: [
+                    RomMatch(rom: aOnlyRom, status: .correct(HashedFile(file: ScannedFile(url: gameZip, name: "a-only.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")))),
+                    RomMatch(rom: sharedRom, status: .missing),
+                ]),
+            ],
+            surplusFiles: []
+        )
+        let donorFiles = [
+            HashedFile(file: ScannedFile(url: donorURL, name: donorURL.lastPathComponent, size: Int64("shared-content".utf8.count)), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0")),
+        ]
+
+        let operations = RebuildPlanner.planRepairFromMaintenanceFolder(matchReport: matchReport, donorFiles: donorFiles)
+        #expect(operations.count == 1)
+        try RebuildExecutor.execute(operations)
+
+        let archive = try Archive(url: gameZip, accessMode: .read)
+        guard let entry = archive["shared.bin"] else {
+            Issue.record("Game A's own zip should now contain the borrowed \"shared.bin\" entry")
+            return
+        }
+        var extracted = Data()
+        _ = try archive.extract(entry) { extracted.append($0) }
+        #expect(String(data: extracted, encoding: .utf8) == "shared-content")
+        #expect(archive["a-only.bin"] != nil)
+        // The donor file itself must survive completely untouched — the
+        // whole point of the Maintenance folder being read-only.
+        #expect(FileManager.default.fileExists(atPath: donorURL.path))
+        #expect(try String(contentsOf: donorURL, encoding: .utf8) == "shared-content")
+    }
+
+    @Test("never borrows from a Maintenance-folder donor whose content doesn't actually match the missing rom")
+    func repairFromMaintenanceFolderSkipsNonMatchingDonor() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let gameZip = root.appendingPathComponent("game.zip")
+        try makeZip(at: gameZip, entries: [("a-only.bin", "A-only-content")])
+
+        let donorURL = root.appendingPathComponent("maintenance/unrelated.bin")
+        try FileManager.default.createDirectory(at: donorURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("totally-unrelated-content".utf8).write(to: donorURL)
+
+        let sharedRom = DATRom(name: "shared.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let aOnlyRom = DATRom(name: "a-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game A", description: "Game A", cloneOf: nil, romOf: nil, roms: [aOnlyRom, sharedRom])
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [
+                RomMatch(rom: aOnlyRom, status: .correct(HashedFile(file: ScannedFile(url: gameZip, name: "a-only.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")))),
+                RomMatch(rom: sharedRom, status: .missing),
+            ])],
+            surplusFiles: []
+        )
+        // The game DOES have an anchor (its own correct "a-only.bin") — the
+        // only reason nothing should be planned is that the donor's actual
+        // content simply doesn't match the missing rom's declared hash.
+        let donorFiles = [
+            HashedFile(file: ScannedFile(url: donorURL, name: "unrelated.bin", size: Int64("totally-unrelated-content".utf8.count)), hash: FileHash(crc32: "ffffffff", md5: "0", sha1: "0")),
+        ]
+
+        #expect(RebuildPlanner.planRepairFromMaintenanceFolder(matchReport: matchReport, donorFiles: donorFiles).isEmpty)
+    }
+
     // MARK: - Convert to non-merged (Fase 2 Step 4)
 
     @Test("makes a clone self-contained by copying its parent's rom (found elsewhere) into the clone's own zip")

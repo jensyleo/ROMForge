@@ -1243,6 +1243,91 @@ final class LibraryViewModel {
         await scan(system: system)
     }
 
+    /// The plan `planRepairFromMaintenanceFolderPreviewCount` already
+    /// built, so `repairFromMaintenanceFolder` can execute it without
+    /// scanning the Maintenance folder a second time right after the
+    /// user confirms — cheaper, and avoids the two steps silently
+    /// disagreeing if a file appears/disappears there in between.
+    private var pendingMaintenanceFolderOperations: [RebuildOperation] = []
+
+    /// Scans the optional, read-only Maintenance folder configured in
+    /// Settings → General (`MaintenanceFolderSettings`) and plans every
+    /// rom it can donate to a `.missing` rom in the current scan — Fase
+    /// 2's "Repair from Maintenance Folder…". Nothing here ever writes
+    /// to, moves, or deletes anything in that folder; it's only ever
+    /// read, exactly like `planRepairFromSiblingSetsPreviewCount`'s own
+    /// sibling donors. Returns the operation count for the caller's
+    /// preview-before-confirm dialog; the plan itself is cached in
+    /// `pendingMaintenanceFolderOperations` for `repairFromMaintenanceFolder`.
+    func planRepairFromMaintenanceFolderPreviewCount() async -> Int {
+        pendingMaintenanceFolderOperations = []
+        guard let matchReport else {
+            logError("Scan first.")
+            return 0
+        }
+        guard let folderURL = MaintenanceFolderSettings.folderURL else {
+            logWarning("No Maintenance folder configured — set one in Settings → General first.")
+            return 0
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let operations = try await Task.detached(priority: .userInitiated) {
+                let scannedFiles = try FolderScanner.scan(paths: [folderURL])
+                let donorFiles = try await CollectionHasher.hash(scannedFiles: scannedFiles, algorithms: HashAlgorithmSettings.current)
+                return RebuildPlanner.planRepairFromMaintenanceFolder(matchReport: matchReport, donorFiles: donorFiles)
+            }.value
+            pendingMaintenanceFolderOperations = operations
+            return operations.count
+        } catch {
+            logError(String(describing: error))
+            return 0
+        }
+    }
+
+    /// Executes the plan `planRepairFromMaintenanceFolderPreviewCount`
+    /// already built. Every operation only ever READS from the
+    /// Maintenance folder (a `.copy`/`.extractZipEntry`/`.addEntryToZip`'s
+    /// own donor source) — the actual write always lands in the scanned
+    /// collection's own existing archive/folder, never back into the
+    /// Maintenance folder itself. Each operation is attempted
+    /// independently, same reasoning as `repairFromSiblingSets` above.
+    func repairFromMaintenanceFolder(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("Repairing is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        let operations = pendingMaintenanceFolderOperations
+        pendingMaintenanceFolderOperations = []
+        guard !operations.isEmpty else {
+            logWarning("Nothing to repair from the Maintenance folder.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            for operation in operations {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                }
+            }
+            return (succeeded, failed)
+        }.value
+
+        if failed > 0 {
+            logWarning("Repaired \(succeeded) rom(s) from the Maintenance folder; \(failed) failed (see above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Repaired \(succeeded) rom(s) from the Maintenance folder.")
+        }
+        await scan(system: system)
+    }
+
     /// How many roms "Make Self-Contained…" would actually copy in, without
     /// touching disk — same preview-before-confirm pattern as every other
     /// Fase 2 action. Returns `0` before any scan has run.

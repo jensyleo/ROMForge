@@ -451,6 +451,26 @@ private extension View {
         }
     }
 
+    /// "Repair from Maintenance Folder…"'s own confirmation dialog, its
+    /// own separate modifier for the same reason `applyCasePolicyConfirmation`
+    /// above is.
+    func repairFromMaintenanceFolderConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Repair \(count) Missing ROM\(count == 1 ? "" : "s") from the Maintenance Folder?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Repair", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each rom is copied from the read-only Maintenance folder configured in Settings → General. Nothing there is ever renamed, moved, or deleted.")
+        }
+    }
+
     /// Fase 2 Step 8's own confirmation dialog, its own separate modifier
     /// for the same reason `fase2Step4SplitConfirmation` above is.
     func handleCorruptedFilesConfirmation(
@@ -1224,6 +1244,13 @@ struct LibraryDetailView: View {
     /// shape, own separate confirmation modifier for the same reason.
     @State private var applyCasePolicyCount = 0
     @State private var showApplyCasePolicyConfirmation = false
+
+    /// "Repair from Maintenance Folder…" state — same preview-then-confirm
+    /// shape as "Repair from Sibling Sets…", except the preview itself
+    /// scans an external folder and so needs an `await`, unlike every
+    /// other Fase 2 preview here (all instant, matchReport-only lookups).
+    @State private var repairFromMaintenanceFolderCount = 0
+    @State private var showRepairFromMaintenanceFolderConfirmation = false
     /// Fase 2 Step 8 "Handle Corrupted Files…" state — same preview-then-
     /// confirm shape, own separate confirmation modifier for the same
     /// reason.
@@ -1475,6 +1502,22 @@ struct LibraryDetailView: View {
             // otherwise-good zip). The most destructive action in the app —
             // its own confirmation dialog is deliberately separate from
             // every other Fase 2 confirmation.
+            // Repairs a `.missing` rom by borrowing it from the optional,
+            // read-only "Maintenance folder" configured in Settings →
+            // General — a donor folder the user drops new/extra dumps
+            // into over time; never touched, renamed, or deleted from
+            // (see `RebuildPlanner.planRepairFromMaintenanceFolder`'s own
+            // doc comment). Distinct from "Repair from Sibling Sets…"
+            // above, which only ever borrows from within this same scan.
+            ToolbarAction(
+                id: "repairFromMaintenanceFolder", title: "Repair from Maintenance Folder…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Fill in a missing rom by copying it from the optional, read-only Maintenance folder configured in Settings → General"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRepairFromMaintenanceFolder()
+            },
             ToolbarAction(
                 id: "removeUselessFiles", title: "Remove Useless Files…",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
@@ -1812,6 +1855,11 @@ struct LibraryDetailView: View {
             count: applyCasePolicyCount,
             onConfirm: commitApplyCasePolicy
         )
+        .repairFromMaintenanceFolderConfirmation(
+            isPresented: $showRepairFromMaintenanceFolderConfirmation,
+            count: repairFromMaintenanceFolderCount,
+            onConfirm: commitRepairFromMaintenanceFolder
+        )
         .handleCorruptedFilesConfirmation(
             isPresented: $showHandleCorruptedFilesConfirmation,
             count: handleCorruptedFilesCount,
@@ -1945,6 +1993,23 @@ struct LibraryDetailView: View {
 
     private func commitApplyCasePolicy() {
         Task { await viewModel.applyCasePolicy(system: system) }
+    }
+
+    /// Previews the repair count before showing the confirmation dialog —
+    /// same dry-run-before-write caution as every other Fase 2 action.
+    /// Unlike every other "start" function here, the preview itself scans
+    /// the Maintenance folder, so it has to run inside a `Task` rather
+    /// than synchronously.
+    private func startRepairFromMaintenanceFolder() {
+        Task {
+            repairFromMaintenanceFolderCount = await viewModel.planRepairFromMaintenanceFolderPreviewCount()
+            guard repairFromMaintenanceFolderCount > 0 else { return }
+            showRepairFromMaintenanceFolderConfirmation = true
+        }
+    }
+
+    private func commitRepairFromMaintenanceFolder() {
+        Task { await viewModel.repairFromMaintenanceFolder(system: system) }
     }
 
     /// Previews the count before showing the confirmation dialog — same

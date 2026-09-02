@@ -4,6 +4,7 @@
 // This program is free software under the GNU General Public License v3.0
 // or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
 
+import AppKit
 import ROMForgeCore
 import SwiftUI
 
@@ -17,10 +18,28 @@ struct GeneralSettingsView: View {
     @AppStorage(HashAlgorithmSettings.sha1Key) private var computeSHA1 = true
     @AppStorage("ROMForge.scan.autoScanOnAdd") private var autoScanOnAdd = false
     @AppStorage(ModificationsEnabledSettings.storageKey) private var modificationsEnabled = false
+    @AppStorage(MaintenanceFolderSettings.storageKey) private var maintenanceFolderPath = ""
     @State private var showModificationsConfirmation = false
 
     var body: some View {
         Form {
+            Section("Maintenance folder (optional)") {
+                HStack {
+                    Text(maintenanceFolderPath.isEmpty ? "Not set" : maintenanceFolderPath)
+                        .font(.callout)
+                        .foregroundStyle(maintenanceFolderPath.isEmpty ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    if !maintenanceFolderPath.isEmpty {
+                        Button("Clear") { maintenanceFolderPath = "" }
+                    }
+                    Button("Choose Folder…") { pickMaintenanceFolder() }
+                }
+                Text("A read-only donor folder — drop new or extra ROM dumps here and \"Repair from Maintenance Folder…\" (the Fix menu) can use them to complete missing roms elsewhere in your collection. ROMForge never renames, moves, or deletes anything inside this folder. Entirely optional — leave unset if you'd rather keep your own donor folder outside ROMForge.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Write access") {
                 Toggle("Enable file modifications", isOn: Binding(
                     get: { modificationsEnabled },
@@ -75,6 +94,16 @@ struct GeneralSettingsView: View {
         } message: {
             Text("ROMForge will be able to rename, move, and rebuild ROM files on disk to match the loaded DAT. Files are never overwritten — a failed operation leaves the original untouched — but this is real, on-disk file activity. You can turn this back off at any time.")
         }
+    }
+
+    private func pickMaintenanceFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a read-only Maintenance folder for donor ROMs"
+        guard panel.runModal() == .OK, let url = panel.urls.first else { return }
+        maintenanceFolderPath = url.path
     }
 }
 
@@ -155,5 +184,27 @@ enum ModificationsEnabledSettings {
     /// Returns the persisted enabled state — always `false` on first install.
     static var isEnabled: Bool {
         UserDefaults.standard.bool(forKey: storageKey)
+    }
+}
+
+/// Optional, global "Maintenance folder" — jensyleo's own design
+/// (2026-09-02): a read-only donor folder ROMForge never renames, moves,
+/// or deletes anything in or from. The user drops new or extra dumps
+/// into it over time; Fase 2's "Repair from Maintenance Folder…" action
+/// (see `LibraryViewModel.repairFromMaintenanceFolder`) scans it purely
+/// to find content that completes a `.missing` rom elsewhere in the
+/// currently scanned collection. Entirely optional — `nil` by default —
+/// since a user may already keep such a donor folder on their own and
+/// just point ROMForge at it occasionally, or never use this feature at
+/// all. Global rather than per-system, same reasoning as
+/// `MAMEMergeModeSettings`: one donor folder makes sense across every
+/// system, not configured separately per DAT.
+enum MaintenanceFolderSettings {
+    static let storageKey = "ROMForge.maintenanceFolder.path"
+
+    /// `nil` when unset (default) or when the stored path is empty.
+    static var folderURL: URL? {
+        guard let path = UserDefaults.standard.string(forKey: storageKey), !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
     }
 }

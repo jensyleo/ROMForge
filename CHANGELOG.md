@@ -4,6 +4,17 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added — optional, read-only "Maintenance folder" (Fase 2)
+
+A new, entirely optional, global setting in Settings → General: a folder the user drops new or
+extra ROM dumps into over time. ROMForge only ever *reads* from it — nothing is renamed, moved,
+or deleted there, ever. A new "Repair from Maintenance Folder…" action (Fix menu) scans it and
+uses it to fill in `.missing` roms elsewhere in the currently scanned collection, matching purely
+by content (size plus whichever hash both sides declare), never by filename. Distinct from
+"Repair from Sibling Sets…", which only ever borrows from within the same scan (a parent/clone
+pair); this looks at an independent, external folder instead. Left unset by default — a user who
+already manages their own donor folder outside ROMForge isn't required to use this at all.
+
 ### Fixed — critical: case-only rename always failed on the default macOS volume
 
 Caught by finally running the automated test suite (a stale, hours-old SwiftPM lock had been

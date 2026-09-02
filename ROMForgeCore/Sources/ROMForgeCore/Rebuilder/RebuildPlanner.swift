@@ -330,6 +330,73 @@ public enum RebuildPlanner {
         return operations
     }
 
+    /// True when `donor`'s real, computed hash is the exact content `rom`
+    /// declares — same "only compare what's actually declared on both
+    /// sides" caution `datRomsShareContent` uses, just between a
+    /// DAT-declared rom and an arbitrary hashed file (one that was never
+    /// itself matched against any DAT) rather than two DAT-declared roms.
+    private static func donorMatches(_ donor: HashedFile, rom: DATRom) -> Bool {
+        guard donor.file.size == rom.size else { return false }
+        if let romCRC = rom.crc, let donorCRC = donor.hash.crc32 { return romCRC == donorCRC }
+        if let romMD5 = rom.md5, let donorMD5 = donor.hash.md5 { return romMD5 == donorMD5 }
+        if let romSHA1 = rom.sha1, let donorSHA1 = donor.hash.sha1 { return romSHA1 == donorSHA1 }
+        return false
+    }
+
+    /// Repairs a `.missing` rom by borrowing it from an external,
+    /// read-only "Maintenance folder" the user configures once, in
+    /// Settings → General (`MaintenanceFolderSettings`), and drops new or
+    /// extra dumps into over time — jensyleo's own design (2026-09-02).
+    ///
+    /// Unlike `planCrossSetRepair` (which only ever borrows from a
+    /// SIBLING set already present in this same `matchReport`), this
+    /// looks entirely outside the scanned collection, at `donorFiles` —
+    /// already hashed by the caller from a separate, independent scan of
+    /// that folder — matched purely by CONTENT (`donorMatches`: size plus
+    /// whichever one hash both sides declare), never by name or by
+    /// having been matched against any DAT itself. `donorFiles` is only
+    /// ever READ here, exactly like `planCrossSetRepair`'s own sibling
+    /// donors: nothing in the Maintenance folder is ever renamed, moved,
+    /// or deleted by this planner or by any operation it produces — every
+    /// resulting `.copy`/`.extractZipEntry`/`.addEntryToZip` only reads
+    /// from a donor's path, the actual write always lands in the SCANNED
+    /// collection's own existing anchor (see `existingAnchor`'s own doc
+    /// comment for why a game with none is skipped rather than guessed
+    /// at).
+    ///
+    /// Deliberately narrow to `.missing` roms only — a `.hashMismatch`
+    /// rom already occupies its own correct slot under content that's
+    /// simply wrong, which would need an overwrite (remove the bad entry,
+    /// then add the good one) this function doesn't attempt yet.
+    public static func planRepairFromMaintenanceFolder(matchReport: MatchReport, donorFiles: [HashedFile]) -> [RebuildOperation] {
+        var operations: [RebuildOperation] = []
+        for gameResult in matchReport.games {
+            guard let anchor = existingAnchor(for: gameResult) else { continue }
+            for romMatch in gameResult.matches {
+                guard case .missing = romMatch.status else { continue }
+                guard let donor = donorFiles.first(where: { donorMatches($0, rom: romMatch.rom) }) else { continue }
+                guard !isArchivePath(donor.file.url) || isZipPath(donor.file.url) else { continue }
+                let outputEntryName = safePathComponent(romMatch.rom.name)
+                switch anchor {
+                case .zip(let targetArchive):
+                    operations.append(.addEntryToZip(
+                        targetArchive: targetArchive,
+                        entryName: outputEntryName,
+                        source: archiveEntrySource(forDonor: donor, outputEntryName: outputEntryName)
+                    ))
+                case .looseFolder(let folder):
+                    let destination = folder.appendingPathComponent(outputEntryName)
+                    if isZipPath(donor.file.url) {
+                        operations.append(.extractZipEntry(archive: donor.file.url, entryName: donor.file.name, to: destination))
+                    } else {
+                        operations.append(.copy(from: donor.file.url, to: destination))
+                    }
+                }
+            }
+        }
+        return operations
+    }
+
     /// Makes every game in the scan self-contained by copying in any rom
     /// the matcher already found genuinely present elsewhere in the scan
     /// (`.foundElsewhere` — see that case's own doc comment) but not yet
