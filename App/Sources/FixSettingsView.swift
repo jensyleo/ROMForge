@@ -19,12 +19,10 @@ import SwiftUI
 /// a "not yet connected" caption rather than silently doing nothing.
 struct FixSettingsView: View {
     @AppStorage(FixPreferencesSettings.testArchivesKey) private var testArchives = FixPreferencesSettings.testArchivesDefault
-    @AppStorage(FixPreferencesSettings.renameFilesKey) private var renameFiles = FixPreferencesSettings.renameFilesDefault
     @AppStorage(FixPreferencesSettings.removeUselessFilesKey) private var removeUselessFilesAuto = FixPreferencesSettings.removeUselessFilesDefault
     @AppStorage(FixPreferencesSettings.corruptedFilesPolicyKey) private var corruptedFilesPolicy = FixPreferencesSettings.corruptedFilesPolicyDefault
-    @AppStorage(FixPreferencesSettings.corruptedFilesMoveToPathKey) private var corruptedFilesMoveToPath = ""
+    @AppStorage(FixPreferencesSettings.corruptedFilesMoveToPathKey) private var corruptedFilesMoveToPath = FixPreferencesSettings.corruptedFilesMoveToPathDefault
 
-    @AppStorage(FixPreferencesSettings.renameRomsKey) private var renameRoms = FixPreferencesSettings.renameRomsDefault
     @AppStorage(FixPreferencesSettings.removeUselessRomsKey) private var removeUselessRoms = FixPreferencesSettings.removeUselessRomsDefault
     @AppStorage(FixPreferencesSettings.findMissingRomsKey) private var findMissingRoms = FixPreferencesSettings.findMissingRomsDefault
     @AppStorage(FixPreferencesSettings.createDummyRomsKey) private var createDummyRoms = FixPreferencesSettings.createDummyRomsDefault
@@ -42,17 +40,83 @@ struct FixSettingsView: View {
                 Text("Runs a ZIP integrity check (local-header vs central-directory CRC32) on every archive before \"Fix\" does anything else, and applies the \"Corrupted files\" policy below to whatever it finds. Off by default — a full integrity pass reads every archive's data twice, worth paying for only when you suspect real corruption.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack {
+                    Button("Reset to Defaults") { testArchives = FixPreferencesSettings.testArchivesDefault }
+                    Spacer()
+                }
             }
 
-            Section("Rename") {
-                Toggle("Rename files to match the DAT", isOn: $renameFiles)
-                Text("Renames a misnamed archive (or loose file) in place to the name its DAT entry declares. This is what the toolbar's own \"Fix\" button already does — turning this off here disables that specific part of \"Fix\" without disabling the whole action.")
+            // jensyleo's own decision (2026-09-10): correcting a name the
+            // DAT disagrees with is unconditional — the whole reason this
+            // app, and its "Fix Mismatched Files"/"Fix Misnamed ROMs
+            // Inside Their Archives…" actions, exist — so it was never
+            // really an optional toggle the way "Test archives" or
+            // "Corrupted files" genuinely are. The only real knob for
+            // either action is HOW the corrected (or already-correct)
+            // name is STYLED, which is what the two pickers below control.
+            // A prior version here had a separate "Apply Case Policy…"
+            // action that only re-styled an already-correct name, plus two
+            // now-removed toggles gating whether a mismatch got fixed at
+            // all — jensyleo's own read on seeing them: "o es una o es la
+            // otra." Both toolbar actions now do BOTH halves (repair a
+            // wrong name; re-style an already-correct one) themselves, in
+            // one click, unconditionally.
+            Section("Fix") {
+                Picker("Sets case (archive names)", selection: $setsCasePolicy) {
+                    ForEach(FileCasePolicy.allCases) { policy in
+                        Text(policy.title).tag(policy)
+                    }
+                }
+                Picker("Roms case (entry names)", selection: $romsCasePolicy) {
+                    ForEach(FileCasePolicy.allCases) { policy in
+                        Text(policy.title).tag(policy)
+                    }
+                }
+                Text("Governs the toolbar's own \"Fix Mismatched Files\" (Sets case) and \"Fix Misnamed ROMs Inside Their Archives…\" (Roms case) — each ALWAYS runs both halves: a genuinely wrong name is corrected TO this style (\"Don't Touch\" still fixes it, using the DAT's own exact declared case — a real mismatch always needs SOME rename), and an ALREADY-correct name is re-styled to it too, in the same click.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Rename roms inside archives", isOn: $renameRoms)
-                Text("Renames a misnamed rom entry inside an otherwise-correctly-named zip via the toolbar's own \"Rename ROMs Inside Archives…\" action, which always confirms regardless of this toggle.")
+                // ⚠️ COUPLED TO CODE — jensyleo's own instruction
+                // (2026-09-10): if a future change to
+                // `RebuildPlanner.planRepair`'s hash-identity logic (the
+                // "own-archive-wrong-case" loop, added the same day) ever
+                // stops being true — e.g. if identifying a container as
+                // this game's own were EVER made to require its entries to
+                // already be `.correct` again — this sentence must be
+                // revisited too. It exists specifically because jensyleo
+                // found the two actions were NOT independent at first (a
+                // container rename silently required "Roms case" to run
+                // first) and had that fixed on the same hash-identity
+                // grounds this text now describes.
+                Text("Each action fixes its OWN level independently — the archive's own name (Sets case) or the names of the ROMs inside it (Roms case) — regardless of whether the other one has been fixed yet. A ROM is identified by its hash, not by its current name, so either action works whatever state the other is in; run them in any order, or just one of the two.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // jensyleo's own instruction (2026-09-10): "la app se guía
+                // por el DAT, por ende es su base para todo... eso debe
+                // quedar documentado en la sección case de la app y en el
+                // help" — the DAT is the ONLY source of truth this app's own
+                // Correct/Incorrect status is ever judged against (see
+                // `ROMMatcher`'s exact, case-sensitive `==`), never against
+                // whatever ROMForge itself last wrote here. See the Help
+                // window's own "Settings — Fix" topic ("The DAT is always
+                // the source of truth") for the full explanation.
+                Text("⚠️ The DAT is always the source of truth for what counts as \"Correct\"/\"Ok\". Any style here besides Datafile Case makes the styled name differ from the DAT's own exact declared case — the next Scan will report that same File/ROM as Incorrect again, and running Fix again just re-applies this same style, forever. Only Datafile Case can ever produce a name ROMForge's own audit will keep calling Correct.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                // jensyleo's own request (2026-09-10): "hay que poner la
+                // opción de restore to defaults en las opciones del Fix
+                // para el case" — resets both pickers back to "Datafile
+                // Case" (the DAT's own exact declared case), the least
+                // surprising default and the one with no case-sensitivity
+                // risk at all (see `currentSetsCasePolicyRisksCaseMismatch`/
+                // `currentRomsCasePolicyRisksCaseMismatch` in
+                // `LibraryDetailView`).
+                HStack {
+                    Button("Reset to Defaults") {
+                        setsCasePolicy = FixPreferencesSettings.setsCasePolicyDefault
+                        romsCasePolicy = FixPreferencesSettings.romsCasePolicyDefault
+                    }
+                    Spacer()
+                }
             }
 
             Section("Remove") {
@@ -64,6 +128,13 @@ struct FixSettingsView: View {
                 Text("Same underlying action as the toggle above — \"Remove Useless Files…\" already removes a zip-internal unrecognized entry without touching anything else in that archive. Kept as its own toggle to mirror ClrMamePro's own panel; there's nothing to configure differently between the two yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack {
+                    Button("Reset to Defaults") {
+                        removeUselessFilesAuto = FixPreferencesSettings.removeUselessFilesDefault
+                        removeUselessRoms = FixPreferencesSettings.removeUselessRomsDefault
+                    }
+                    Spacer()
+                }
             }
 
             Section("Corrupted files") {
@@ -87,22 +158,13 @@ struct FixSettingsView: View {
                 Text("Applied by the toolbar's own \"Fix\" dropdown → \"Handle Corrupted Files…\", which always confirms before touching anything (regardless of \"Test archives before fixing\" above, which is a separate, not-yet-connected pre-pass toggle). \"Move to\" needs a folder chosen above; \"Delete\" permanently removes the entry from its archive.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            Section("Case") {
-                Picker("Sets case (archive names)", selection: $setsCasePolicy) {
-                    ForEach(FileCasePolicy.allCases) { policy in
-                        Text(policy.title).tag(policy)
+                HStack {
+                    Button("Reset to Defaults") {
+                        corruptedFilesPolicy = FixPreferencesSettings.corruptedFilesPolicyDefault
+                        corruptedFilesMoveToPath = FixPreferencesSettings.corruptedFilesMoveToPathDefault
                     }
+                    Spacer()
                 }
-                Picker("Roms case (entry names)", selection: $romsCasePolicy) {
-                    ForEach(FileCasePolicy.allCases) { policy in
-                        Text(policy.title).tag(policy)
-                    }
-                }
-                Text("Applied by the toolbar's own \"Fix\" dropdown → \"Apply Case Policy…\", which always confirms before renaming anything and respects whichever policy is chosen here for each of the two independently. \"Sets case\" only applies to a zip-per-game archive's own filename; \"Roms case\" only applies to a rom entry living inside a zip.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("Not yet available") {

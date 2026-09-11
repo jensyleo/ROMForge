@@ -108,6 +108,39 @@ struct AuditReporterTests {
         #expect(surplusEntry.actualCRC == "aaaaaaaa")
     }
 
+    @Test("actualEntryName is the real, CURRENT on-disk entry name — distinct from both `name` (the DAT's declared name) and `path` (the CONTAINER's own URL for a zip entry)")
+    func actualEntryNameReflectsTheRealZipEntryNotTheDATNameOrContainer() throws {
+        // jensyleo's own report (2026-09-10): after renaming a misnamed rom
+        // entry inside "awbios.zip" (e.g. "bios0.ic23" → "Bios0.Ic23" via
+        // "Fix Misnamed ROMs Inside Their Archives…"), neither "Rom name"
+        // (always `rom.name`, the DAT's declared identity) nor "File name"
+        // (`path.lastPathComponent`, which for a zip entry is the
+        // CONTAINER's own filename "awbios.zip", never the entry's own)
+        // showed what was actually written inside the zip.
+        let rom = DATRom(name: "bios0.ic23", size: 1, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let game = DATGame(name: "awbios", description: "Atomiswave BIOS", cloneOf: nil, romOf: nil, roms: [rom])
+        // The container's own url is "awbios.zip" — the entry's own real
+        // name ("Bios0.Ic23") is genuinely distinct from both `rom.name`
+        // and the container's `lastPathComponent`, exactly the archived-
+        // entry shape (`url.lastPathComponent != file.name`).
+        let containerURL = URL(fileURLWithPath: "/roms/awbios.zip")
+        let entry = HashedFile(
+            file: ScannedFile(url: containerURL, name: "Bios0.Ic23", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: nil, sha1: nil)
+        )
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .misnamed(entry))])],
+            surplusFiles: []
+        )
+
+        let report = try AuditReporter.generate(from: matchReport)
+
+        let misnamedEntry = try #require(report.entries.first { $0.status == .incorrect })
+        #expect(misnamedEntry.name == "bios0.ic23", "the DAT's own declared name — unaffected by what's actually on disk")
+        #expect(misnamedEntry.path == containerURL, "the CONTAINER's own url — a zip entry has no path of its own")
+        #expect(misnamedEntry.actualEntryName == "Bios0.Ic23", "the entry's own REAL, current name — this is the one field a UI must read to see what's actually inside the zip")
+    }
+
     @Test("propagates the game's cloneOf so a UI can group clone sets under their parent")
     func propagatesCloneOf() throws {
         let rom = DATRom(name: "clone.bin", size: 1, crc: nil, md5: nil, sha1: nil)
@@ -328,5 +361,31 @@ struct AuditReporterTests {
         #expect(merged.entries.count == 2)
         #expect(merged.entries.first { $0.name == "junk.txt" }?.status == .incorrect)
         #expect(merged.entries.first { $0.name == "other-junk.txt" } == previous.entries.first { $0.name == "other-junk.txt" })
+    }
+
+    @Test("scopedSummary counts only the rescanned game's own entries, not the whole report — jensyleo's own report (2026-09-11) that the Log's completion line read whole-system totals for a scoped 'Scan File'")
+    func scopedSummaryCountsOnlyTheTouchedGame() {
+        let rescannedArchive = URL(fileURLWithPath: "/roms/aliens.zip")
+        let report = AuditReport(
+            entries: [
+                plainEntry(status: .correct, game: "aliens", name: "rom1.bin", path: rescannedArchive),
+                plainEntry(status: .incorrect, game: "aliens", name: "rom2.bin", path: rescannedArchive),
+                // Thousands of other, untouched games in a real collection —
+                // represented here by just one, `other`, still `.missing`.
+                plainEntry(status: .missing, game: "other", name: "rom3.bin"),
+            ],
+            correct: 1, incorrect: 1, missing: 1, surplus: 0
+        )
+        let summary = AuditReporter.scopedSummary(in: report, rescannedPaths: [rescannedArchive])
+        #expect(summary?.correct == 1)
+        #expect(summary?.incorrect == 1)
+        #expect(summary?.missing == 0, "the untouched 'other' game must not leak into a scoped summary")
+        #expect(summary?.entries.count == 2)
+    }
+
+    @Test("scopedSummary returns nil for an empty scope — an unscoped scan has no narrower summary")
+    func scopedSummaryReturnsNilForEmptyScope() {
+        let report = AuditReport(entries: [plainEntry(status: .correct, game: "game1", name: "rom1.bin")], correct: 1, incorrect: 0, missing: 0, surplus: 0)
+        #expect(AuditReporter.scopedSummary(in: report, rescannedPaths: []) == nil)
     }
 }

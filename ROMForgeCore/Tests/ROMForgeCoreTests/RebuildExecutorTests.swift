@@ -91,6 +91,23 @@ struct RebuildExecutorTests {
         #expect(try Data(contentsOf: destination) == Data("original".utf8), "existing destination must be left untouched")
     }
 
+    @Test("RebuildError.localizedDescription returns the SPECIFIC message, not Foundation's generic fallback")
+    func rebuildErrorLocalizedDescriptionIsSpecific() {
+        // jensyleo's own instruction (2026-09-10) to review the app's whole
+        // logging for coherence surfaced this: `RebuildError` used to
+        // conform only to `CustomStringConvertible`, so `.localizedDescription`
+        // (called by every write action's own `failureLines`, added the
+        // same day to fix "la opción de fix sigue sin funcionar") fell back
+        // to Foundation's generic NSError-bridged text — something like
+        // "The operation couldn't be completed." — instead of ever showing
+        // the real, specific reason below. This is the exact property
+        // every one of those "Could not <do the thing>: <this message>"
+        // log lines depends on to be worth anything at all.
+        let error: Error = RebuildError.sourceMissing(URL(fileURLWithPath: "/roms/missing.zip"))
+        #expect(error.localizedDescription == "Source file does not exist: /roms/missing.zip")
+        #expect(!error.localizedDescription.contains("couldn't be completed"), "must never fall back to Foundation's generic bridged text")
+    }
+
     @Test("throws when the source file is missing")
     func throwsWhenSourceMissing() throws {
         let root = try tempDirectory()
@@ -607,6 +624,38 @@ struct RebuildExecutorTests {
         #expect(String(data: extracted, encoding: .utf8) == "the-real-content", "the renamed entry must keep its original content")
     }
 
+    @Test(
+        "planRenameRomsInArchive styles the fixed entry name per romsCasePolicy, always derived from the DAT's own declared name",
+        arguments: [
+            (FileCasePolicy.datafileCase, "Correct Name.bin"),
+            (.uppercase, "CORRECT NAME.BIN"),
+            (.lowercase, "correct name.bin"),
+            (.capitalized, "Correct Name.bin"),
+        ]
+    )
+    func planRenameRomsInArchiveStylesEntryNamePerPolicy(policy: FileCasePolicy, expectedEntryName: String) throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("game.zip")
+        try makeZip(at: zipURL, entries: [("wrong-name.bin", "the-real-content")])
+
+        let rom = DATRom(name: "Correct Name.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let misnamedFile = HashedFile(file: ScannedFile(url: zipURL, name: "wrong-name.bin", size: 1), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .misnamed(misnamedFile))])],
+            surplusFiles: []
+        )
+
+        let operations = RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport, romsCasePolicy: policy)
+        #expect(operations == [
+            .addEntryToZip(targetArchive: zipURL, entryName: expectedEntryName, source: ArchiveEntrySource(source: zipURL, entryName: expectedEntryName, sourceArchiveEntryName: "wrong-name.bin")),
+            .removeEntryFromZip(archive: zipURL, entryName: "wrong-name.bin"),
+        ])
+    }
+
     @Test("never plans a rename for a rom already using its expected entry name")
     func doesNotRenameAlreadyCorrectlyNamedEntry() throws {
         let root = try tempDirectory()
@@ -698,7 +747,86 @@ struct RebuildExecutorTests {
         #expect(RebuildPlanner.planConvertToSplit(matchReport: matchReport).isEmpty)
     }
 
+    // MARK: - Fix Mismatched Files + Sets case, combined (jensyleo's own
+    // ClrMamePro-parity request, 2026-09-10: one "Fix" pass should both
+    // repair a wrong name AND re-style an already-correct one, exactly as
+    // `LibraryViewModel.fix()` now runs `planRepair` and
+    // `planApplySetsCasePolicy` together)
+
+    @Test("planRepair and planApplySetsCasePolicy never target the same archive — mutually exclusive by construction, so LibraryViewModel.fix() can safely run both in one pass without risking a double-rename")
+    func planRepairAndSetsCasePolicyAreMutuallyExclusive() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // A real MAME/NEOGEO-shaped collection: every archive's name
+        // already matches its DAT game name exactly (lowercase) — nothing
+        // for `planRepair` to fix, everything for a Sets-case Uppercase
+        // pass to re-style. jensyleo's own report (2026-09-10): 26 such
+        // archives, "Sets case" = Uppercase, "Fix Mismatched Files" logged
+        // "nothing to fix" because THIS half genuinely had nothing to do
+        // — the fix is that the SAME click also runs the other half.
+        var games: [GameMatchResult] = []
+        for name in ["mslug", "blazstar", "ganryu"] {
+            let zipURL = root.appendingPathComponent("\(name).zip")
+            try makeZip(at: zipURL, entries: [("\(name).rom", "content")])
+            let rom = DATRom(name: "\(name).rom", size: 1, crc: nil, md5: nil, sha1: nil)
+            let game = DATGame(name: name, description: name, cloneOf: nil, romOf: nil, roms: [rom])
+            let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "\(name).rom", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+            games.append(GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))]))
+        }
+        let matchReport = MatchReport(games: games, surplusFiles: [])
+
+        let mismatchOperations = RebuildPlanner.planRepair(matchReport: matchReport, filesCasePolicy: .uppercase)
+        let caseOnlyOperations = RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: .uppercase)
+
+        #expect(mismatchOperations.isEmpty, "nothing here disagrees with the DAT — planRepair's own half has genuinely nothing to do")
+        #expect(caseOnlyOperations.count == 3, "all three lowercase archives are eligible for Sets-case re-styling")
+
+        // The actual safety property `fix()` relies on: no source path
+        // appears in both plans, so concatenating and executing them
+        // together can never rename the same File twice.
+        func sourcePath(_ op: RebuildOperation) -> String? {
+            if case .rename(let from, _) = op { return from.path }
+            return nil
+        }
+        let mismatchSources = Set(mismatchOperations.compactMap(sourcePath))
+        let caseOnlySources = Set(caseOnlyOperations.compactMap(sourcePath))
+        #expect(mismatchSources.isDisjoint(with: caseOnlySources))
+
+        // Executing the combined plan (as `fix()` now does) actually
+        // performs every rename.
+        try RebuildExecutor.execute(mismatchOperations + caseOnlyOperations)
+        let onDisk = Set(try FileManager.default.contentsOfDirectory(atPath: root.path))
+        #expect(onDisk == ["MSLUG.zip", "BLAZSTAR.zip", "GANRYU.zip"])
+    }
+
     // MARK: - Case policy (Fase 2 Step 9)
+
+    @Test("Roms case = Capitalized re-styles an already-correct entry's BASE name only, keeping its extension lowercase — never 'Game.Bin'")
+    func romsCasePolicyCapitalizedKeepsExtensionLowercase() throws {
+        // jensyleo's own instruction (2026-09-10) to review the app for
+        // coherence surfaced this: `mismatchFixName` (a genuine mismatch's
+        // target name) already guards `.capitalized` against title-casing
+        // the extension too ("game.bin" → "Game.bin", not "Game.Bin") —
+        // but `caseTransformTarget` (an ALREADY-correct entry being
+        // re-styled) had no such guard, so "Roms case" = Capitalized
+        // silently produced "Game.Bin" for an entry the DAT already
+        // matched correctly.
+        let zipURL = URL(fileURLWithPath: "/roms/sfiii.zip")
+        let rom = DATRom(name: "game.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "sfiii", description: "sfiii", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "game.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        let operations = RebuildPlanner.planApplyRomsCasePolicy(matchReport: matchReport, policy: .capitalized)
+
+        #expect(operations.count == 2)
+        guard case .addEntryToZip(_, let newName, _) = operations.first else {
+            Issue.record("expected the pair to start with .addEntryToZip, got \(String(describing: operations.first))")
+            return
+        }
+        #expect(newName == "Game.bin", "extension must stay lowercase — 'Game.Bin' is the exact bug this test guards against")
+    }
 
     @Test("renames a zip-per-game archive's own filename to uppercase, leaving its extension and contents untouched")
     func setsCasePolicyUppercasesArchiveFilename() throws {
@@ -709,7 +837,10 @@ struct RebuildExecutorTests {
         try makeZip(at: zipURL, entries: [("a.bin", "content")])
 
         let rom = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
-        let game = DATGame(name: "Lowercase Game", description: "Lowercase Game", cloneOf: nil, romOf: nil, roms: [rom])
+        // The container's name must match the DAT game name apart from case
+        // for this to be a genuine "Sets case" job at all — a name that
+        // differs beyond case is a File-level mismatch, not a case one.
+        let game = DATGame(name: "lowercase-game", description: "Lowercase Game", cloneOf: nil, romOf: nil, roms: [rom])
         let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "a.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
         let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
 
@@ -729,6 +860,113 @@ struct RebuildExecutorTests {
         #expect(siblingNames.contains("LOWERCASE-GAME.zip"), "the on-disk name itself must be uppercase now, not just case-insensitively reachable")
         let archive = try Archive(url: expectedURL, accessMode: .read)
         #expect(archive["a.bin"] != nil, "contents must survive the rename untouched")
+    }
+
+    @Test("re-cases a .7z set's own container filename too — renaming a container never rewrites entries, so restricting this to .zip left every 7z collection silently unfixable")
+    func setsCasePolicyUppercasesSevenZipFilename() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Only the container's NAME matters to this planner — it plans a
+        // plain filesystem rename and never opens the archive, so a stub
+        // file at a .7z path is a faithful fixture here.
+        let archiveURL = root.appendingPathComponent("lowercase-game.7z")
+        try Data("stub".utf8).write(to: archiveURL)
+
+        let rom = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        // The container's name must match the DAT game name apart from case
+        // for this to be a genuine "Sets case" job at all — a name that
+        // differs beyond case is a File-level mismatch, not a case one.
+        let game = DATGame(name: "lowercase-game", description: "Lowercase Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: archiveURL, name: "a.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        let operations = RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: .uppercase)
+        #expect(operations.count == 1)
+        guard case .rename(let from, let to) = operations.first else {
+            Issue.record("expected a single .rename operation, got \(String(describing: operations.first))")
+            return
+        }
+        #expect(from == archiveURL)
+        #expect(to.lastPathComponent == "LOWERCASE-GAME.7z", "basename uppercased, extension left exactly as it was")
+    }
+
+    @Test("never re-cases a container whose own FILENAME is wrong beyond case, even when every ENTRY inside it is .correct — entry status says nothing about the container's name")
+    func setsCasePolicySkipsContainerWhoseFilenameIsGenuinelyWrong() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // The container's own name has nothing to do with the game; the
+        // entry inside it is named exactly right. `ROMMatcher` matches by
+        // HASH, so this rom comes back `.correct` — a status decided
+        // purely by the ENTRY name — while the File's own name is
+        // genuinely wrong. Uppercasing it here would just produce
+        // "UNKNOWN123.zip": a differently-cased WRONG File name.
+        let zipURL = root.appendingPathComponent("unknown123.zip")
+        try makeZip(at: zipURL, entries: [("a.bin", "content")])
+
+        let rom = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "sfiii", description: "sfiii", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "a.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        #expect(
+            RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: .uppercase).isEmpty,
+            "renaming this File is \"Fix Mismatched Files\"' job, never a case policy's"
+        )
+    }
+
+    @Test("re-cases only the container's own filename, leaving every entry name inside it exactly as it was")
+    func setsCasePolicyNeverTouchesEntryNames() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Container name differs from the game name by case only — a real
+        // "Sets case" job. The entry inside is deliberately lowercase and
+        // must survive untouched: this half renames the FILE, never its
+        // contents.
+        let zipURL = root.appendingPathComponent("sfiii.zip")
+        try makeZip(at: zipURL, entries: [("a.bin", "content")])
+
+        let rom = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "SFIII", description: "SFIII", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "a.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile))])], surplusFiles: [])
+
+        let operations = RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: .uppercase)
+        #expect(operations.count == 1)
+        for operation in operations {
+            if case .addEntryToZip = operation { Issue.record("a Sets-case rename must never rewrite an entry") }
+            if case .removeEntryFromZip = operation { Issue.record("a Sets-case rename must never rewrite an entry") }
+        }
+        try RebuildExecutor.execute(operations)
+
+        let renamed = root.appendingPathComponent("SFIII.zip")
+        let archive = try Archive(url: renamed, accessMode: .read)
+        #expect(archive["a.bin"] != nil, "the entry name must be untouched — only the container was renamed")
+    }
+
+    @Test("never re-cases a game whose only anchor is .misnamed — that's Fix Mismatched Files' job, and re-casing the CURRENT (wrong) name would just produce a differently-cased version of it")
+    func setsCasePolicySkipsMisnamedAnchor() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // The zip's own name is "wrongname.zip" — not even close to the
+        // DAT's declared game name — mirroring a genuinely misidentified
+        // archive, not just a case mismatch.
+        let zipURL = root.appendingPathComponent("wrongname.zip")
+        try makeZip(at: zipURL, entries: [("a.bin", "content")])
+
+        let rom = DATRom(name: "a.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Sfiii", description: "Sfiii", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "a.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .misnamed(hashedFile))])], surplusFiles: [])
+
+        // Before the fix, this would have produced
+        // .rename(wrongname.zip, WRONGNAME.zip) — uppercasing the WRONG
+        // name instead of leaving it for "Fix Mismatched Files" to
+        // actually correct.
+        #expect(RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: .uppercase).isEmpty)
     }
 
     @Test("never plans a sets-case rename when the policy is dontTouch or the name already matches")
@@ -785,6 +1023,25 @@ struct RebuildExecutorTests {
         var extracted = Data()
         _ = try archive.extract(renamed) { extracted.append($0) }
         #expect(String(data: extracted, encoding: .utf8) == "the-content")
+    }
+
+    @Test("never re-cases a rom entry whose own status is .misnamed — that's Fix Misnamed ROMs Inside Their Archives' job")
+    func romsCasePolicySkipsMisnamedEntry() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("game.zip")
+        try makeZip(at: zipURL, entries: [("wrong-entry.bin", "the-content")])
+
+        let rom = DATRom(name: "correct-entry.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let hashedFile = HashedFile(file: ScannedFile(url: zipURL, name: "wrong-entry.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        let matchReport = MatchReport(games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .misnamed(hashedFile))])], surplusFiles: [])
+
+        // Before the fix, this would have produced an add/remove pair
+        // renaming to "WRONG-ENTRY.BIN" (uppercasing the wrong current
+        // name) instead of leaving it for the actual Fix action.
+        #expect(RebuildPlanner.planApplyRomsCasePolicy(matchReport: matchReport, policy: .uppercase).isEmpty)
     }
 
     // MARK: - Corrupted files policy (Fase 2 Step 8)

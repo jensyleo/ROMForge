@@ -6,7 +6,14 @@
 
 import Foundation
 
-public enum CHDError: Error, Equatable, CustomStringConvertible {
+// jensyleo's own instruction (2026-09-10) to review the app's whole
+// logging for coherence — same systemic gap as `RebuildError`/`ScannerError`
+// (see their own doc comments): this type only conformed to
+// `CustomStringConvertible`, so any `error.localizedDescription` call
+// would silently fall back to Foundation's generic bridged text instead of
+// the specific `description` below. `errorDescription` fixes it at the
+// source.
+public enum CHDError: Error, Equatable, CustomStringConvertible, LocalizedError {
     case cannotOpenFile(URL)
     case notAValidCHD(URL)
     case unsupportedVersion(UInt32, URL)
@@ -21,4 +28,6 @@ public enum CHDError: Error, Equatable, CustomStringConvertible {
             return "\(url.path) is CHD header version \(version) — only version 5 is supported"
         }
     }
+
+    public var errorDescription: String? { description }
 }

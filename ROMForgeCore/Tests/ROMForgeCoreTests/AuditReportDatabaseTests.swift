@@ -283,6 +283,27 @@ struct AuditReportDatabaseTests {
         #expect(reloadedInUse.isOrphanedBios == false)
     }
 
+    @Test("an entry's actualEntryName survives a save/load round trip — added in the same commit as the field itself (v23), following the exact pattern the earlier isDisk/foundElsewhereArchiveName gaps established")
+    func actualEntryNameSurvivesRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        // jensyleo's own report (2026-09-10): renaming a misnamed rom entry
+        // inside a zip left nothing anywhere showing the entry's own
+        // CURRENT real name — "Rom name" is always the DAT's declared
+        // name, and "File name" (`path.lastPathComponent`) is the
+        // CONTAINER's filename for a zip entry, never the entry's own.
+        let misnamed = AuditEntry(status: .incorrect, game: "awbios", name: "bios0.ic23", actualEntryName: "Bios0.Ic23", path: URL(fileURLWithPath: "/roms/awbios.zip"))
+        let missing = AuditEntry(status: .missing, game: "awbios", name: "bios1.ic23", path: nil)
+        let report = AuditReport(entries: [misnamed, missing], correct: 0, incorrect: 1, missing: 1, surplus: 0)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedMisnamed = try #require(loaded.entries.first { $0.name == "bios0.ic23" })
+        let reloadedMissing = try #require(loaded.entries.first { $0.name == "bios1.ic23" })
+        #expect(reloadedMisnamed.actualEntryName == "Bios0.Ic23")
+        #expect(reloadedMissing.actualEntryName == nil, "no HashedFile ever existed for a missing rom, so this must stay nil, not an empty string")
+    }
+
     /// Same class of bug once more, one schema version later (v6,
     /// 2026-08-04), for `AuditEntry.requiredByGameDescription` — added the
     /// `ALTER TABLE` and this test in the same commit as the field itself

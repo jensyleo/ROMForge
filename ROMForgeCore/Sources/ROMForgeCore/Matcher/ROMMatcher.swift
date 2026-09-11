@@ -242,6 +242,15 @@ public enum ROMMatcher {
                         claimedArchiveURLsByGame[game.name.lowercased(), default: []].insert(hashedFile.file.url)
                     }
                     let viaHeaderStrip = matchKind(hashedFile, rom) == .stripped
+                    // REVERTED (2026-09-10) — jensyleo's own live report:
+                    // making this case-insensitive made the app DISPLAY a
+                    // rom as "Correct"/matching the DAT's own declared name
+                    // while the entry ON DISK still carried a different
+                    // case than the DAT declares — masking a genuine,
+                    // visible-in-the-zip difference instead of surfacing
+                    // it. Restored to the original exact, case-SENSITIVE
+                    // comparison pending his own explanation of what's
+                    // actually supposed to happen here.
                     resolvedStatuses[index] = hashedFile.file.name == rom.name
                         ? .correct(hashedFile, viaHeaderStrip: viaHeaderStrip)
                         : .misnamed(hashedFile, viaHeaderStrip: viaHeaderStrip)

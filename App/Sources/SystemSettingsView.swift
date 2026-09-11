@@ -209,6 +209,41 @@ private struct MAMEMergeSettingsForm: View {
     @State private var biosMergeModeAtAppear: String?
     @State private var didPurgeMAMEFiles = false
     @State private var purgedMAMEFileCount = 0
+    /// "Update Database" — jensyleo's own request (2026-09-10): "Poner la
+    /// opción de actualizar el DAT... en el caso de MAME se actualiza muy
+    /// seguido." Every configured `RomSystem` today is a MAME category-split
+    /// of ONE underlying MAME DAT (they all read "DAT: MAME" at the top of
+    /// `LibraryDetailView`) — re-picking each one's own `datURL` by hand
+    /// every time a newer DAT comes out doesn't scale past a couple of
+    /// systems. This one action re-points EVERY configured system at a
+    /// single new DAT in one step, placed here (not per-system) for the
+    /// same reason merge mode already lives here globally rather than
+    /// per-system — jensyleo's own explicit placement instruction:
+    /// "Systems -> MAME... así para cada sistema que a futuro le
+    /// coloquemos" (a future non-MAME system type would get its own
+    /// equivalent section here, not this one).
+    ///
+    /// jensyleo's own correction (2026-09-10) to the first cut of this,
+    /// which only offered a plain file picker under the label "Update DAT
+    /// for All Systems…": "eso no es cierto" — a single "load a file"
+    /// button doesn't actually cover how a MAME DAT really gets updated in
+    /// practice. Two genuinely different sources now offered, mirroring
+    /// `AddSystemSheet`'s own two DAT-source buttons exactly:
+    /// 1. **Choose DAT File…** — pick any `.dat`/`.xml` already on disk.
+    /// 2. **Generate from Installed MAME…** — runs the configured MAME
+    ///    executable's own `-listxml` (`MAMEDATGenerator`), same mechanism
+    ///    `AddSystemSheet.generateDATFromMAME()` already uses; only offered
+    ///    once a MAME executable is actually configured just above.
+    /// Holds the resulting file between either source finishing and the
+    /// user actually confirming (`confirmationDialog` below) — nothing is
+    /// touched until confirmed.
+    @State private var pendingDATUpdateURL: URL?
+    @State private var isGeneratingDATForUpdate = false
+    @State private var generatedDATBytesForUpdate = 0
+    @State private var generateDATForUpdateErrorMessage: String?
+    @State private var isUpdatingDAT = false
+    @State private var didUpdateDAT = false
+    @State private var updatedSystemCount = 0
 
     private var mergeModeChangedSinceAppear: Bool {
         guard let mergeModeAtAppear, let biosMergeModeAtAppear else { return false }
@@ -288,6 +323,42 @@ private struct MAMEMergeSettingsForm: View {
                 Text("Clears whatever MAME itself has written under its own working directory while running a game launched from here (\"cfg\"/\"nvram\"/\"snap\", and a machine-specific \"diff\" scratch overlay for any hard disk MAME treats as writable) — per-game settings, screenshots, and in-progress hard-disk state, none of it anything ROMForge needs to keep. Never touches your ROMs, DATs, or any scan result.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section("Database") {
+                HStack {
+                    Button("Choose DAT File…") { chooseNewDAT() }
+                        .disabled(store.systems.isEmpty || isUpdatingDAT || isGeneratingDATForUpdate)
+                    // Only offered once a real MAME executable is configured
+                    // just above — nothing to generate from otherwise, same
+                    // condition `AddSystemSheet`'s own equivalent button
+                    // uses.
+                    if MAMELaunchSettings.executablePath != nil {
+                        Button("Generate from Installed MAME…") { generateDATForUpdate() }
+                            .disabled(store.systems.isEmpty || isUpdatingDAT || isGeneratingDATForUpdate)
+                    }
+                    if isGeneratingDATForUpdate {
+                        ProgressView().controlSize(.small)
+                        Text("Running mame -listxml… \(generatedDATBytesForUpdate / 1024) KB")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if isUpdatingDAT {
+                        ProgressView().controlSize(.small)
+                    }
+                    Spacer()
+                }
+                if let generateDATForUpdateErrorMessage {
+                    Text(generateDATForUpdateErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Text("MAME's own database updates often. Either source here re-points EVERY configured system at the resulting DAT in one step, instead of editing each one individually — the last scan result for each affected system is cleared too, so the next Scan re-audits against the new DAT rather than showing stale results from the old one.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if store.systems.isEmpty {
+                    Text("No systems configured yet — add one first (the \"+\" in the sidebar).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("MAME") {
                 // Confirmed against a real reference MAME frontend's own
@@ -466,6 +537,85 @@ private struct MAMEMergeSettingsForm: View {
                     ? "Removed \(purgedMAMEFileCount) item\(purgedMAMEFileCount == 1 ? "" : "s") (\"cfg\"/\"diff\"/\"snap\" and anything else MAME had written there)."
                     : "Nothing was there yet — there was nothing to remove."
             )
+        }
+        // Confirms BEFORE touching anything — this rewrites every
+        // configured system's own `datURL`, not a reversible toggle.
+        .confirmationDialog(
+            "Update Database?",
+            isPresented: Binding(get: { pendingDATUpdateURL != nil }, set: { if !$0 { pendingDATUpdateURL = nil } })
+        ) {
+            Button("Update \(store.systems.count) System\(store.systems.count == 1 ? "" : "s")") {
+                if let pendingDATUpdateURL {
+                    applyDATUpdate(to: pendingDATUpdateURL)
+                }
+                pendingDATUpdateURL = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDATUpdateURL = nil }
+        } message: {
+            Text(
+                "This points every one of your \(store.systems.count) configured system(s) — \(store.systems.map(\.name).joined(separator: ", ")) — at \"\(pendingDATUpdateURL?.lastPathComponent ?? "")\" instead of whatever DAT each one currently uses, and clears each one's last scan result (a fresh Scan will be needed). This can't be undone automatically — pick \"Cancel\" if you meant to update only one specific system instead (not yet possible from here; edit that system directly)."
+            )
+        }
+        .alert("Database Updated", isPresented: $didUpdateDAT) {
+            Button("OK") {}
+        } message: {
+            Text("Re-pointed \(updatedSystemCount) system\(updatedSystemCount == 1 ? "" : "s") at the new DAT and cleared their last scan results. Run Scan Folder/Scan All Folders on each to re-audit against it.")
+        }
+    }
+
+    private func chooseNewDAT() {
+        let panel = NSOpenPanel()
+        // Same "no content-type filter" reasoning as `AddSystemSheet
+        // .chooseDAT()` — a `.dat` file's UTI doesn't reliably conform to
+        // public.xml even though its content is XML.
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "Select the new DAT (.dat or .xml — Logiqx/ClrMamePro or MAME -listxml, auto-detected)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        pendingDATUpdateURL = url
+    }
+
+    /// Same mechanism as `AddSystemSheet.generateDATFromMAME()` — runs the
+    /// configured MAME executable's own `-listxml` via `MAMEDATGenerator`,
+    /// then hands the result into the same confirmation flow
+    /// `chooseNewDAT()` above uses, rather than applying it immediately.
+    private func generateDATForUpdate() {
+        isGeneratingDATForUpdate = true
+        generateDATForUpdateErrorMessage = nil
+        generatedDATBytesForUpdate = 0
+        Task {
+            do {
+                let url = try await MAMEDATGenerator.generate { bytes in
+                    Task { @MainActor in generatedDATBytesForUpdate = bytes }
+                }
+                isGeneratingDATForUpdate = false
+                pendingDATUpdateURL = url
+            } catch {
+                isGeneratingDATForUpdate = false
+                generateDATForUpdateErrorMessage = String(describing: error)
+            }
+        }
+    }
+
+    /// Re-points every configured system's `datURL` at `newDATURL`, then
+    /// purges each one's last scan result (`SavedViewStatePurger
+    /// .purgeScanResults`, the same purge "Purge Database View" already
+    /// uses) — a system whose DAT just changed showing its OLD DAT's scan
+    /// results until the user happens to rescan would be actively
+    /// misleading, not just stale.
+    private func applyDATUpdate(to newDATURL: URL) {
+        isUpdatingDAT = true
+        let systemsToUpdate = store.systems
+        for system in systemsToUpdate {
+            var updated = system
+            updated.datURL = newDATURL
+            store.update(updated)
+        }
+        Task {
+            await SavedViewStatePurger.purgeScanResults(systems: systemsToUpdate)
+            isUpdatingDAT = false
+            updatedSystemCount = systemsToUpdate.count
+            didUpdateDAT = true
         }
     }
 

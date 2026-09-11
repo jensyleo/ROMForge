@@ -323,6 +323,35 @@ private extension View {
             }
     }
 
+    /// `true` when the currently configured "Roms case" policy (Settings →
+    /// Fix) could actually produce an entry name whose case differs from
+    /// what the DAT declares — jensyleo's own request (2026-09-10): don't
+    /// show the case-sensitivity caution below when there's nothing to
+    /// warn about. `.datafileCase` always produces the DAT's own exact
+    /// case; `.dontTouch` is treated identically to it for a genuine
+    /// mismatch fix (`RebuildPlanner.mismatchFixName`'s own doc comment —
+    /// a mismatch always needs SOME real rename, so `.dontTouch` there
+    /// falls back to the DAT's declared case rather than leaving the
+    /// wrong name in place) and is a literal no-op for the already-correct
+    /// re-styling half (`RebuildPlanner.caseTransformTarget`) — neither can
+    /// ever change an entry's case away from the DAT's own.
+    fileprivate func currentRomsCasePolicyRisksCaseMismatch() -> Bool {
+        let policy = FixPreferencesSettings.currentRomsCasePolicy()
+        return policy != .datafileCase && policy != .dontTouch
+    }
+
+    /// Same idea as `currentRomsCasePolicyRisksCaseMismatch` above, for
+    /// "Sets case" (File-level) — jensyleo's own follow-up request
+    /// (2026-09-10) after adding the ROM-level warning: "Fix Mismatched
+    /// Files" carried the exact same risk (a re-styled archive filename no
+    /// longer matching the DAT's own case) but never had a confirmation
+    /// dialog at all to show it in, an asymmetry with no good reason to
+    /// keep.
+    fileprivate func currentSetsCasePolicyRisksCaseMismatch() -> Bool {
+        let policy = FixPreferencesSettings.currentSetsCasePolicy()
+        return policy != .datafileCase && policy != .dontTouch
+    }
+
     /// Every Fase 2 write action's own confirmation dialog (Rebuild to
     /// Folder, Remove Useless Files, Repair from Sibling Sets, Make
     /// Self-Contained), bundled into ONE modifier and factored out of
@@ -399,14 +428,16 @@ private extension View {
                 Text("Each rom is already genuinely present elsewhere in this scan (a BIOS or parent set) — this only adds a copy into each game's own archive, it never removes anything from where it already is.")
             }
             .confirmationDialog(
-                "Rename \(renameRomsInArchiveCount) ROM\(renameRomsInArchiveCount == 1 ? "" : "s") Inside Their Archives?",
+                "Fix \(renameRomsInArchiveCount) Misnamed ROM\(renameRomsInArchiveCount == 1 ? "" : "s") Inside Their Archives?",
                 isPresented: showRenameRomsInArchive,
                 titleVisibility: .visible
             ) {
-                Button("Rename", action: onRenameRomsInArchive)
+                Button("Fix", action: onRenameRomsInArchive)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Each entry keeps its own content — only its name inside the zip changes, to match what the DAT declares.")
+                if currentRomsCasePolicyRisksCaseMismatch() {
+                    Text("Changing the case away from \"Datafile Case\" (Settings → Fix → \"Roms case\") makes this entry's name no longer match the DAT exactly. Some tools/emulators are case-sensitive and may then fail to find it — which can stop this game from running there.")
+                }
             }
     }
 
@@ -432,27 +463,8 @@ private extension View {
         }
     }
 
-    /// Fase 2 Step 9's own confirmation dialog, its own separate modifier
-    /// for the same reason `fase2Step4SplitConfirmation` above is.
-    func applyCasePolicyConfirmation(
-        isPresented: Binding<Bool>,
-        count: Int,
-        onConfirm: @escaping () -> Void
-    ) -> some View {
-        confirmationDialog(
-            "Rename \(count) Item\(count == 1 ? "" : "s") for Case Policy?",
-            isPresented: isPresented,
-            titleVisibility: .visible
-        ) {
-            Button("Rename", action: onConfirm)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Applies the \"Sets case\"/\"Roms case\" policy configured in Settings → Fix. Only the name changes — every rom's own content is untouched.")
-        }
-    }
-
     /// "Repair from Maintenance Folder…"'s own confirmation dialog, its
-    /// own separate modifier for the same reason `applyCasePolicyConfirmation`
+    /// own separate modifier for the same reason `fase2Step4SplitConfirmation`
     /// above is.
     func repairFromMaintenanceFolderConfirmation(
         isPresented: Binding<Bool>,
@@ -468,6 +480,56 @@ private extension View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Each rom is copied from the read-only Maintenance folder configured in Settings → General. Nothing there is ever renamed, moved, or deleted.")
+        }
+    }
+
+    /// "Fix Misnamed ROMs Inside Their Archives…", scoped to a single File
+    /// from the Games table's own context menu — its own separate modifier
+    /// so it can't share (and so clobber) the toolbar's own folder-scoped
+    /// confirmation state.
+    func contextMenuRenameRomsInArchiveConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Fix \(count) Misnamed ROM\(count == 1 ? "" : "s") Inside This Archive?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Fix", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if currentRomsCasePolicyRisksCaseMismatch() {
+                Text("Changing the case away from \"Datafile Case\" (Settings → Fix → \"Roms case\") makes this entry's name no longer match the DAT exactly. Some tools/emulators are case-sensitive and may then fail to find it — which can stop this game from running there.")
+            }
+        }
+    }
+
+    /// "Fix Mismatched Files" — the File-level twin of
+    /// `contextMenuRenameRomsInArchiveConfirmation` above, added for the
+    /// same reason (2026-09-10): a re-styled archive filename can stop
+    /// matching the DAT's own case just as easily as a re-styled ROM
+    /// entry can. One modifier, reused by both the toolbar's own
+    /// folder-scoped action and the Games table context menu's
+    /// single-File action — each passes its own state so neither can
+    /// clobber the other's pending confirmation.
+    func fixMismatchedFilesConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Fix \(count) Mismatched File\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Fix", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if currentSetsCasePolicyRisksCaseMismatch() {
+                Text("Changing the case away from \"Datafile Case\" (Settings → Fix → \"Sets case\") makes this File's name no longer match the DAT exactly. Some tools/emulators are case-sensitive and may then fail to find it — which can stop this game from running there.")
+            }
         }
     }
 
@@ -701,8 +763,41 @@ struct LibraryDetailView: View {
     @Environment(\.controlActiveState) private var controlActiveState
 
     @State private var viewModel = LibraryViewModel()
-    @State private var selectedGameID: String?
-    @State private var selectedRomID: String?
+    /// The Games table's own REAL selection — jensyleo's own request
+    /// (2026-09-10): "la app no permite selección múltiple". A `Table`
+    /// bound to a `Set<ID>` (rather than a single optional `ID?`) is what
+    /// actually lets ⌘/⇧-click select more than one row at all; every
+    /// OTHER piece of this view that only ever needed "the" selected game
+    /// keeps reading/writing through `selectedGameID` below, which is
+    /// backed by this same Set.
+    @State private var selectedGameIDs: Set<String> = []
+    /// Backward-compatible single-selection proxy over `selectedGameIDs`
+    /// above — reads/writes its FIRST element, so every existing
+    /// single-game call site (the detail panel, type-ahead, category-tree
+    /// sync, keyboard navigation) keeps meaning exactly what it always
+    /// did: "the" selected game, or the first of several when more than
+    /// one is now selected. A computed property, not `@State` itself —
+    /// `$selectedGameID` binding syntax is never used anywhere in this
+    /// file (only the Table's own selection binds to `$selectedGameIDs`
+    /// directly), so this needed no further plumbing.
+    private var selectedGameID: String? {
+        get { selectedGameIDs.first }
+        nonmutating set { selectedGameIDs = newValue.map { [$0] } ?? [] }
+    }
+    /// The Roms table's own REAL selection — same multi-selection
+    /// treatment as `selectedGameIDs` above, jensyleo's own request
+    /// (2026-09-10): "Renombrar roms de una o varias, también se debe
+    /// poder" (the right-hand Roms panel, not just the Games table).
+    @State private var selectedRomIDs: Set<String> = []
+    /// Backward-compatible single-selection proxy over `selectedRomIDs`
+    /// above — same shape as `selectedGameID`'s own proxy, for the same
+    /// reason: every existing single-rom call site (the detail pane's own
+    /// `selectedEntry`) keeps meaning "the" selected rom, or the first of
+    /// several when more than one is now selected.
+    private var selectedRomID: String? {
+        get { selectedRomIDs.first }
+        nonmutating set { selectedRomIDs = newValue.map { [$0] } ?? [] }
+    }
     /// Finder/`NSTableView`-style type-ahead: typing a few characters while
     /// the Games table has focus jumps to the first row whose file name
     /// starts with what's been typed so far — jensyleo's own request
@@ -1228,8 +1323,8 @@ struct LibraryDetailView: View {
     /// confirm shape as the others above.
     @State private var makeSelfContainedCount = 0
     @State private var showMakeSelfContainedConfirmation = false
-    /// Fase 2 Step 6 "Rename ROMs Inside Archives…" state — same preview-
-    /// then-confirm shape as the others above.
+    /// Fase 2 Step 6 "Fix Misnamed ROMs Inside Their Archives…" state —
+    /// same preview-then-confirm shape as the others above.
     @State private var renameRomsInArchiveCount = 0
     @State private var showRenameRomsInArchiveConfirmation = false
     /// Fase 2 Step 4 "Strip Redundant ROMs (Split)…" state — same preview-
@@ -1240,10 +1335,51 @@ struct LibraryDetailView: View {
     /// (see its own doc comment).
     @State private var convertToSplitCount = 0
     @State private var showConvertToSplitConfirmation = false
-    /// Fase 2 Step 9 "Apply Case Policy…" state — same preview-then-confirm
-    /// shape, own separate confirmation modifier for the same reason.
-    @State private var applyCasePolicyCount = 0
-    @State private var showApplyCasePolicyConfirmation = false
+
+    /// "Fix Mismatched Files" (toolbar, folder-scoped) — jensyleo's own
+    /// follow-up request (2026-09-10): give this the same preview-then-
+    /// confirm-when-risky treatment `renameRomsInArchiveCount`/
+    /// `showRenameRomsInArchiveConfirmation` already have, since a
+    /// re-styled archive filename risks the exact same DAT-case mismatch
+    /// a re-styled ROM entry does.
+    @State private var fixMismatchedFilesCount = 0
+    @State private var showFixMismatchedFilesConfirmation = false
+
+    /// Per-FILE Fix, from the Games table's own context menu — jensyleo's
+    /// own request (2026-09-10): the toolbar's "Fix" actions only ever
+    /// scope to a whole selected ROM folder ("Scan Folder"'s own scope);
+    /// this is the same "Fix Misnamed ROMs Inside Their Archives…" but
+    /// scoped to the ONE right-clicked File instead, mirroring "Rescan
+    /// This File"'s own relationship to "Scan Folder". A dedicated pair of
+    /// state, kept separate from `renameRomsInArchiveCount`/
+    /// `showRenameRomsInArchiveConfirmation` above (the toolbar's own,
+    /// folder-scoped flow) so the two can't clobber each other's pending
+    /// confirmation. `contextMenuFixFileURL` remembers WHICH file the
+    /// confirmation is for, captured at preview time — `urlIsInScope`
+    /// (`LibraryViewModel`) already treats a single file URL as a scope
+    /// exactly as it does a folder (an operation's own path must equal it,
+    /// not just share a prefix), so no Core/ViewModel change was needed to
+    /// support this, only new call sites.
+    @State private var contextMenuRenameRomsInArchiveCount = 0
+    @State private var showContextMenuRenameRomsInArchiveConfirmation = false
+    @State private var contextMenuFixFileURLs: [URL] = []
+    /// Non-empty ONLY when this confirmation's own trigger came from the
+    /// Roms panel's own multi-selection (specific entries within one
+    /// already-selected game) rather than the Games table's (whole Files)
+    /// — see `LibraryViewModel.renameRomsInArchive`'s own `entryKeys`
+    /// parameter doc comment for why this distinction has to exist at all.
+    @State private var contextMenuRenameRomsInArchiveEntryKeys: Set<String> = []
+
+    /// "Fix Mismatched File" (context menu, single-File-scoped) — the
+    /// File-level twin of `contextMenuRenameRomsInArchiveCount`/
+    /// `showContextMenuRenameRomsInArchiveConfirmation`/
+    /// `contextMenuFixFileURL` above, kept as its own dedicated trio for
+    /// the same reason those are separate from the toolbar's own state:
+    /// two independent pending confirmations must never be able to
+    /// clobber each other.
+    @State private var contextMenuFixMismatchedFilesCount = 0
+    @State private var showContextMenuFixMismatchedFilesConfirmation = false
+    @State private var contextMenuFixMismatchedFileURLs: [URL] = []
 
     /// "Repair from Maintenance Folder…" state — same preview-then-confirm
     /// shape as "Repair from Sibling Sets…", except the preview itself
@@ -1372,20 +1508,43 @@ struct LibraryDetailView: View {
     /// button. Each sub-action's own `isEnabled`/gating logic is unchanged
     /// from when it was a standalone button; only where it's declared
     /// moved.
+    /// Which Fix actions are actually offered right now, while jensyleo
+    /// works through manual testing of each one — jensyleo's own request
+    /// (2026-09-09): "Hay muchos FIX y nos podemos confundir para pruebas...
+    /// solo dejes 2 y los vamos agregando de poco". Every action below is
+    /// fully implemented; this just narrows what's exposed in the "Fix"
+    /// dropdown at any given time. Add an id here once its own action has
+    /// been manually verified.
+    // jensyleo's own report (2026-09-10) and follow-up decision: setting
+    // "Sets case" to Uppercase and running "Fix Mismatched Files" on an
+    // already-correct collection logged "nothing to fix" — correctly, at
+    // the time, since a case policy there only STYLED a mismatch repair,
+    // and re-casing an already-correct name was a SEPARATE "Apply Case
+    // Policy…" action. jensyleo's own read on seeing two actions sharing
+    // one setting: "o es una o es la otra" — unify them, and while at it,
+    // matching the DAT is the whole reason this app exists, not something
+    // that needs its own toggle. So `fix()`/`renameRomsInArchive()` now
+    // unconditionally do both (repair a wrong name, styled per case
+    // policy; re-style an already-correct one, same policy) in one pass —
+    // exactly ClrMamePro's own single "Fix" model — and "Apply Case
+    // Policy…" was removed outright as a separate action rather than kept
+    // as a redundant second door to the same result.
+    private static let fixActionsEnabledForTesting: Set<String> = ["fixMisnamed", "renameRomsInArchive"]
+
     private var fixSubActions: [ToolbarAction] {
         [
             ToolbarAction(
-                id: "fixMisnamed", title: "Fix Misnamed ROMs",
+                id: "fixMisnamed", title: "Fix Mismatched Files",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
                 help: LibraryViewModel.modificationsEnabled
-                    ? "Rename misnamed ROMs to match the DAT"
+                    ? "Fix a mismatched File's name AND re-style an already-correct one, both per \"Sets case\" in Settings → Fix\(selectedRomFolder.map { " — only inside \"\($0.lastPathComponent)\"" } ?? "")"
                     : "Disabled for now — ROMForge only scans and reports, it won't touch your files"
             ) {
-                Task { await viewModel.fix(system: system) }
+                startFixMismatchedFiles()
             },
             // Fase 2 Step 1: "classic rebuild" — copies every matched ROM
             // into a chosen folder as `<game name>/<rom name>`. Gated the
-            // same way as "Fix Misnamed ROMs" above; the destination-folder
+            // same way as "Fix Mismatched Files" above; the destination-folder
             // picker and count-preview confirmation live in
             // `startRebuildToFolder()`.
             ToolbarAction(
@@ -1426,16 +1585,16 @@ struct LibraryDetailView: View {
             ) {
                 startMakeSelfContained()
             },
-            // Fase 2 Step 6 (entry-level half — the archive-level half is
-            // "Fix Misnamed ROMs" above): renames a misnamed rom entry
-            // inside an otherwise-correctly-named zip via add-then-remove
-            // (see `RebuildPlanner.planRenameRomsInArchive`'s own doc
-            // comment).
+            // Fase 2 Step 6 (ROM-level half — the File-level half is
+            // "Fix Mismatched Files" above): renames a misnamed ROM entry
+            // inside an otherwise-correctly-named archive File via
+            // add-then-remove (see `RebuildPlanner.planRenameRomsInArchive`'s
+            // own doc comment).
             ToolbarAction(
-                id: "renameRomsInArchive", title: "Rename ROMs Inside Archives…",
+                id: "renameRomsInArchive", title: "Fix Misnamed ROMs Inside Their Archives…",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
                 help: LibraryViewModel.modificationsEnabled
-                    ? "Rename a misnamed rom entry inside an otherwise-correctly-named zip to match the DAT"
+                    ? "Fix a misnamed ROM entry AND re-style an already-correct one inside an otherwise-correctly-named archive File, both per \"Roms case\" in Settings → Fix\(selectedRomFolder.map { " — only inside \"\($0.lastPathComponent)\"" } ?? "")"
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startRenameRomsInArchive()
@@ -1453,19 +1612,6 @@ struct LibraryDetailView: View {
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startConvertToSplit()
-            },
-            // Fase 2 Step 9: renames archive filenames ("Sets case") and/or
-            // rom entry names ("Roms case") to match whichever policy is
-            // configured for each in Settings → Fix. Either half is a
-            // no-op if its own policy there is "Don't Touch".
-            ToolbarAction(
-                id: "applyCasePolicy", title: "Apply Case Policy…",
-                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
-                help: LibraryViewModel.modificationsEnabled
-                    ? "Rename archive filenames and/or rom entries to match the case policy configured in Settings → Fix"
-                    : "Disabled for now — enable file modifications in Settings → General first"
-            ) {
-                startApplyCasePolicy()
             },
             // Fase 2 Step 8: applies whichever "Corrupted files" policy is
             // configured in Settings → Fix to every rom
@@ -1527,7 +1673,7 @@ struct LibraryDetailView: View {
             ) {
                 startRemoveUselessFiles()
             },
-        ]
+        ].filter { Self.fixActionsEnabledForTesting.contains($0.id) }
     }
 
     /// This view's own contribution to the shared toolbar's "detail"
@@ -1734,6 +1880,51 @@ struct LibraryDetailView: View {
         } message: {
             Text(cancelledPhaseMessage)
         }
+        // jensyleo's own request (2026-09-09): opening an already-scanned
+        // system shows its persisted results immediately, which leaves
+        // every Fix button reading as enabled (`auditReport != nil`) even
+        // when no write action has anything LIVE to act on yet — a real
+        // scan this session (as opposed to loading yesterday's saved
+        // report) never ran. Deliberately NOT disabling the buttons for
+        // this (an earlier pass did — jensyleo's own follow-up report:
+        // "eso no es intuitivo... indica con un mensaje 'Scan first'" — a
+        // silently-disabled button explains nothing): every write action's
+        // own preview/execute function now calls `requireMatchReport()`
+        // first, which pops this alert immediately on click instead of
+        // the button doing nothing or logging a message nobody was
+        // watching.
+        .alert(
+            "Scan Required",
+            isPresented: Binding(
+                get: { viewModel.scanRequiredAlertIsPresented },
+                set: { viewModel.scanRequiredAlertIsPresented = $0 }
+            )
+        ) {
+            Button("OK") { viewModel.scanRequiredAlertIsPresented = false }
+        } message: {
+            Text("This system hasn't been scanned yet this session. Run \"Scan Folder\" or \"Scan All Folders\" first.")
+        }
+        // "Rescan Required" — jensyleo's own decision (2026-09-10): the
+        // "el último scan es el que aplica" rule (`LibraryViewModel
+        // .scopeCoveredByLastScan`) blocks a Fix whose target wasn't part
+        // of the most recent Scan, and needs the SAME "alert on click, not
+        // just a log line" treatment as "Scan Required" above — a log line
+        // alone was easy to miss, and hiding the Fix option instead would
+        // read as a mystery disappearance (the exact complaint that already
+        // happened once with "Fix Mismatched File"). `isPresented` is
+        // driven by the message itself being non-nil rather than a
+        // separate `Bool`, since the text varies per call.
+        .alert(
+            "Rescan Required",
+            isPresented: Binding(
+                get: { viewModel.rescanRequiredAlertMessage != nil },
+                set: { if !$0 { viewModel.rescanRequiredAlertMessage = nil } }
+            )
+        ) {
+            Button("OK") { viewModel.rescanRequiredAlertMessage = nil }
+        } message: {
+            Text(viewModel.rescanRequiredAlertMessage ?? "")
+        }
         .onChange(of: activeStatusFilters) {
             selectedGameID = nil; selectedRomID = nil
             triggerCachedGameDataRecompute()
@@ -1850,15 +2041,25 @@ struct LibraryDetailView: View {
             count: convertToSplitCount,
             onConfirm: commitConvertToSplit
         )
-        .applyCasePolicyConfirmation(
-            isPresented: $showApplyCasePolicyConfirmation,
-            count: applyCasePolicyCount,
-            onConfirm: commitApplyCasePolicy
-        )
         .repairFromMaintenanceFolderConfirmation(
             isPresented: $showRepairFromMaintenanceFolderConfirmation,
             count: repairFromMaintenanceFolderCount,
             onConfirm: commitRepairFromMaintenanceFolder
+        )
+        .contextMenuRenameRomsInArchiveConfirmation(
+            isPresented: $showContextMenuRenameRomsInArchiveConfirmation,
+            count: contextMenuRenameRomsInArchiveCount,
+            onConfirm: commitContextMenuRenameRomsInArchive
+        )
+        .fixMismatchedFilesConfirmation(
+            isPresented: $showFixMismatchedFilesConfirmation,
+            count: fixMismatchedFilesCount,
+            onConfirm: commitFixMismatchedFiles
+        )
+        .fixMismatchedFilesConfirmation(
+            isPresented: $showContextMenuFixMismatchedFilesConfirmation,
+            count: contextMenuFixMismatchedFilesCount,
+            onConfirm: commitContextMenuFixMismatchedFile
         )
         .handleCorruptedFilesConfirmation(
             isPresented: $showHandleCorruptedFilesConfirmation,
@@ -1953,16 +2154,120 @@ struct LibraryDetailView: View {
     /// Previews the rename count before showing the confirmation dialog —
     /// same dry-run-before-write caution as every other Fase 2 action.
     private func startRenameRomsInArchive() {
-        renameRomsInArchiveCount = viewModel.planRenameRomsInArchivePreviewCount()
+        renameRomsInArchiveCount = viewModel.planRenameRomsInArchivePreviewCount(scopeFolders: selectedRomFolder.map { [$0] } ?? [])
         guard renameRomsInArchiveCount > 0 else {
-            viewModel.logWarning("Nothing to rename — no misnamed rom entries inside a zip in this scan.")
+            viewModel.logWarning("Nothing to fix — every rom entry already matches the DAT, styled exactly per \"Roms case\" in Settings → Fix.")
+            return
+        }
+        // jensyleo's own request (2026-09-10): the confirmation exists to
+        // warn about a real risk — a re-styled name no longer matching the
+        // DAT's own case, which some case-sensitive tools/emulators can't
+        // find. With "Roms case" at Datafile Case (or Don't Touch, which
+        // behaves identically here — see `currentRomsCasePolicyRisksCaseMismatch`'s
+        // own doc comment) that risk doesn't exist, so asking first is
+        // just friction with nothing to actually confirm — run directly.
+        guard currentRomsCasePolicyRisksCaseMismatch() else {
+            commitRenameRomsInArchive()
             return
         }
         showRenameRomsInArchiveConfirmation = true
     }
 
     private func commitRenameRomsInArchive() {
-        Task { await viewModel.renameRomsInArchive(system: system) }
+        Task { await viewModel.renameRomsInArchive(system: system, scopeFolders: selectedRomFolder.map { [$0] } ?? []) }
+    }
+
+    /// Toolbar → "Fix Mismatched Files" (folder-scoped) — jensyleo's own
+    /// follow-up request (2026-09-10): same preview-then-confirm-only-
+    /// when-risky treatment as `startRenameRomsInArchive()` above. Skips
+    /// the dialog entirely (runs directly) whenever "Sets case" can't
+    /// actually produce a DAT-case mismatch.
+    private func startFixMismatchedFiles() {
+        fixMismatchedFilesCount = viewModel.planFixPreviewCount(scopeFolders: selectedRomFolder.map { [$0] } ?? [])
+        guard fixMismatchedFilesCount > 0 else {
+            viewModel.logWarning("Nothing to fix\(selectedRomFolder.map { " inside \"\($0.lastPathComponent)\"" } ?? "") — every File name already matches the DAT, styled exactly per \"Sets case\" in Settings → Fix.")
+            return
+        }
+        guard currentSetsCasePolicyRisksCaseMismatch() else {
+            commitFixMismatchedFiles()
+            return
+        }
+        showFixMismatchedFilesConfirmation = true
+    }
+
+    private func commitFixMismatchedFiles() {
+        Task { await viewModel.fix(system: system, scopeFolders: selectedRomFolder.map { [$0] } ?? []) }
+    }
+
+    /// Games table context menu → "Fix Mismatched Files" (this File, or
+    /// every File currently selected) — same preview-then-confirm-only-
+    /// when-risky shape as `startFixMismatchedFiles()` above, scoped to
+    /// `fileURLs` instead of `selectedRomFolder`, using its own dedicated
+    /// state (`contextMenuFixMismatchedFilesCount`/
+    /// `showContextMenuFixMismatchedFilesConfirmation`/
+    /// `contextMenuFixMismatchedFileURLs`) for the same
+    /// can't-clobber-each-other reason `startContextMenuRenameRomsInArchive`
+    /// has its own. jensyleo's own request (2026-09-10): "la app no
+    /// permite selección múltiple" — `fileURLs` becomes `fix(scopeFolders:)`'s
+    /// scope, one entry per selected File; `urlIsInScope` already treats
+    /// each as an exact-path match rather than a prefix, so several just
+    /// means "in scope if it's under ANY of these."
+    private func fixMismatchedFile(_ fileURLs: [URL]) {
+        guard !fileURLs.isEmpty else { return }
+        contextMenuFixMismatchedFilesCount = viewModel.planFixPreviewCount(scopeFolders: fileURLs)
+        guard contextMenuFixMismatchedFilesCount > 0 else {
+            viewModel.logWarning("Nothing to fix\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — every File name already matches the DAT, styled exactly per \"Sets case\" in Settings → Fix.")
+            return
+        }
+        contextMenuFixMismatchedFileURLs = fileURLs
+        guard currentSetsCasePolicyRisksCaseMismatch() else {
+            commitContextMenuFixMismatchedFile()
+            return
+        }
+        showContextMenuFixMismatchedFilesConfirmation = true
+    }
+
+    private func commitContextMenuFixMismatchedFile() {
+        guard !contextMenuFixMismatchedFileURLs.isEmpty else { return }
+        Task { await viewModel.fix(system: system, scopeFolders: contextMenuFixMismatchedFileURLs) }
+    }
+
+    /// Games table context menu → "Fix Misnamed ROMs Inside Their
+    /// Archives…" (this File, or every File currently selected) — same
+    /// preview-then-confirm shape as the toolbar's own
+    /// `startRenameRomsInArchive()`, scoped to `fileURLs` instead of
+    /// `selectedRomFolder`. Uses its own dedicated state
+    /// (`contextMenuRenameRomsInArchiveCount`/
+    /// `showContextMenuRenameRomsInArchiveConfirmation`/
+    /// `contextMenuFixFileURLs`) so right-clicking while the toolbar's own
+    /// folder-scoped confirmation might independently be pending can't
+    /// cross-contaminate either one's outcome.
+    private func startContextMenuRenameRomsInArchive(_ fileURLs: [URL], entryKeys: Set<String> = []) {
+        guard !fileURLs.isEmpty else { return }
+        contextMenuRenameRomsInArchiveCount = viewModel.planRenameRomsInArchivePreviewCount(scopeFolders: fileURLs, entryKeys: entryKeys)
+        guard contextMenuRenameRomsInArchiveCount > 0 else {
+            viewModel.logWarning("Nothing to fix\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — every rom entry already matches the DAT, styled exactly per \"Roms case\" in Settings → Fix.")
+            return
+        }
+        contextMenuFixFileURLs = fileURLs
+        contextMenuRenameRomsInArchiveEntryKeys = entryKeys
+        // Same reasoning as `startRenameRomsInArchive()`'s own comment
+        // above: nothing to actually confirm when there's no real
+        // case-mismatch risk, so skip the dialog and just run it.
+        guard currentRomsCasePolicyRisksCaseMismatch() else {
+            commitContextMenuRenameRomsInArchive()
+            return
+        }
+        showContextMenuRenameRomsInArchiveConfirmation = true
+    }
+
+    private func commitContextMenuRenameRomsInArchive() {
+        guard !contextMenuFixFileURLs.isEmpty else { return }
+        Task {
+            await viewModel.renameRomsInArchive(
+                system: system, scopeFolders: contextMenuFixFileURLs, entryKeys: contextMenuRenameRomsInArchiveEntryKeys
+            )
+        }
     }
 
     /// Previews the strip count before showing the confirmation dialog —
@@ -1978,21 +2283,6 @@ struct LibraryDetailView: View {
 
     private func commitConvertToSplit() {
         Task { await viewModel.convertToSplit(system: system) }
-    }
-
-    /// Previews the rename count before showing the confirmation dialog —
-    /// same dry-run-before-write caution as every other Fase 2 action.
-    private func startApplyCasePolicy() {
-        applyCasePolicyCount = viewModel.planApplyCasePolicyPreviewCount()
-        guard applyCasePolicyCount > 0 else {
-            viewModel.logWarning("Nothing to rename — every set/rom already matches its configured case policy (or both policies are \"Don't Touch\").")
-            return
-        }
-        showApplyCasePolicyConfirmation = true
-    }
-
-    private func commitApplyCasePolicy() {
-        Task { await viewModel.applyCasePolicy(system: system) }
     }
 
     /// Previews the repair count before showing the confirmation dialog —
@@ -2042,22 +2332,33 @@ struct LibraryDetailView: View {
         Task { await viewModel.convertToMerged(system: system) }
     }
 
+    /// Strips a trailing parenthetical off a DAT's own declared version
+    /// string for display — jensyleo's own report (2026-09-10), screenshot
+    /// of "DAT: MAME 0.289 (unknown)": MAME's own `-listxml` `build`
+    /// attribute genuinely can contain a parenthetical git/revision suffix
+    /// that isn't always meaningful (a dev build with no revision info at
+    /// all literally emits "(unknown)") — this only trims it for the
+    /// header's own display, never touches the stored `DATHeader.version`
+    /// value itself (still the DAT's own exact declared string everywhere
+    /// else, e.g. `AuditReportDatabase`'s persisted scan meta).
+    private static func displayVersion(_ version: String) -> String {
+        guard let parenIndex = version.firstIndex(of: "(") else { return version }
+        return version[..<parenIndex].trimmingCharacters(in: .whitespaces)
+    }
+
     private var header: some View {
-        HStack(spacing: 8) {
-            // While a new DAT is loading, the *previous* one's name/version
-            // would otherwise sit here unchanged (`datHeader` only updates
-            // once loading actually finishes) — reading as if it were still
-            // current, when the whole games/database view below it is about
-            // to change out from under it. A real, reported source of
-            // confusion switching between two DATs for the same system.
-            Text(viewModel.isLoadingDAT ? "DAT: Loading…" : "DAT: \(viewModel.datHeader.map { "\($0.name) \($0.version)" } ?? system.name)")
-                .font(.headline)
-            if !viewModel.isLoadingDAT, let worst = viewModel.auditReport?.worstStatus {
-                Image(systemName: symbolName(for: worst))
-                    .foregroundStyle(worst.tint)
-                    .help(worst == .correct ? "Everything scanned is correct" : "This system has \(worst.rawValue) items")
-            }
-        }
+        // While a new DAT is loading, the *previous* one's name/version
+        // would otherwise sit here unchanged (`datHeader` only updates
+        // once loading actually finishes) — reading as if it were still
+        // current, when the whole games/database view below it is about
+        // to change out from under it. A real, reported source of
+        // confusion switching between two DATs for the same system.
+        Text(
+            viewModel.isLoadingDAT
+                ? "DAT: Loading…"
+                : "DAT: \(viewModel.datHeader.map { "\($0.name) \(Self.displayVersion($0.version))" } ?? system.name)"
+        )
+        .font(.headline)
     }
 
     // MARK: - Scan progress
@@ -2212,44 +2513,60 @@ struct LibraryDetailView: View {
 
     // MARK: - Log panel
 
-    /// Text color for one `LogLine`, by `kind` — jensyleo's own request
-    /// (2026-08-27): the Log panel used to distinguish only red errors from
-    /// everything else; this extends that same idea to every message type
-    /// the view model actually reports (see `LogLineKind`'s own doc
-    /// comment for what qualifies as each).
-    private func logLineColor(for kind: LogLineKind) -> Color {
-        switch kind {
-        case .info: return .primary
-        case .success: return .green
-        case .warning: return .orange
-        case .error: return .red
-        }
-    }
-
     private var logPane: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Log")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(viewModel.logLines.enumerated()), id: \.offset) { index, line in
-                            Text(line.text)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(logLineColor(for: line.kind))
-                                .textSelection(.enabled)
-                                .id(index)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Text("Log")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                // jensyleo's own report (2026-09-10): `.textSelection(.enabled)`
+                // on each line (below) only ever lets you select WITHIN one
+                // line at a time — SwiftUI doesn't merge separate `Text`
+                // views in a `LazyVStack` into one continuous, drag-across
+                // selection the way a real multi-line text view would. For
+                // actually copying a log out to troubleshoot something (the
+                // real need here), a single "copy everything" action is far
+                // more useful than fighting that limitation.
+                Button {
+                    copyLogToClipboard()
+                } label: {
+                    Label("Copy Log", systemImage: "doc.on.doc")
                 }
-                .onChange(of: viewModel.logLines.count) {
-                    proxy.scrollTo(viewModel.logLines.count - 1, anchor: .bottom)
+                .buttonStyle(.borderless)
+                .labelStyle(.iconOnly)
+                .help("Copy the entire log to the clipboard")
+                .disabled(viewModel.logLines.isEmpty)
+                // jensyleo's own request (2026-09-11): a way to explicitly
+                // start fresh without needing to run a whole new scan
+                // (which already clears the log as a side effect).
+                Button {
+                    viewModel.clearLog()
+                } label: {
+                    Label("Clear Log", systemImage: "trash")
                 }
+                .buttonStyle(.borderless)
+                .labelStyle(.iconOnly)
+                .help("Clear the log")
+                .disabled(viewModel.logLines.isEmpty)
             }
+            // A real `NSTextView` (see `LogTextView`'s own doc comment),
+            // not a `LazyVStack` of separate `Text` lines — this is what
+            // actually lets you select (and ⌘C-copy) an arbitrary range
+            // spanning any number of lines, not just within one at a time.
+            LogTextView(lines: viewModel.logLines)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// Joins every log line's own text with a newline and puts it on the
+    /// pasteboard — the one reliable way to get the WHOLE log out for
+    /// troubleshooting, since per-line `.textSelection(.enabled)` (above)
+    /// can't select across multiple lines at once.
+    private func copyLogToClipboard() {
+        let fullText = viewModel.logLines.map(\.text).joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(fullText, forType: .string)
     }
 
     // MARK: - Status filter
@@ -3243,7 +3560,7 @@ struct LibraryDetailView: View {
     }
 
     private var gameTreeTableContent: some View {
-        Table(visibleGameNodes, selection: $selectedGameID, columnCustomization: $gameColumnCustomization) {
+        Table(visibleGameNodes, selection: $selectedGameIDs, columnCustomization: $gameColumnCustomization) {
             TableColumn("") { node in
                 if let status = node.aggregateStatus {
                     Image(systemName: symbolName(for: status)).foregroundStyle(status.tint)
@@ -3373,6 +3690,75 @@ struct LibraryDetailView: View {
                     Label("Verify ZIP Integrity", systemImage: "checkmark.shield")
                 }
                 .disabled(viewModel.isBusy || viewModel.auditReport == nil)
+                // jensyleo's own request (2026-09-10): the toolbar's own
+                // "Fix" actions only ever scope to a whole selected ROM
+                // folder — "para eso agrega en el menú contextual las
+                // opciones de fix del menú asociadas al archivo." Same two
+                // actions, same underlying `fix()`/`renameRomsInArchive()`.
+                // jensyleo's own follow-up (2026-09-10): "la app no
+                // permite selección múltiple" — `selection` here is
+                // ALREADY the full multi-selection `Set<GameNode.ID>`
+                // (SwiftUI's own `.contextMenu(forSelectionType:)` always
+                // provides one; only the Table's own `selection` binding
+                // above being a `Set` now is what lets more than one row
+                // actually GET selected in the first place). `fileURLs`
+                // below is every SELECTED node's own real File, one entry
+                // per File — no ViewModel/Core change needed beyond
+                // accepting an array, since `urlIsInScope` already treats
+                // each as its own exact-path scope, same mechanism "Rescan
+                // This File" above already relies on for `scan(folders:)`.
+                let fileURLs = selection.compactMap { selectedID in
+                    cachedGameNodes.first(where: { $0.id == selectedID }).flatMap(actualFileURL(for:))
+                }
+                // Same visibility rule as the Roms panel's own context menu
+                // below, and for the same reason (jensyleo's own report,
+                // 2026-09-10): show each action only when its own real
+                // preview count is actually greater than zero, rather than
+                // always showing both merely disabled by the write-access
+                // gate — offering a "Fix" that's guaranteed to do nothing
+                // reads as broken, not as "nothing to fix here".
+                //
+                // `viewModel.hasMatchReport` is checked FIRST and neither
+                // preview function is called at all when it's `false` —
+                // jensyleo's own bug report (2026-09-10), screenshot of
+                // "Scan Required" popping up from a plain right-click:
+                // `planFixPreviewCount`/`planRenameRomsInArchivePreviewCount`
+                // both go through `requireMatchReport()`, which triggers
+                // that very alert as a SIDE EFFECT whenever there's no live
+                // `matchReport` yet (a persisted `auditReport` from a past
+                // session already shows real rows on screen without one) —
+                // and SwiftUI evaluates this closure just from opening the
+                // menu, so merely right-clicking a row was enough to fire
+                // it. See `hasMatchReport`'s own doc comment.
+                if !fileURLs.isEmpty, viewModel.hasMatchReport {
+                    let fixMismatchedFileCount = viewModel.planFixPreviewCount(scopeFolders: fileURLs)
+                    let renameRomsCount = viewModel.planRenameRomsInArchivePreviewCount(scopeFolders: fileURLs)
+                    if fixMismatchedFileCount > 0 || renameRomsCount > 0 {
+                        Divider()
+                    }
+                    if fixMismatchedFileCount > 0 {
+                        Button {
+                            fixMismatchedFile(fileURLs)
+                        } label: {
+                            Label(
+                                fileURLs.count == 1 ? "Fix Mismatched File" : "Fix \(fileURLs.count) Mismatched Files",
+                                systemImage: "wrench.and.screwdriver"
+                            )
+                        }
+                        .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
+                    }
+                    if renameRomsCount > 0 {
+                        Button {
+                            startContextMenuRenameRomsInArchive(fileURLs)
+                        } label: {
+                            Label(
+                                fileURLs.count == 1 ? "Fix Misnamed ROMs Inside This Archive…" : "Fix Misnamed ROMs Inside These \(fileURLs.count) Archives…",
+                                systemImage: "wrench.and.screwdriver"
+                            )
+                        }
+                        .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
+                    }
+                }
             }
         }
     }
@@ -3453,8 +3839,21 @@ struct LibraryDetailView: View {
         scanFile(node)
     }
 
+    /// jensyleo's own request (2026-09-11): `canScanFile`/`actualFileURL`
+    /// only ever disable this action for a rom with NO recorded path at
+    /// all (genuinely Missing since its last scan) — a rom whose path WAS
+    /// recorded but got deleted or moved externally, outside ROMForge,
+    /// since that last scan still passes that check (the cached path is
+    /// non-nil) and only reveals it's gone once the whole rescan quietly
+    /// completes and the row flips to Missing on its own. A live
+    /// existence check right here, before ever starting that rescan,
+    /// surfaces it immediately and explicitly instead.
     private func scanFile(_ node: GameNode) {
         guard let url = actualFileURL(for: node) else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            viewModel.logError("File not found: \(url.path)")
+            return
+        }
         viewModel.startScan(system: system, folders: [url])
     }
 
@@ -3729,7 +4128,7 @@ struct LibraryDetailView: View {
             Text(selectedGameNode.map { "\($0.name) (\($0.entries.count) files)" } ?? "Select a game")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Table(selectedRomRows, selection: $selectedRomID, columnCustomization: $romColumnCustomization) {
+            Table(selectedRomRows, selection: $selectedRomIDs, columnCustomization: $romColumnCustomization) {
                 TableColumn("") { row in
                     romCell(Image(systemName: symbolName(for: row.entry.status)).foregroundStyle(row.entry.status.tint), status: row.entry.status)
                 }
@@ -3737,12 +4136,25 @@ struct LibraryDetailView: View {
                 .customizationID("status")
                 .disabledCustomizationBehavior(.all)
                 TableColumn("File name") { row in
-                    // `path` is nil whenever nothing was actually found on
+                    // jensyleo's own report (2026-09-10): "revisa el ZIP tú
+                    // mismo y verás" — `path?.lastPathComponent` is the
+                    // CONTAINER's own filename ("awbios.zip") for a
+                    // zip-entry rom, the SAME string for every rom inside
+                    // it, never the entry's own actual name. This column
+                    // is what a user reads to see "what's really in
+                    // there" — `actualEntryName` (`AuditEntry`'s own doc
+                    // comment) IS that, for both a loose file (where it
+                    // equals `path?.lastPathComponent` anyway) and a zip
+                    // entry (where it's genuinely different). Falls back
+                    // to `path?.lastPathComponent` only for an entry that
+                    // predates this field (an on-disk cache/database row
+                    // saved before it existed — nil until the next scan).
+                    // `nil` overall whenever nothing was actually found on
                     // disk for this rom (status `.missing`) — genuinely
                     // blank, not a rendering glitch, but a bare empty cell
                     // reads as broken, so it gets an explicit placeholder
                     // instead. The expected name still lives in "Rom name".
-                    if let fileName = row.entry.path?.lastPathComponent {
+                    if let fileName = row.entry.actualEntryName ?? row.entry.path?.lastPathComponent {
                         romCell(Text(fileName), status: row.entry.status)
                     } else {
                         romCell(Text("— not found —").foregroundStyle(.secondary), status: row.entry.status)
@@ -3805,6 +4217,65 @@ struct LibraryDetailView: View {
                 }
             }
             .onChange(of: romColumnCustomization) { Self.persist(romColumnCustomization, key: Self.romColumnCustomizationKey) }
+            // jensyleo's own request (2026-09-10): "todo esto que estamos
+            // haciendo debe aplicar también al panel de más allá a la
+            // derecha. Renombrar roms de auna o varias, también se debe
+            // poder" — the ROM-level Fix action the Games table's own
+            // context menu already has, mirrored here, entry-level and
+            // restricted to ONLY the specific rows selected (`entryKeys`,
+            // below), not every fixable entry sharing their same container
+            // — jensyleo's own follow-up report (2026-09-10): "selecciono 2
+            // roms y me renombra las 4". See `LibraryViewModel
+            // .renameRomsInArchive`'s own `entryKeys` doc comment.
+            //
+            // Deliberately NO "Fix Mismatched File" here — jensyleo's own
+            // explicit instruction (2026-09-10), after seeing it appear for
+            // a selection of already-"Ok" rows sharing a container that
+            // genuinely did have an unrelated File-level issue elsewhere in
+            // it: "no debe aparecer nunca en el menú de más a la derecha,
+            // porque esta situación ahí no existe y puede prestarse para
+            // fallas en la app". This panel shows ROM ENTRIES, not Files —
+            // a File-level rename acts on the whole container regardless of
+            // which entries happen to be selected, which reads as
+            // confusing/risky from a per-ROM list. The Games table (one row
+            // per File) is the only place that action is offered.
+            .contextMenu(forSelectionType: String.self) { selection in
+                let selectedRows = selection.compactMap { selectedID in selectedRomRows.first(where: { $0.id == selectedID }) }
+                let containerURLs = Array(Set(selectedRows.compactMap(\.entry.path)))
+                let entryKeys = Set(selectedRows.compactMap { row -> String? in
+                    guard let containerURL = row.entry.path, let currentName = row.entry.actualEntryName else { return nil }
+                    return LibraryViewModel.entryScopeKey(containerURL: containerURL, currentEntryName: currentName)
+                })
+                // Hidden entirely — not just disabled — unless its own real
+                // preview count is actually greater than zero, using the
+                // exact same `planRenameRomsInArchivePreviewCount` the
+                // confirmation dialog itself relies on, so "would this
+                // button do anything" and "what actually happens on click"
+                // can never disagree. Deliberately NOT based on the
+                // selected rows' own displayed status ("Ok" vs "Bad name")
+                // — the count can still be > 0 purely from a case policy
+                // re-style even when every row already reads "Ok".
+                //
+                // `viewModel.hasMatchReport` checked FIRST, same reason as
+                // the Games table's own context menu above — jensyleo's own
+                // bug report (2026-09-10) of "Scan Required" popping up from
+                // a plain right-click, before Fix was ever asked for. See
+                // `hasMatchReport`'s own doc comment.
+                let renameRomsCount = viewModel.hasMatchReport
+                    ? viewModel.planRenameRomsInArchivePreviewCount(scopeFolders: containerURLs, entryKeys: entryKeys)
+                    : 0
+                if !containerURLs.isEmpty, renameRomsCount > 0 {
+                    Button {
+                        startContextMenuRenameRomsInArchive(containerURLs, entryKeys: entryKeys)
+                    } label: {
+                        Label(
+                            selectedRows.count == 1 ? "Fix This Misnamed ROM…" : "Fix These \(selectedRows.count) Misnamed ROMs…",
+                            systemImage: "wrench.and.screwdriver"
+                        )
+                    }
+                    .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
+                }
+            }
         }
     }
 
@@ -5529,7 +6000,12 @@ struct LibraryDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(entry.name).font(.headline)
             if showDetailRomFileName {
-                if let fileName = entry.path?.lastPathComponent {
+                // Same fix as the Roms table's own "File name" column
+                // (`romsList`) — `actualEntryName` is the entry's own REAL
+                // current name, distinct from `path?.lastPathComponent`
+                // for a zip entry (the CONTAINER's own filename). See that
+                // column's own doc comment.
+                if let fileName = entry.actualEntryName ?? entry.path?.lastPathComponent {
                     Text("File name: \(fileName)")
                 } else {
                     Text("File name: — not found —").foregroundStyle(.secondary)

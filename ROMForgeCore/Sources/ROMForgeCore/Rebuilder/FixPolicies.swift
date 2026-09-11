@@ -40,6 +40,10 @@ public enum FileCasePolicy: String, CaseIterable, Identifiable, Sendable {
     case uppercase
     case lowercase
     case datafileCase
+    /// Title Case — each word's first letter uppercased, the rest
+    /// lowercased (`String.capitalized`'s own definition of a "word").
+    /// jensyleo's own request (2026-09-09).
+    case capitalized
 
     public var id: String { rawValue }
 
@@ -49,6 +53,7 @@ public enum FileCasePolicy: String, CaseIterable, Identifiable, Sendable {
         case .uppercase: return "Uppercase"
         case .lowercase: return "Lowercase"
         case .datafileCase: return "Datafile Case"
+        case .capitalized: return "Capitalized"
         }
     }
 }

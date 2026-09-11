@@ -49,6 +49,11 @@ struct MAMEListXMLParserTests {
     func parsesMachinesWithMetadata() throws {
         let dataset = try MAMEListXMLParser.parse(data: Data(xml.utf8))
         #expect(dataset.machines.count == 3)
+        // jensyleo's own report (2026-09-10): "DAT: MAME" never showed a
+        // version — the root `<mame build="...">` attribute was parsed by
+        // nothing at all before this. This fixture's own root already
+        // carries `build="0.278"` above.
+        #expect(dataset.build == "0.278")
 
         let bios = try #require(dataset.machine(named: "neogeo"))
         #expect(bios.isBios == true)

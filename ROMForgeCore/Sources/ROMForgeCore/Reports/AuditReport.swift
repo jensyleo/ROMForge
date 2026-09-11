@@ -317,7 +317,30 @@ public struct AuditEntry: Equatable, Sendable {
     /// performance reasoning), same "flag an already-computed row" shape as
     /// `isOrphanedBios` above. `false` until that pass has actually run.
     public let hasInternalZipCRCMismatch: Bool
+    /// The DAT's own declared name for this rom — what it's SUPPOSED to be
+    /// called, regardless of what's actually on disk right now. Always
+    /// `rom.name`, for every status including `.correct`/`.misnamed` alike.
     public let name: String
+    /// The real, CURRENT name of the actual file/entry on disk right now —
+    /// `nil` whenever nothing was actually found (status `.missing`, or a
+    /// pre-`AuditEntry` construction that never had a `HashedFile` on
+    /// hand, e.g. a disk row or a duplicate-set row copied from another).
+    ///
+    /// jensyleo's own report (2026-09-10): after renaming a misnamed rom
+    /// ENTRY inside a zip (e.g. "Fix Misnamed ROMs Inside Their
+    /// Archives…"), the "Rom name" column kept showing the DAT's declared
+    /// name (`name`, above — by design, always the expected identity) and
+    /// "File name" showed `path.lastPathComponent`, which for a zip-entry
+    /// rom is the CONTAINING ARCHIVE's own filename ("awbios.zip"), never
+    /// the entry's own name — so NOTHING anywhere displayed what was
+    /// actually, currently written inside the zip ("verifica el ZIP tú
+    /// mismo y verás": `unzip -l` showed "Bios0.Ic23" while the app showed
+    /// neither that nor "bios0.ic23" distinctly). For a LOOSE file, this
+    /// equals `path.lastPathComponent` exactly (the same File-vs-ROM
+    /// discriminator used throughout: `url.lastPathComponent == file.name`
+    /// for a loose file) — set uniformly from `hashedFile.file.name`,
+    /// which is already correct for both shapes.
+    public let actualEntryName: String?
     public let path: URL?
     public let expectedSize: Int64?
     public let actualSize: Int64?
@@ -363,6 +386,7 @@ public struct AuditEntry: Equatable, Sendable {
         hasFilenameCRCMismatch: Bool = false,
         hasInternalZipCRCMismatch: Bool = false,
         name: String,
+        actualEntryName: String? = nil,
         path: URL?,
         expectedSize: Int64? = nil,
         actualSize: Int64? = nil,
@@ -407,6 +431,7 @@ public struct AuditEntry: Equatable, Sendable {
         self.hasFilenameCRCMismatch = hasFilenameCRCMismatch
         self.hasInternalZipCRCMismatch = hasInternalZipCRCMismatch
         self.name = name
+        self.actualEntryName = actualEntryName
         self.path = path
         self.expectedSize = expectedSize
         self.actualSize = actualSize
@@ -431,7 +456,7 @@ public struct AuditEntry: Equatable, Sendable {
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: true, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
-            name: name, path: path, expectedSize: expectedSize, actualSize: actualSize,
+            name: name, actualEntryName: actualEntryName, path: path, expectedSize: expectedSize, actualSize: actualSize,
             expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
             actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
         )
@@ -450,7 +475,7 @@ public struct AuditEntry: Equatable, Sendable {
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: true, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
-            name: name, path: path, expectedSize: expectedSize, actualSize: actualSize,
+            name: name, actualEntryName: actualEntryName, path: path, expectedSize: expectedSize, actualSize: actualSize,
             expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
             actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
         )
@@ -469,7 +494,7 @@ public struct AuditEntry: Equatable, Sendable {
             isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
             isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: true,
-            name: name, path: path, expectedSize: expectedSize, actualSize: actualSize,
+            name: name, actualEntryName: actualEntryName, path: path, expectedSize: expectedSize, actualSize: actualSize,
             expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
             actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
         )

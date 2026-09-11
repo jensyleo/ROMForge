@@ -299,6 +299,27 @@ titles, or otherwise properly licensed sources.
   for now — deliberately **not implemented**, kept here to revisit later
   in case that changes.
 
+## Terminology: File vs ROM
+
+Every screen, log message, and Fix action in ROMForge draws a strict line
+between these two words — worth knowing before either term shows up in a
+menu:
+
+- **File** — the physical thing sitting on disk: an archive (`.zip`/`.7z`)
+  or a standalone loose file. A File is a *container*. One File can hold
+  many ROMs (a multi-rom `.zip`) or exactly one (a loose file, or a
+  single-rom archive).
+- **ROM** — one unit of game/BIOS/system content, as the DAT itself
+  declares it (one `<rom>` entry). A ROM's bytes live either as their own
+  standalone File, or as one entry *inside* an archive File alongside
+  possibly several sibling ROMs.
+
+So "fix this File's name" means renaming the archive/loose file itself —
+nothing inside it changes. "Fix this ROM's name" means renaming one entry
+*inside* an archive, without touching the archive's own filename or any
+other ROM sitting next to it. The two are never interchangeable, and every
+Fix action name says explicitly which one it acts on.
+
 ## Design principles
 
 1. Core (`ROMForgeCore`) never depends on the UI — every feature works

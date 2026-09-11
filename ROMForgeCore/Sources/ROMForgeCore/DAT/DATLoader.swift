@@ -365,7 +365,7 @@ public enum DATLoader {
             ))
         }
         return DATFile(
-            header: DATHeader(name: "MAME", description: "Parsed from mame -listxml", version: "", author: "MAMEDev"),
+            header: DATHeader(name: "MAME", description: "Parsed from mame -listxml", version: dataset.build ?? "", author: "MAMEDev"),
             games: games,
             mergeMode: mode,
             // From the raw, unfiltered machine list — see `DATFile.hasClones`'s

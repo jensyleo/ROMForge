@@ -104,6 +104,47 @@ false-positive matches:
 - [ ] Re-enable MD5 and SHA1 in Settings, rescan the same system, and
       confirm the cache now shows all three hash fields populated again.
 
+### 2.7 "Maximum subfolder depth" (added 2026-09-10)
+- [ ] Reproduce the real case that surfaced this: create a folder shaped
+      like `<ROM folder>/BATOCERA/<game>/<file>` (an extra organizational
+      folder above the game level) and add it as (or point an existing
+      system's) ROM folder.
+- [ ] With Settings → General → "Maximum subfolder depth" at its default
+      (1), scan it — confirm the Log shows "Skipped (nested too deep, not
+      scanned): .../BATOCERA/<game>" and that game's roms show as
+      **Missing**, even though the real files are sitting right there on
+      disk.
+- [ ] Raise "Maximum subfolder depth" to **2**, rescan the SAME folder —
+      confirm the game is now found and scanned normally (no more skip
+      message for it), with correct/incorrect status same as any other
+      properly-read file.
+- [ ] Quit and relaunch ROMForge (don't touch Settings first) — confirm a
+      scan still respects the value you set (2), not the compiled-in
+      default (1) — this is the part that needs applying at launch, not
+      only when Settings happens to be open.
+- [ ] Set it back to 1 — confirm the same BATOCERA-shaped folder goes back
+      to being skipped (not a one-way, "leaked" setting).
+
+### 2.8 "Scan Folder"/"Scan File" genuinely scope their own disk access (added 2026-09-11)
+With at least two ROM folders configured for the same system:
+- [ ] Run "Scan All Folders" once first, so every folder has a fresh cache
+      entry.
+- [ ] Select one specific ROM folder in the ROM folder panel, then run
+      "Scan Folder". Watch the Log: confirm you now see "Scanning
+      <that folder>…" and nothing else — no "Scanning <other folder>…"
+      lines for folders you didn't select.
+- [ ] Confirm the resulting report is still fully correct across BOTH
+      folders — any duplicate ROM or parent/clone relationship spanning
+      the two folders should still show correctly, not as if the other
+      folder had vanished.
+- [ ] Right-click a single game/file and choose "Rescan This File" (or
+      "Scan File" from the menu on a selected node) — confirm the Log
+      again shows only that one file, not every configured folder.
+- [ ] Delete or move a file outside ROMForge (Finder), then use "Rescan
+      This File"/"Scan File" on it — confirm the Log immediately shows
+      "File not found: <path>" instead of silently finishing and only
+      then flipping the row to Missing.
+
 ---
 
 ## 3. Repair (Fix)
@@ -544,6 +585,23 @@ in-place archive rewriting) and this is their first real-ROM test pass.
 - [ ] Turn it back off, then on again — confirm the buttons re-enable
       immediately without needing to relaunch or rescan.
 
+### 11.0b "Scan Required" alert (added 2026-09-09)
+- [ ] Quit and relaunch ROMForge, open a system you've already scanned
+      before (so it shows its persisted results immediately, without you
+      scanning again this session).
+- [ ] Confirm every Fix button LOOKS enabled (this is deliberate — see
+      CHANGELOG) — click **any** one of them (e.g. "Fix Mismatched Files")
+      WITHOUT running Scan Folder/Scan All Folders first.
+- [ ] Confirm a **"Scan Required"** alert pops up immediately (not just a
+      line in the Log panel) telling you to scan first.
+- [ ] Dismiss it, run a real Scan, then try the same action again —
+      confirm it now works normally (preview count, confirmation, etc.)
+      with no alert.
+- [ ] Repeat for at least one preview-count-style action too (e.g.
+      "Repair from Sibling Sets…") — confirm it shows the SAME alert
+      immediately, before any folder picker or confirmation dialog
+      appears.
+
 ### 11.1 Rebuild to Folder — loose files (Step 1)
 - [ ] From your scratch scan, extract one game's `.zip` into loose files in
       its own subfolder (so you have a genuine loose-file source, not just
@@ -673,7 +731,14 @@ suite.
       whether `.foundElsewhere` still appears the way this test expects,
       or whether the merge mode setting changes what gets flagged.
 
-### 11.7 Rename ROMs Inside Archives (Step 6 — entry-level)
+### 11.7 Fix Misnamed ROMs Inside Their Archives (Step 6 — entry-level)
+- [x] **Confirmed live 2026-09-10** — jensyleo's real NEOGEO/CPS1 collection
+      (shocktro.zip, cyberlip.zip, mslugx and others), through multiple
+      rounds tracking down the macOS kernel vnode/namecache staleness bug
+      (see CHANGELOG) rather than the exact shell-script repro below —
+      same end result confirmed: a misnamed entry gets fixed, its container
+      untouched, and the app's own display now reflects the real on-disk
+      name immediately after (`FolderScanner`'s directory-listing fix).
 - [ ] Using one of your real `.zip` sets, rename ONE internal entry to a
       wrong name without changing the zip's own filename — e.g.
       `printf '' > /tmp/dummy && cd /path/to/set && mv game.zip
@@ -684,8 +749,8 @@ suite.
       correct, only the ENTRY name inside it changes).
 - [ ] Scan — confirm this specific rom now shows **Incorrect** (misnamed),
       not Missing.
-- [ ] Click the **"Fix"** toolbar dropdown → **"Rename ROMs Inside
-      Archives…"**.
+- [ ] Click the **"Fix"** toolbar dropdown → **"Fix Misnamed ROMs Inside
+      Their Archives…"**.
 - [ ] Confirm the preview count is accurate, then confirm it.
 - [ ] Rescan — confirm the rom is now **Correct**.
 - [ ] Verify directly with `unzip -l game.zip`:
@@ -722,22 +787,68 @@ suite.
       right after (nothing left to strip) reports a 0 count and makes no
       further changes — a clean no-op on an already-stripped scan.
 
-### 11.9 Apply Case Policy (Step 9)
-- [ ] In Settings → **Fix** → "Case", set **Sets case** to **Uppercase**.
-      Leave **Roms case** at "Don't Touch" for this first pass.
-- [ ] Click the **"Fix"** toolbar dropdown → **"Apply Case Policy…"**.
-- [ ] Confirm the preview count matches the number of zip-per-game archives
-      in your scratch folder that AREN'T already all-uppercase, then
-      confirm it.
-- [ ] Rescan — confirm every `.zip` filename is now uppercase (extension
-      stays `.zip`, lowercase), and every game still shows **Correct**.
-- [ ] Now set **Sets case** back to **Datafile Case** and **Roms case** to
-      **Lowercase**, and run "Apply Case Policy…" again.
-- [ ] Confirm the archive filenames now match the DAT's own declared game
-      names exactly, and (via `unzip -l`) every internal entry name is now
-      lowercase.
+### 11.9 Case policy, applied unconditionally by Fix Mismatched Files / Fix Misnamed ROMs (Step 9 — superseded 2026-09-10)
+**"Apply Case Policy…" no longer exists as a separate action.** jensyleo's
+own call (2026-09-10), after live-testing it as two side-by-side actions
+sharing one Settings pair: "o es una o es la otra" — every scenario below
+now runs through the toolbar's regular **"Fix Mismatched Files"** (Sets
+case) and **"Fix Misnamed ROMs Inside Their Archives…"** (Roms case)
+instead, each of which ALWAYS does both halves — repair a wrong name AND
+re-style an already-correct one — in the same click, unconditionally (no
+toggle can turn either half off; see 11.13's own rewrite below for why).
+- [x] **Confirmed live 2026-09-10** — jensyleo's real NEOGEO folder: set
+      **Sets case** to **Uppercase**, ran **"Fix Mismatched Files"** on a
+      folder of already-uppercase `.zip` archives (`AWBIOS.zip` etc.) whose
+      own DAT-declared name is lowercase — confirmed every archive's
+      filename stayed/became uppercase and every game kept showing
+      Correct.
+- [x] **Confirmed live 2026-09-10** — set **Sets case** back to **Datafile
+      Case**, ran "Fix Mismatched Files" again — confirmed archive
+      filenames now match the DAT's own declared case exactly.
+- [ ] Repeat for **Roms case** against real ROM-entry names inside a zip,
+      via "Fix Misnamed ROMs Inside Their Archives…" — not yet explicitly
+      re-verified against real entry names post-unification.
 - [ ] Confirm content is untouched throughout — rescan after each pass and
-      confirm 100% Correct, never Missing/Incorrect from this action alone.
+      confirm 100% Correct, never Missing/Incorrect from either action
+      alone.
+
+### 11.9b A genuinely misnamed archive/rom is still fixed correctly, not left half-fixed (added 2026-09-11, re-verified 2026-09-10)
+- [ ] Deliberately rename a real, currently-Correct game's `.zip` to something
+      completely unrelated (e.g. `sfiii.zip` → `wrongname.zip`) so it now
+      shows as **Incorrect** (misnamed).
+- [ ] Set **Sets case** to **Uppercase**, run **"Fix Mismatched Files"**.
+- [ ] Confirm it renames the archive to the DAT's own declared name styled
+      per "Sets case" (e.g. `SFIII.ZIP`), never to a differently-cased
+      version of the still-wrong name (`WRONGNAME.ZIP`) — "Don't Touch"/any
+      case choice always derives the target from the DAT's OWN declared
+      name for a genuine mismatch, never from the current wrong one (see
+      `RebuildPlanner.mismatchFixName`'s own doc comment).
+- [ ] Repeat the same check at the ROM-entry level via "Fix Misnamed ROMs
+      Inside Their Archives…".
+
+### 11.9c A container whose OWN game matches correctly, but whose filename case is wrong — fixed without needing "Roms case" run first (added 2026-09-10)
+jensyleo's own real NEOGEO test: a whole folder of archives whose entries
+match their own game by HASH, but whose CONTAINER filename ("AWBIOS.zip")
+didn't match the DAT's declared case ("awbios.zip") — `planRepair` had no
+code path for this at all (it only handled a loose file's own wrong name,
+or a whole archive belonging to a DIFFERENT game); "Fix Mismatched Files"
+silently reported "Nothing to fix" despite every File failing "Bad file
+name". Fixed same day, then found the fix still required the ROM entry
+inside to already be `.correct` (case already fixed) before it would
+recognize the container as this game's own — jensyleo's own follow-up
+correction: "el CRC32 identifica el archivo... aunque el nombre esté mal",
+so this must NOT require "Roms case" to run first. Both are now confirmed:
+- [x] **Confirmed live 2026-09-10** — a folder where every entry's OWN name
+      already matched (post a prior "Roms case" pass) but the CONTAINER
+      filename was still wrong-case: "Fix Mismatched Files" now renames the
+      container correctly in one pass.
+- [x] **Confirmed live 2026-09-10 (follow-up)** — a container wrong-case
+      AND its own entry still under its OLD wrong name at the same time
+      (no "Roms case" run yet): "Fix Mismatched Files" still renames the
+      container correctly, since identity comes from the CRC32 hash, not
+      from either name being right yet. See `RebuildPlannerTests
+      .planRepairRenamesWrongCaseContainerEvenWithAStillMisnamedEntry`
+      for the synthetic regression test.
 
 ### 11.10 Handle Corrupted Files (Step 8)
 - [ ] Using a real `.zip` set, corrupt its **local header's** own CRC32
@@ -821,19 +932,213 @@ collection — for this one especially.
       unrelated content), confirm the action reports a 0 preview count and makes no changes —
       never a false match.
 
-### 11.13 Settings → Fix tab
+### 11.13 Settings → Fix tab (rewritten 2026-09-10 — no more mismatch on/off toggle)
+There is deliberately **no toggle** to turn mismatch-correction off anymore
+— jensyleo's own call (2026-09-10): fixing a name the DAT disagrees with is
+the whole reason "Fix Mismatched Files"/"Fix Misnamed ROMs Inside Their
+Archives…" (and this app) exist, so it was never really optional the way
+"Test archives"/"Corrupted files" genuinely are. The only real knob left is
+**how** the corrected (or already-correct) name gets STYLED — "Sets
+case"/"Roms case" — which always applies, unconditionally, to both a
+repaired mismatch and an already-correct re-style, in the same click.
 - [ ] Open Settings → **Fix** — confirm every toggle from the ROADMAP's own
       "ClrMamePro Fix panel" review is present, and that the ones marked
       "not yet connected" in the UI's own caption text are visibly
       disabled (can't be toggled on) rather than silently doing nothing.
-- [ ] Toggle **"Rename files to match the DAT"** OFF, then rename a real
-      rom's file to something wrong and run the regular **Fix** toolbar
-      action — confirm it does NOT rename it back (logs a message that
-      renaming is off in Settings instead).
-- [ ] Toggle it back ON, run **Fix** again — confirm it now renames the
-      file back correctly, same as before this setting existed.
-- [ ] Quit and relaunch ROMForge — confirm every toggle you set (on or off)
-      persisted correctly.
+- [ ] Confirm there is NO toggle anywhere that can make "Fix Mismatched
+      Files"/"Fix Misnamed ROMs Inside Their Archives…" skip a genuine
+      mismatch — rename a real file/rom to something wrong and run either
+      action; it should always fix it, regardless of any other setting on
+      this tab.
+- [x] **Confirmed live 2026-09-10** — the "Fix" section's own **"Reset to
+      Defaults"** button (jensyleo's own request) resets **Sets case**/
+      **Roms case** back to **Datafile Case**; every other section on this
+      tab (Test & Verify, Remove, Corrupted files) has its own matching
+      reset button too.
+- [ ] Quit and relaunch ROMForge — confirm every setting you changed on
+      this tab persisted correctly.
+
+### 11.13f Multi-selection Fix — Games table AND Roms panel, entry-level scoping (added 2026-09-10)
+jensyleo's own request: "La app no permite selección múltiple... Renombrar
+roms de una o varias, también se debe poder" — both tables now support
+⌘/⇧-click multi-select, with a real bug found and fixed along the way
+(selecting 2 of 5 rom rows renamed all 4/5 of them — container-level
+scoping alone can't tell "these 2 rows" from "every rom sharing this
+container" when they all share one archive).
+- [x] **Confirmed live 2026-09-10** — Games table: select 2+ File rows
+      (⌘-click), right-click → "Fix N Mismatched Files"/"Fix Misnamed ROMs
+      Inside These N Archives…" — confirmed only the selected Files'
+      containers are touched, others untouched.
+- [x] **Confirmed live 2026-09-10 (after a real bug fix)** — Roms panel:
+      select exactly 2 of several rom rows sharing the SAME container,
+      right-click → "Fix These 2 Misnamed ROMs…" — confirmed only those 2
+      specific entries get renamed, not every fixable entry in that
+      archive. (Originally reported as "selecciono 2 roms y me renombra
+      las 4" — root cause was `restrictPairsToScope` only filtering by
+      container path, a no-op when every selected row shares one container;
+      fixed via `LibraryViewModel.entryScopeKey`/`restrictPairsToEntries`.)
+- [x] **Confirmed live 2026-09-10** — the Roms panel's context menu never
+      shows "Fix Mismatched File" at all (File-level, container-scoped —
+      jensyleo's own explicit call: that concept doesn't belong in a
+      per-ROM-entry list, only in the Games table). Only "Fix This/These
+      Misnamed ROM(s)…" appears there, and only when there's genuinely
+      something to fix (see 11.13g).
+
+### 11.13g Fix menu items hidden when there's genuinely nothing to fix, not just disabled (added 2026-09-10)
+- [x] **Confirmed live 2026-09-10** — select rows/Files that already read
+      "Ok"/Correct for a chosen scope; right-click — confirm the relevant
+      Fix action doesn't appear at all (not merely greyed out), computed
+      from the exact same `planFixPreviewCount`/
+      `planRenameRomsInArchivePreviewCount` the confirmation dialog itself
+      uses, so "would this button do anything" can never disagree with
+      "what actually happens on click".
+- [x] **Confirmed live 2026-09-10 (real bug + fix)** — opening EITHER
+      context menu (Games table or Roms panel) on a freshly-launched app,
+      BEFORE running any Scan this session (only a persisted, past-session
+      report showing on screen) used to pop the "Scan Required" alert
+      immediately from a plain right-click — `requireMatchReport()`'s own
+      alert side effect firing just from building the menu's preview
+      counts. Fixed via a side-effect-free `LibraryViewModel
+      .hasMatchReport` check, called first. Confirm right-clicking a row in
+      that exact state (fresh launch, no Scan yet) shows the normal context
+      menu with no Fix items and no alert.
+
+### 11.13h "Rescan required" gate — a Fix can't run on a scope the LAST Scan didn't cover (added 2026-09-10)
+jensyleo's own explicit, deliberately universal rule: "si le doy rescan
+file a un archivo y le doy fix a otro. Esta acción no debería permitirse" —
+confirmed as intentional even though `ScanCache` already re-verifies every
+file's own size+mtime on every scan regardless of scope (so this is a
+workflow safeguard on top of that, not a patch for an actual data-integrity
+gap). Applies to every Fase 2 write action, not just the two scoped ones.
+- [x] **Confirmed live 2026-09-10** — Rescan one specific File ("Rescan This
+      File"), then right-click a DIFFERENT File/selection and choose any
+      Fix action — confirm it's BLOCKED: a "Rescan Required" alert pops up
+      (in addition to a Log line), naming the scope that wasn't covered,
+      and nothing on disk changes.
+- [ ] Run "Scan Folder" on ONE folder only (not "Scan All Folders"), then
+      try a whole-system Fix action (e.g. "Remove Useless Files…", which
+      has no per-file scope of its own) — confirm it's blocked too, since
+      the last Scan only covered one folder, not the whole system.
+- [ ] Run "Scan All Folders" (or "Scan Folder" covering everything
+      configured), then run any Fix action — confirm it proceeds normally,
+      no alert.
+
+### 11.13b "Sets case" / "Roms case" — shared by Fix Mismatched + Apply Case Policy (added 2026-09-09, merged 2026-09-10)
+Originally two SEPARATE settings pairs ("Fix files to"/"Fix ROMs to" vs "Sets case"/"Roms case") —
+merged into one shared pair per jensyleo's own report (2026-09-10) that having both side by side
+was confusing ("fisiona eso en un solo grupo de configuraciones, es casi lo mismo"). Now ONE
+"Sets case"/"Roms case" choice governs BOTH the two "Fix" toggles above (styling what a genuinely
+mismatched name gets fixed TO) AND the separate "Apply Case Policy…" action (re-styling an
+ALREADY-correct name, on request) — same picker, both meanings, `.dontTouch` behaving differently
+in each (see the Settings → Fix caption text under "Case" for the exact wording).
+- [ ] Take a real rom whose DAT-declared name has mixed case (e.g. "Sonic
+      The Hedgehog.bin") and rename its on-disk file to something wrong.
+- [ ] Settings → Fix → set **"Sets case"** to **Datafile Case**, run
+      **Fix Mismatched Files** — confirm the file is renamed to EXACTLY
+      what the DAT declares, mixed case included.
+- [ ] Set it to **Uppercase**, break the name again, run Fix — confirm the
+      result is entirely uppercase, **including the file extension**
+      (e.g. "SONIC THE HEDGEHOG.BIN").
+- [ ] Set it to **Lowercase** — confirm entirely lowercase, extension
+      included.
+- [ ] Set it to **Don't Touch** — confirm the fix STILL renames the file
+      (to the DAT's exact declared case, same as "Datafile Case") rather
+      than leaving the wrong name in place — "Don't Touch" only means
+      "leave it alone" for "Apply Case Policy…", never for a genuine fix.
+- [ ] Set it to **Capitalized** — confirm Title Case on the base name
+      ("Sonic The Hedgehog.bin") but the **extension stays lowercase**
+      (".bin", never ".Bin") — this is the one case worth double-checking,
+      since Swift's own `.capitalized` would title-case the extension too
+      if that bug ever crept back in.
+- [ ] Repeat all five for **"Roms case"** against a misnamed ROM entry
+      inside a zip (via **Fix Misnamed ROMs Inside Their Archives…**) —
+      same expected outcomes, applied to the entry name instead of the
+      archive's own filename.
+- [ ] Once "Apply Case Policy…" itself gets enabled for testing, confirm
+      the SAME "Sets case"/"Roms case" value you configure here is what it
+      uses too — no separate, hidden setting for it anymore.
+
+### 11.13c "Fix Mismatched Files" real success/failure reporting + no more all-or-nothing abort (added 2026-09-10)
+- [ ] From a real, mostly-zip-per-game MAME collection, confirm the Log
+      after running **Fix Mismatched Files** now reports one line per
+      outcome that actually happened — "Fixed N mismatched File(s)." when
+      at least one succeeded, "N mismatched File(s) failed to rename" when
+      at least one failed, the existing "N misnamed ROM(s) left as-is —
+      their content lives INSIDE..." when any were skipped as archive
+      entries, and "Nothing to fix — every File name already matches the
+      DAT." only when literally none of the three above apply. These can
+      appear TOGETHER (e.g. both a success and a skip line) — previously
+      only the skip line ever showed, even when real renames also
+      succeeded.
+- [ ] Reproduce the actual bug this fixes: take at least TWO genuinely
+      loose (non-archived) misnamed rom files — e.g. two misnamed `.chd`
+      files, since `.chd` isn't treated as an archive here — and
+      deliberately make the FIRST one's rename fail (e.g. pre-create a
+      real file already sitting at its correct destination name, so
+      `RebuildExecutor` refuses to overwrite it). Run **Fix Mismatched
+      Files**.
+  - [ ] Confirm the SECOND file still gets renamed correctly — before this
+        fix, one early failure silently aborted every operation queued
+        after it in the same run, so the second file would have been left
+        untouched with no explanation.
+  - [ ] Confirm the Log shows both a "Fixed 1 mismatched File(s)." line
+        AND a "1 mismatched File(s) failed to rename" line together, not
+        just one generic error swallowing the whole batch.
+
+### 11.13d "Fix" respects the selected ROM folder, like "Scan Folder" already does (added 2026-09-10)
+jensyleo's own report (2026-09-10): standing on one specific "ROM folder" in the sidebar (e.g.
+NEOGEO) and running a Fix action used to act across the WHOLE system regardless — every configured
+folder at once — matching "Scan Folder" in name only. This applies to "Fix Mismatched Files" and
+"Fix Misnamed ROMs Inside Their Archives…" (the two currently enabled for testing); the same
+restriction needs applying to each remaining Fix action as it gets turned on.
+- [ ] Select a system with at least TWO configured ROM folders, both containing real misnamed
+      files/roms fixable by one of the two actions above.
+- [ ] Click on ONE specific "ROM folder" in the sidebar (not "Database", and not left unselected)
+      so it's the active selection — confirm the "Fix" toolbar item's own tooltip (hover, or the
+      submenu item's own help text) now says "— only inside "<that folder's name>"".
+- [ ] Run the Fix action — confirm ONLY files/roms physically inside the selected folder were
+      touched (check the other folder's files directly — untouched, still misnamed).
+- [ ] Confirm the reported success/skip counts in the Log match ONLY what's inside the selected
+      folder, not the whole system's total.
+- [ ] Click "Database" (or otherwise deselect the ROM folder) and run the SAME action again —
+      confirm it now acts across every folder again (the original, unscoped, whole-system
+      behavior) — `nil` selection must mean "no restriction", not "nothing eligible".
+
+### 11.13e "Clear Log" button + 2000-line cap (added 2026-09-11)
+- [ ] In the Log panel's toolbar, confirm you see both "Copy Log" and a
+      new "Clear Log" button.
+- [ ] Click "Clear Log" — confirm the panel empties immediately.
+- [ ] Run a scan or Fix action large enough to generate log lines, select
+      a range of text in the middle of the log (native drag-select), and
+      confirm Copy (⌘C) copies only that range, not the whole log — this
+      is the native `NSTextView` behavior, distinct from "Copy Log".
+- [ ] (Optional, slow) Generate more than 2000 log lines (e.g. repeated
+      scans of a large collection) — confirm the panel keeps showing the
+      2000 most recent lines and older ones quietly disappear from the
+      top, rather than the panel growing without bound.
+
+### 11.14 Help window — sidebar redesign + Keyboard Shortcuts merge
+- [ ] **Help → ROMForge Help** opens a `NavigationSplitView`: a searchable
+      sidebar of topics on the left (with icons), a detail page on the
+      right — not the old single long scrolling page.
+- [ ] Confirm **"Keyboard Shortcuts"** is now its OWN topic at the top of
+      the sidebar (with a keyboard icon) — there is no longer a separate
+      "Keyboard Shortcuts" window, and ⌘? no longer opens one (check the
+      Help menu itself: it should show only "ROMForge Help", nothing else).
+- [ ] Type in the sidebar's search field (e.g. "maintenance") — confirm the
+      list narrows to matching topics only, and clearing the field restores
+      the full list.
+- [ ] Click through a few topics (e.g. "The \"Fix\" menu", "Settings —
+      Fix") — confirm each renders as a title + prose sections, with
+      "term rows" (a bordered list of action/setting name + explanation,
+      sometimes with a small badge like "Off by default") for the
+      enumerable ones.
+- [ ] Click the **"Done"** button at the bottom of the Help window —
+      confirm it closes the window (same as the red traffic-light button).
+- [ ] Reopen Help, press **Escape** — confirm it also closes the window.
+- [ ] Resize the Help window smaller and larger — confirm it respects a
+      sensible minimum size and the sidebar/detail split behaves normally
+      (no clipped text, no broken layout).
 
 ---
 

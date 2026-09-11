@@ -45,18 +45,216 @@ public enum RebuildPlanner {
         url.pathExtension.lowercased() == "zip"
     }
 
+    /// Whether this `ScannedFile` is an ENTRY INSIDE an archive rather than
+    /// a file in its own right — the codebase's canonical test for the
+    /// File-vs-ROM distinction, and the one every planner must use before
+    /// deciding whether an operation targets a container or its contents.
+    ///
+    /// A zip/7z entry's `ScannedFile` reuses the CONTAINING ARCHIVE's own
+    /// `url` and carries the entry name in `name` (see `CollectionHasher`'s
+    /// construction of one, and `ScanCache.key(for:)`/`ROMMatcher
+    /// .annotateMisnamedArchives`, both of which already discriminate this
+    /// exact way). A file in its own right has `url.lastPathComponent ==
+    /// name`.
+    ///
+    /// jensyleo's own instruction (2026-09-10): "distingue entre renombrar
+    /// archivos .zip/7z y renombrar el contenido de los mismos, cosas muy
+    /// distintas". Testing the PATH EXTENSION instead (`isZipPath`) answers
+    /// a different question — "does this path end in .zip" — which is true
+    /// both for an entry inside an archive AND for a junk archive that is
+    /// itself the file in question, so it cannot tell the two apart. Every
+    /// place that decided "container or contents?" from the extension alone
+    /// was therefore guessing.
+    private static func isArchivedEntry(_ file: ScannedFile) -> Bool {
+        file.url.lastPathComponent != file.name
+    }
+
+    /// This rom's bytes live inside a `.zip` ENTRY — entry-level operations
+    /// (`.extractZipEntry`/`.addEntryToZip`/`.removeEntryFromZip`) apply,
+    /// and `file.url` is the CONTAINER, never the rom itself.
+    private static func isZipEntry(_ file: ScannedFile) -> Bool {
+        isArchivedEntry(file) && isZipPath(file.url)
+    }
+
+    /// This rom's bytes live inside an archive whose entries ROMForge has
+    /// no rewrite support for (`.7z` — `SevenZipRunner` exposes no entry
+    /// add/remove). Such a rom is always skipped rather than approximated
+    /// by an operation on its container, which would hit every OTHER rom
+    /// sitting next to it.
+    private static func isUnrewritableArchiveEntry(_ file: ScannedFile) -> Bool {
+        isArchivedEntry(file) && !isZipPath(file.url)
+    }
+
+    /// This rom IS a file in its own right, not an entry inside anything —
+    /// File-level operations (`.rename`/`.copy`/`.move`/`.delete`) apply
+    /// directly to `file.url`. True for a plain `.bin`, and also for a
+    /// `.zip`/`.7z` that is itself the scanned file rather than a container
+    /// being looked into — the case an extension test gets wrong.
+    private static func isLooseFile(_ file: ScannedFile) -> Bool {
+        !isArchivedEntry(file)
+    }
+
+    /// The target name a "Fix Mismatched Files"/"Fix Misnamed ROMs Inside
+    /// Their Archives…" rename should produce, given the DAT's own declared
+    /// name and a chosen case style — jensyleo's own request (2026-09-09):
+    /// "Dejarlo como dice el DAT / Todo minúsculas / Todo mayúsculas /
+    /// Capitalized" for BOTH File- and ROM-level fixes.
+    ///
+    /// Deliberately distinct from `caseTransformTarget` below (the other
+    /// half `LibraryViewModel.fix()`/`renameRomsInArchive()` run in the
+    /// SAME pass as this one): that one transforms an EXISTING,
+    /// presumed-correct name's own case, since it only ever touches names
+    /// that are already right. A mismatched File/ROM's
+    /// CURRENT name is exactly what's wrong here instead — case-
+    /// transforming it would just produce a differently-cased version of
+    /// the WRONG name — so this always derives the result from the DAT's
+    /// own declared name. `.dontTouch` has no meaning for "fix a mismatch"
+    /// (there's always a real rename to make, by definition); treated the
+    /// same as `.datafileCase`.
+    private static func mismatchFixName(declaredName: String, policy: FileCasePolicy) -> String {
+        let base = safePathComponent(declaredName)
+        switch policy {
+        case .dontTouch, .datafileCase: return base
+        case .uppercase: return base.uppercased()
+        case .lowercase: return base.lowercased()
+        case .capitalized: return capitalizedPreservingExtension(base)
+        }
+    }
+
+    /// `String.capitalized` title-cases the WHOLE string, extension
+    /// included ("game.bin" → "Game.Bin") — not what "Capitalized" means
+    /// for a filename (nobody wants ".Bin"/".Zip"). Title-cases only the
+    /// base name and keeps the extension itself lowercase, the de facto
+    /// convention every ROM/archive extension already follows.
+    ///
+    /// Shared by `mismatchFixName` above (a genuine mismatch's target
+    /// name) AND `caseTransformTarget` below (an already-correct name
+    /// being re-styled) — jensyleo's own instruction (2026-09-10) to
+    /// review the app for coherence surfaced a real, previously
+    /// undetected gap: `caseTransformTarget`'s own `.capitalized` branch
+    /// called `current.capitalized` directly, with no extension
+    /// protection at all. That's harmless for "Sets case" (the caller
+    /// there already strips the extension before calling in), but for
+    /// "Roms case" — where `current` is a full entry name WITH its own
+    /// extension ("game.bin") — it silently produced "Game.Bin" for an
+    /// entry that was already otherwise correct, exactly the bug this
+    /// function exists to prevent, just reached through the other door.
+    private static func capitalizedPreservingExtension(_ name: String) -> String {
+        let url = URL(fileURLWithPath: name)
+        let ext = url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent.capitalized
+        return ext.isEmpty ? stem : "\(stem).\(ext.lowercased())"
+    }
+
     /// Renames misnamed local files in place (same folder) to the name their
-    /// DAT entry expects. Files that are already correct or missing are left
-    /// untouched.
-    public static func planRepair(matchReport: MatchReport) -> [RebuildOperation] {
+    /// DAT entry expects, styled per `filesCasePolicy` (default: the DAT's
+    /// own exact declared case). Files that are already correct or missing
+    /// are left untouched. Three genuinely distinct sources of a File-level
+    /// mismatch, all handled here:
+    ///
+    /// 1. A LOOSE file whose own name doesn't match its rom's declared name
+    ///    — `hashedFile.file.url` IS the file to rename directly.
+    /// 2. A whole ARCHIVE sitting under the wrong filename while its content
+    ///    clearly belongs to one specific game
+    ///    (`SurplusFile.misnamedArchiveForGameName`) — jensyleo's own
+    ///    real-world test case (2026-09-11): an archive whose entries are
+    ///    all individually named correctly for their game never produces a
+    ///    single `.misnamed` rom match (every entry's own name already
+    ///    equals its rom's declared name — only the CONTAINER's name is
+    ///    wrong), so this whole scenario silently fixed nothing before this
+    ///    loop existed, despite being exactly what "Fix Mismatched Files"
+    ///    is for.
+    /// 3. An archive that genuinely IS this game's own — every entry
+    ///    matched correctly by hash — but whose OWN filename carries the
+    ///    wrong CASE ("AWBIOS.zip" instead of "awbios.zip"). jensyleo's own
+    ///    real-world NEOGEO test (2026-09-10): once a prior "Roms case"
+    ///    pass has already re-styled every entry's own name to match its
+    ///    declared rom name exactly, no rom in that archive is ever
+    ///    `.misnamed` either — same silent-no-op shape as #2, just with the
+    ///    archive belonging to the RIGHT game instead of the wrong one.
+    ///
+    /// A `.misnamed` rom whose content lives INSIDE a `.zip`/`.7z` entry
+    /// never renames its container by itself in loop #1 above — its own
+    /// CONTAINER name is a separate concern, handled (if actually wrong)
+    /// by loop #3; the ENTRY's own name inside it is "Fix Misnamed ROMs
+    /// Inside Their Archives…"'s job, never this File-level action's.
+    /// Treating a `.misnamed` entry's OWN name as the container's target
+    /// (as this function used to) would rename the WHOLE container to look
+    /// like one entry's own name — exactly wrong.
+    public static func planRepair(matchReport: MatchReport, filesCasePolicy: FileCasePolicy = .datafileCase) -> [RebuildOperation] {
         var operations: [RebuildOperation] = []
         for gameResult in matchReport.games {
             for romMatch in gameResult.matches {
                 guard case .misnamed(let hashedFile, _) = romMatch.status else { continue }
+                guard isLooseFile(hashedFile.file) else { continue }
                 let destination = hashedFile.file.url
                     .deletingLastPathComponent()
-                    .appendingPathComponent(safePathComponent(romMatch.rom.name))
+                    .appendingPathComponent(mismatchFixName(declaredName: romMatch.rom.name, policy: filesCasePolicy))
                 operations.append(.rename(from: hashedFile.file.url, to: destination))
+            }
+        }
+        // `ROMMatcher.annotateMisnamedArchives` flags a misnamed archive by
+        // stamping `misnamedArchiveForGameName` onto EVERY surplus entry
+        // inside it (it has no archive-level row of its own to stamp) — so
+        // an archive holding 5 surplus entries arrives here as 5
+        // `SurplusFile`s that all name the SAME container. Planning one
+        // rename per entry produced 5 identical renames of one file: the
+        // first succeeded and the other 4 failed with `sourceMissing`,
+        // since the container no longer existed under its old name.
+        // jensyleo's own report (2026-09-10) of Fix "failing" is exactly
+        // this shape. Deduplicated by container URL — renaming a File is
+        // one operation on one File, however many ROMs happen to be inside
+        // it.
+        var plannedArchiveRenames: Set<URL> = []
+        for surplusFile in matchReport.surplusFiles {
+            guard let gameName = surplusFile.misnamedArchiveForGameName else { continue }
+            let currentURL = surplusFile.file.file.url
+            guard plannedArchiveRenames.insert(currentURL).inserted else { continue }
+            let ext = currentURL.pathExtension
+            let declaredName = ext.isEmpty ? gameName : "\(gameName).\(ext)"
+            let destination = currentURL.deletingLastPathComponent().appendingPathComponent(mismatchFixName(declaredName: declaredName, policy: filesCasePolicy))
+            operations.append(.rename(from: currentURL, to: destination))
+        }
+        // An archive that genuinely IS this game's own — every entry that
+        // matters is matched by HASH to this exact game, `.correct` or
+        // `.misnamed` alike — but is itself sitting under a wrong-CASE
+        // filename ("AWBIOS.zip" instead of "awbios.zip"). jensyleo's own
+        // real-world NEOGEO test (2026-09-10) plus his own follow-up
+        // correction the same day: hash identity is what proves an entry
+        // belongs to this game, regardless of whether its OWN name also
+        // happens to be right yet — requiring every entry to already be
+        // `.correct` first would force "Fix Misnamed ROMs Inside Their
+        // Archives…" to run before "Fix Mismatched Files" ever could, an
+        // ordering dependency jensyleo explicitly rejected ("el CRC32
+        // identifica el archivo... aunque el nombre esté mal"). Safe to
+        // include `.misnamed` here because the CONTAINER's target name is
+        // always derived from `gameResult.game.name` (the DAT's own
+        // declared game), never from the entry's own — still wrong — name;
+        // see `planRepairSkipsEntryLevelMismatchesInsideArchives` for the
+        // one thing this deliberately never does. Deduplicated by container
+        // URL exactly like the surplus-archive loop above, since several
+        // entries of the same game share one container.
+        var plannedOwnArchiveRenames: Set<URL> = []
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                let hashedFile: HashedFile?
+                switch romMatch.status {
+                case .correct(let file, _), .misnamed(let file, _):
+                    hashedFile = file
+                case .missing, .foundElsewhere, .hashMismatch, .nodump:
+                    hashedFile = nil
+                }
+                guard let hashedFile, isArchivedEntry(hashedFile.file) else { continue }
+                let currentURL = hashedFile.file.url
+                guard plannedArchiveRenames.contains(currentURL) == false,
+                      plannedOwnArchiveRenames.insert(currentURL).inserted
+                else { continue }
+                let ext = currentURL.pathExtension
+                let declaredName = ext.isEmpty ? gameResult.game.name : "\(gameResult.game.name).\(ext)"
+                let expectedName = mismatchFixName(declaredName: declaredName, policy: filesCasePolicy)
+                guard currentURL.lastPathComponent != expectedName else { continue }
+                let destination = currentURL.deletingLastPathComponent().appendingPathComponent(expectedName)
+                operations.append(.rename(from: currentURL, to: destination))
             }
         }
         return operations
@@ -74,14 +272,14 @@ public enum RebuildPlanner {
     /// while the old entry still exists), then remove the stale old-named
     /// entry — so the rom's own content is never briefly absent from the
     /// archive mid-operation if the add step fails.
-    public static func planRenameRomsInArchive(matchReport: MatchReport) -> [RebuildOperation] {
+    public static func planRenameRomsInArchive(matchReport: MatchReport, romsCasePolicy: FileCasePolicy = .datafileCase) -> [RebuildOperation] {
         var operations: [RebuildOperation] = []
         for gameResult in matchReport.games {
             for romMatch in gameResult.matches {
                 guard case .misnamed(let hashedFile, _) = romMatch.status else { continue }
-                guard isZipPath(hashedFile.file.url) else { continue }
+                guard isZipEntry(hashedFile.file) else { continue }
                 let currentEntryName = hashedFile.file.name
-                let expectedEntryName = safePathComponent(romMatch.rom.name)
+                let expectedEntryName = mismatchFixName(declaredName: romMatch.rom.name, policy: romsCasePolicy)
                 guard currentEntryName != expectedEntryName else { continue }
                 let zipURL = hashedFile.file.url
                 operations.append(.addEntryToZip(
@@ -126,9 +324,9 @@ public enum RebuildPlanner {
                 }
                 guard let hashedFile else { continue }
                 let target = gameFolder.appendingPathComponent(safePathComponent(romMatch.rom.name))
-                if isZipPath(hashedFile.file.url) {
+                if isZipEntry(hashedFile.file) {
                     operations.append(.extractZipEntry(archive: hashedFile.file.url, entryName: hashedFile.file.name, to: target))
-                } else if isArchivePath(hashedFile.file.url) {
+                } else if isUnrewritableArchiveEntry(hashedFile.file) {
                     continue
                 } else {
                     operations.append(move ? .move(from: hashedFile.file.url, to: target) : .copy(from: hashedFile.file.url, to: target))
@@ -166,8 +364,8 @@ public enum RebuildPlanner {
                 // missing that one rom rather than the whole game being
                 // skipped, same "do what's possible, report what wasn't"
                 // spirit as `rebuildToFolder`'s own per-operation loop.
-                guard !isArchivePath(hashedFile.file.url) || isZipPath(hashedFile.file.url) else { return nil }
-                let innerEntryName = isZipPath(hashedFile.file.url) ? hashedFile.file.name : nil
+                guard !isUnrewritableArchiveEntry(hashedFile.file) else { return nil }
+                let innerEntryName = isZipEntry(hashedFile.file) ? hashedFile.file.name : nil
                 return ArchiveEntrySource(source: hashedFile.file.url, entryName: safePathComponent(romMatch.rom.name), sourceArchiveEntryName: innerEntryName)
             }
             guard !entries.isEmpty else { continue }
@@ -205,14 +403,24 @@ public enum RebuildPlanner {
         matchReport.surplusFiles
             .filter { $0.requiredByGameDescription == nil && !$0.matchesNodumpRomName }
             .compactMap { surplus in
-                let url = surplus.file.file.url
-                if isZipPath(url) {
-                    return .removeEntryFromZip(archive: url, entryName: surplus.file.file.name)
-                } else if isArchivePath(url) {
-                    return nil
-                } else {
-                    return .delete(url)
-                }
+                let file = surplus.file.file
+                let url = file.url
+                // Container or contents? Decided by `isArchivedEntry` (see
+                // its own doc comment), never by the path extension: a junk
+                // `.zip` that is ITSELF the unrecognized file also has a
+                // `.zip` extension, and the old `isZipPath` test sent it
+                // down the entry-removal branch — planning
+                // `.removeEntryFromZip(archive: junk.zip, entryName:
+                // "junk.zip")`, which can only ever fail, instead of
+                // deleting the junk archive it was asked to remove.
+                guard isArchivedEntry(file) else { return .delete(url) }
+                // A genuine entry inside a container: remove just that
+                // entry, never the container. Only `.zip` supports it
+                // (`SevenZipRunner` exposes no entry removal), so a
+                // `.7z`-held surplus entry is skipped rather than
+                // approximated by deleting its whole archive.
+                guard isZipPath(url) else { return nil }
+                return .removeEntryFromZip(archive: url, entryName: file.name)
             }
     }
 
@@ -239,9 +447,9 @@ public enum RebuildPlanner {
             default: hashedFile = nil
             }
             guard let hashedFile else { continue }
-            if isZipPath(hashedFile.file.url) {
+            if isZipEntry(hashedFile.file) {
                 return .zip(hashedFile.file.url)
-            } else if !isArchivePath(hashedFile.file.url) {
+            } else if isLooseFile(hashedFile.file) {
                 return .looseFolder(hashedFile.file.url.deletingLastPathComponent())
             }
         }
@@ -278,7 +486,7 @@ public enum RebuildPlanner {
                 default: hashedFile = nil
                 }
                 guard let hashedFile else { continue }
-                if isArchivePath(hashedFile.file.url) && !isZipPath(hashedFile.file.url) { continue }
+                if isUnrewritableArchiveEntry(hashedFile.file) { continue }
                 return hashedFile
             }
         }
@@ -286,7 +494,7 @@ public enum RebuildPlanner {
     }
 
     private static func archiveEntrySource(forDonor donor: HashedFile, outputEntryName: String) -> ArchiveEntrySource {
-        let innerEntryName = isZipPath(donor.file.url) ? donor.file.name : nil
+        let innerEntryName = isZipEntry(donor.file) ? donor.file.name : nil
         return ArchiveEntrySource(source: donor.file.url, entryName: outputEntryName, sourceArchiveEntryName: innerEntryName)
     }
 
@@ -318,7 +526,7 @@ public enum RebuildPlanner {
                         ))
                     case .looseFolder(let folder):
                         let destination = folder.appendingPathComponent(outputEntryName)
-                        if isZipPath(donor.file.url) {
+                        if isZipEntry(donor.file) {
                             operations.append(.extractZipEntry(archive: donor.file.url, entryName: donor.file.name, to: destination))
                         } else {
                             operations.append(.copy(from: donor.file.url, to: destination))
@@ -375,7 +583,7 @@ public enum RebuildPlanner {
             for romMatch in gameResult.matches {
                 guard case .missing = romMatch.status else { continue }
                 guard let donor = donorFiles.first(where: { donorMatches($0, rom: romMatch.rom) }) else { continue }
-                guard !isArchivePath(donor.file.url) || isZipPath(donor.file.url) else { continue }
+                guard !isUnrewritableArchiveEntry(donor.file) else { continue }
                 let outputEntryName = safePathComponent(romMatch.rom.name)
                 switch anchor {
                 case .zip(let targetArchive):
@@ -386,7 +594,7 @@ public enum RebuildPlanner {
                     ))
                 case .looseFolder(let folder):
                     let destination = folder.appendingPathComponent(outputEntryName)
-                    if isZipPath(donor.file.url) {
+                    if isZipEntry(donor.file) {
                         operations.append(.extractZipEntry(archive: donor.file.url, entryName: donor.file.name, to: destination))
                     } else {
                         operations.append(.copy(from: donor.file.url, to: destination))
@@ -423,7 +631,7 @@ public enum RebuildPlanner {
             guard let anchor = existingAnchor(for: gameResult) else { continue }
             for romMatch in gameResult.matches {
                 guard case .foundElsewhere(let donor) = romMatch.status else { continue }
-                guard !isArchivePath(donor.file.url) || isZipPath(donor.file.url) else { continue }
+                guard !isUnrewritableArchiveEntry(donor.file) else { continue }
                 let outputEntryName = safePathComponent(romMatch.rom.name)
                 switch anchor {
                 case .zip(let targetArchive):
@@ -434,7 +642,7 @@ public enum RebuildPlanner {
                     ))
                 case .looseFolder(let folder):
                     let destination = folder.appendingPathComponent(outputEntryName)
-                    if isZipPath(donor.file.url) {
+                    if isZipEntry(donor.file) {
                         operations.append(.extractZipEntry(archive: donor.file.url, entryName: donor.file.name, to: destination))
                     } else {
                         operations.append(.copy(from: donor.file.url, to: destination))
@@ -471,7 +679,7 @@ public enum RebuildPlanner {
                     case .correct(let file, _), .misnamed(let file, _): hashedFile = file
                     default: hashedFile = nil
                     }
-                    guard let hashedFile, isZipPath(hashedFile.file.url) else { continue }
+                    guard let hashedFile, isZipEntry(hashedFile.file) else { continue }
                     guard parentAlreadyHas(romMatch.rom, in: parent) else { continue }
                     operations.append(.removeEntryFromZip(archive: hashedFile.file.url, entryName: hashedFile.file.name))
                 }
@@ -510,20 +718,76 @@ public enum RebuildPlanner {
         case .uppercase: target = current.uppercased()
         case .lowercase: target = current.lowercased()
         case .datafileCase: target = safePathComponent(datafileDeclaredName)
+        // See `capitalizedPreservingExtension`'s own doc comment — bare
+        // `current.capitalized` would title-case a ROM entry's own
+        // extension too ("game.bin" → "Game.Bin"), same bug
+        // `mismatchFixName` already guards against for a genuine mismatch.
+        case .capitalized: target = capitalizedPreservingExtension(current)
         }
         return target == current ? nil : target
     }
 
-    /// Renames a game's own archive filename to match `policy` — Fase 2
-    /// Step 9's "Sets case". Only applies to a `.zip`-anchored game (see
-    /// `existingAnchor`'s own doc comment) — a loose-file collection has no
-    /// single "set" filename for this to mean anything about. The file
-    /// extension itself is never touched, only the basename.
+    /// A container whose own FILENAME is already correct apart from its
+    /// case — the only thing "Sets case" is ever allowed to re-style.
+    ///
+    /// jensyleo's own report (2026-09-10): "no confundas renombrar el
+    /// contenido del .zip/.7z con renombrar el nombre del archivo". This
+    /// function is where that confusion was load-bearing. `RomMatchStatus`
+    /// is decided PURELY by the ENTRY name (`ROMMatcher`: `hashedFile
+    /// .file.name == rom.name ? .correct : .misnamed`) — the container's
+    /// own filename is never consulted to produce it, because the matcher
+    /// matches by HASH, not by filename. So a `.correct` rom proves only
+    /// that one entry INSIDE the archive is named right; it says nothing
+    /// whatsoever about the archive's own name.
+    ///
+    /// `correctOnlyArchiveAnchor` (this function's predecessor) leaned on
+    /// `.correct` as if it meant "this File's name is right", so an
+    /// archive named `unknown123.zip` full of perfectly-named entries got
+    /// uppercased to `UNKNOWN123.zip` — re-casing a genuinely WRONG File
+    /// name, which is exactly what excluding `.misnamed` was written to
+    /// prevent, just measured on the wrong name. The container's name has
+    /// to be compared against the DAT's own game name directly, which is
+    /// what happens here: same name apart from case means a real case
+    /// policy job; different beyond case means a genuine File-level
+    /// mismatch, which is "Fix Mismatched Files"' job and never this one's.
+    private static func caseOnlyMismatchedArchiveAnchor(for gameResult: GameMatchResult) -> URL? {
+        let declaredBasename = safePathComponent(gameResult.game.name).lowercased()
+        for match in gameResult.matches {
+            // `isArchivedEntry` first: `file.file.url` is only a CONTAINER
+            // path when the rom is genuinely an entry inside one. A loose
+            // `.zip` that is itself a rom passes `isArchivePath` too, and
+            // re-casing it is a File-level rename of that rom, not a set
+            // rename — this action has no business claiming it as a set.
+            guard case .correct(let file, _) = match.status,
+                  isArchivedEntry(file.file), isArchivePath(file.file.url)
+            else { continue }
+            let currentBasename = file.file.url.deletingPathExtension().lastPathComponent
+            guard currentBasename.lowercased() == declaredBasename else { continue }
+            return file.file.url
+        }
+        return nil
+    }
+
+    /// Renames a game's own archive FILENAME (the container itself — never
+    /// anything inside it) to match `policy` — Fase 2 Step 9's "Sets case".
+    /// The `.zip`/`.7z` container is renamed as a plain filesystem rename,
+    /// which needs no entry rewriting and so works identically for both;
+    /// the entries inside are untouched by this function entirely (that's
+    /// `planApplyRomsCasePolicy` below, a genuinely different operation).
+    ///
+    /// Only ever applies to a container whose own filename already matches
+    /// the DAT's declared game name apart from case — see
+    /// `caseOnlyMismatchedArchiveAnchor`'s own doc comment for why that has
+    /// to be checked against the container's name directly rather than
+    /// inferred from a rom's `.correct`/`.misnamed` status. A loose-file
+    /// collection has no single "set" filename for this to mean anything
+    /// about, and is skipped. The extension itself is never touched, only
+    /// the basename.
     public static func planApplySetsCasePolicy(matchReport: MatchReport, policy: FileCasePolicy) -> [RebuildOperation] {
         guard policy != .dontTouch else { return [] }
         var operations: [RebuildOperation] = []
         for gameResult in matchReport.games {
-            guard case .zip(let currentURL)? = existingAnchor(for: gameResult) else { continue }
+            guard let currentURL = caseOnlyMismatchedArchiveAnchor(for: gameResult) else { continue }
             let currentBasename = currentURL.deletingPathExtension().lastPathComponent
             guard let targetBasename = caseTransformTarget(current: currentBasename, datafileDeclaredName: gameResult.game.name, policy: policy) else { continue }
             let targetURL = currentURL.deletingLastPathComponent()
@@ -534,23 +798,38 @@ public enum RebuildPlanner {
         return operations
     }
 
-    /// Renames every matched rom's own entry name inside its `.zip` to
-    /// match `policy` — Fase 2 Step 9's "Roms case". Same add-then-remove
-    /// shape as `planRenameRomsInArchive`, just driven by a case transform
-    /// instead of a DAT-name mismatch. A `.7z`-sourced or loose rom is
-    /// skipped (no 7z-entry rewrite support; a loose file's case is really
-    /// a "Sets case"-shaped rename, not this one).
+    /// Renames every matched rom's own ENTRY NAME inside its `.zip` — the
+    /// content of the archive, never the archive's own filename (that's
+    /// `planApplySetsCasePolicy` above) — to match `policy`. Fase 2 Step
+    /// 9's "Roms case". Same add-then-remove shape as
+    /// `planRenameRomsInArchive`, just driven by a case transform instead
+    /// of a DAT-name mismatch.
+    ///
+    /// Only a genuinely `.correct` rom qualifies, and unlike the set-level
+    /// half above, `.correct` IS the right test here: it's decided purely
+    /// by `hashedFile.file.name == rom.name` (`ROMMatcher`), which is
+    /// exactly this operation's own subject — the entry's name. A
+    /// `.misnamed` one is "Fix Misnamed ROMs Inside Their Archives…"'s
+    /// job, never this action's, since re-casing a wrong entry name just
+    /// produces a differently-cased wrong name.
+    ///
+    /// A `.7z`-sourced rom is skipped (rewriting an entry needs archive
+    /// support that only exists for `.zip`) — note this is a genuinely
+    /// different constraint from the set-level half, which renames the
+    /// container as a plain filesystem rename and so handles `.7z` fine. A
+    /// loose rom is skipped too: it has no containing archive, so its case
+    /// is a File-level concern, not an entry-level one.
+    ///
+    /// KNOWN GAP (2026-09-10, unfixed by design decision pending):
+    /// a loose rom therefore falls through BOTH halves — `planApplySetsCasePolicy`
+    /// skips it for having no container, and this skips it for having no
+    /// archive — so no action re-cases a loose file at all.
     public static func planApplyRomsCasePolicy(matchReport: MatchReport, policy: FileCasePolicy) -> [RebuildOperation] {
         guard policy != .dontTouch else { return [] }
         var operations: [RebuildOperation] = []
         for gameResult in matchReport.games {
             for romMatch in gameResult.matches {
-                let hashedFile: HashedFile?
-                switch romMatch.status {
-                case .correct(let file, _), .misnamed(let file, _): hashedFile = file
-                default: hashedFile = nil
-                }
-                guard let hashedFile, isZipPath(hashedFile.file.url) else { continue }
+                guard case .correct(let hashedFile, _) = romMatch.status, isZipEntry(hashedFile.file) else { continue }
                 let currentEntryName = hashedFile.file.name
                 guard let targetEntryName = caseTransformTarget(current: currentEntryName, datafileDeclaredName: romMatch.rom.name, policy: policy) else { continue }
                 let zipURL = hashedFile.file.url
@@ -601,7 +880,13 @@ public enum RebuildPlanner {
 
         var groups: [[RebuildOperation]] = []
         for entry in flagged {
-            guard let path = entry.path, isZipPath(path) else { continue }
+            // `entry.path` is the CONTAINER and `entry.name` the entry
+            // inside it, so the same container-vs-contents test applies
+            // here as everywhere else (see `isArchivedEntry`): equal names
+            // would mean the flagged item is the file itself, and every
+            // operation below would then be addressing a nonexistent entry
+            // named after its own archive.
+            guard let path = entry.path, isZipPath(path), path.lastPathComponent != entry.name else { continue }
             let entryName = safePathComponent(entry.name)
             switch policy {
             case .dontTouch:

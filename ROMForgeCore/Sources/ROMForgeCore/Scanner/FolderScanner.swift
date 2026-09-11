@@ -26,7 +26,23 @@ public enum FolderScanner {
     /// (below) is called once per offending subfolder instead — its
     /// contents are simply never looked at, everything else in the folder
     /// still scans normally.
-    public static let maxSubfolderDepth = 1
+    ///
+    /// A `var`, not a `let` — jensyleo's own report (2026-09-10): a real
+    /// BATOCERA export nested TWO extra levels above the game folder
+    /// (`<system>/BATOCERA/<game>/<file>`), not one, silently skipping
+    /// every file in every one of those games with no way to reach them
+    /// short of physically reorganizing the folder. `App/Sources
+    /// /GeneralSettingsView.swift`'s own "Maximum subfolder depth" control
+    /// (`MaxSubfolderDepthSettings`) sets this at launch and on change, so
+    /// a folder layout deeper than the safe `1` default has an actual way
+    /// out that doesn't require touching source.
+    /// `nonisolated(unsafe)`: read from a scan's own detached background
+    /// task, written only from the main-actor Settings UI on a user edit —
+    /// never concurrently with each other in practice (a scan already in
+    /// flight reads this once per directory, a change here only takes
+    /// effect on the NEXT scan), so a plain global avoids forcing every
+    /// caller through an actor hop just to read one `Int`.
+    public nonisolated(unsafe) static var maxSubfolderDepth = 1
 
     /// - Parameter onFileFound: reports the running count of regular files
     ///   found so far, throttled to roughly every 200 files (plus always a
@@ -141,7 +157,31 @@ public enum FolderScanner {
     /// than everything underneath a directory. Lets a caller re-scan one
     /// specific archive/file (e.g. "just this one game's zip" from a
     /// right-click) without having to re-walk its entire containing folder.
+    /// Per-parent-directory listing cache for `scanSingleFile` — see that
+    /// function's own doc comment for WHY a directory listing is needed at
+    /// all. Keyed so that `scan(paths:)` scanning several files that share
+    /// the SAME parent folder (jensyleo's own follow-up concern, 2026-09-10,
+    /// after the mouse cursor spun during testing: several files fixed
+    /// together shouldn't each pay for their own separate, full listing of
+    /// the same directory) lists that directory exactly ONCE, not once per
+    /// file. A single-file caller (the common case — one archive rescanned
+    /// from a right-click) still costs exactly one listing, same as before;
+    /// this only removes the REDUNDANT repeats when there's more than one.
+    private final class DirectoryListingCache: @unchecked Sendable {
+        private var listings: [URL: [URL]] = [:]
+        func entries(for parent: URL) -> [URL] {
+            if let cached = listings[parent] { return cached }
+            let listed = (try? FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? []
+            listings[parent] = listed
+            return listed
+        }
+    }
+
     public static func scanSingleFile(_ url: URL) throws -> ScannedFile {
+        try scanSingleFile(url, directoryCache: DirectoryListingCache())
+    }
+
+    private static func scanSingleFile(_ url: URL, directoryCache: DirectoryListingCache) throws -> ScannedFile {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw ScannerError.folderNotFound(url)
@@ -149,10 +189,45 @@ public enum FolderScanner {
         guard !isDirectory.boolValue else {
             throw ScannerError.notADirectory(url)
         }
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+        // jensyleo's own report (2026-09-10): "Rescan This File" (and any
+        // scoped Fix action's own verification rescan) kept showing a
+        // File's OLD name forever, even though the real file on disk had
+        // genuinely been renamed AND "Scan Folder"/"Scan All Folders"
+        // (a directory WALK) correctly showed the corrected name right
+        // away. A first attempt read `.nameKey` directly off `url` — that
+        // looked right in an isolated one-shot script, but reproducing the
+        // REAL sequence (an app that had already looked at this exact
+        // path once before, then renamed the file, then looked again)
+        // showed it still failing: `url.resourceValues(forKeys:)`,
+        // `removeAllCachedResourceValues()`, and even a genuinely NEW
+        // `URL` built fresh from the same path STRING all kept returning
+        // the OLD name. This isn't a Foundation-level cache at all — it's
+        // the kernel's own vnode/namecache for that EXACT path, which a
+        // rename doesn't invalidate once something has already resolved
+        // that path once. No amount of "ask again, freshly" from the Swift
+        // side gets past it, because the kernel itself is what's stale.
+        //
+        // A directory LISTING never hits this: `contentsOfDirectory`
+        // reads the CURRENT directory entries fresh via `readdir()`, never
+        // a cached per-path vnode lookup — exactly why a folder walk
+        // always saw the corrected name for free. So instead of asking
+        // "what is this exact path now" (the question that's stuck),
+        // this asks the question a folder walk already answers for free:
+        // "what entry in this File's own parent directory matches it,
+        // whatever it's actually called right now" — genuinely reads the
+        // parent's own current contents, not a resolution of `url` itself.
+        // `directoryCache` (above) means this listing itself only ever
+        // happens once per distinct parent folder within one `scan(paths:)`
+        // call, however many files in it are being scanned.
+        let parent = url.deletingLastPathComponent()
+        let targetNameLowercased = url.lastPathComponent.lowercased()
+        let siblings = directoryCache.entries(for: parent)
+        let realURL = siblings.first(where: { $0.lastPathComponent.lowercased() == targetNameLowercased }) ?? url
+        let values = try realURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey, .nameKey])
+        let realName = values.name ?? realURL.lastPathComponent
         return ScannedFile(
-            url: url,
-            name: url.lastPathComponent,
+            url: realURL,
+            name: realName,
             size: Int64(values.fileSize ?? 0),
             modificationDate: values.contentModificationDate ?? Date(timeIntervalSince1970: 0)
         )
@@ -177,6 +252,13 @@ public enum FolderScanner {
         onFolderStarted: (@Sendable (URL) -> Void)? = nil
     ) throws -> [ScannedFile] {
         var all: [ScannedFile] = []
+        // Shared across every single-file entry in `urls` this call scans
+        // — jensyleo's own follow-up report (2026-09-10, spinning cursor
+        // during testing): several files fixed together used to each pay
+        // for their own full listing of the SAME parent folder inside
+        // `scanSingleFile`; one shared cache means that folder gets listed
+        // once, however many of its files are in `urls`.
+        let directoryCache = DirectoryListingCache()
         for url in urls {
             onFolderStarted?(url)
             var isDirectory: ObjCBool = false
@@ -188,7 +270,7 @@ public enum FolderScanner {
                 let files = try scan(folder: url, onFileFound: { count in onFileFound?(alreadyFound + count) }, onSkippedTooDeep: onSkippedTooDeep)
                 all.append(contentsOf: files)
             } else {
-                all.append(try scanSingleFile(url))
+                all.append(try scanSingleFile(url, directoryCache: directoryCache))
                 onFileFound?(all.count)
             }
         }

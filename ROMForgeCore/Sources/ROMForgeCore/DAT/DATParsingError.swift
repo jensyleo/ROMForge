@@ -6,7 +6,14 @@
 
 import Foundation
 
-public enum DATParsingError: Error, Equatable, CustomStringConvertible {
+// jensyleo's own instruction (2026-09-10) to review the app's whole
+// logging for coherence — same systemic gap as `RebuildError`/`ScannerError`
+// (see their own doc comments): this type only conformed to
+// `CustomStringConvertible`, so any `error.localizedDescription` call
+// would silently fall back to Foundation's generic bridged text instead of
+// the specific `description` below. `errorDescription` fixes it at the
+// source.
+public enum DATParsingError: Error, Equatable, CustomStringConvertible, LocalizedError {
     case malformedXML(underlying: String)
     case missingRootElement
     case missingHeader
@@ -24,4 +31,6 @@ public enum DATParsingError: Error, Equatable, CustomStringConvertible {
             return "Game \"\(game)\" has a <rom> missing required attribute \"\(attribute)\""
         }
     }
+
+    public var errorDescription: String? { description }
 }

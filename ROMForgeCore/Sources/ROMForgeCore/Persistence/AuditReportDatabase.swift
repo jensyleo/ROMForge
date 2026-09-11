@@ -7,7 +7,14 @@
 import Foundation
 import SQLite3
 
-public enum AuditReportDatabaseError: Error, Equatable, CustomStringConvertible {
+// jensyleo's own instruction (2026-09-10) to review the app's whole
+// logging for coherence — same systemic gap as `RebuildError`/`ScannerError`
+// (see their own doc comments): this type only conformed to
+// `CustomStringConvertible`, so any `error.localizedDescription` call
+// would silently fall back to Foundation's generic bridged text instead of
+// the specific `description` below. `errorDescription` fixes it at the
+// source.
+public enum AuditReportDatabaseError: Error, Equatable, CustomStringConvertible, LocalizedError {
     case cannotOpen(String)
     case sqlError(String)
 
@@ -17,6 +24,8 @@ public enum AuditReportDatabaseError: Error, Equatable, CustomStringConvertible 
         case .sqlError(let message): return "SQLite error: \(message)"
         }
     }
+
+    public var errorDescription: String? { description }
 }
 
 /// Persists each configured system's last audit — every `AuditEntry` plus
@@ -147,7 +156,18 @@ public final class AuditReportDatabase {
     // silently revert to blank on the next app relaunch. New `is_device`
     // column; only a fresh rescan recomputes it, so the wipe below applies
     // here too.
-    private static let currentSchemaVersion: Int32 = 22
+    // v23 (2026-09-10): new `AuditEntry.actualEntryName` — jensyleo's own
+    // report: after renaming a misnamed rom entry inside a zip, neither
+    // "Rom name" (always the DAT's own declared name, by design) nor "File
+    // name" (a zip entry's own `path` is the CONTAINER's URL, so its
+    // `lastPathComponent` is the archive's own filename, never the entry's)
+    // showed what was actually, currently written inside the zip. Same
+    // unpersisted-new-field class as v20/v21/v22 above: left unpersisted,
+    // a fresh scan would show the real entry name but it would silently
+    // revert to blank on the next app relaunch. New `actual_entry_name`
+    // column; only a fresh rescan recomputes it, so the wipe below applies
+    // here too.
+    private static let currentSchemaVersion: Int32 = 23
 
     private let path: String
 
@@ -199,6 +219,7 @@ public final class AuditReportDatabase {
                     .textOrNull(entry.driverStatus), .textOrNull(entry.displayType), .textOrNull(entry.displayRotate),
                     .textOrNull(entry.players), .textOrNull(entry.coins),
                     .int(entry.isDevice ? 1 : 0),
+                    .textOrNull(entry.actualEntryName),
                 ]
             }
             try Self.bindAndExecMany(
@@ -214,8 +235,8 @@ public final class AuditReportDatabase {
                     expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
                     cpu_chip_names, audio_chip_names,
                     driver_status, display_type, display_rotate, players, coins,
-                    is_device
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    is_device, actual_entry_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 rowValues
             )
@@ -251,7 +272,7 @@ public final class AuditReportDatabase {
                    has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
                    cpu_chip_names, audio_chip_names,
                    driver_status, display_type, display_rotate, players, coins,
-                   is_device
+                   is_device, actual_entry_name
             FROM audit_entries WHERE system_id = ?;
             """,
             [.text(systemID)]
@@ -293,6 +314,7 @@ public final class AuditReportDatabase {
                     hasFilenameCRCMismatch: sqlite3_column_int(statement, 31) != 0,
                     hasInternalZipCRCMismatch: sqlite3_column_int(statement, 32) != 0,
                     name: Self.columnText(statement, 18) ?? "",
+                    actualEntryName: Self.columnText(statement, 41),
                     path: Self.columnText(statement, 19).map(URL.init(fileURLWithPath:)),
                     expectedSize: Self.columnInt64(statement, 20),
                     actualSize: Self.columnInt64(statement, 21),
@@ -699,6 +721,8 @@ public final class AuditReportDatabase {
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN coins TEXT;")
         // v22: see `currentSchemaVersion`'s own doc comment above.
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN is_device INTEGER NOT NULL DEFAULT 0;")
+        // v23: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN actual_entry_name TEXT;")
         if currentVersion > 0 {
             try? exec(db, "DELETE FROM audit_entries;")
             try? exec(db, "DELETE FROM scans;")

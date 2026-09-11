@@ -79,7 +79,7 @@ public enum AuditReporter {
                         driverStatus: game.driverStatus, displayType: game.displayType, displayRotate: game.displayRotate,
                         players: game.players, coins: game.coins,
                         matchedViaHeaderStrip: viaHeaderStrip, foundElsewhereArchiveName: foundElsewhereArchiveName,
-                        name: rom.name, path: path,
+                        name: rom.name, actualEntryName: hashedFile?.file.name, path: path,
                         expectedSize: rom.size, actualSize: hashedFile?.file.size,
                         expectedCRC: rom.crc, expectedMD5: rom.md5, expectedSHA1: rom.sha1,
                         actualCRC: hashedFile?.hash.crc32, actualMD5: hashedFile?.hash.md5, actualSHA1: hashedFile?.hash.sha1
@@ -323,10 +323,47 @@ public enum AuditReporter {
 
         let untouchedEntries = previousReport.entries.filter { !isRefreshed($0) }
         let refreshedEntries = newReport.entries.filter(isRefreshed)
-        let mergedEntries = untouchedEntries + refreshedEntries
+        return counted(untouchedEntries + refreshedEntries)
+    }
 
+    /// Just the entries belonging to whichever game(s) `rescannedPaths`
+    /// actually touches within `report`, with their own counts — jensyleo's
+    /// own report (2026-09-11): the Log's own scan-completion line ("Done in
+    /// Xs: N correct, N incorrect...") read whole-SYSTEM totals even for a
+    /// scoped "Scan File"/"Scan Folder" ("esta línea no tiene nada que ver
+    /// con la acción de scan file"), since it was built straight from the
+    /// full, freshly-matched report rather than anything scoped to what was
+    /// actually asked for. This mirrors `replacingRescannedEntries`'s own
+    /// per-game grouping (a rescanned archive can affect a rom entry with no
+    /// matching path of its own — a `.missing` rom just found, or one just
+    /// lost — path alone can't catch either direction), but only needs
+    /// `report` itself: it's summarizing what THIS scan found, not
+    /// reconciling it against a previous one.
+    ///
+    /// `nil` when `rescannedPaths` is empty — an unscoped "Scan All Folders"
+    /// has no narrower scope to summarize; the whole report already IS the
+    /// answer.
+    public static func scopedSummary(in report: AuditReport, rescannedPaths: [URL]) -> AuditReport? {
+        guard !rescannedPaths.isEmpty else { return nil }
+        let prefixes = rescannedPaths.map(\.path)
+        func pathIsRescanned(_ entry: AuditEntry) -> Bool {
+            guard let path = entry.path?.path else { return false }
+            return prefixes.contains { ScanCache.key(path, isUnder: $0) }
+        }
+        var touchedGames: Set<String> = []
+        for entry in report.entries where pathIsRescanned(entry) {
+            if let game = entry.game { touchedGames.insert(game) }
+        }
+        func isTouched(_ entry: AuditEntry) -> Bool {
+            if let game = entry.game { return touchedGames.contains(game) }
+            return pathIsRescanned(entry)
+        }
+        return counted(report.entries.filter(isTouched))
+    }
+
+    private static func counted(_ entries: [AuditEntry]) -> AuditReport {
         var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0, duplicateSets = 0
-        for entry in mergedEntries {
+        for entry in entries {
             switch entry.status {
             case .correct: correct += 1
             case .incorrect: incorrect += 1
@@ -337,6 +374,6 @@ public enum AuditReporter {
             case .duplicateSet: duplicateSets += 1
             }
         }
-        return AuditReport(entries: mergedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
+        return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
     }
 }

@@ -6,7 +6,14 @@
 
 import Foundation
 
-public enum ZipArchiveError: Error, Equatable, CustomStringConvertible {
+// jensyleo's own instruction (2026-09-10) to review the app's whole
+// logging for coherence — same systemic gap as `RebuildError`/`ScannerError`
+// (see their own doc comments): this type only conformed to
+// `CustomStringConvertible`, so any `error.localizedDescription` call
+// would silently fall back to Foundation's generic bridged text instead of
+// the specific `description` below. `errorDescription` fixes it at the
+// source.
+public enum ZipArchiveError: Error, Equatable, CustomStringConvertible, LocalizedError {
     case cannotOpenArchive(URL)
     case entryNotFound(entryPath: String, archiveURL: URL)
     case extractionFailed(String)
@@ -30,4 +37,6 @@ public enum ZipArchiveError: Error, Equatable, CustomStringConvertible {
             return "Entry \"\(entryPath)\" decompressed to far more than its declared size (\(declaredSize) bytes) — aborted as a suspected zip bomb"
         }
     }
+
+    public var errorDescription: String? { description }
 }

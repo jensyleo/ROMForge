@@ -35,8 +35,39 @@ public struct ScanCacheEntry: Equatable, Sendable, Codable {
 public struct ScanCache: Sendable, Codable, Equatable {
     private var entries: [String: ScanCacheEntry]
 
-    public init(entries: [String: ScanCacheEntry] = [:]) {
+    /// Paths of `.chd` files seen by a scan, kept DELIBERATELY OUTSIDE
+    /// `entries` — jensyleo's own instruction (2026-09-10) to verify Fase
+    /// 1's read path survived the scan-scoping work intact, which is how
+    /// this was found.
+    ///
+    /// `CollectionHasher.hash` excludes `.chd` on purpose (a CHD's
+    /// whole-file hash has no relationship to any `DATRom`'s, so hashing
+    /// one only ever wastes time — `DiskAuditor` audits them separately by
+    /// each CHD's own header SHA1). So a CHD never appears in a
+    /// `[HashedFile]`, and therefore never in `entries` either. Once
+    /// scoping made the folder walk itself scoped, deriving the CHD list
+    /// from `[HashedFile]` made it unconditionally EMPTY, silently killing
+    /// disk auditing outright: every disk in the DAT reported Missing.
+    ///
+    /// A plain path list, not a `ScanCacheEntry`: there is no hash to
+    /// record, and inventing a placeholder one would be actively dangerous
+    /// — `entries` feeds `reconstructedHashedFiles()`, whose output goes
+    /// straight into `ROMMatcher`, which would then try to match a CHD as
+    /// if it were a rom.
+    private var chdPaths: Set<String>
+
+    public init(entries: [String: ScanCacheEntry] = [:], chdPaths: Set<String> = []) {
         self.entries = entries
+        self.chdPaths = chdPaths
+    }
+
+    /// Every `.chd` this cache knows about, as real URLs — the disk-audit
+    /// counterpart to `reconstructedHashedFiles()`, and for the same
+    /// reason: a scoped scan walks only its own scope, so every OTHER
+    /// folder's CHDs have to come from what was already known or
+    /// `DiskAuditor` wrongly reports them all missing.
+    public func reconstructedCHDPaths() -> [URL] {
+        chdPaths.map { URL(fileURLWithPath: $0) }
     }
 
     /// Returns a previously-hashed result for `file` if the cache has an
@@ -77,12 +108,27 @@ public struct ScanCache: Sendable, Codable, Equatable {
         // A zip entry's ScannedFile reuses the archive's url with a
         // different name — the same test CollectionHasher's docs already
         // establish for "this came from inside an archive."
+        //
+        // jensyleo's own live report (2026-09-10) of a File-level case-only
+        // rename not refreshing on screen led to trying `.resolvingSymlinksInPath()`
+        // here — confirmed by direct reproduction to be the wrong fix: it
+        // resolves a path to whatever it CURRENTLY, ACTUALLY points to on
+        // disk right now, so querying the OLD (pre-rename) scope path
+        // AFTER a rename already happened resolves it to the NEW name —
+        // creating a mismatch against this cache's entries, which are
+        // keyed by whatever name was current AT SCAN TIME, in the OTHER
+        // direction. Plain `.path` (no resolution) is what keeps a scan's
+        // own written key and a same-scan eviction lookup consistent with
+        // each other, confirmed correct by that same reproduction.
         file.url.lastPathComponent == file.name ? file.url.path : "\(file.url.path)::\(file.name)"
     }
 
     /// Builds a fresh cache from a completed scan's results, ready to
     /// persist for the next one.
-    public static func build(from hashedFiles: [HashedFile]) -> ScanCache {
+    /// `chdPaths` is passed in separately because a CHD never appears in
+    /// `hashedFiles` at all (see that property's own doc comment) — the
+    /// caller that did the folder walk is the only place that knows them.
+    public static func build(from hashedFiles: [HashedFile], chdPaths: [URL] = []) -> ScanCache {
         var entries: [String: ScanCacheEntry] = [:]
         for hashedFile in hashedFiles {
             entries[key(for: hashedFile.file)] = ScanCacheEntry(
@@ -92,7 +138,7 @@ public struct ScanCache: Sendable, Codable, Equatable {
                 headerStripped: hashedFile.headerStripped
             )
         }
-        return ScanCache(entries: entries)
+        return ScanCache(entries: entries, chdPaths: Set(chdPaths.map(\.path)))
     }
 
     /// A copy with every entry under any of `paths` dropped, so those files
@@ -116,9 +162,19 @@ public struct ScanCache: Sendable, Codable, Equatable {
     public func removingEntries(under paths: [URL]) -> ScanCache {
         guard !paths.isEmpty else { return self }
         let prefixes = paths.map(\.path)
-        return ScanCache(entries: entries.filter { key, _ in
-            !prefixes.contains { Self.key(key, isUnder: $0) }
-        })
+        // `chdPaths` is dropped for the scope too, and for the same reason
+        // the hash entries are: the scope is being genuinely re-read, so
+        // whatever the walk finds there is the truth. Keeping them would
+        // make a CHD deleted from a rescanned folder survive in the cache
+        // forever, still reported present by `DiskAuditor`.
+        return ScanCache(
+            entries: entries.filter { key, _ in
+                !prefixes.contains { Self.key(key, isUnder: $0) }
+            },
+            chdPaths: chdPaths.filter { path in
+                !prefixes.contains { Self.key(path, isUnder: $0) }
+            }
+        )
     }
 
     /// A cache `key` (a loose file's own path, or `"<archivePath>::<entry
@@ -134,6 +190,51 @@ public struct ScanCache: Sendable, Codable, Equatable {
         key == path || key.hasPrefix(path + "/") || key.hasPrefix(path + "::")
     }
 
+    /// Reconstructs every entry as a real `HashedFile`, entirely from what
+    /// was already persisted here — no disk access at all. jensyleo's own
+    /// request (2026-09-11) to genuinely separate "Scan Folder"/"Scan
+    /// File" from "Scan All Folders" (after weighing, and then explicitly
+    /// setting aside, the 2026-08-06 always-walk-everything call —
+    /// `removingEntries(under:)`'s own doc comment tells that history):
+    /// a scoped scan can now walk ONLY the folder/file actually asked
+    /// for, then reconstruct every OTHER folder's own files straight from
+    /// this cache instead of re-listing them from disk — combined, the
+    /// matcher still sees every folder at once (the real fix the
+    /// always-walk change was for), while disk access itself stays
+    /// genuinely scoped.
+    ///
+    /// A loose file's key IS its own path (`file.name` is its own last
+    /// path component); a zip entry's key is `"<archivePath>::<entry
+    /// name>"` (see `key(for:)`) — split back apart here. Malformed keys
+    /// (shouldn't exist — nothing else ever writes to this cache) are
+    /// skipped rather than crashing on a force-unwrap.
+    ///
+    /// Sorted by cache key, NOT left in `entries`' own order. `entries` is
+    /// a `Dictionary`, whose iteration order is unspecified and genuinely
+    /// varies between runs (Swift seeds its hashing per process) — and this
+    /// output feeds `ROMMatcher`, which resolves a rom to `scopedCandidates
+    /// .first(where: { !consumed[$0] && matches(...) })`. Order therefore
+    /// DECIDES which of two byte-identical archives becomes the game's own
+    /// claimed set and which is reported as the surplus duplicate.
+    /// jensyleo's own report (2026-09-10), a folder holding both `nss.7z`
+    /// and `nss.zip`: unsorted, that verdict flipped from scan to scan for
+    /// no reason the user could see.
+    public func reconstructedHashedFiles() -> [HashedFile] {
+        entries.sorted { $0.key < $1.key }.compactMap { key, entry in
+            let url: URL
+            let name: String
+            if let separatorRange = key.range(of: "::") {
+                url = URL(fileURLWithPath: String(key[key.startIndex..<separatorRange.lowerBound]))
+                name = String(key[separatorRange.upperBound...])
+            } else {
+                url = URL(fileURLWithPath: key)
+                name = url.lastPathComponent
+            }
+            let file = ScannedFile(url: url, name: name, size: entry.size, modificationDate: entry.modificationDate)
+            return HashedFile(file: file, hash: entry.hash, headerStripped: entry.headerStripped)
+        }
+    }
+
     public static func load(contentsOf url: URL) throws -> ScanCache {
         try JSONDecoder().decode(ScanCache.self, from: Data(contentsOf: url))
     }
@@ -142,12 +243,32 @@ public struct ScanCache: Sendable, Codable, Equatable {
         try JSONEncoder().encode(self).write(to: url, options: .atomic)
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case entries
+        case chdPaths
+    }
+
+    /// Decodes BOTH the current keyed shape and the legacy one, which was a
+    /// bare `[String: ScanCacheEntry]` dictionary at the top level (a
+    /// `singleValueContainer`). Every cache already on a user's disk is in
+    /// that legacy shape — refusing it would throw, `LibraryViewModel.scan`
+    /// would swallow that into an empty cache, and the next scan would be a
+    /// full cold rehash of the entire collection. A legacy cache simply has
+    /// no CHD list yet; it refills on the next scan that walks those folders.
     public init(from decoder: Decoder) throws {
+        if let container = try? decoder.container(keyedBy: CodingKeys.self),
+           let decodedEntries = try? container.decode([String: ScanCacheEntry].self, forKey: .entries) {
+            entries = decodedEntries
+            chdPaths = try container.decodeIfPresent(Set<String>.self, forKey: .chdPaths) ?? []
+            return
+        }
         entries = try decoder.singleValueContainer().decode([String: ScanCacheEntry].self)
+        chdPaths = []
     }
 
     public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(entries)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(entries, forKey: .entries)
+        try container.encode(chdPaths, forKey: .chdPaths)
     }
 }

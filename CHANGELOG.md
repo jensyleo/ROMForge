@@ -4,6 +4,205 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Changed — "Scan Folder"/"Scan File" now genuinely scope their own disk access
+
+jensyleo's own report (2026-09-11) that "Scan Folder" on one ROM folder still logged (and, on closer
+review, actually walked/re-read) every other configured folder too, making it read in the Log
+exactly like "Scan All Folders" — traced to a 2026-08-06 decision to always walk and match every
+folder regardless of requested scope, specifically to keep cross-folder duplicate/parent-clone
+reconciliation correct. After that history was explained, jensyleo explicitly set it aside
+("Olvida lo de mi decisión, separa los diferentes tipos de escaneo") in favor of real separation.
+Implemented via a new `ScanCache.reconstructedHashedFiles()`: a scoped scan now walks and rehashes
+disk ONLY for the requested folder/file, then rebuilds every other folder's already-known files
+straight from the persisted scan cache — zero disk access for them — and still feeds the combined
+set into the matcher in one pass, so cross-folder correctness (duplicates, parent/clone sharing)
+is unaffected. "Scan All Folders" is unchanged. Also fixes "Rescan This File", which shared the
+same always-walk-everything path.
+
+### Fixed — "Fix Mismatched Files" never fixed a whole misnamed archive, only entry-level mismatches
+
+jensyleo's own report (2026-09-11), testing the only 2 Fix actions currently enabled: neither did
+anything on a genuinely misnamed `.zip` (right content, wrong container filename) — the single most
+natural real-world test case for this action. Root cause: `RebuildPlanner.planRepair` only ever
+looked at `.misnamed` ROM statuses, which reflect an ENTRY's own name vs. its rom (an archive whose
+every entry is individually named correctly for its game never produces a single `.misnamed` match,
+even when the CONTAINER's own filename is wrong) — the matcher's own `misnamedArchiveForGameName`
+signal for exactly this case existed only for display, never consumed by any Fix action. `planRepair`
+now also plans a rename for it. Separately, it also used to plan a bogus rename for a rom whose
+content lives inside a zip *entry* (attempting to rename the whole archive to look like one entry's
+own name) — the App layer silently discarded those via `partitionArchivedRenames`, but that same
+discard would have wrongly swallowed the new, genuine whole-archive renames above too; `planRepair`
+itself now skips entry-level mismatches instead, so `partitionArchivedRenames` was removed as dead
+(and now-incorrect) weight.
+
+### Fixed — several Fix actions' own completion message was erased by their own verification rescan
+
+Every write action logs its own result ("Removed N useless file(s)", "Repaired N rom(s)...", etc.)
+then automatically rescans to verify — but `scan()` clears the whole Log at its own start
+(`logLines.removeAll()`), and 7 of these actions logged their result *before* calling that rescan,
+so the message was wiped out before ever surviving in the Log's history. Reordered to scan first,
+log the result after, matching the one action (`fix()`) that already had this right.
+
+### Fixed — "Scan File"/"Scan Folder" completion line in the Log reported whole-system totals
+
+jensyleo's own report (2026-09-11), right after the scan-separation work above: "Scan File" on
+`aliens.zip` correctly logged only that one file being read, but the final "Done in Xs: N correct,
+N incorrect..." line still reported counts for the entire system's roms — hundreds of thousands of
+them — "esta línea no tiene nada que ver con la acción de scan file." The completion line was built
+from the full, freshly-matched report (always whole-system, regardless of scope), not from anything
+narrowed to what was actually requested. New `AuditReporter.scopedSummary(in:rescannedPaths:)`
+counts only the game(s) the scoped scan actually touched — an unscoped "Scan All Folders" is
+unaffected, since it has no narrower scope to summarize.
+
+### Added — "File not found" message for "Scan File"/"Rescan This File"
+
+Scanning a game whose underlying file has since been deleted or moved outside ROMForge now logs
+"File not found: <path>" immediately and stops, instead of silently finishing the scan and only
+then flipping the row to Missing.
+
+### Added — "Clear Log" button and a 2000-line cap on the Log panel
+
+The Log panel's toolbar now has a "Clear Log" button alongside the existing "Copy Log". The log
+also caps itself at 2000 lines, trimming the oldest entries once exceeded, so a very long session
+can't grow it without bound.
+
+### Fixed — "Apply Case Policy…" could silently re-case a MISNAMED archive/rom instead of skipping it
+
+jensyleo's own request (2026-09-11) to review "Fix"/"Case" for conflicts, right after merging
+"Sets case"/"Roms case" into the one shared pair also used by "Fix Mismatched Files"/"Fix Misnamed
+ROMs Inside Their Archives…", surfaced a real, pre-existing gap: `existingAnchor` (shared with
+`planCrossSetRepair`/`planConvertToNonMerged`, where a `.misnamed` rom's own file is still a
+perfectly good anchor) also let "Apply Case Policy…" act on an archive/rom that's actually
+MISNAMED, not just wrongly-cased. For Uppercase/Lowercase/Capitalized, the transform is applied to
+the file's CURRENT name — for a genuinely misnamed one, that current name is exactly what's wrong,
+so "re-casing" it only ever produced a differently-cased version of the wrong name (e.g.
+`wrongname.zip` → `WRONGNAME.zip`), silently leaving the real mismatch untouched while looking like
+something happened. Both planner functions now require a genuinely `.correct` anchor/rom —
+skipping a misnamed one entirely, leaving it for the actual Fix action to correct instead.
+
+### Fixed — "New Window" (⌘N) could open a second, confusingly-duplicate copy of the main window
+
+`LSMultipleInstancesProhibited` already stops a second, separate ROMForge *process* from
+launching, but SwiftUI's `WindowGroup` still adds its own "New Window" command by default — nothing
+had ever removed it. jensyleo's own report (2026-09-10), with a screenshot of exactly this: two
+full windows open at once, both showing the same system/state (they share the same app-wide
+store). ROMForge has exactly one meaningful main window per launch — there's no per-document
+concept a second one would even make sense for — so "New Window" (and ⌘N) is removed entirely now
+rather than left as a way to open a redundant, confusing second copy.
+
+### Changed — merged the duplicated case-style settings into one shared pair
+
+"Fix files to"/"Fix ROMs to" (added 2026-09-09 for "Fix Mismatched Files"/"Fix Misnamed ROMs Inside
+Their Archives…") and "Sets case"/"Roms case" (the older, separate settings for "Apply Case
+Policy…") sat side by side in Settings → Fix, four nearly-identically-worded pickers doing two
+related but distinct jobs. jensyleo's own report (2026-09-10): "fisiona eso en un solo grupo de
+configuraciones, es casi lo mismo." Now a single "Sets case"/"Roms case" pair governs both — the
+two "Fix" actions treat `.dontTouch` as `.datafileCase` (a real mismatch always needs SOME rename),
+while "Apply Case Policy…" keeps `.dontTouch`'s original meaning (leave an already-correct name
+alone). Two settings instead of four, each doing one job in two related contexts rather than the
+same job duplicated under two different names.
+
+### Fixed — Fix actions ignored the selected ROM folder, acting on the whole system instead
+
+"Scan Folder" already scopes to whichever specific "ROM folder" is selected in the sidebar; every
+Fix action did not — standing on one folder (e.g. NEOGEO) and running "Fix Mismatched Files" or
+"Fix Misnamed ROMs Inside Their Archives…" acted across every configured folder in the system
+regardless. jensyleo's own report (2026-09-10): "estoy en la carpeta NEOGEO, busca que haga las
+acciones donde uno se ubica, no en todo lado." Both currently-enabled Fix actions now restrict
+their planned operations to files physically inside the selected folder (a `nil` selection —
+"Database" or nothing picked — still means the original, unrestricted, whole-system behavior). The
+same restriction needs applying to each remaining Fix action as it gets enabled for testing.
+
+### Fixed — critical: "Fix Mismatched Files" could silently rename nothing at all
+
+A single `try RebuildExecutor.execute(eligible)` call ran every planned File rename as ONE batch —
+the odd one out among every other Fix action in the app, which already execute their own
+operations one at a time. The first genuine failure in that batch (e.g. a real destination
+collision) aborted every rename queued after it in the same run, with nothing distinguishing "no
+File actually needed fixing" from "N were eligible and none of them ran because the first one
+collided." jensyleo's own report (2026-09-10): "No está renombrando los archivos, eso es lo que
+pasa." Now executes each rename independently and reports real success/failure counts — one
+mismatched File failing to rename no longer blocks every other one in the same run.
+
+### Added — configurable "Maximum subfolder depth" (Settings → General)
+
+`FolderScanner.maxSubfolderDepth` used to be a hardcoded constant (`1`, covering the common
+`<system>/<game>/<file>` layout) — jensyleo's own report (2026-09-10): a real BATOCERA export
+nested TWO extra levels above the game folder (`<system>/BATOCERA/<game>/<file>`), silently
+skipping every file in every one of those games with no way to reach them short of physically
+reorganizing the folder first. Now a real, mutable setting (1–5, default unchanged at 1) applied
+at launch and on change — raising it is the actual fix for a real folder shaped like this, not a
+source change.
+
+### Fixed — Log panel: only one line at a time was ever selectable
+
+`.textSelection(.enabled)` on each Log panel line (separate `Text` views in a `LazyVStack`) only
+ever let you select text WITHIN one line — SwiftUI doesn't merge them into one continuous,
+drag-across selection the way a real multi-line text view would; a drag spanning several lines
+silently dropped part of the selection. jensyleo's own report (2026-09-10): "eso de que me deje
+seleccionar algunas partes sí y otras no del log no está bien." Replaced with a real, read-only
+`NSTextView` (`LogTextView`) — selecting (and ⌘C-copying) an arbitrary range spanning any number
+of lines now works exactly like every other macOS text view.
+
+### Added — "Copy Log" button
+
+`.textSelection(.enabled)` on each Log panel line only ever lets you select text WITHIN one line
+at a time — SwiftUI doesn't merge separate `Text` views in a `LazyVStack` into one continuous,
+drag-across selection the way a real multi-line text view would. jensyleo's own report
+(2026-09-10): copying the log out to troubleshoot something needs the whole thing, not one line at
+a time. A small toolbar button (and a right-click "Copy Log" on the panel itself) now copies every
+line to the clipboard in one action.
+
+### Fixed — "Fix Mismatched Files" log message read like a missing feature, not a pointer to the right action
+
+Renaming a misnamed rom whose content lives as an ENTRY inside an otherwise-correctly-named
+archive (the overwhelmingly common case for a MAME zip-per-game layout) is deliberately skipped by
+this File-level action — renaming the WHOLE archive to one entry's own name would corrupt it. The
+skip itself was already correct; the log line describing it ("left as-is (not supported yet)")
+read as if the whole capability were missing, when the right tool ("Fix Misnamed ROMs Inside Their
+Archives…") already exists and handles exactly this. Reworded to name that action directly instead
+of implying nothing can be done, and downgraded from `logError` to `logWarning` — a File that
+genuinely doesn't need this action isn't an error.
+
+### Added — configurable case style for "Fix Mismatched Files" / "Fix Misnamed ROMs Inside Their Archives…"
+
+Two new Settings → Fix pickers, "Fix files to" and "Fix ROMs to": Datafile Case (the DAT's own
+exact case, the default — identical to the previous behavior), Uppercase, Lowercase, or the new
+Capitalized (Title Case) `FileCasePolicy` option. Always derived from the DAT's own declared name,
+never from the file's current wrong one — a mismatched name is exactly what's being fixed, so
+transforming *its* case would just produce a differently-cased version of the wrong name.
+Deliberately separate settings from "Sets case"/"Roms case" (which govern the unrelated "Apply
+Case Policy…" action, re-casing names that are already otherwise correct) — jensyleo's own report
+(2026-09-09) of configuring the wrong one and expecting it to affect "Fix Mismatched Files" is
+exactly the confusion two clearly-separated settings resolve honestly, instead of one setting
+trying to do two jobs.
+
+Caught by a new unit test before shipping: Swift's own `String.capitalized` title-cases a whole
+filename including its extension (`"game.bin"` → `"Game.Bin"`) — not what "Capitalized" should
+mean for a filename. Fixed to title-case only the base name and keep the extension lowercase.
+
+### Fixed — clicking a Fix action before a real rescan silently did nothing
+
+Opening a system with saved results from a previous session restores its `auditReport` for
+display immediately, but never the underlying `matchReport` every write action actually needs —
+there's no serialized form of it to restore. Every Fix action used to write "Scan first." to the
+Log panel and stop, easy to miss entirely, while its own toolbar button stayed enabled
+(`auditReport != nil`) the whole time with nothing indicating anything was wrong. A first pass
+disabled the buttons instead — jensyleo's own immediate follow-up report: a silently-disabled
+button "no es intuitivo" either, with no explanation of why. Settled on the button staying
+enabled and every write action's own preview/execute function (20 call sites, both halves of all
+11 write actions) now popping a real, visible `.alert` ("Scan Required") the moment it's clicked
+without a live `matchReport` — the one place both reports actually agreed a message needed to be.
+
+### Documentation — in-app Help now covers all of Fase 2
+
+`Help → ROMForge Help` only ever documented Fase 1 (the read-only audit) — every rebuild/repair
+write action added since (the whole "Fix" toolbar dropdown, the write-access gate, the Maintenance
+folder, Settings → Fix's policies, Settings → Systems, adding a system, playing in MAME, exporting)
+had nowhere in-app explaining it. Rewrote/expanded `HelpView.swift` to cover the app end to end,
+and corrected one stale claim found along the way ("Verify ZIP Integrity" was documented as a
+toolbar button; it's actually a game's right-click context menu item).
+
 ### Added — optional, read-only "Maintenance folder" (Fase 2)
 
 A new, entirely optional, global setting in Settings → General: a folder the user drops new or

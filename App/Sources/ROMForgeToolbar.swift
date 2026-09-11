@@ -143,10 +143,20 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         let id: String
         let title: String
         let isEnabled: Bool
+        // jensyleo's own report (2026-09-10): the "Fix" dropdown's own
+        // per-item tooltip names the currently-selected ROM folder ("...
+        // only inside \"NEOGEO\""), but selecting a DIFFERENT folder
+        // without also changing any sub-action's id/title/isEnabled left
+        // this signature unchanged — the menu (and its stale `.toolTip`)
+        // never got rebuilt, so it kept showing whichever folder was
+        // selected the last time it actually was. `help` included here so
+        // a scope change alone is enough to trigger a rebuild.
+        let help: String
         init(_ action: ToolbarAction) {
             id = action.id
             title = action.title
             isEnabled = action.isEnabled
+            help = action.help
         }
     }
     private var lastAppliedSignatureByID: [String: ActionSignature] = [:]

@@ -6,7 +6,14 @@
 
 import Foundation
 
-public enum SevenZipError: Error, Equatable, CustomStringConvertible {
+// jensyleo's own instruction (2026-09-10) to review the app's whole
+// logging for coherence — same systemic gap as `RebuildError`/`ScannerError`
+// (see their own doc comments): this type only conformed to
+// `CustomStringConvertible`, so any `error.localizedDescription` call
+// would silently fall back to Foundation's generic bridged text instead of
+// the specific `description` below. `errorDescription` fixes it at the
+// source.
+public enum SevenZipError: Error, Equatable, CustomStringConvertible, LocalizedError {
     /// No binary identifying itself as the official 7-Zip
     /// (https://www.7-zip.org) was found on this system — either nothing was
     /// there, or something else was found under that name and rejected.
@@ -60,4 +67,6 @@ public enum SevenZipError: Error, Equatable, CustomStringConvertible {
             return "\"\(entryPath)\" decompressed far beyond its declared size (\(declaredSize) bytes) — treating it as a suspected decompression bomb rather than continuing to read it."
         }
     }
+
+    public var errorDescription: String? { description }
 }

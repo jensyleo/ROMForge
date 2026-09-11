@@ -37,7 +37,18 @@ public struct DATFileCache: Sendable, Codable, Equatable {
     /// time such logic changes, forces every existing cache entry to miss
     /// exactly once after an update like that, rather than silently
     /// serving stale results indefinitely.
-    private static let currentFormatVersion = 4
+    private static let currentFormatVersion = 5
+    // v5 (2026-09-10): `MAMEListXMLParser` now captures the root `<mame
+    // build="...">` attribute into `MAMEDataset.build`, and
+    // `DATLoader.datFile(from: MAMEDataset...)` threads it into
+    // `DATHeader.version` instead of hardcoding `""` — jensyleo's own
+    // report: "DAT: MAME" in the header never showed a version at all. A
+    // `DATFile` cached from before this fix decodes just fine (its
+    // `header.version` is simply the empty string it always was) and would
+    // otherwise keep silently showing no version forever, for any (DAT
+    // file, mode) combination already visited, until the DAT file itself
+    // happened to change — the exact same shape of bug `currentFormatVersion`
+    // itself exists to force a one-time miss for.
     // v4 (2026-08-04, same day): `MAMESetLayoutPlanner.mergedGame` now
     // records `DATGame.mergedFamilyMachineNames` (parent + every clone
     // folded into it), a new field a cached `DATFile` built before this

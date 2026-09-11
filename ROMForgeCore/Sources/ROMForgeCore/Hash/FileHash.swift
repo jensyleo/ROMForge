@@ -22,7 +22,14 @@ public struct FileHash: Equatable, Sendable, Codable {
     }
 }
 
-public enum HasherError: Error, Equatable, CustomStringConvertible {
+// jensyleo's own instruction (2026-09-10) to review the app's whole
+// logging for coherence — same systemic gap as `RebuildError`/`ScannerError`
+// (see their own doc comments): this type only conformed to
+// `CustomStringConvertible`, so any `error.localizedDescription` call
+// would silently fall back to Foundation's generic bridged text instead of
+// the specific `description` below. `errorDescription` fixes it at the
+// source.
+public enum HasherError: Error, Equatable, CustomStringConvertible, LocalizedError {
     case cannotOpenFile(URL)
 
     public var description: String {
@@ -31,4 +38,6 @@ public enum HasherError: Error, Equatable, CustomStringConvertible {
             return "Could not open \(url.path) for reading"
         }
     }
+
+    public var errorDescription: String? { description }
 }

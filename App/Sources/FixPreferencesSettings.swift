@@ -31,14 +31,6 @@ public enum FixPreferencesSettings {
     public static let testArchivesKey = "fixPreferences.testArchives"
     public static let testArchivesDefault = false
 
-    /// Renames a misnamed *archive* (loose file, not an entry inside one) to
-    /// match the DAT's declared name — **wired**: this is exactly what
-    /// `RebuildPlanner.planRepair` + the existing "Fix" toolbar button
-    /// already do; this toggle just lets that be turned off without
-    /// disabling the whole Fix action.
-    public static let renameFilesKey = "fixPreferences.renameFiles"
-    public static let renameFilesDefault = true
-
     /// Deletes every file the DAT recognizes nothing about at all —
     /// **wired**: `LibraryViewModel.removeUselessFiles(system:)` +
     /// `RebuildPlanner.planRemoveUselessFiles`. Always has its own separate
@@ -67,6 +59,11 @@ public enum FixPreferencesSettings {
     /// its codebase), so a plain path string persists like every other
     /// user-picked folder setting here.
     public static let corruptedFilesMoveToPathKey = "fixPreferences.corruptedFilesMoveToPath"
+    // jensyleo's own request (2026-09-10): "Restore to Defaults" for the
+    // Fix tab needs a real default to reset EVERY setting back to,
+    // including this one — an empty path (no folder chosen) is exactly
+    // what a fresh install already starts with.
+    public static let corruptedFilesMoveToPathDefault = ""
 
     /// Same underlying action as `removeUselessFilesKey` above — that
     /// toggle's own action already covers a zip-internal entry as well as
@@ -77,16 +74,6 @@ public enum FixPreferencesSettings {
     /// no plan to actually gate anything differently between the two.
     public static let removeUselessRomsKey = "fixPreferences.removeUselessRoms"
     public static let removeUselessRomsDefault = false
-
-    /// Renames a misnamed rom entry inside an otherwise-correctly-named zip
-    /// (remove the old name, add the same bytes back under the new one) —
-    /// **wired**: `LibraryViewModel.renameRomsInArchive(system:)` +
-    /// `RebuildPlanner.planRenameRomsInArchive`. Its own standalone toolbar
-    /// action ("Rename ROMs Inside Archives…") always confirms regardless
-    /// of this toggle, same relationship `removeUselessFilesKey` above has
-    /// with its own toolbar action.
-    public static let renameRomsKey = "fixPreferences.renameRoms"
-    public static let renameRomsDefault = false
 
     // MARK: - Shell only — not yet connected to any real action
 
@@ -131,11 +118,55 @@ public enum FixPreferencesSettings {
     public static let numberOfThreadsKey = "fixPreferences.numberOfThreads"
     public static let numberOfThreadsDefault = 4
 
+    /// One File-level case style, driving BOTH halves of one single "Fix"
+    /// pass — **wired** into `RebuildPlanner.planRepair`'s own
+    /// `filesCasePolicy` (a genuinely wrong name, fixed TO this style) AND
+    /// `RebuildPlanner.planApplySetsCasePolicy` (an already-correct name,
+    /// re-styled to it too), both run together by
+    /// `LibraryViewModel.fix(system:)` ("Fix Mismatched Files") in one
+    /// click. jensyleo's own decision (2026-09-10), after these two halves
+    /// briefly lived behind two separate toolbar actions sharing this one
+    /// setting: "o es una o es la otra" — unify into one action, since a
+    /// mismatch fix was never really optional to begin with (matching the
+    /// DAT is the whole point of the app); this setting only ever governs
+    /// HOW a name is styled, on either side of that unconditional pass.
+    /// `.dontTouch` means something slightly different for each half — for
+    /// the already-correct one it genuinely means "leave its case alone";
+    /// for a genuine mismatch there's always SOME real rename to make, so
+    /// `.dontTouch` there falls back to `.datafileCase` (the DAT's own
+    /// exact declared case) instead of leaving the wrong name in place —
+    /// see `RebuildPlanner.mismatchFixName`'s own doc comment.
     public static let setsCasePolicyKey = "fixPreferences.setsCasePolicy"
-    public static let setsCasePolicyDefault = FileCasePolicy.dontTouch
-    /// **Not yet connected** — needs the same central-directory rewrite
-    /// concern as `renameRomsKey` for the archive-level case, plus the
-    /// underlying case-transform rename operation.
+    // jensyleo's own decision (2026-09-10), after Fix started working for
+    // real: default to `.datafileCase` rather than `.dontTouch` — the
+    // DAT's own exact declared case is the least surprising default for a
+    // fresh install (it's what a mismatch fix already effectively falls
+    // back to per `mismatchFixName`'s own doc comment; making it the
+    // explicit default too means the already-correct re-styling half
+    // behaves the same way out of the box, instead of silently doing
+    // nothing until a user finds this setting).
+    public static let setsCasePolicyDefault = FileCasePolicy.datafileCase
+    /// The same unification, at the ROM-entry level — used by both
+    /// `RebuildPlanner.planRenameRomsInArchive` and
+    /// `RebuildPlanner.planApplyRomsCasePolicy`, both run together by
+    /// `LibraryViewModel.renameRomsInArchive(system:)` ("Fix Misnamed ROMs
+    /// Inside Their Archives…").
     public static let romsCasePolicyKey = "fixPreferences.romsCasePolicy"
-    public static let romsCasePolicyDefault = FileCasePolicy.dontTouch
+    // Same default change and reasoning as `setsCasePolicyDefault` above.
+    public static let romsCasePolicyDefault = FileCasePolicy.datafileCase
+
+    // MARK: - Reading the current value
+
+    /// The one-line `FileCasePolicy(rawValue: UserDefaults.standard
+    /// .string(forKey:) ?? "") ?? default` pattern, factored out here after
+    /// a code audit (2026-09-10) found it repeated identically at 6 call
+    /// sites across `LibraryViewModel`/`LibraryDetailView` — a pure
+    /// read-only refactor, no behavior change.
+    public static func currentSetsCasePolicy() -> FileCasePolicy {
+        FileCasePolicy(rawValue: UserDefaults.standard.string(forKey: setsCasePolicyKey) ?? "") ?? setsCasePolicyDefault
+    }
+    /// Same as `currentSetsCasePolicy()` above, for the ROM-entry-level key.
+    public static func currentRomsCasePolicy() -> FileCasePolicy {
+        FileCasePolicy(rawValue: UserDefaults.standard.string(forKey: romsCasePolicyKey) ?? "") ?? romsCasePolicyDefault
+    }
 }

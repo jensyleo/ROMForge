@@ -64,7 +64,7 @@ public enum MAMEListXMLParser {
             throw MAMEParsingError.missingRootElement
         }
         onProgress?(delegate.machines.count, delegate.machines.count)
-        return MAMEDataset(machines: delegate.machines)
+        return MAMEDataset(machines: delegate.machines, build: delegate.build)
     }
 
     public static func parse(contentsOf url: URL, onCountingStarted: (@Sendable () -> Void)? = nil, onCountingProgress: (@Sendable (Int, Int) -> Void)? = nil, onProgress: (@Sendable (Int, Int) -> Void)? = nil) throws -> MAMEDataset {
@@ -120,6 +120,9 @@ public enum MAMEListXMLParser {
 
 private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
     fileprivate var sawRoot = false
+    /// Captured from the root `<mame build="...">` attribute — see
+    /// `MAMEDataset.build`'s own doc comment for why this exists at all.
+    fileprivate var build: String?
     fileprivate var machines: [MAMEMachine] = []
     fileprivate var thrownError: MAMEParsingError?
     /// Set by `MAMEListXMLParser.parse` only when a caller asked for
@@ -169,6 +172,7 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
         switch elementName {
         case "mame":
             sawRoot = true
+            build = attributeDict["build"]
         case "machine":
             inMachine = true
             name = attributeDict["name"] ?? ""

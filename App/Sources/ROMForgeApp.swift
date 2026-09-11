@@ -50,6 +50,15 @@ struct ROMForgeApp: App {
     // same configured systems rather than a second, disconnected store.
     @State private var store = SystemLibraryStore()
 
+    // Applies whatever "Maximum subfolder depth" (Settings → General) was
+    // last persisted to `FolderScanner.maxSubfolderDepth` — a scan can run
+    // before Settings is ever opened this session, so the compiled-in
+    // default (1) would otherwise silently win over an earlier session's
+    // own configured value until the user happened to reopen that panel.
+    init() {
+        MaxSubfolderDepthSettings.applyPersistedValue()
+    }
+
     var body: some Scene {
         // SwiftUI already restores this window's size/position across
         // launches on its own, keyed off the *exact static type* of
@@ -78,6 +87,17 @@ struct ROMForgeApp: App {
         // keeps the window-frame-restoration key intact.
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
+            // jensyleo's own report (2026-09-10): ended up with two full
+            // copies of the main window open at once, both showing the
+            // same system/state (they share the same `store`) — SwiftUI's
+            // `WindowGroup` adds a "New Window" (⌘N) command by default,
+            // and nothing here ever removed it. ROMForge has exactly one
+            // meaningful main window per launch (there's no per-document
+            // concept a second window would even make sense for); this
+            // empty `CommandGroup(replacing: .newItem)` removes that menu
+            // item (and its ⌘N shortcut) entirely rather than leaving a
+            // way to open a second, confusingly-duplicate one.
+            CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .toolbar) {
                 Divider()
                 Button("Reset Column Sizes") {
@@ -94,12 +114,13 @@ struct ROMForgeApp: App {
                 AboutMenuButton()
             }
             CommandGroup(replacing: .help) {
+                // jensyleo's own request (2026-09-03): "lo de keyboard
+                // shorcuts metelo al help" — the shortcuts cheat sheet
+                // (database/ROM folder arrow-key navigation, type-ahead,
+                // ⌘-drag reorder) used to be its own separate window
+                // (⌘?); folded into Help as its own topic instead of a
+                // second window to open and remember.
                 HelpMenuButton()
-                // jensyleo's own request (2026-08-18): a quick-reference
-                // cheat sheet for the app's real shortcuts (database/ROM
-                // folder arrow-key navigation, type-ahead, ⌘-drag reorder)
-                // — ⌘? is the conventional key for this across macOS apps.
-                ShortcutsMenuButton()
             }
             // "Settings…" (⌘,), the conventional macOS place for
             // configuration that isn't part of the main content flow —
@@ -129,10 +150,6 @@ struct ROMForgeApp: App {
         Window("ROMForge Help", id: "help") {
             HelpView()
         }
-        Window("Keyboard Shortcuts", id: "shortcuts") {
-            KeyboardShortcutsView()
-        }
-        .windowResizability(.contentSize)
     }
 }
 
@@ -152,13 +169,5 @@ private struct HelpMenuButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("ROMForge Help") { openWindow(id: "help") }
-    }
-}
-
-private struct ShortcutsMenuButton: View {
-    @Environment(\.openWindow) private var openWindow
-    var body: some View {
-        Button("Keyboard Shortcuts") { openWindow(id: "shortcuts") }
-            .keyboardShortcut("?", modifiers: .command)
     }
 }

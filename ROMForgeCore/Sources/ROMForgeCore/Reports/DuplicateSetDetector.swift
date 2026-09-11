@@ -76,7 +76,7 @@ public enum DuplicateSetDetector {
                         status: .duplicateSet, game: duplicateEntry.game, gameDescription: duplicateEntry.gameDescription,
                         cloneOf: duplicateEntry.cloneOf, isBios: duplicateEntry.isBios,
                         duplicateSetPrimaryPath: primaryEntry.path,
-                        name: duplicateEntry.name, path: duplicateEntry.path
+                        name: duplicateEntry.name, actualEntryName: duplicateEntry.actualEntryName, path: duplicateEntry.path
                     )
                 )
             }

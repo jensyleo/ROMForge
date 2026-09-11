@@ -41,6 +41,179 @@ struct RebuildPlannerTests {
         #expect(plan == [.rename(from: folder.appendingPathComponent("wrong-name.bin"), to: folder.appendingPathComponent("expected.bin"))])
     }
 
+    @Test(
+        "planRepair styles the fixed File name per filesCasePolicy, always derived from the DAT's own declared name — never from the current, wrong one",
+        arguments: [
+            (FileCasePolicy.datafileCase, "Expected Name.bin"),
+            (.uppercase, "EXPECTED NAME.BIN"),
+            (.lowercase, "expected name.bin"),
+            (.capitalized, "Expected Name.bin"),
+            // .dontTouch has no meaning for fixing a mismatch — treated the
+            // same as .datafileCase rather than leaving the wrong name alone.
+            (.dontTouch, "Expected Name.bin"),
+        ]
+    )
+    func planRepairStylesFixedNamePerPolicy(policy: FileCasePolicy, expectedName: String) {
+        let folder = URL(fileURLWithPath: "/roms")
+        // The DAT itself declares Mixed Case — a policy other than
+        // .datafileCase must still ignore the WRONG on-disk name
+        // ("wrong-name.bin", itself already lowercase) and derive the
+        // result from the DAT's own name instead, not from what's there now.
+        let misnamedRom = DATRom(name: "Expected Name.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [misnamedRom])
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: game, matches: [
+                    RomMatch(rom: misnamedRom, status: .misnamed(hashedFile(name: "wrong-name.bin", in: folder))),
+                ]),
+            ],
+            surplusFiles: []
+        )
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport, filesCasePolicy: policy)
+
+        #expect(plan == [.rename(from: folder.appendingPathComponent("wrong-name.bin"), to: folder.appendingPathComponent(expectedName))])
+    }
+
+    @Test("planRepair never plans a rename for a rom whose content lives INSIDE a zip/7z entry — that's Fix Misnamed ROMs Inside Their Archives' job, not this File-level action's")
+    func planRepairSkipsEntryLevelMismatchesInsideArchives() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let misnamedRom = DATRom(name: "expected.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [misnamedRom])
+        // A zip ENTRY's own HashedFile reuses the archive's own `url` with a
+        // different `name` — see `CollectionHasher`'s construction. Named
+        // "Game.zip" (matching the DAT's own declared case exactly) so this
+        // fixture isolates ONLY the thing this test checks — a misnamed
+        // ENTRY never drives a container rename to that entry's own name —
+        // without also, coincidentally, being a real container-case
+        // mismatch that the newer own-archive-wrong-case rule (2026-09-10)
+        // would legitimately want to fix on its own terms.
+        let archiveURL = folder.appendingPathComponent("Game.zip")
+        let entryFile = HashedFile(
+            file: ScannedFile(url: archiveURL, name: "wrong-entry-name.bin", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: misnamedRom, status: .misnamed(entryFile))])],
+            surplusFiles: []
+        )
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan.isEmpty, "renaming the whole archive to look like one entry's own name would be exactly wrong")
+    }
+
+    @Test("planRepair renames an archive's OWN container when it genuinely is this game's own set but sits under the wrong-case filename — jensyleo's own real-world NEOGEO test (2026-09-10)")
+    func planRepairRenamesOwnArchiveWithWrongCaseContainer() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let rom = DATRom(name: "awbios.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "awbios", description: "Neo-Geo BIOS", cloneOf: nil, romOf: nil, roms: [rom])
+        // Every entry inside is individually correct by name AND hash (a
+        // prior "Roms case" pass already re-styled it) — only the
+        // CONTAINER's own filename still carries the wrong case.
+        let archiveURL = folder.appendingPathComponent("AWBIOS.zip")
+        let entryFile = HashedFile(
+            file: ScannedFile(url: archiveURL, name: "awbios.bin", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(entryFile))])],
+            surplusFiles: []
+        )
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan == [.rename(from: archiveURL, to: folder.appendingPathComponent("awbios.zip"))])
+    }
+
+    @Test("planRepair renames a wrong-case container even when its own entry is STILL misnamed too — hash identity alone proves it belongs to this game, no need to fix \"Roms case\" first — jensyleo's own real-world follow-up (2026-09-10)")
+    func planRepairRenamesWrongCaseContainerEvenWithAStillMisnamedEntry() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let rom = DATRom(name: "awbios.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "awbios", description: "Neo-Geo BIOS", cloneOf: nil, romOf: nil, roms: [rom])
+        // Both halves are still wrong at once, exactly as jensyleo found
+        // them on disk: the CONTAINER carries the wrong case ("AWBIOS.zip")
+        // AND the entry inside it is still under its OLD, wrong-case name
+        // ("AWBIOS.BIN") — no "Roms case" pass has run yet. The CRC32 hash
+        // is what identifies this entry as this exact game's own rom
+        // regardless of either name being wrong, so the container-rename
+        // rule must not require the entry to already be `.correct` first.
+        let archiveURL = folder.appendingPathComponent("AWBIOS.zip")
+        let entryFile = HashedFile(
+            file: ScannedFile(url: archiveURL, name: "AWBIOS.BIN", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .misnamed(entryFile))])],
+            surplusFiles: []
+        )
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan == [.rename(from: archiveURL, to: folder.appendingPathComponent("awbios.zip"))])
+    }
+
+    @Test("planRepair renames a whole misnamed archive to the game it clearly belongs to — jensyleo's own real-world test case (2026-09-11)")
+    func planRepairRenamesAWholeMisnamedArchive() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let misnamedArchiveURL = folder.appendingPathComponent("unknown123.zip")
+        // Every entry inside is individually named correctly for its own
+        // rom — this archive would never produce a single `.misnamed` rom
+        // match on its own; only the CONTAINER's own name is wrong.
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: misnamedArchiveURL, name: "sfiii.06", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            misnamedArchiveForGameName: "sfiii"
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusFile])
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan == [.rename(from: misnamedArchiveURL, to: folder.appendingPathComponent("sfiii.zip"))])
+    }
+
+    @Test("planRepair plans ONE rename per misnamed archive, however many surplus ROMs inside it carry the same flag")
+    func planRepairDeduplicatesAMisnamedArchiveAcrossItsOwnEntries() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let misnamedArchiveURL = folder.appendingPathComponent("unknown123.zip")
+        // `ROMMatcher.annotateMisnamedArchives` stamps
+        // `misnamedArchiveForGameName` onto EVERY surplus entry inside the
+        // archive — it has no archive-level row of its own to stamp. Five
+        // entries therefore arrive as five SurplusFiles all naming the SAME
+        // container. Renaming a File is one operation on one File: before
+        // the dedup, this planned five identical renames, of which the
+        // first succeeded and the other four failed `sourceMissing`.
+        let surplusFiles = ["sfiii.06", "sfiii.07", "sfiii.08", "sfiii.09", "sfiii.10"].map { entryName in
+            SurplusFile(
+                file: HashedFile(file: ScannedFile(url: misnamedArchiveURL, name: entryName, size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+                misnamedArchiveForGameName: "sfiii"
+            )
+        }
+        let matchReport = MatchReport(games: [], surplusFiles: surplusFiles)
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan == [.rename(from: misnamedArchiveURL, to: folder.appendingPathComponent("sfiii.zip"))])
+    }
+
+    @Test("planRepair styles a whole misnamed archive's new name per filesCasePolicy, same as any other File-level fix", arguments: [
+        (FileCasePolicy.uppercase, "SFIII.ZIP"),
+        (.lowercase, "sfiii.zip"),
+        (.capitalized, "Sfiii.zip"),
+    ])
+    func planRepairStylesAWholeMisnamedArchivePerPolicy(policy: FileCasePolicy, expectedName: String) {
+        let folder = URL(fileURLWithPath: "/roms")
+        let misnamedArchiveURL = folder.appendingPathComponent("unknown123.zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: misnamedArchiveURL, name: "sfiii.06", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            misnamedArchiveForGameName: "sfiii"
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusFile])
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport, filesCasePolicy: policy)
+
+        #expect(plan == [.rename(from: misnamedArchiveURL, to: folder.appendingPathComponent(expectedName))])
+    }
+
     @Test("plans a copy into <destination>/<game>/<rom name> for matched roms, skipping missing ones")
     func plansRebuildCopyIntoGameFolder() {
         let folder = URL(fileURLWithPath: "/roms")
@@ -118,7 +291,7 @@ struct RebuildPlannerTests {
         let plan = RebuildPlanner.planRebuildAsZip(matchReport: matchReport, destination: destination)
 
         #expect(plan == [
-            .createArchive(
+            .createTorrentZipArchive(
                 entries: [
                     ArchiveEntrySource(source: folder.appendingPathComponent("correct.bin"), entryName: "correct.bin"),
                     ArchiveEntrySource(source: folder.appendingPathComponent("wrong-name.bin"), entryName: "expected.bin"),

@@ -153,11 +153,22 @@ public struct MAMEMachine: Equatable, Sendable {
 /// load hanging forever, rather than just being slow.
 public struct MAMEDataset: Sendable {
     public let machines: [MAMEMachine]
+    /// The root `<mame build="0.276 (...)">` attribute — MAME's own
+    /// version string for this `-listxml` dump. Was never captured at all
+    /// before jensyleo's own report (2026-09-10): "DAT: MAME" in the
+    /// header never showed a version for a MAME system, always blank,
+    /// because `DATLoader.datFile(from: MAMEDataset...)` hardcoded
+    /// `DATHeader(..., version: "")` — nothing upstream ever read this
+    /// attribute in the first place. `nil` for a dump from an older MAME
+    /// build that omits `build` entirely (rare, but not worth failing
+    /// over).
+    public let build: String?
     private let machinesByName: [String: MAMEMachine]
     private let clonesByParent: [String: [MAMEMachine]]
 
-    public init(machines: [MAMEMachine]) {
+    public init(machines: [MAMEMachine], build: String? = nil) {
         self.machines = machines
+        self.build = build
         self.machinesByName = Dictionary(machines.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         self.clonesByParent = Dictionary(grouping: machines.filter { $0.cloneOf != nil }, by: { $0.cloneOf! })
     }
