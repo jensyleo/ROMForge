@@ -167,7 +167,67 @@ public final class AuditReportDatabase {
     // revert to blank on the next app relaunch. New `actual_entry_name`
     // column; only a fresh rescan recomputes it, so the wipe below applies
     // here too.
-    private static let currentSchemaVersion: Int32 = 23
+    // v24 (2026-09-11): new `AuditEntry.hasContainerCaseMismatch` —
+    // `AuditReporter`'s own flag for a `.correct` archived entry whose
+    // container filename differs from the DAT's expected archive name in
+    // CASE only (jensyleo's own report the same day). Same unpersisted-new-
+    // field class as v18-v23 above: left unpersisted, a fresh scan would
+    // show the real "Bad file name" game-level status but it would silently
+    // revert to plain "Ok" on the next app relaunch or system re-select.
+    // New `has_container_case_mismatch` column; only a fresh rescan
+    // recomputes it, so the wipe below applies here too.
+    // v25 (2026-09-14): new `AuditEntry.hasMaintenanceDonor` —
+    // `MaintenanceDonorDetector`'s own flag (a `.missing` rom whose exact
+    // content is already staged in this system's own Maintenance folder).
+    // Same unpersisted-new-field class as v18-v24 above: jensyleo's own
+    // live report — the Roms panel correctly showed the yellow "donor
+    // available" icon right after a fresh scan, but it silently reverted
+    // to plain red on the very next app relaunch (or any time the report
+    // was loaded from this cache instead of freshly re-scanned), reading
+    // as if the whole feature simply didn't work. New
+    // `has_maintenance_donor` column; only a fresh rescan recomputes it,
+    // so the wipe below applies here too.
+    // v26 (2026-09-17): new `AuditEntry.requiredByGameMachineName` — the
+    // real DAT machine name behind `requiredByGameDescription` (a
+    // human-readable description, e.g. "Naomi Bios", never usable as a
+    // lookup key). jensyleo's own report: a stray file recognized as
+    // belonging to another game (e.g. `CPS2/naomi.zip`'s own extra rom,
+    // genuinely belonging to machine "naomi") never got a "Repair from
+    // Maintenance Folder" donor search at all, because
+    // `MaintenanceDonorDetector`/`RebuildPlanner` key their lookups by the
+    // DAT's own machine name, which no entry without a real `game` owner
+    // ever carried anywhere before this field existed. Same
+    // unpersisted-new-field class as v18-v25 above: left unpersisted, a
+    // fresh scan would resolve donors correctly but silently lose that
+    // ability on the next app relaunch. New `required_by_game_machine_name`
+    // column; only a fresh rescan recomputes it, so the wipe below applies
+    // here too.
+    // v27 (2026-09-19): new `AuditEntry.requiredByGameConfirmedRedundant` —
+    // jensyleo's own real incident: `requiredByGameDescription` (and the
+    // "Remove Redundant Files/ROMs" actions built on it) always meant "the
+    // DAT declares this content belongs to game X", NEVER "X already has a
+    // good copy elsewhere" — a stray `naomi.zip` full of NAOMI BIOS content
+    // got deleted as "safe" while NAOMI BIOS's own real archive had ALSO
+    // just been removed, so it was genuinely the only real copy left. See
+    // `SurplusFile.requiredByGameConfirmedRedundant`'s own doc comment for
+    // the full incident and the fix. New `required_by_game_confirmed_redundant`
+    // column; only a fresh rescan recomputes it, so the wipe below applies
+    // here too.
+    // v28 (2026-09-19, same day, second round): new
+    // `AuditEntry.requiredByGameOwnerSatisfiedElsewhere` — a real, distinct
+    // signal from `requiredByGameConfirmedRedundant`. That field alone
+    // turned out to still be unsafe for "Remove Redundant Files/ROMs": it
+    // also goes `true` for "duplicate among unclaimed surplus files"
+    // (`duplicateAmongSurplusIndices`), which is only genuinely safe for a
+    // whole, directly-usable unit (an entire duplicated archive/CHD), never
+    // a loose fragment whose owner still has NO real copy anywhere — a
+    // loose `epr-21576g.ic27` duplicated via a Finder-style "epr-21576g
+    // 2.ic27" copy while "NAOMI BIOS" had no real archive read as "Duplicated
+    // archive, not needed here", which is false. See
+    // `SurplusFile.requiredByGameOwnerSatisfiedElsewhere`'s own doc comment.
+    // New `required_by_game_owner_satisfied_elsewhere` column; only a fresh
+    // rescan recomputes it, so the wipe below applies here too.
+    private static let currentSchemaVersion: Int32 = 28
 
     private let path: String
 
@@ -180,13 +240,12 @@ public final class AuditReportDatabase {
 
     // MARK: - Public API
 
-    public func saveReport(_ report: AuditReport, systemID: String, datName: String?, datVersion: String?, scannedAt: Date) throws {
+    public func saveReport(_ report: AuditReport, systemID: String, datName: String?, datVersion: String?, scannedAt: Date, onProgress: (@Sendable (Int, Int) -> Void)? = nil) throws {
         let db = try Self.open(path)
         defer { sqlite3_close(db) }
 
         try Self.exec(db, "BEGIN TRANSACTION;")
         do {
-            try Self.bindAndExec(db, "DELETE FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
             try Self.bindAndExec(db, "DELETE FROM scans WHERE system_id = ?;", [.text(systemID)])
             try Self.bindAndExec(
                 db,
@@ -196,54 +255,191 @@ public final class AuditReportDatabase {
                 """,
                 [.text(systemID), .textOrNull(datName), .textOrNull(datVersion), .text(ISO8601DateFormatter().string(from: scannedAt))]
             )
-            // One statement prepared and reused (bind → step → reset) for
-            // every entry, instead of a fresh `sqlite3_prepare_v2` per row —
-            // a real scan's `audit_entries` can run to tens of thousands of
-            // rows, and re-parsing/re-compiling the same SQL that many
-            // times inside one transaction was pure waste.
-            let rowValues: [[BindValue]] = report.entries.map { entry in
-                [
-                    .text(systemID), .text(entry.status.rawValue), .textOrNull(entry.game), .textOrNull(entry.gameDescription), .textOrNull(entry.cloneOf),
-                    .int(entry.isBios ? 1 : 0), .int(entry.hasCHD ? 1 : 0), .int(entry.hasSamples ? 1 : 0), .int(entry.isBadDump ? 1 : 0),
-                    .int(entry.isOptional ? 1 : 0),
-                    .textOrNull(entry.romDumpStatus?.rawValue), .textOrNull(entry.mergeName), .textOrNull(entry.chdNames),
-                    .textOrNull(entry.gameYear), .textOrNull(entry.gameManufacturer), .textOrNull(entry.requiredBiosNames), .textOrNull(entry.deviceRefNames),
-                    .int(entry.isDisk ? 1 : 0), .textOrNull(entry.foundElsewhereArchiveName), .textOrNull(entry.requiredByGameDescription),
-                    .textOrNull(entry.duplicateSetPrimaryPath?.path), .int(entry.isOrphanedBios ? 1 : 0),
-                    .int(entry.hasFilenameCRCMismatch ? 1 : 0), .int(entry.hasInternalZipCRCMismatch ? 1 : 0),
-                    .text(entry.name), .textOrNull(entry.path?.path),
-                    .int64OrNull(entry.expectedSize), .int64OrNull(entry.actualSize),
-                    .textOrNull(entry.expectedCRC), .textOrNull(entry.expectedMD5), .textOrNull(entry.expectedSHA1),
-                    .textOrNull(entry.actualCRC), .textOrNull(entry.actualMD5), .textOrNull(entry.actualSHA1),
-                    .textOrNull(entry.cpuChipNames), .textOrNull(entry.audioChipNames),
-                    .textOrNull(entry.driverStatus), .textOrNull(entry.displayType), .textOrNull(entry.displayRotate),
-                    .textOrNull(entry.players), .textOrNull(entry.coins),
-                    .int(entry.isDevice ? 1 : 0),
-                    .textOrNull(entry.actualEntryName),
-                ]
-            }
-            try Self.bindAndExecMany(
-                db,
-                """
-                INSERT INTO audit_entries (
-                    system_id, status, game, game_description, clone_of, is_bios, has_chd, has_samples, is_bad_dump,
-                    is_optional,
-                    rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
-                    is_disk, found_elsewhere_archive_name, required_by_game_description, duplicate_primary_path, is_orphaned_bios,
-                    has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
-                    name, path, expected_size, actual_size,
-                    expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
-                    cpu_chip_names, audio_chip_names,
-                    driver_status, display_type, display_rotate, players, coins,
-                    is_device, actual_entry_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                rowValues
-            )
+            try Self.saveEntriesDiffed(db, path: path, entries: report.entries, systemID: systemID, onProgress: onProgress)
             try Self.exec(db, "COMMIT;")
         } catch {
             try? Self.exec(db, "ROLLBACK;")
             throw error
+        }
+    }
+
+    /// The exact `audit_entries` write column order — shared by the INSERT
+    /// and UPDATE paths in `saveEntriesDiffed` so both stay in lockstep with
+    /// `rowValues(for:systemID:)`'s own order; a positional mismatch here
+    /// caused a real `NOT NULL constraint failed` bug once already (see the
+    /// v26 migration's own history), so this is the single place that order
+    /// is written down.
+    private static let auditEntryWriteColumns = [
+        "system_id", "status", "game", "game_description", "clone_of", "is_bios", "has_chd", "has_samples", "is_bad_dump",
+        "is_optional",
+        "rom_dump_status", "merge_name", "chd_names", "game_year", "game_manufacturer", "required_bios_names", "device_ref_names",
+        "is_disk", "found_elsewhere_archive_name", "required_by_game_description", "duplicate_primary_path", "is_orphaned_bios",
+        "has_filename_crc_mismatch", "has_internal_zip_crc_mismatch",
+        "name", "path", "expected_size", "actual_size",
+        "expected_crc", "expected_md5", "expected_sha1", "actual_crc", "actual_md5", "actual_sha1",
+        "cpu_chip_names", "audio_chip_names",
+        "driver_status", "display_type", "display_rotate", "players", "coins",
+        "is_device", "actual_entry_name", "has_container_case_mismatch", "has_maintenance_donor",
+        "required_by_game_machine_name", "required_by_game_confirmed_redundant",
+        "required_by_game_owner_satisfied_elsewhere",
+    ]
+
+    private static func rowValues(for entry: AuditEntry, systemID: String) -> [BindValue] {
+        [
+            .text(systemID), .text(entry.status.rawValue), .textOrNull(entry.game), .textOrNull(entry.gameDescription), .textOrNull(entry.cloneOf),
+            .int(entry.isBios ? 1 : 0), .int(entry.hasCHD ? 1 : 0), .int(entry.hasSamples ? 1 : 0), .int(entry.isBadDump ? 1 : 0),
+            .int(entry.isOptional ? 1 : 0),
+            .textOrNull(entry.romDumpStatus?.rawValue), .textOrNull(entry.mergeName), .textOrNull(entry.chdNames),
+            .textOrNull(entry.gameYear), .textOrNull(entry.gameManufacturer), .textOrNull(entry.requiredBiosNames), .textOrNull(entry.deviceRefNames),
+            .int(entry.isDisk ? 1 : 0), .textOrNull(entry.foundElsewhereArchiveName), .textOrNull(entry.requiredByGameDescription),
+            .textOrNull(entry.duplicateSetPrimaryPath?.path), .int(entry.isOrphanedBios ? 1 : 0),
+            .int(entry.hasFilenameCRCMismatch ? 1 : 0), .int(entry.hasInternalZipCRCMismatch ? 1 : 0),
+            .text(entry.name), .textOrNull(entry.path?.path),
+            .int64OrNull(entry.expectedSize), .int64OrNull(entry.actualSize),
+            .textOrNull(entry.expectedCRC), .textOrNull(entry.expectedMD5), .textOrNull(entry.expectedSHA1),
+            .textOrNull(entry.actualCRC), .textOrNull(entry.actualMD5), .textOrNull(entry.actualSHA1),
+            .textOrNull(entry.cpuChipNames), .textOrNull(entry.audioChipNames),
+            .textOrNull(entry.driverStatus), .textOrNull(entry.displayType), .textOrNull(entry.displayRotate),
+            .textOrNull(entry.players), .textOrNull(entry.coins),
+            .int(entry.isDevice ? 1 : 0),
+            .textOrNull(entry.actualEntryName),
+            .int(entry.hasContainerCaseMismatch ? 1 : 0),
+            .int(entry.hasMaintenanceDonor ? 1 : 0),
+            .textOrNull(entry.requiredByGameMachineName),
+            .int(entry.requiredByGameConfirmedRedundant ? 1 : 0),
+            .int(entry.requiredByGameOwnerSatisfiedElsewhere ? 1 : 0),
+        ]
+    }
+
+    /// A stable identity for an entry across two scans of the SAME system —
+    /// not its current VALUES (those are exactly what a diff needs to be
+    /// free to compare/change), but "which real thing is this row about."
+    /// A DAT-declared rom/disk is identified by its game + its own declared
+    /// name, regardless of where it currently lives on disk (or whether it
+    /// was found at all) — the same rom found this time under a different
+    /// path than last time (e.g. just repaired from Maintenance) is still
+    /// correctly treated as the SAME row to update, not a delete+insert
+    /// pair, as long as its game/name didn't change. A game-less surplus
+    /// entry has no DAT identity to key by, so its own on-disk path stands
+    /// in for one instead — a surplus row only ever exists for a file
+    /// genuinely found on disk (see `SurplusFile`'s own doc comment), so
+    /// path is always present there.
+    private static func entryIdentityKey(_ entry: AuditEntry) -> String {
+        if let game = entry.game {
+            return "g\u{0}\(game)\u{0}\(entry.name)"
+        }
+        return "p\u{0}\(entry.path?.path ?? entry.name)"
+    }
+
+    /// Writes `entries` for `systemID` as only the additions, removals and
+    /// value changes relative to what's already persisted — jensyleo's own
+    /// proposal (2026-09-18): a full "Scan All Folders" on a real ~300K-row
+    /// collection used to unconditionally `DELETE`+re-`INSERT` every row,
+    /// even though a rescan of an already-stable collection typically
+    /// changes few or none of them. Diffing against the rows already on
+    /// disk turns that into "write only what's actually different," which
+    /// is the common case in practice. Must be called inside the same
+    /// transaction/connection `saveReport` already holds — this only reads
+    /// and writes `audit_entries`, never touches `scans`.
+    private static func saveEntriesDiffed(_ db: OpaquePointer?, path: String, entries: [AuditEntry], systemID: String, onProgress: (@Sendable (Int, Int) -> Void)? = nil) throws {
+        // jensyleo's own report (2026-09-19), a real ~50,368-game
+        // collection: the diff's own up-front read used to run as one
+        // single-connection sequential loop, decoding every existing row
+        // to a full `AuditEntry` one at a time — for a large system this
+        // is exactly the same real, measured CPU cost `loadEntries` was
+        // parallelized for (2026-09-17, ~6.5s single-threaded on 323,568
+        // rows), just paid again here on every save instead of only on
+        // load. Reusing that same rowid-range-partitioned parallel
+        // strategy (see `loadEntries`'s own doc comment) turns this into
+        // the same multi-core win, rather than a second, unoptimized copy
+        // of the identical bottleneck.
+        let existingRows = try Self.loadEntriesWithRowIDs(path: path, db: db, systemID: systemID, estimatedCount: entries.count)
+        var existingByKey: [String: (rowid: Int64, entry: AuditEntry)] = [:]
+        existingByKey.reserveCapacity(existingRows.count)
+        for row in existingRows {
+            existingByKey[Self.entryIdentityKey(row.entry)] = row
+        }
+
+        var seenKeys: Set<String> = []
+        seenKeys.reserveCapacity(entries.count)
+        var toInsert: [AuditEntry] = []
+        var toUpdate: [(rowid: Int64, entry: AuditEntry)] = []
+        for entry in entries {
+            let key = Self.entryIdentityKey(entry)
+            seenKeys.insert(key)
+            if let existing = existingByKey[key] {
+                if existing.entry != entry {
+                    toUpdate.append((existing.rowid, entry))
+                }
+            } else {
+                toInsert.append(entry)
+            }
+        }
+        let toDeleteRowIDs = existingByKey.compactMap { key, existing in seenKeys.contains(key) ? nil : existing.rowid }
+
+        // jensyleo's own report (2026-09-19): "Saving results…" showed a
+        // bare, generic spinner with no numbers at all — this app's own
+        // convention everywhere else is a real, determinate bar, so this
+        // reports the same way: total work is every row this diff will
+        // actually touch (delete + update + insert), throttled through the
+        // same `ScanProgressCounter` every other phase already uses.
+        let totalWork = toDeleteRowIDs.count + toUpdate.count + toInsert.count
+        let progressCounter = onProgress.map { callback in
+            ScanProgressCounter(total: max(totalWork, 1)) { progress in callback(progress.completed, progress.total) }
+        }
+        func reportProgress(_ count: Int) {
+            guard let progressCounter else { return }
+            for _ in 0..<count { progressCounter.increment() }
+        }
+
+        // Chunked, not one giant `IN (...)` — SQLite's default
+        // `SQLITE_MAX_VARIABLE_NUMBER` caps how many bound parameters a
+        // single statement can take (32766 on modern SQLite, but this
+        // stays conservative rather than depending on that ceiling).
+        let deleteChunkSize = 500
+        var deleteIndex = 0
+        while deleteIndex < toDeleteRowIDs.count {
+            let chunk = toDeleteRowIDs[deleteIndex..<min(deleteIndex + deleteChunkSize, toDeleteRowIDs.count)]
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
+            try Self.bindAndExec(db, "DELETE FROM audit_entries WHERE system_id = ? AND rowid IN (\(placeholders));", [.text(systemID)] + chunk.map { .int64($0) })
+            reportProgress(chunk.count)
+            deleteIndex += deleteChunkSize
+        }
+
+        if !toUpdate.isEmpty {
+            let setClause = auditEntryWriteColumns.dropFirst().map { "\($0) = ?" }.joined(separator: ", ")
+            var updateStatement: OpaquePointer?
+            try Self.prepare(db, &updateStatement, "UPDATE audit_entries SET \(setClause) WHERE rowid = ?;", [])
+            defer { sqlite3_finalize(updateStatement) }
+            for (rowid, entry) in toUpdate {
+                sqlite3_reset(updateStatement)
+                sqlite3_clear_bindings(updateStatement)
+                let values = Array(rowValues(for: entry, systemID: systemID).dropFirst()) + [.int64(rowid)]
+                Self.bindValues(updateStatement, values)
+                guard sqlite3_step(updateStatement) == SQLITE_DONE else {
+                    throw AuditReportDatabaseError.sqlError("Couldn't update audit_entries row \(rowid): \(String(cString: sqlite3_errmsg(db)))")
+                }
+                reportProgress(1)
+            }
+        }
+
+        if !toInsert.isEmpty {
+            var insertStatement: OpaquePointer?
+            try Self.prepare(
+                db, &insertStatement,
+                "INSERT INTO audit_entries (\(auditEntryWriteColumns.joined(separator: ", "))) VALUES (\(Array(repeating: "?", count: auditEntryWriteColumns.count).joined(separator: ", ")));",
+                []
+            )
+            defer { sqlite3_finalize(insertStatement) }
+            for entry in toInsert {
+                Self.bindValues(insertStatement, rowValues(for: entry, systemID: systemID))
+                guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+                    throw AuditReportDatabaseError.sqlError("Couldn't insert an audit_entries row: \(String(cString: sqlite3_errmsg(db)))")
+                }
+                sqlite3_reset(insertStatement)
+                sqlite3_clear_bindings(insertStatement)
+                reportProgress(1)
+            }
         }
     }
 
@@ -258,75 +454,19 @@ public final class AuditReportDatabase {
             return nil
         }
 
-        var statement: OpaquePointer?
-        defer { sqlite3_finalize(statement) }
-        try Self.prepare(
-            db, &statement,
-            """
-            SELECT status, game, game_description, clone_of, is_bios, has_chd, has_samples, is_bad_dump,
-                   rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
-                   is_disk, found_elsewhere_archive_name, required_by_game_description,
-                   name, path, expected_size, actual_size,
-                   expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
-                   is_optional, duplicate_primary_path, is_orphaned_bios,
-                   has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
-                   cpu_chip_names, audio_chip_names,
-                   driver_status, display_type, display_rotate, players, coins,
-                   is_device, actual_entry_name
-            FROM audit_entries WHERE system_id = ?;
-            """,
-            [.text(systemID)]
-        )
+        // A large real collection (jensyleo's own MAME system, 2026-09-17:
+        // 323,568 entries) grows the plain `Array` this loop appends to
+        // through its usual doubling reallocations — each one copying
+        // every element built so far. Reserving up front from a cheap,
+        // index-covered `COUNT(*)` (same `idx_audit_entries_system` index
+        // the main query below already uses) turns that into a single
+        // allocation.
+        var countStatement: OpaquePointer?
+        try Self.prepare(db, &countStatement, "SELECT COUNT(*) FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
+        let estimatedCount = sqlite3_step(countStatement) == SQLITE_ROW ? Int(sqlite3_column_int64(countStatement, 0)) : 0
+        sqlite3_finalize(countStatement)
 
-        var entries: [AuditEntry] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            entries.append(
-                AuditEntry(
-                    status: AuditStatus(rawValue: Self.columnText(statement, 0) ?? "") ?? .surplus,
-                    game: Self.columnText(statement, 1),
-                    gameDescription: Self.columnText(statement, 2),
-                    cloneOf: Self.columnText(statement, 3),
-                    isBios: sqlite3_column_int(statement, 4) != 0,
-                    isDevice: sqlite3_column_int(statement, 40) != 0,
-                    hasCHD: sqlite3_column_int(statement, 5) != 0,
-                    hasSamples: sqlite3_column_int(statement, 6) != 0,
-                    isBadDump: sqlite3_column_int(statement, 7) != 0,
-                    isOptional: sqlite3_column_int(statement, 28) != 0,
-                    romDumpStatus: Self.columnText(statement, 8).flatMap(RomDumpStatus.init(rawValue:)),
-                    mergeName: Self.columnText(statement, 9),
-                    chdNames: Self.columnText(statement, 10),
-                    gameYear: Self.columnText(statement, 11),
-                    gameManufacturer: Self.columnText(statement, 12),
-                    requiredBiosNames: Self.columnText(statement, 13),
-                    deviceRefNames: Self.columnText(statement, 14),
-                    cpuChipNames: Self.columnText(statement, 33),
-                    audioChipNames: Self.columnText(statement, 34),
-                    driverStatus: Self.columnText(statement, 35),
-                    displayType: Self.columnText(statement, 36),
-                    displayRotate: Self.columnText(statement, 37),
-                    players: Self.columnText(statement, 38),
-                    coins: Self.columnText(statement, 39),
-                    isDisk: sqlite3_column_int(statement, 15) != 0,
-                    foundElsewhereArchiveName: Self.columnText(statement, 16),
-                    requiredByGameDescription: Self.columnText(statement, 17),
-                    duplicateSetPrimaryPath: Self.columnText(statement, 29).map(URL.init(fileURLWithPath:)),
-                    isOrphanedBios: sqlite3_column_int(statement, 30) != 0,
-                    hasFilenameCRCMismatch: sqlite3_column_int(statement, 31) != 0,
-                    hasInternalZipCRCMismatch: sqlite3_column_int(statement, 32) != 0,
-                    name: Self.columnText(statement, 18) ?? "",
-                    actualEntryName: Self.columnText(statement, 41),
-                    path: Self.columnText(statement, 19).map(URL.init(fileURLWithPath:)),
-                    expectedSize: Self.columnInt64(statement, 20),
-                    actualSize: Self.columnInt64(statement, 21),
-                    expectedCRC: Self.columnText(statement, 22),
-                    expectedMD5: Self.columnText(statement, 23),
-                    expectedSHA1: Self.columnText(statement, 24),
-                    actualCRC: Self.columnText(statement, 25),
-                    actualMD5: Self.columnText(statement, 26),
-                    actualSHA1: Self.columnText(statement, 27)
-                )
-            )
-        }
+        let entries = try Self.loadEntries(path: path, db: db, systemID: systemID, estimatedCount: estimatedCount)
 
         // One pass instead of 5 separate `filter{}.count` scans over up to
         // ~188k entries — same "count in one pass" pattern already used by
@@ -359,6 +499,296 @@ public final class AuditReportDatabase {
         return AuditReport(
             entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable,
             duplicateSets: duplicateSets
+        )
+    }
+
+    /// The full column list every `loadReport` row-fetch selects, in the
+    /// exact order `decodeEntry(_:)`'s column indices below assume —
+    /// shared by both the plain single-connection path and the
+    /// multi-connection parallel path so the two can never drift apart.
+    private static let entrySelectColumns = """
+        status, game, game_description, clone_of, is_bios, has_chd, has_samples, is_bad_dump,
+        rom_dump_status, merge_name, chd_names, game_year, game_manufacturer, required_bios_names, device_ref_names,
+        is_disk, found_elsewhere_archive_name, required_by_game_description,
+        name, path, expected_size, actual_size,
+        expected_crc, expected_md5, expected_sha1, actual_crc, actual_md5, actual_sha1,
+        is_optional, duplicate_primary_path, is_orphaned_bios,
+        has_filename_crc_mismatch, has_internal_zip_crc_mismatch,
+        cpu_chip_names, audio_chip_names,
+        driver_status, display_type, display_rotate, players, coins,
+        is_device, actual_entry_name, has_container_case_mismatch, has_maintenance_donor,
+        required_by_game_machine_name, required_by_game_confirmed_redundant,
+        required_by_game_owner_satisfied_elsewhere
+        """
+
+    /// Reads every `audit_entries` row for `systemID`, splitting the read
+    /// itself across several worker threads (each its own SQLite
+    /// connection) once the report is large enough to make that worth it —
+    /// jensyleo's own real collection (2026-09-17): 323,568 entries took
+    /// 6.5s to decode into `AuditEntry` on a single connection/thread, an
+    /// almost entirely CPU-bound cost (per-row `String`/`URL` construction
+    /// across 44 columns), not disk I/O — `mmap_size`/`cache_size` tuning
+    /// in `open(_:)` barely moved it. Below the threshold, the plain
+    /// single-connection loop is kept exactly as it always was — no
+    /// concurrency overhead for the common case of a small/medium system.
+    private static func loadEntries(path: String, db: OpaquePointer?, systemID: String, estimatedCount: Int) throws -> [AuditEntry] {
+        // SQLite read connections don't contend with each other (or with
+        // this same read), so splitting is purely a win once there's
+        // enough work per worker to be worth a second connection's own
+        // open/prepare overhead.
+        let parallelThreshold = 20_000
+        guard estimatedCount >= parallelThreshold else {
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try Self.prepare(db, &statement, "SELECT \(entrySelectColumns), rowid FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
+            var entries: [AuditEntry] = []
+            entries.reserveCapacity(estimatedCount)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                entries.append(Self.decodeEntry(statement))
+            }
+            return entries
+        }
+
+        // Partitioned by ROWID VALUE (a cheap indexed MIN/MAX, not a row
+        // count) rather than `LIMIT`/`OFFSET` — an `OFFSET` large enough to
+        // skip most of a ~300k-row table still has to walk every skipped
+        // row internally, making each later chunk pay for all the earlier
+        // ones too. A rowid range only touches the rows a chunk actually
+        // owns. This assumes one system's rows are reasonably contiguous
+        // in rowid order, true for how `saveReport` writes them (one
+        // system's full replace happens as a single batch) — an uneven
+        // split here still only costs a slower load, never a wrong one.
+        var rangeStatement: OpaquePointer?
+        try Self.prepare(db, &rangeStatement, "SELECT MIN(rowid), MAX(rowid) FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
+        guard sqlite3_step(rangeStatement) == SQLITE_ROW, sqlite3_column_type(rangeStatement, 0) != SQLITE_NULL else {
+            sqlite3_finalize(rangeStatement)
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try Self.prepare(db, &statement, "SELECT \(entrySelectColumns), rowid FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
+            var entries: [AuditEntry] = []
+            entries.reserveCapacity(estimatedCount)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                entries.append(Self.decodeEntry(statement))
+            }
+            return entries
+        }
+        let minRowID = sqlite3_column_int64(rangeStatement, 0)
+        let maxRowID = sqlite3_column_int64(rangeStatement, 1)
+        sqlite3_finalize(rangeStatement)
+
+        let workerCount = HashingConcurrency.workerCount(for: estimatedCount)
+        guard workerCount > 1, maxRowID > minRowID else {
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try Self.prepare(db, &statement, "SELECT \(entrySelectColumns), rowid FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
+            var entries: [AuditEntry] = []
+            entries.reserveCapacity(estimatedCount)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                entries.append(Self.decodeEntry(statement))
+            }
+            return entries
+        }
+
+        let span = maxRowID - minRowID + 1
+        let chunkSpan = max(1, (span + Int64(workerCount) - 1) / Int64(workerCount))
+        var mutableChunks: [(low: Int64, high: Int64)] = []
+        var cursor = minRowID
+        while cursor <= maxRowID {
+            let high = min(cursor + chunkSpan - 1, maxRowID)
+            mutableChunks.append((cursor, high))
+            cursor = high + 1
+        }
+        let chunks = mutableChunks
+
+        // A worker's own connection can fail to open/prepare (too many
+        // open files under heavy parallel load, a transient disk hiccup,
+        // etc.) — jensyleo's own proactive code review (2026-09-17) of
+        // this session's own parallel-load fix flagged that the original
+        // `guard ... else { return }` on each of those silently left that
+        // chunk's slot at its initial `[]` with no way for `loadReport`'s
+        // caller to ever know part of the collection just vanished from
+        // the loaded report. `failure` (a lock-protected box, since —
+        // unlike `results` below — every worker could write to this SAME
+        // slot, unlike their own disjoint `results` index) records the
+        // first such failure so this function can throw instead of
+        // quietly returning an incomplete report.
+        let failure = AuditReportDatabaseFailureBox()
+        var results = [[AuditEntry]](repeating: [], count: chunks.count)
+        results.withUnsafeMutableBufferPointer { buffer in
+            let box = AuditReportDatabaseUncheckedSendableBox(buffer)
+            DispatchQueue.concurrentPerform(iterations: chunks.count) { chunkIndex in
+                let chunk = chunks[chunkIndex]
+                // Each worker opens its own connection — a single SQLite
+                // connection/statement can't be driven from multiple
+                // threads at once, and this is purely reading, so there's
+                // no write contention to worry about.
+                guard let workerDB = try? Self.open(path) else {
+                    failure.record("couldn't open a worker connection for rowid range \(chunk.low)...\(chunk.high)")
+                    return
+                }
+                defer { sqlite3_close(workerDB) }
+                var statement: OpaquePointer?
+                defer { sqlite3_finalize(statement) }
+                guard (try? Self.prepare(
+                    workerDB, &statement,
+                    "SELECT \(entrySelectColumns), rowid FROM audit_entries WHERE system_id = ? AND rowid BETWEEN ? AND ?;",
+                    [.text(systemID), .int64(chunk.low), .int64(chunk.high)]
+                )) != nil else {
+                    failure.record("couldn't prepare the worker statement for rowid range \(chunk.low)...\(chunk.high)")
+                    return
+                }
+                var chunkEntries: [AuditEntry] = []
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    chunkEntries.append(Self.decodeEntry(statement))
+                }
+                box.value[chunkIndex] = chunkEntries
+            }
+        }
+        if let message = failure.message {
+            throw AuditReportDatabaseError.sqlError("Parallel report load failed partway through — \(message). Aborted rather than returning an incomplete report.")
+        }
+        return results.flatMap { $0 }
+    }
+
+    /// The `(rowid, AuditEntry)` counterpart to `loadEntries` above, for
+    /// `saveEntriesDiffed`'s own up-front read of what's already
+    /// persisted — same rowid-range-partitioned parallel strategy above
+    /// that threshold, same plain single-connection loop below it; kept as
+    /// its own function rather than a shared core with `loadEntries`
+    /// because the two return genuinely different shapes (this one needs
+    /// each row's rowid to target its later `UPDATE`/`DELETE`, `loadEntries`
+    /// never does) and duplicating this one loop is far cheaper to keep
+    /// correct than threading an extra generic return type through both.
+    private static func loadEntriesWithRowIDs(path: String, db: OpaquePointer?, systemID: String, estimatedCount: Int) throws -> [(rowid: Int64, entry: AuditEntry)] {
+        let parallelThreshold = 20_000
+        func sequentialRead(_ db: OpaquePointer?) throws -> [(rowid: Int64, entry: AuditEntry)] {
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            try Self.prepare(db, &statement, "SELECT \(entrySelectColumns), rowid FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
+            var results: [(rowid: Int64, entry: AuditEntry)] = []
+            results.reserveCapacity(estimatedCount)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                results.append((sqlite3_column_int64(statement, 47), Self.decodeEntry(statement)))
+            }
+            return results
+        }
+        guard estimatedCount >= parallelThreshold else {
+            return try sequentialRead(db)
+        }
+
+        var rangeStatement: OpaquePointer?
+        try Self.prepare(db, &rangeStatement, "SELECT MIN(rowid), MAX(rowid) FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
+        guard sqlite3_step(rangeStatement) == SQLITE_ROW, sqlite3_column_type(rangeStatement, 0) != SQLITE_NULL else {
+            sqlite3_finalize(rangeStatement)
+            return try sequentialRead(db)
+        }
+        let minRowID = sqlite3_column_int64(rangeStatement, 0)
+        let maxRowID = sqlite3_column_int64(rangeStatement, 1)
+        sqlite3_finalize(rangeStatement)
+
+        let workerCount = HashingConcurrency.workerCount(for: estimatedCount)
+        guard workerCount > 1, maxRowID > minRowID else {
+            return try sequentialRead(db)
+        }
+
+        let span = maxRowID - minRowID + 1
+        let chunkSpan = max(1, (span + Int64(workerCount) - 1) / Int64(workerCount))
+        var mutableChunks: [(low: Int64, high: Int64)] = []
+        var cursor = minRowID
+        while cursor <= maxRowID {
+            let high = min(cursor + chunkSpan - 1, maxRowID)
+            mutableChunks.append((cursor, high))
+            cursor = high + 1
+        }
+        let chunks = mutableChunks
+
+        let failure = AuditReportDatabaseFailureBox()
+        var results = [[(rowid: Int64, entry: AuditEntry)]](repeating: [], count: chunks.count)
+        results.withUnsafeMutableBufferPointer { buffer in
+            let box = AuditReportDatabaseUncheckedSendableBox(buffer)
+            DispatchQueue.concurrentPerform(iterations: chunks.count) { chunkIndex in
+                let chunk = chunks[chunkIndex]
+                guard let workerDB = try? Self.open(path) else {
+                    failure.record("couldn't open a worker connection for rowid range \(chunk.low)...\(chunk.high)")
+                    return
+                }
+                defer { sqlite3_close(workerDB) }
+                var statement: OpaquePointer?
+                defer { sqlite3_finalize(statement) }
+                guard (try? Self.prepare(
+                    workerDB, &statement,
+                    "SELECT \(entrySelectColumns), rowid FROM audit_entries WHERE system_id = ? AND rowid BETWEEN ? AND ?;",
+                    [.text(systemID), .int64(chunk.low), .int64(chunk.high)]
+                )) != nil else {
+                    failure.record("couldn't prepare the worker statement for rowid range \(chunk.low)...\(chunk.high)")
+                    return
+                }
+                var chunkEntries: [(rowid: Int64, entry: AuditEntry)] = []
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    chunkEntries.append((sqlite3_column_int64(statement, 47), Self.decodeEntry(statement)))
+                }
+                box.value[chunkIndex] = chunkEntries
+            }
+        }
+        if let message = failure.message {
+            throw AuditReportDatabaseError.sqlError("Parallel diff read failed partway through — \(message). Aborted rather than risking an incomplete diff.")
+        }
+        return results.flatMap { $0 }
+    }
+
+    /// Decodes one already-positioned row into an `AuditEntry`, in the
+    /// exact column order `entrySelectColumns` selects them in. A pure
+    /// function of the statement's current row — safe to call from any
+    /// thread, since each caller owns its own connection/statement.
+    private static func decodeEntry(_ statement: OpaquePointer?) -> AuditEntry {
+        AuditEntry(
+            status: AuditStatus(rawValue: Self.columnText(statement, 0) ?? "") ?? .surplus,
+            game: Self.columnText(statement, 1),
+            gameDescription: Self.columnText(statement, 2),
+            cloneOf: Self.columnText(statement, 3),
+            isBios: sqlite3_column_int(statement, 4) != 0,
+            isDevice: sqlite3_column_int(statement, 40) != 0,
+            hasCHD: sqlite3_column_int(statement, 5) != 0,
+            hasSamples: sqlite3_column_int(statement, 6) != 0,
+            isBadDump: sqlite3_column_int(statement, 7) != 0,
+            isOptional: sqlite3_column_int(statement, 28) != 0,
+            romDumpStatus: Self.columnText(statement, 8).flatMap(RomDumpStatus.init(rawValue:)),
+            mergeName: Self.columnText(statement, 9),
+            chdNames: Self.columnText(statement, 10),
+            gameYear: Self.columnText(statement, 11),
+            gameManufacturer: Self.columnText(statement, 12),
+            requiredBiosNames: Self.columnText(statement, 13),
+            deviceRefNames: Self.columnText(statement, 14),
+            cpuChipNames: Self.columnText(statement, 33),
+            audioChipNames: Self.columnText(statement, 34),
+            driverStatus: Self.columnText(statement, 35),
+            displayType: Self.columnText(statement, 36),
+            displayRotate: Self.columnText(statement, 37),
+            players: Self.columnText(statement, 38),
+            coins: Self.columnText(statement, 39),
+            isDisk: sqlite3_column_int(statement, 15) != 0,
+            foundElsewhereArchiveName: Self.columnText(statement, 16),
+            requiredByGameDescription: Self.columnText(statement, 17),
+            requiredByGameMachineName: Self.columnText(statement, 44),
+            requiredByGameConfirmedRedundant: sqlite3_column_int(statement, 45) != 0,
+            requiredByGameOwnerSatisfiedElsewhere: sqlite3_column_int(statement, 46) != 0,
+            duplicateSetPrimaryPath: Self.columnText(statement, 29).map(URL.init(fileURLWithPath:)),
+            isOrphanedBios: sqlite3_column_int(statement, 30) != 0,
+            hasFilenameCRCMismatch: sqlite3_column_int(statement, 31) != 0,
+            hasInternalZipCRCMismatch: sqlite3_column_int(statement, 32) != 0,
+            hasContainerCaseMismatch: sqlite3_column_int(statement, 42) != 0,
+            hasMaintenanceDonor: sqlite3_column_int(statement, 43) != 0,
+            name: Self.columnText(statement, 18) ?? "",
+            actualEntryName: Self.columnText(statement, 41),
+            path: Self.columnText(statement, 19).map(URL.init(fileURLWithPath:)),
+            expectedSize: Self.columnInt64(statement, 20),
+            actualSize: Self.columnInt64(statement, 21),
+            expectedCRC: Self.columnText(statement, 22),
+            expectedMD5: Self.columnText(statement, 23),
+            expectedSHA1: Self.columnText(statement, 24),
+            actualCRC: Self.columnText(statement, 25),
+            actualMD5: Self.columnText(statement, 26),
+            actualSHA1: Self.columnText(statement, 27)
         )
     }
 
@@ -436,6 +866,7 @@ public final class AuditReportDatabase {
         case text(String)
         case textOrNull(String?)
         case int(Int32)
+        case int64(Int64)
         case int64OrNull(Int64?)
     }
 
@@ -446,6 +877,35 @@ public final class AuditReportDatabase {
             sqlite3_close(db)
             throw AuditReportDatabaseError.cannotOpen(message)
         }
+        // Pure read/write-durability performance tuning, no schema/data
+        // impact — jensyleo's own report (2026-09-17): loading a real
+        // ~363MB database (323,568 rows for one MAME system alone) took
+        // 6.5s. `mmap_size` lets SQLite read big sequential scans (like
+        // `loadReport`'s own `SELECT ... WHERE system_id = ?`) straight out
+        // of the page cache instead of repeated read() syscalls; a bigger
+        // `cache_size` keeps more of a large database's pages resident
+        // across the several separate connections this file opens one
+        // after another (`open()` is called fresh per call, never pooled).
+        // `PRAGMA`s are best-effort: an older SQLite build lacking one is
+        // not worth failing the whole open over, so failures are ignored
+        // exactly like every other best-effort `try?` in this file.
+        try? exec(db, "PRAGMA mmap_size = 268435456;")
+        try? exec(db, "PRAGMA cache_size = -65536;")
+        try? exec(db, "PRAGMA temp_store = MEMORY;")
+        // WAL + `synchronous = NORMAL` — jensyleo's own report (2026-09-17):
+        // even off the main actor (see `LibraryViewModel.saveReportInBackground`),
+        // `saveReport` still took ~3s for a real collection (323,626 rows),
+        // long enough that the "Saving results…" overlay itself read as
+        // "stuck". The default journal mode fsyncs on every commit for
+        // full crash safety — worth paying for a source of truth, not for
+        // a cache this app can always regenerate by rescanning (this
+        // exact tradeoff is why `loadReport`'s own doc comment already
+        // treats a missing/corrupt database as "just rescan", never as
+        // data loss). WAL also lets a `loadReport` read proceed
+        // concurrently with a write in flight, which the previous
+        // rollback-journal mode would have blocked on.
+        try? exec(db, "PRAGMA journal_mode = WAL;")
+        try? exec(db, "PRAGMA synchronous = NORMAL;")
         return db
     }
 
@@ -469,6 +929,8 @@ public final class AuditReportDatabase {
                 }
             case .int(let value):
                 sqlite3_bind_int(statement, column, value)
+            case .int64(let value):
+                sqlite3_bind_int64(statement, column, value)
             case .int64OrNull(let value):
                 if let value {
                     sqlite3_bind_int64(statement, column, value)
@@ -492,27 +954,6 @@ public final class AuditReportDatabase {
         try prepare(db, &statement, sql, values)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw AuditReportDatabaseError.sqlError(String(cString: sqlite3_errmsg(db)))
-        }
-    }
-
-    /// Prepares `sql` once and re-executes it for every row in `rowValues`
-    /// via bind → step → reset, instead of re-preparing (a real SQL parse/
-    /// compile) from scratch per row — for a large collection (tens of
-    /// thousands of `audit_entries` rows per scan), re-preparing per row
-    /// was a genuine, avoidable hot-path cost inside the save transaction.
-    private static func bindAndExecMany(_ db: OpaquePointer?, _ sql: String, _ rowValues: [[BindValue]]) throws {
-        var statement: OpaquePointer?
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw AuditReportDatabaseError.sqlError(String(cString: sqlite3_errmsg(db)))
-        }
-        for values in rowValues {
-            bindValues(statement, values)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
-                throw AuditReportDatabaseError.sqlError(String(cString: sqlite3_errmsg(db)))
-            }
-            sqlite3_reset(statement)
-            sqlite3_clear_bindings(statement)
         }
     }
 
@@ -723,6 +1164,16 @@ public final class AuditReportDatabase {
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN is_device INTEGER NOT NULL DEFAULT 0;")
         // v23: see `currentSchemaVersion`'s own doc comment above.
         try? exec(db, "ALTER TABLE audit_entries ADD COLUMN actual_entry_name TEXT;")
+        // v24: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN has_container_case_mismatch INTEGER NOT NULL DEFAULT 0;")
+        // v25: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN has_maintenance_donor INTEGER NOT NULL DEFAULT 0;")
+        // v26: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN required_by_game_machine_name TEXT;")
+        // v27: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN required_by_game_confirmed_redundant INTEGER NOT NULL DEFAULT 0;")
+        // v28: see `currentSchemaVersion`'s own doc comment above.
+        try? exec(db, "ALTER TABLE audit_entries ADD COLUMN required_by_game_owner_satisfied_elsewhere INTEGER NOT NULL DEFAULT 0;")
         if currentVersion > 0 {
             try? exec(db, "DELETE FROM audit_entries;")
             try? exec(db, "DELETE FROM scans;")
@@ -737,3 +1188,37 @@ public final class AuditReportDatabase {
 /// each bound string immediately since Swift's `String` doesn't outlive the
 /// call the way a static C string literal would.
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+/// Wraps a value that's actually safe to share across threads in this one
+/// specific, hand-verified way, but whose type doesn't itself conform to
+/// `Sendable` — same pattern as `ROMMatcher`'s own private
+/// `UncheckedSendableBox` (a different file can't reuse a `private` type,
+/// hence this separate copy). See `AuditReportDatabase.loadEntries`'s only
+/// use: each `DispatchQueue.concurrentPerform` worker writes only to its
+/// own disjoint `buffer[chunkIndex]`, never touching another worker's slot.
+private struct AuditReportDatabaseUncheckedSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
+}
+
+/// Lock-protected, unlike `AuditReportDatabaseUncheckedSendableBox` above —
+/// every `loadEntries` worker can reach this SAME instance (there's no
+/// per-worker disjoint slot for "did I fail", the way there is for
+/// `results`), so a plain `@unchecked Sendable` wrapper without a lock
+/// would be a real data race the first time two workers failed at once.
+/// Only the FIRST failure's message is kept; that's already enough to
+/// abort the whole load and tell the user something real went wrong.
+private final class AuditReportDatabaseFailureBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _message: String?
+    var message: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _message
+    }
+    func record(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if _message == nil { _message = message }
+    }
+}

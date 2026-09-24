@@ -40,14 +40,19 @@ struct ContentView: View {
     // Applying a preset with a saved `sidebarVisible` still overrides this
     // afterward, same as any other preference here.
     @AppStorage("ROMForge.isSidebarVisible") private var isSidebarVisible = true
-    /// jensyleo's own report (2026-08-19): the app "se pone lenta por
-    /// momentos" — traced to `lastKnownStatus(for:)` opening/closing a
-    /// real SQLite connection (`AuditDatabaseLocation.open()` +
-    /// `loadReport`, both real disk I/O) for *every* sidebar row, on
-    /// *every* render of `sidebarList` (any selection change, any system
-    /// added/removed). Cached here instead, refreshed only at the specific
-    /// moments a status could actually have changed — see `refreshStatusCache()`.
-    @State private var statusCache: [RomSystem.ID: AuditStatus?] = [:]
+    // jensyleo's own report (2026-09-16): "Cuando remuevo todo el sistema
+    // ¿Se borra todo lo asociado?" — real bug: `SystemLibraryStore.remove`
+    // already deletes the systems-list entry, the SQLite audit report rows,
+    // the scan cache, and the DAT cache, but never touched that system's
+    // own Maintenance subfolder (`MaintenanceFolderSettings
+    // .deleteSubfolder`, previously only reachable from a manual button in
+    // Settings) — removing a system silently orphaned any donor ROMs left
+    // there. "Remove" from the sidebar also had NO confirmation at all
+    // before this, so a misclick could lose a whole system with zero
+    // warning. Now: a confirmation dialog, with an explicit second,
+    // separately-destructive choice for the Maintenance subfolder — never
+    // deleted silently as a side effect of the first choice.
+    @State private var pendingSystemRemoval: RomSystem?
 
     var body: some View {
         Group {
@@ -84,7 +89,11 @@ struct ContentView: View {
                     // in absolute pixels on any real window) — the divider's
                     // own min-coordinate clamp is what actually determines
                     // the floor from here, not this fraction's precision.
-                    defaultFractions: [0.01, 0.99]
+                    // jensyleo's own live value (2026-09-23, "esos son los
+                    // tamaños que vamos a dejar por defecto") lands at
+                    // effectively the same clamped-to-minimum result, just
+                    // captured exactly instead of an approximate 0.01.
+                    defaultFractions: [0.06122448979591837, 0.9380952380952381]
                 )
             } else {
                 detailContent
@@ -118,7 +127,7 @@ struct ContentView: View {
             )
         )
         .sheet(isPresented: $isShowingAddSheet) {
-            AddSystemSheet(existingCategories: existingCategories) { system in
+            AddSystemSheet { system in
                 store.add(system)
             }
         }
@@ -138,14 +147,7 @@ struct ContentView: View {
         .transaction { $0.disablesAnimations = true }
         .onAppear {
             missingDependencies = HomebrewLibraryDependency.all.filter { !HomebrewDylibLoader.isAvailable($0) }
-            refreshStatusCache()
         }
-        // Covers adding/removing a system, and — the case that actually
-        // matters day to day — switching away from whichever system was
-        // just scanned/fixed, so its sidebar dot reflects the fresh result
-        // without paying the SQLite cost on every single render.
-        .onChange(of: store.systems.count) { refreshStatusCache() }
-        .onChange(of: store.selectedSystemID) { refreshStatusCache() }
         .alert(
             "Missing dependency",
             isPresented: Binding(
@@ -158,6 +160,32 @@ struct ContentView: View {
         } message: { dependency in
             Text(dependencyAlertMessage(for: dependency))
         }
+        .confirmationDialog(
+            "Remove \"\(pendingSystemRemoval?.name ?? "")\"?",
+            isPresented: Binding(
+                get: { pendingSystemRemoval != nil },
+                set: { if !$0 { pendingSystemRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove System", role: .destructive) {
+                if let system = pendingSystemRemoval {
+                    store.remove(system)
+                }
+                pendingSystemRemoval = nil
+            }
+            Button("Remove System and Delete Maintenance Folder", role: .destructive) {
+                if let system = pendingSystemRemoval {
+                    store.remove(system)
+                    try? MaintenanceFolderSettings.deleteSubfolder(for: system)
+                    NotificationCenter.default.post(name: MaintenanceFolderSettings.subfolderDidDelete, object: nil, userInfo: ["systemID": system.id])
+                }
+                pendingSystemRemoval = nil
+            }
+            Button("Cancel", role: .cancel) { pendingSystemRemoval = nil }
+        } message: {
+            Text("Forgets this system, its scan cache, and its saved audit report. Your actual ROM files are never touched. This system's own Maintenance subfolder (if any) is kept by default, in case you re-add this system later — choose \"Delete Maintenance Folder\" to also permanently remove it and every donor ROM inside it.")
+        }
     }
 
     private var sidebarList: some View {
@@ -165,19 +193,17 @@ struct ContentView: View {
             ForEach(groupedSystems, id: \.category) { group in
                 Section(group.category.isEmpty ? "SYSTEM" : group.category) {
                     ForEach(group.systems) { system in
-                        HStack(spacing: 6) {
-                            if let status = statusCache[system.id] ?? nil {
-                                Circle()
-                                    .fill(status.tint)
-                                    .frame(width: 8, height: 8)
-                                    .help("Last scan: \(status.rawValue)")
-                            }
-                            Text(system.name)
-                        }
+                        // jensyleo's own request (2026-09-16): "quita ese
+                        // punto rojo al lado de MAME" — the per-system
+                        // last-scan-status dot removed from the sidebar
+                        // row entirely.
+                        Text(system.name)
                         .tag(system.id)
                         .contextMenu {
-                            Button("Remove", role: .destructive) {
-                                store.remove(system)
+                            Button(role: .destructive) {
+                                pendingSystemRemoval = system
+                            } label: {
+                                Label("Remove…", systemImage: "trash")
                             }
                         }
                     }
@@ -200,9 +226,7 @@ struct ContentView: View {
                     store.update(updated)
                 }, onExportCollectionReport: {
                     exportCollectionReport()
-                }, toolbarController: toolbarController, isSidebarVisible: $isSidebarVisible, onAuditReportChanged: {
-                    refreshStatus(for: system.id)
-                })
+                }, toolbarController: toolbarController, isSidebarVisible: $isSidebarVisible)
                 .id(system.id)
             } else {
                 ContentUnavailableView(
@@ -254,34 +278,6 @@ struct ContentView: View {
         return ordered.map { category in
             (category: category, systems: store.systems.filter { $0.category == category })
         }
-    }
-
-    private var existingCategories: [String] {
-        Set(store.systems.map(\.category)).filter { !$0.isEmpty }.sorted()
-    }
-
-    /// The persisted worst status from this system's last real scan, if
-    /// any — one real SQLite open/close per system, so this is only ever
-    /// called from `refreshStatusCache()` (a handful of well-defined
-    /// moments), never straight from `sidebarList`'s own render anymore.
-    private func lastKnownStatus(for system: RomSystem) -> AuditStatus? {
-        guard let db = try? AuditDatabaseLocation.open() else { return nil }
-        return (try? db.loadReport(systemID: system.id.uuidString))?.worstStatus
-    }
-
-    private func refreshStatusCache() {
-        for system in store.systems {
-            statusCache[system.id] = lastKnownStatus(for: system)
-        }
-    }
-
-    /// Called from `LibraryDetailView` right after a scan/fix actually
-    /// changes its `auditReport` — refreshing just the one system that
-    /// could plausibly have a new status, instead of every configured
-    /// system, and only at the moment it's genuinely needed.
-    private func refreshStatus(for systemID: RomSystem.ID) {
-        guard let system = store.systems.first(where: { $0.id == systemID }) else { return }
-        statusCache[systemID] = lastKnownStatus(for: system)
     }
 
     /// Saves `CollectionReportExporter`'s HTML and opens it in the default

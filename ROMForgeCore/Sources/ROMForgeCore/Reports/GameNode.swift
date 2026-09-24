@@ -102,14 +102,54 @@ public struct GameNode: Identifiable, Sendable {
     /// contributes only a token one or two. Fixed by requiring the
     /// most-represented candidate path to cover at least half of this
     /// game's own rom entries before trusting it.
-    public var actualFileName: String? {
+    public var actualFileName: String? { actualFileURL?.lastPathComponent }
+
+    /// The same majority-vote-verified archive `actualFileName` names,
+    /// as a full `URL` rather than just its last path component — needed
+    /// anywhere a caller must actually READ/WRITE that file (a scoped
+    /// rescan, "Repair from Maintenance Folder…", a context-menu action),
+    /// not just display its name.
+    ///
+    /// Real bug found live by jensyleo (2026-09-21): a hand-rolled
+    /// `App/Sources/LibraryDetailView.swift` helper (`actualFileURL(for:)`)
+    /// took the first entry with ANY `path`, without this property's own
+    /// `foundElsewhereArchiveName`/`requiredByGameDescription` filtering —
+    /// exactly the borrowed-path bug this property's own doc comment
+    /// already describes. For "naomi" (BIOS roms shared with "naomigd"),
+    /// several of naomi's own genuinely-`.missing` roms carry a
+    /// `.foundElsewhere` entry whose `path` points at `naomigd.zip` (where
+    /// that same content was actually found) — the unfiltered helper could
+    /// return THAT path as if it were naomi's own archive, so right-
+    /// clicking "naomi.zip" and choosing "Repair from Maintenance
+    /// Folder…" silently scoped the whole action to `naomigd.zip` instead
+    /// (a different, unrelated archive that didn't need repairing),
+    /// logging "Nothing to repair … inside naomigd.zip" while never
+    /// touching naomi.zip at all.
+    public var actualFileURL: URL? {
         let owned = entries.filter { $0.path != nil && $0.foundElsewhereArchiveName == nil && $0.requiredByGameDescription == nil }
         guard !owned.isEmpty else { return nil }
         var countsByPath: [URL: Int] = [:]
         for entry in owned { countsByPath[entry.path!, default: 0] += 1 }
         guard let (bestPath, bestCount) = countsByPath.max(by: { $0.value < $1.value }) else { return nil }
         guard bestCount * 2 >= entries.count else { return nil }
-        return bestPath.lastPathComponent
+        return bestPath
+    }
+
+    /// A genuinely-owned archive path for this game, WITHOUT `actualFileURL`'s
+    /// own majority-of-`entries.count` requirement — needed for scoping
+    /// purposes (a scoped rescan, "Repair from Maintenance Folder…") where
+    /// ANY single real, non-borrowed file this game legitimately owns is
+    /// enough to act on, even for a game whose collection is mostly
+    /// `.missing` (so `actualFileURL`'s stricter majority check, tuned for
+    /// a DIFFERENT problem — telling a real archive apart from a handful of
+    /// stray leaked entries — would otherwise return `nil` for a real,
+    /// single-file anchor sitting among many unrelated `.missing` rows with
+    /// no path of their own at all). Still excludes the same two
+    /// borrowed-path cases `actualFileURL` does (`.foundElsewhere`,
+    /// `requiredByGameDescription`) — never a path this game doesn't
+    /// genuinely own.
+    public var firstOwnedFileURL: URL? {
+        entries.first(where: { $0.path != nil && $0.foundElsewhereArchiveName == nil && $0.requiredByGameDescription == nil })?.path
     }
 
     /// The DAT's own human-readable name (its `<description>`, e.g.
@@ -166,9 +206,34 @@ public struct GameNode: Identifiable, Sendable {
                 return "Bad file name — rename to \(expected).zip"
             }
             guard aggregateStatus == .incorrect,
-                  let requiredBy = entries.compactMap(\.requiredByGameDescription).first
+                  let requiredByEntry = entries.first(where: { $0.requiredByGameDescription != nil })
             else {
                 return "Unknown game"
+            }
+            let requiredBy = requiredByEntry.requiredByGameDescription ?? ""
+            // jensyleo's own real incident (2026-09-19): "Duplicated" reads
+            // as "a known, SAFE duplicate of something already claimed
+            // elsewhere" — true only when `requiredByGameConfirmedRedundant`
+            // actually confirms `requiredBy` has this content satisfied
+            // somewhere real (see that field's own doc comment on
+            // `SurplusFile`). When it's NOT confirmed, this text used to
+            // claim a safe duplicate existed even when it didn't — a stray
+            // `naomi.zip` got deleted as "safe" this way while NAOMI BIOS's
+            // own real archive had ALSO just been removed, with no copy
+            // left anywhere but the Maintenance folder (which never counts
+            // as "already have it").
+            // Second round of the same incident, same day: `requiredByGameConfirmedRedundant`
+            // ALSO goes true for "duplicate among unclaimed surplus files"
+            // even when `requiredBy` has NO real copy anywhere — safe only
+            // for a whole, directly-usable unit (a duplicated whole archive),
+            // never a loose fragment. `requiredByGameOwnerSatisfiedElsewhere`
+            // is the strict subset that means `requiredBy` genuinely already
+            // has real content — see its own doc comment on `SurplusFile`.
+            guard requiredByEntry.requiredByGameOwnerSatisfiedElsewhere else {
+                if requiredByEntry.requiredByGameConfirmedRedundant {
+                    return "Extra copy of unused content — \(requiredBy) still has no real copy"
+                }
+                return "Recognized content, but \(requiredBy) doesn't have it either"
             }
             // Leads with "Duplicated" specifically to mean "a known
             // duplicate of something already claimed elsewhere" — not a
@@ -230,7 +295,37 @@ public struct GameNode: Identifiable, Sendable {
                 }
             }
             let hasOwnRomProblem = entries.contains { $0.status == .incorrect && $0.requiredByGameDescription == nil }
-            return hasOwnRomProblem ? "Rom need fix" : "Duplicated file, not needed here"
+            if hasOwnRomProblem { return "Rom need fix" }
+            // Real bug found live by jensyleo (2026-09-22): "Duplicated
+            // file, not needed here" used to be returned unconditionally
+            // for a real, DAT-owned game (this branch — NOT the
+            // `isSurplusBucket` one above, which already got this exact
+            // fix on 2026-09-19) whenever every one of its own `.incorrect`
+            // entries turned out to be a folded-in surplus rom belonging to
+            // ANOTHER game — never checking whether that other game
+            // actually has a confirmed real copy anywhere. Live case:
+            // `gng.zip` ("Ghosts'n Goblins (World? set 1)", every one of
+            // its OWN roms genuinely `.correct`) also holds 3 unclaimed
+            // roms that are "Ghosts'n Goblins (World? set 2)"'s declared
+            // content — but set 2 has NO real copy anywhere in the scan.
+            // The archive-level message said "not needed here" (implying
+            // safe/confirmed) while the very same roms' own Roms-panel
+            // rows correctly said "Recognized content, but set 2 doesn't
+            // have it either" — two genuinely contradictory readings of
+            // the identical underlying data. Same 3-way distinction as the
+            // `isSurplusBucket` branch above, just under this branch's own
+            // "Duplicated FILE" (not "archive") wording.
+            guard let requiredByEntry = entries.first(where: { $0.status == .incorrect && $0.requiredByGameDescription != nil }) else {
+                return "Rom need fix"
+            }
+            let requiredBy = requiredByEntry.requiredByGameDescription ?? ""
+            guard requiredByEntry.requiredByGameOwnerSatisfiedElsewhere else {
+                if requiredByEntry.requiredByGameConfirmedRedundant {
+                    return "Extra copy of unused content — \(requiredBy) still has no real copy"
+                }
+                return "Recognized content, but \(requiredBy) doesn't have it either"
+            }
+            return "Duplicated file, not needed here (required by \(requiredBy))"
         case .correct, .surplus, .surplusInArchive, .unknownFile:
             // A surplus entry can end up here (not in its own "Unknown
             // game" bucket) when it's an extra file inside an archive that

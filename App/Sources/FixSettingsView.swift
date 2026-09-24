@@ -24,28 +24,28 @@ struct FixSettingsView: View {
     @AppStorage(FixPreferencesSettings.corruptedFilesMoveToPathKey) private var corruptedFilesMoveToPath = FixPreferencesSettings.corruptedFilesMoveToPathDefault
 
     @AppStorage(FixPreferencesSettings.removeUselessRomsKey) private var removeUselessRoms = FixPreferencesSettings.removeUselessRomsDefault
-    @AppStorage(FixPreferencesSettings.findMissingRomsKey) private var findMissingRoms = FixPreferencesSettings.findMissingRomsDefault
-    @AppStorage(FixPreferencesSettings.createDummyRomsKey) private var createDummyRoms = FixPreferencesSettings.createDummyRomsDefault
-    @AppStorage(FixPreferencesSettings.fixSamplesKey) private var fixSamples = FixPreferencesSettings.fixSamplesDefault
-    @AppStorage(FixPreferencesSettings.removeZipCommentsKey) private var removeZipComments = FixPreferencesSettings.removeZipCommentsDefault
-    @AppStorage(FixPreferencesSettings.unzipAndRezipKey) private var unzipAndRezip = FixPreferencesSettings.unzipAndRezipDefault
-    @AppStorage(FixPreferencesSettings.allowMultipleRomFormatsKey) private var allowMultipleRomFormats = FixPreferencesSettings.allowMultipleRomFormatsDefault
     @AppStorage(FixPreferencesSettings.setsCasePolicyKey) private var setsCasePolicy = FixPreferencesSettings.setsCasePolicyDefault
     @AppStorage(FixPreferencesSettings.romsCasePolicyKey) private var romsCasePolicy = FixPreferencesSettings.romsCasePolicyDefault
+    @AppStorage(FixPreferencesSettings.missingRomsSearchScopeKey) private var missingRomsSearchScope = FixPreferencesSettings.missingRomsSearchScopeDefault
+    @AppStorage(FixPreferencesSettings.chdDuplicatePreferenceKey) private var chdDuplicatePreference = FixPreferencesSettings.chdDuplicatePreferenceDefault
 
     var body: some View {
         Form {
-            Section("Test & Verify") {
-                Toggle("Test archives before fixing", isOn: $testArchives)
-                Text("Runs a ZIP integrity check (local-header vs central-directory CRC32) on every archive before \"Fix\" does anything else, and applies the \"Corrupted files\" policy below to whatever it finds. Off by default — a full integrity pass reads every archive's data twice, worth paying for only when you suspect real corruption.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Button("Reset to Defaults") { testArchives = FixPreferencesSettings.testArchivesDefault }
-                    Spacer()
-                }
-            }
-
+            // "Test & Verify" section (the "Test archives before fixing"
+            // toggle) temporarily removed at jensyleo's own explicit
+            // request (2026-09-17), same reasoning as the right-click
+            // "Verify ZIP Integrity" action it mirrors (see that removal's
+            // own comment in `GameTreeTableView.swift`) — this toggle was
+            // ALREADY the "not yet connected" case this view's own header
+            // doc comment describes (see `FixSettingsView`'s own doc
+            // comment above, and `FixSettingsView.swift:158`'s own note
+            // that "Test archives before fixing" is "a separate,
+            // not-yet-connected pre-pass toggle"), so hiding it costs
+            // nothing functionally. `testArchives`/`FixPreferencesSettings
+            // .testArchivesKey` themselves are untouched — only this
+            // section's UI is gone — so restoring it is just re-adding
+            // this `Section` block.
+            //
             // jensyleo's own decision (2026-09-10): correcting a name the
             // DAT disagrees with is unconditional — the whole reason this
             // app, and its "Fix Mismatched Files"/"Fix Misnamed ROMs
@@ -61,7 +61,12 @@ struct FixSettingsView: View {
             // otra." Both toolbar actions now do BOTH halves (repair a
             // wrong name; re-style an already-correct one) themselves, in
             // one click, unconditionally.
-            Section("Fix") {
+            // jensyleo's own request (2026-09-11): "para los case poner la
+            // palabra case, no fix" — this section is specifically about
+            // HOW a name is styled (case), not the "Fix" repair actions
+            // themselves (those live on the toolbar's own "Fix" dropdown);
+            // renamed from "Fix" to "Case" to say exactly that.
+            Section("Case") {
                 Picker("Sets case (archive names)", selection: $setsCasePolicy) {
                     ForEach(FileCasePolicy.allCases) { policy in
                         Text(policy.title).tag(policy)
@@ -167,17 +172,120 @@ struct FixSettingsView: View {
                 }
             }
 
-            Section("Not yet available") {
-                Toggle("Find missing roms in scavenging folders", isOn: $findMissingRoms).disabled(true)
-                Toggle("Create dummy roms for nodump entries", isOn: $createDummyRoms).disabled(true)
-                Toggle("Fix samples", isOn: $fixSamples).disabled(true)
-                Toggle("Remove zip comments", isOn: $removeZipComments).disabled(true)
-                Toggle("Unzip and rezip every archive", isOn: $unzipAndRezip).disabled(true)
-                Toggle("Allow multiple rom formats", isOn: $allowMultipleRomFormats).disabled(true)
-                Text("Each needs its own not-yet-built infrastructure (a scavenging-folder setting, a placeholder-file format, sample-file inventory, a batch rewrite entry point, or a second output format besides ZIP) — kept here, visibly inert, so this tab already reflects the full scope of ClrMamePro's own Fix panel rather than only what's done so far.")
+            // jensyleo's own request (2026-09-11): "Colocar la opcion de:
+            // Solo buscar ROMS faltantes en la carpeta de mantenimiento o en
+            // cualquiera de las declaradas" — governs "Repair from
+            // Maintenance Folder…"'s own donor search (`LibraryViewModel
+            // .planRepairFromMaintenanceFolderPreviewCount`). Distinct from
+            // "Find missing roms in scavenging folders" below (a separate,
+            // still-unbuilt feature for arbitrary user-added folders outside
+            // any system's own configuration) — this one only ever searches
+            // folders the system ALREADY declares (its Maintenance
+            // subfolder, and optionally its own configured ROM folders).
+            // jensyleo's own request (2026-09-11): "esta opcion... debe
+            // estar ligada a la opcion de la pestaña general Maintenance
+            // folder, si esta no esta configurado (el folder) no debe
+            // aparecer como configurable en la pestaña fix" — this whole
+            // scope choice is meaningless without a Maintenance root
+            // configured at all: even "+ All ROM Folders" mode still
+            // requires the Maintenance subfolder to exist as PART of the
+            // search set (`LibraryViewModel
+            // .planRepairFromMaintenanceFolderPreviewCount`'s own
+            // `searchFolders` always starts from it), so "Repair from
+            // Maintenance Folder…" already refuses outright with no
+            // Maintenance root set, regardless of this setting's value.
+            Section("Find ROMS") {
+                if MaintenanceFolderSettings.folderURL != nil {
+                    Picker("Search missing ROMs in", selection: $missingRomsSearchScope) {
+                        ForEach(MissingRomsSearchScope.allCases) { scope in
+                            Text(scope.title).tag(scope)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("\"Maintenance Folder Only\" looks solely at this system's own Maintenance subfolder — donors deliberately staged there. \"+ All ROM Folders\" also searches every one of this system's own currently-configured ROM folders, so a rom that's merely misplaced in a sibling folder (a different drive, a region subfolder, an old backup location) can donate too. Both are strictly read-only — nothing here ever writes to a ROM folder, only reads from it as a possible donor.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Reset to Defaults") { missingRomsSearchScope = FixPreferencesSettings.missingRomsSearchScopeDefault }
+                        Spacer()
+                    }
+                } else {
+                    Text("No Maintenance folder configured yet")
+                        .foregroundStyle(.secondary)
+                    Text("This scope choice only applies to \"Repair from Maintenance Folder…\", which needs a Maintenance folder to search in the first place. Set one in Settings → General → \"Maintenance folder\" first, then this becomes configurable here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // jensyleo's own request (2026-09-19), after a real kinst2.chd
+            // sitting byte-identical BOTH directly in Nintendo's own ROM
+            // folder root AND inside a same-named Nintendo/kinst2/
+            // subfolder — a real, common layout ambiguity with no single
+            // "obviously right" answer, so ROMForge asks rather than
+            // guesses. Affects which copy `DiskAuditor` reports `.correct`
+            // (and therefore which one "Remove Redundant Files…" would
+            // offer to delete as the leftover) whenever the same disk
+            // exists more than once.
+            Section("Duplicate CHDs") {
+                Picker("When the same CHD exists in more than one place", selection: $chdDuplicatePreference) {
+                    ForEach(CHDDuplicatePreference.allCases) { preference in
+                        Text(preference.title).tag(preference)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("\"Prefer ROM Folder Root\" always treats the copy sitting directly in the ROM folder as correct; \"Prefer Subfolder\" always treats the copy inside a subfolder named after the game as correct. Only matters when the exact same CHD genuinely exists in both places at once.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack {
+                    Button("Reset to Defaults") { chdDuplicatePreference = FixPreferencesSettings.chdDuplicatePreferenceDefault }
+                    Spacer()
+                }
             }
+
+            // jensyleo's own request (2026-09-11): "implementa: Create dummy
+            // roms for nodump entries, Remove zip comments y Unzip and
+            // rezip every archive" — the first two are now fully built
+            // (`RebuildPlanner.planCreateDummyRoms`/`planRemoveZipComments`
+            // + their own `RebuildExecutor` operations and `LibraryViewModel`
+            // actions), so they moved out of "Not yet available" — there's
+            // no separate on/off toggle for either (same as "Remove Useless
+            // Files…"/"Repair from Sibling Sets…" above, which also have no
+            // Settings toggle of their own): each is a standalone action,
+            // reachable from the toolbar's own "Fix" dropdown once added to
+            // `LibraryDetailView.fixActionsEnabledForTesting` per jensyleo's
+            // own one-at-a-time manual-testing policy. "Unzip and rezip
+            // every archive" was built the same way, then removed outright
+            // the same day (jensyleo: "elimina eso, no lo vamos a usar, no
+            // tiene sentido para esta app") — see ROADMAP.md's own note for
+            // the reasoning and for a future implementer's exact starting
+            // point if that decision is ever revisited.
+            // jensyleo's own decision (2026-09-11): "Allow multiple rom
+            // formats" removed from the UI outright rather than kept as a
+            // disabled toggle — this one is never going to be implemented
+            // (see ROADMAP.md's own note on it for the reasoning, and for a
+            // future implementer's exact starting point if that changes).
+            // "Find missing roms in scavenging folders" removed the same
+            // day, same reasoning (jensyleo: "la idea es que solo busque
+            // las ROMs para reparación de la carpeta de reparación o de
+            // las ya agregadas a Rom Folder") — an arbitrary "scavenging"
+            // folder unrelated to a system is explicitly out of scope by
+            // design, and "Repair from Maintenance Folder…" + its own
+            // Settings → Fix → "Find ROMS" → "Search missing ROMs in"
+            // scope picker already covers exactly the two sources this
+            // should ever search (the Maintenance subfolder, optionally
+            // plus the system's own already-configured ROM folders) — see
+            // ROADMAP.md's own note for the full reasoning.
+            // "Fix samples" implemented 2026-09-11 (jensyleo: "implementalo,
+            // es clave para MAME") as "Fix Samples…" in the toolbar's own
+            // "Fix" dropdown, once added to `LibraryDetailView
+            // .fixActionsEnabledForTesting` — its own on/off toggle and
+            // folder setting live in Settings → Systems → MAME →
+            // "Samples" (MAME-exclusive, per jensyleo's own explicit
+            // placement instruction), not here. With it gone, "Not yet
+            // available" has nothing left in it — removed entirely rather
+            // than kept as an empty section; a future genuinely-deferred
+            // item gets it back.
         }
         .formStyle(.grouped)
         .padding()

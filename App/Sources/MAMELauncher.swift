@@ -22,12 +22,52 @@ enum MAMELaunchSettings {
     /// instead of making every user locate it by hand via a file panel.
     static let homebrewDefaultPath = "/opt/homebrew/bin/mame"
 
-    /// `nil` when nothing's configured yet — the feature (context menu
-    /// item, "Play" toolbar button) stays hidden/disabled rather than
-    /// offered with nothing to actually launch.
+    /// `nil` when nothing's configured AND no real MAME can be found on its
+    /// own — the feature (context menu item, "Play" toolbar button,
+    /// "Generate from Installed MAME…" in Update Database/Add System)
+    /// stays hidden/disabled rather than offered with nothing to actually
+    /// launch.
+    ///
+    /// Real report, live (2026-09-24): "Generate from Installed MAME…"
+    /// vanished from both Update Database and Add System — not a code
+    /// regression, `UserDefaults` for this key had simply gone empty (this
+    /// exact bundle ID's own uninstall flow, `defaults delete <bundleID>`,
+    /// wipes every setting at once by design — see `ROMForgeUninstaller`'s
+    /// own doc comment). jensyleo's own follow-up: "Eso debe quedar
+    /// siempre. No debe desaparecer" — rather than special-case this one
+    /// key out of the general reset (which would make "Uninstall" no
+    /// longer mean what it says), this falls back to checking
+    /// `homebrewDefaultPath` ON DISK whenever nothing's explicitly
+    /// configured: a real `brew install mame` puts a real, working
+    /// executable at that exact path on every current Mac, so there's
+    /// nothing to "lose" by finding it again automatically — it's the
+    /// same file the "Default" button in Settings would have pointed at
+    /// anyway. Verified against the real file system, never assumed.
     static var executablePath: String? {
         let path = UserDefaults.standard.string(forKey: executablePathKey) ?? ""
-        return path.isEmpty ? nil : path
+        if !path.isEmpty { return path }
+        return FileManager.default.isExecutableFile(atPath: homebrewDefaultPath) ? homebrewDefaultPath : nil
+    }
+
+    /// Actually WRITES the auto-detected Homebrew path into `UserDefaults`
+    /// (not just the read-time fallback `executablePath` above already
+    /// does) whenever this key is empty and a real executable sits at
+    /// `homebrewDefaultPath` — so Settings → Systems → MAME's own text
+    /// field shows it too ("Not configured" would otherwise keep reading
+    /// that way even while every feature gated on `executablePath` already
+    /// works, which read as its own kind of "it disappeared"). Called once
+    /// at launch (`ROMForgeApp.init()`), same convention as
+    /// `MaxSubfolderDepthSettings.applyPersistedValue()`. A no-op whenever
+    /// something is already configured — never overwrites an explicit,
+    /// different path someone chose via "Locate…". Re-fills a genuinely
+    /// empty value on every launch by design, including right after a
+    /// deliberate "Clear" — jensyleo's own explicit priority ("Eso debe
+    /// quedar siempre. No debe desaparecer") is that a real, standard MAME
+    /// install is never lost.
+    static func autoConfigureIfNeeded() {
+        guard UserDefaults.standard.string(forKey: executablePathKey).map(\.isEmpty) ?? true else { return }
+        guard FileManager.default.isExecutableFile(atPath: homebrewDefaultPath) else { return }
+        UserDefaults.standard.set(homebrewDefaultPath, forKey: executablePathKey)
     }
 }
 

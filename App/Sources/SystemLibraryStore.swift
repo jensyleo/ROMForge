@@ -52,6 +52,13 @@ final class SystemLibraryStore {
         save()
         ScanCacheLocation.remove(for: system)
         DATCacheLocation.remove(for: system)
+        // jensyleo's own report (2026-09-16): "verifica que cuando se quite
+        // el sistema se purgue toda la información" — a real, if harmless,
+        // orphan found during that audit: this system's own persisted
+        // "last selected Database filter / ROM folder" UserDefaults key
+        // (`LibraryDetailView.lastSelectionKey(for:)`) was never removed
+        // here, so it lived on forever under this system's UUID.
+        UserDefaults.standard.removeObject(forKey: LibraryDetailView.lastSelectionKey(for: system))
         // `removeSystem` is a full SQLite `DELETE` of every row belonging
         // to this one system — for a real, large MAME system that can be
         // hundreds of thousands of rows. Found live (2026-08-13, same pass

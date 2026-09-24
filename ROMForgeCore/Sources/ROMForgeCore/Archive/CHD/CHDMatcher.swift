@@ -28,35 +28,35 @@ public enum CHDDiskStatus: Equatable, Sendable {
 /// pool of scanned `.chd` files, using each CHD's own header SHA1 — never by
 /// decompressing hunks, and never by filename alone.
 public enum CHDMatcher {
-    public static func match(disk: MAMEDisk, chdFiles: [URL]) -> CHDDiskStatus {
-        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles)
+    public static func match(disk: MAMEDisk, chdFiles: [URL], duplicatePreference: CHDDuplicatePreference = .preferRootFolder) -> CHDDiskStatus {
+        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles, duplicatePreference: duplicatePreference)
     }
 
     /// `MAMEDisk` overload of the `headerIndex:`-accepting fast path.
-    public static func match(disk: MAMEDisk, chdFiles: [URL], headerIndex: CHDHeaderIndex) -> CHDDiskStatus {
-        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles, headerIndex: headerIndex)
+    public static func match(disk: MAMEDisk, chdFiles: [URL], headerIndex: CHDHeaderIndex, duplicatePreference: CHDDuplicatePreference = .preferRootFolder) -> CHDDiskStatus {
+        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles, headerIndex: headerIndex, duplicatePreference: duplicatePreference)
     }
 
     /// Same matching logic, for the general-purpose `DATDisk` model
     /// (`DATGame.disks`) that `AuditReporter`'s own scan pipeline actually
     /// works with — `MAMEDisk` only exists on the `-listxml`-parsing side
     /// and never reaches the audit pipeline itself.
-    public static func match(disk: DATDisk, chdFiles: [URL]) -> CHDDiskStatus {
-        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles)
+    public static func match(disk: DATDisk, chdFiles: [URL], duplicatePreference: CHDDuplicatePreference = .preferRootFolder) -> CHDDiskStatus {
+        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles, duplicatePreference: duplicatePreference)
     }
 
     /// `DATDisk` overload of the `headerIndex:`-accepting fast path —
     /// `DiskAuditor.audit`'s own hot loop.
-    public static func match(disk: DATDisk, chdFiles: [URL], headerIndex: CHDHeaderIndex) -> CHDDiskStatus {
-        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles, headerIndex: headerIndex)
+    public static func match(disk: DATDisk, chdFiles: [URL], headerIndex: CHDHeaderIndex, duplicatePreference: CHDDuplicatePreference = .preferRootFolder) -> CHDDiskStatus {
+        match(diskName: disk.name, diskSHA1: disk.sha1, chdFiles: chdFiles, headerIndex: headerIndex, duplicatePreference: duplicatePreference)
     }
 
     /// Builds a `CHDHeaderIndex` from `chdFiles` on every call — fine for a
     /// one-off lookup (tests, a single disk), but `DiskAuditor.audit` calls
     /// this once per `<disk>` a whole DAT declares, so it uses the
     /// `headerIndex:` overload below with one index built up front instead.
-    public static func match(diskName: String, diskSHA1: String?, chdFiles: [URL]) -> CHDDiskStatus {
-        match(diskName: diskName, diskSHA1: diskSHA1, chdFiles: chdFiles, headerIndex: CHDHeaderIndex(chdFiles: chdFiles))
+    public static func match(diskName: String, diskSHA1: String?, chdFiles: [URL], duplicatePreference: CHDDuplicatePreference = .preferRootFolder) -> CHDDiskStatus {
+        match(diskName: diskName, diskSHA1: diskSHA1, chdFiles: chdFiles, headerIndex: CHDHeaderIndex(chdFiles: chdFiles), duplicatePreference: duplicatePreference)
     }
 
     /// Same matching logic as the `chdFiles`-only overload, but reads every
@@ -64,7 +64,7 @@ public enum CHDMatcher {
     /// re-opening and re-reading each `.chd` file's header from disk on
     /// every call — see that type's own doc comment for the real O(disks ×
     /// CHD files) hot path this fixes.
-    public static func match(diskName: String, diskSHA1: String?, chdFiles: [URL], headerIndex: CHDHeaderIndex) -> CHDDiskStatus {
+    public static func match(diskName: String, diskSHA1: String?, chdFiles: [URL], headerIndex: CHDHeaderIndex, duplicatePreference: CHDDuplicatePreference = .preferRootFolder) -> CHDDiskStatus {
         guard let expectedSHA1 = diskSHA1 else {
             // Real case found live by jensyleo (2026-08-04): 184 `<disk>`
             // entries in a real MAME 0.288 dump declare no `sha1` at all —
@@ -76,7 +76,8 @@ public enum CHDMatcher {
             return .missing
         }
 
-        if let chdURL = headerIndex.urls(withSHA1: expectedSHA1).first {
+        let candidates = headerIndex.urls(withSHA1: expectedSHA1)
+        if let chdURL = preferredURL(among: candidates, diskName: diskName, preference: duplicatePreference) {
             return .correct(chdURL)
         }
 
@@ -84,5 +85,28 @@ public enum CHDMatcher {
             return .incorrect(chdURL)
         }
         return .missing
+    }
+
+    /// Picks which of several byte-identical CHD copies (same header SHA1)
+    /// counts as "the" correct one — see `CHDDuplicatePreference`'s own doc
+    /// comment for the real layout ambiguity this resolves. A subfolder
+    /// copy is recognized structurally: its containing directory's name
+    /// matches the disk's own declared name (the `<system>/<game>/<file>`
+    /// convention `FolderScanner` already walks one level into). Falls back
+    /// to `candidates.first` whenever the preferred kind isn't actually
+    /// among the candidates, or there's only one candidate to begin with —
+    /// never turns a genuine match into a miss just because the preferred
+    /// LOCATION isn't present this time.
+    private static func preferredURL(among candidates: [URL], diskName: String, preference: CHDDuplicatePreference) -> URL? {
+        guard candidates.count > 1 else { return candidates.first }
+        func isInSubfolder(_ url: URL) -> Bool {
+            url.deletingLastPathComponent().lastPathComponent.caseInsensitiveCompare(diskName) == .orderedSame
+        }
+        switch preference {
+        case .preferSubfolder:
+            return candidates.first(where: isInSubfolder) ?? candidates.first
+        case .preferRootFolder:
+            return candidates.first(where: { !isInSubfolder($0) }) ?? candidates.first
+        }
     }
 }

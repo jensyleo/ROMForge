@@ -71,8 +71,19 @@ public struct MAMEMachine: Equatable, Sendable {
     /// every non-MAME DAT format, which has no such concept.
     public let chips: [MAMEChip]
     /// True when the machine declares any `<sample>` — presence-only, like
-    /// `disks`; ROMForge doesn't audit sample files on disk.
+    /// `disks`; ROMForge doesn't audit individual sample files, only
+    /// whether the whole `samples/<name>.zip` this machine expects exists
+    /// (see `sampleOf`'s own doc comment for which name).
     public let hasSamples: Bool
+    /// The `sampleof="..."` attribute — names a DIFFERENT machine whose own
+    /// `samples/<name>.zip` this one's samples actually live in, when this
+    /// machine shares its samples rather than having its own dedicated zip
+    /// (mirrors `cloneOf`/`romOf`'s own sharing concept, one level
+    /// simpler — MAME's own DTD never chains this further than one hop).
+    /// `nil` when this machine has its own samples zip, or none at all.
+    /// "Fix Samples" resolves the zip name it actually needs via
+    /// `sampleOf ?? name`.
+    public let sampleOf: String?
     /// The `<driver status="...">` MAME reports for its OWN emulation of
     /// this machine ("good"/"imperfect"/"preliminary") — purely descriptive
     /// metadata about MAME itself, never a claim about whether the user's
@@ -113,6 +124,7 @@ public struct MAMEMachine: Equatable, Sendable {
         deviceRefs: [String],
         chips: [MAMEChip] = [],
         hasSamples: Bool = false,
+        sampleOf: String? = nil,
         driverStatus: String? = nil,
         displayType: String? = nil,
         displayRotate: String? = nil,
@@ -133,6 +145,7 @@ public struct MAMEMachine: Equatable, Sendable {
         self.deviceRefs = deviceRefs
         self.chips = chips
         self.hasSamples = hasSamples
+        self.sampleOf = sampleOf
         self.driverStatus = driverStatus
         self.displayType = displayType
         self.displayRotate = displayRotate

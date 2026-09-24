@@ -35,7 +35,7 @@ public enum DiskAuditor {
     /// `dat.games` — this function runs synchronously on the calling
     /// `Task`'s own thread (no concurrent dispatch here), so the check is
     /// meaningful everywhere in this loop.
-    public static func audit(dat: DATFile, chdFiles: [URL]) throws -> [AuditEntry] {
+    public static func audit(dat: DATFile, chdFiles: [URL], duplicatePreference: CHDDuplicatePreference = .preferRootFolder) throws -> [AuditEntry] {
         try Task.checkCancellation()
         // Reads every CHD's header exactly once, up front, instead of the
         // per-disk linear-scan-and-reread `CHDMatcher.match` used to do —
@@ -106,6 +106,13 @@ public enum DiskAuditor {
             }
         }
 
+        // jensyleo's own real incident (2026-09-19) — same fix as
+        // `SurplusFile.requiredByGameConfirmedRedundant`'s own doc comment,
+        // for CHDs: which disk sha1s are ALREADY genuinely satisfied by a
+        // real `.correct` claim, so the leftover-duplicate loop below never
+        // labels a CHD "not needed here" when the disk it's declared for
+        // doesn't actually have a good copy anywhere else.
+        var satisfiedDiskSHA1s = Set<String>()
         for diskName in diskNameOrder {
             // Checked every disk identity, not throttled — see
             // `ROMMatcher.match`'s own doc comment for why throttling this
@@ -115,10 +122,11 @@ public enum DiskAuditor {
             let game = identity.game
             let disk = identity.disk
             let chdNames = game.disks.map(\.name).joined(separator: ", ")
-            let status = CHDMatcher.match(disk: disk, chdFiles: chdFiles, headerIndex: headerIndex)
+            let status = CHDMatcher.match(disk: disk, chdFiles: chdFiles, headerIndex: headerIndex, duplicatePreference: duplicatePreference)
             switch status {
                 case .correct(let url):
                     consumedCHDs.insert(url)
+                    if let sha1 = disk.sha1 { satisfiedDiskSHA1s.insert(sha1) }
                     let header = headerIndex.header(for: url)
                     entries.append(AuditEntry(
                         status: .correct, game: game.name, gameDescription: game.description,
@@ -179,12 +187,41 @@ public enum DiskAuditor {
         // `<disk>` in the DAT at all) — exactly the same false-unknown
         // problem `romsByHash` already solves for duplicate rom files.
         var diskSHA1ToGameDescription: [String: String] = [:]
+        // Mirrors `diskSHA1ToGameDescription` above, but the DAT's own
+        // machine name (e.g. `"naomi"`) rather than its human-readable
+        // description — same reasoning as `SurplusFile.requiredByGameMachineName`'s
+        // own doc comment: `MaintenanceDonorDetector`/`RebuildPlanner` need
+        // an actual lookup key for a "Repair from Maintenance Folder" donor
+        // search, not display text.
+        var diskSHA1ToGameMachineName: [String: String] = [:]
         for game in dat.games {
             for disk in game.disks {
                 guard let sha1 = disk.sha1 else { continue }
                 if diskSHA1ToGameDescription[sha1] == nil {
                     diskSHA1ToGameDescription[sha1] = game.description
+                    diskSHA1ToGameMachineName[sha1] = game.name
                 }
+            }
+        }
+
+        // Same "genuine duplicate among the unclaimed leftovers themselves"
+        // fallback as `ROMMatcher.swift`'s own `duplicateAmongSurplusIndices`
+        // — a shared disk some UNRELATED game happens to declare first in
+        // the DAT (first-game-wins, `diskSHA1ToGameDescription` above) can
+        // never "confirm" anything via `satisfiedDiskSHA1s` if that
+        // unrelated game has no real disk of its own anywhere, even when
+        // the SAME physical `.chd` genuinely sits in more than one
+        // unclaimed location at once — first occurrence (in `chdFiles`'s
+        // own given order) is the keeper, every other one sharing that
+        // sha1 is a confirmed, genuine duplicate of it.
+        var firstUnclaimedCHDBySHA1: [String: URL] = [:]
+        var duplicateAmongUnclaimedCHDs = Set<URL>()
+        for url in chdFiles where !consumedCHDs.contains(url) {
+            guard let sha1 = headerIndex.header(for: url)?.sha1 else { continue }
+            if let firstURL = firstUnclaimedCHDBySHA1[sha1], firstURL != url {
+                duplicateAmongUnclaimedCHDs.insert(url)
+            } else {
+                firstUnclaimedCHDBySHA1[sha1] = url
             }
         }
 
@@ -201,9 +238,21 @@ public enum DiskAuditor {
             let header = headerIndex.header(for: url)
             let sha1 = header?.sha1
             let requiredBy = sha1.flatMap { diskSHA1ToGameDescription[$0] }
+            let requiredByMachineName = sha1.flatMap { diskSHA1ToGameMachineName[$0] }
+            // Unlike a loose rom fragment, a duplicate CHD is a whole,
+            // directly-usable unit — copy-pasting a `.chd` file leaves a
+            // fully working disk image either way, so `duplicateAmongUnclaimedCHDs`
+            // (situation B) is safe here just like a whole duplicated archive.
+            // Still track `ownerSatisfiedElsewhere` (situation A) separately
+            // for message accuracy — see `SurplusFile.requiredByGameOwnerSatisfiedElsewhere`.
+            let ownerSatisfiedElsewhere = requiredBy != nil && (sha1.map { satisfiedDiskSHA1s.contains($0) } ?? false)
+            let requiredByConfirmedRedundant = ownerSatisfiedElsewhere
+                || (requiredBy != nil && duplicateAmongUnclaimedCHDs.contains(url))
             entries.append(AuditEntry(
                 status: requiredBy != nil ? .incorrect : .surplus, game: nil,
-                isDisk: true, requiredByGameDescription: requiredBy,
+                isDisk: true, requiredByGameDescription: requiredBy, requiredByGameMachineName: requiredByMachineName,
+                requiredByGameConfirmedRedundant: requiredByConfirmedRedundant,
+                requiredByGameOwnerSatisfiedElsewhere: ownerSatisfiedElsewhere,
                 name: url.lastPathComponent, path: url,
                 actualSize: header.map { Int64($0.logicalBytes) },
                 actualSHA1: sha1

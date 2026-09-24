@@ -155,6 +155,7 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
     private var deviceRefs: [String] = []
     private var chips: [MAMEChip] = []
     private var hasSamples = false
+    private var sampleOf: String?
     private var driverStatus: String?
     private var displayType: String?
     private var displayRotate: String?
@@ -189,6 +190,12 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
             deviceRefs = []
             chips = []
             hasSamples = false
+            // The `sampleof="..."` attribute (MAME `-listxml`'s own DTD) —
+            // mirrors `cloneof`/`romof`: names a DIFFERENT machine whose own
+            // `samples/<name>.zip` this one's samples actually live in,
+            // when this machine shares them rather than having its own.
+            // `nil` for a machine with its own samples (or none at all).
+            sampleOf = attributeDict["sampleof"]
             driverStatus = nil
             displayType = nil
             displayRotate = nil
@@ -300,6 +307,7 @@ private final class MAMEXMLParserDelegate: NSObject, XMLParserDelegate {
                     deviceRefs: deviceRefs,
                     chips: chips,
                     hasSamples: hasSamples,
+                    sampleOf: sampleOf,
                     driverStatus: driverStatus,
                     displayType: displayType,
                     displayRotate: displayRotate,

@@ -45,13 +45,33 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
     /// happens to be selected, not a restriction on the setting itself.
     var hasClones: Bool?
 
+    /// Whether this system's DAT parses as a MAME format (`-listxml` or a
+    /// Software List) rather than plain Logiqx — decided once, in
+    /// `AddSystemSheet`, by actually parsing the chosen DAT with
+    /// `DATLoader.parse(contentsOf:)` (the same auto-detector the real load
+    /// path uses), not by which button was clicked or the system's name.
+    /// This is what lets the GUI stop mixing MAME-only concepts (Rom/Bios
+    /// merge mode, the MAME executable, Samples, and the MAME-only
+    /// "Database" tree branches) into a console system's own settings —
+    /// jensyleo's own request (2026-09-23), starting with NES: "hay que
+    /// hacer ajustes en la GUI de tal manera que lo de MAME no se mezcle
+    /// con los demás sistemas."
+    ///
+    /// Defaults to `true` for every system saved by a build before this
+    /// field existed — every system ROMForge has ever supported until now
+    /// WAS a MAME system, so that's the only historically-correct fallback
+    /// (never `false`, which would suddenly treat someone's real MAME
+    /// system as a plain console one on next launch).
+    var isMAMEStyle: Bool
+
     init(
         id: UUID = UUID(),
         name: String,
         category: String = "",
         datURL: URL,
         romFolderURLs: [URL],
-        hasClones: Bool? = nil
+        hasClones: Bool? = nil,
+        isMAMEStyle: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -59,10 +79,11 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         self.datURL = datURL
         self.romFolderURLs = romFolderURLs
         self.hasClones = hasClones
+        self.isMAMEStyle = isMAMEStyle
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, category, datURL, romFolderURLs, hasClones
+        case id, name, category, datURL, romFolderURLs, hasClones, isMAMEStyle
         // From earlier, since-abandoned per-system designs — kept only so
         // systems saved by those builds still decode instead of crashing;
         // the values themselves are never read anymore (merge mode is a
@@ -88,6 +109,7 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
             romFolderURLs = [try container.decode(URL.self, forKey: .legacyRomFolderURL)]
         }
         hasClones = try container.decodeIfPresent(Bool.self, forKey: .hasClones)
+        isMAMEStyle = try container.decodeIfPresent(Bool.self, forKey: .isMAMEStyle) ?? true
     }
 
     func encode(to encoder: Encoder) throws {
@@ -98,5 +120,6 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         try container.encode(datURL, forKey: .datURL)
         try container.encode(romFolderURLs, forKey: .romFolderURLs)
         try container.encodeIfPresent(hasClones, forKey: .hasClones)
+        try container.encode(isMAMEStyle, forKey: .isMAMEStyle)
     }
 }

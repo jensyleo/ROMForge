@@ -74,6 +74,50 @@ struct ROMMatcherTests {
         #expect(result.matches[0].status == .misnamed(local))
     }
 
+    @Test("several roms sharing IDENTICAL content under different declared names each self-claim the archive entry already correctly named for them — never an unnecessary cross-swap")
+    func identicalContentRomsPreferAlreadyCorrectlyNamedEntries() throws {
+        // Real case found live by jensyleo (2026-09-13): a shared PAL chip
+        // wired to several sockets is often dumped once and declared under
+        // N different rom names, all with IDENTICAL content (same
+        // crc/sha1/size) — e.g. MAME's own "chasehq" declaring the same PAL
+        // as `pal20l8b-b52-17.ic16`/`.ic18`/`.ic53`/`.ic55`. Before this fix,
+        // `ROMMatcher` claimed each such rom's FIRST unconsumed candidate by
+        // raw index, regardless of name — so an archive that already had
+        // every entry correctly named could still have rom `.ic18` claim
+        // the entry actually named `.ic16` (because it sorted first),
+        // leaving rom `.ic16` to claim the entry actually named `.ic18`: a
+        // needless swap reported as two `.misnamed` roms, and "Fix Misnamed
+        // ROMs…" then failed outright trying to rename each into the
+        // other's own name (`RebuildError.wouldOverwriteExistingFile`).
+        let dat = DATFile(
+            header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"),
+            games: [
+                DATGame(
+                    name: "sharedpal", description: "Shared PAL Game", cloneOf: nil, romOf: nil,
+                    roms: [
+                        DATRom(name: "pal.ic16", size: 260, crc: "dddddddd", md5: nil, sha1: "4444444444444444444444444444444444444444"),
+                        DATRom(name: "pal.ic18", size: 260, crc: "dddddddd", md5: nil, sha1: "4444444444444444444444444444444444444444"),
+                    ]
+                ),
+            ]
+        )
+        // Entries deliberately listed ic18-before-ic16, so a plain
+        // "first unconsumed candidate by index" claim (ic16's rom is
+        // processed first in DAT order, at index 0 of `hashedFiles`... but
+        // the candidate list itself is sorted ascending by index — see
+        // `uniqued`) would hand rom "pal.ic16" the entry at index 0, which
+        // is genuinely named "pal.ic18" here, reproducing the exact swap.
+        let entryIC18 = zipEntryHashedFile(archiveName: "sharedpal", entryName: "pal.ic18", size: 260, crc: "dddddddd", sha1: "4444444444444444444444444444444444444444")
+        let entryIC16 = zipEntryHashedFile(archiveName: "sharedpal", entryName: "pal.ic16", size: 260, crc: "dddddddd", sha1: "4444444444444444444444444444444444444444")
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [entryIC18, entryIC16])
+
+        let result = report.games.first { $0.game.name == "sharedpal" }!
+        let ic16Match = result.matches.first { $0.rom.name == "pal.ic16" }!
+        let ic18Match = result.matches.first { $0.rom.name == "pal.ic18" }!
+        #expect(ic16Match.status == .correct(entryIC16))
+        #expect(ic18Match.status == .correct(entryIC18))
+    }
+
     @Test("marks a rom missing when no local file matches")
     func marksMissingWhenNoFileMatches() throws {
         let report = try ROMMatcher.match(dat: dat, hashedFiles: [])
@@ -462,6 +506,159 @@ struct ROMMatcherTests {
         #expect(report.surplusFiles.first?.requiredByGameDescription == "Header Test")
     }
 
+    // jensyleo's own explicit rule (2026-09-16), a real-collection report:
+    // "SEGA" and "CPS2" both physically hold a copy of the same NAOMI BIOS
+    // archive — the default "first folder always wins" rule above meant
+    // the SAME one of the two was permanently flagged redundant no matter
+    // which folder the user actually just scanned. "Si hay archivos/roms
+    // redundantes, estas deben quedar declaradas como redundantes en la
+    // ÚLTIMA carpeta escaneada" — passing that folder's own path as
+    // `recentlyScannedPaths` must flip the claim to the OTHER folder,
+    // reversing the plain "first folder" default from the test above.
+    @Test("recentlyScannedPaths flips a duplicate claim to the OTHER folder — the just-scanned copy becomes the surplus one")
+    func recentlyScannedFolderLosesTheClaim() throws {
+        let rom = DATRom(name: "naomi.zip", size: 4, crc: "cccc1111", md5: nil, sha1: nil)
+        let game = DATGame(name: "naomi", description: "Naomi Bios", cloneOf: nil, romOf: nil, roms: [rom])
+        let singleGameDAT = DATFile(header: dat.header, games: [game])
+
+        let inSega = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/SEGA/naomi.zip"), name: "naomi.zip", size: 4),
+            hash: FileHash(crc32: "cccc1111", md5: nil, sha1: nil)
+        )
+        let inCPS2 = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/CPS2/naomi.zip"), name: "naomi.zip", size: 4),
+            hash: FileHash(crc32: "cccc1111", md5: nil, sha1: nil)
+        )
+
+        // Baseline (no recently-scanned scope): SEGA, the first folder,
+        // wins — same default as `firstFolderAlwaysOwnsTheArchive` above.
+        let baseline = try ROMMatcher.match(dat: singleGameDAT, hashedFiles: [inSega, inCPS2])
+        if case .correct(let file, _)? = baseline.games.first?.matches.first?.status {
+            #expect(file.file.url.path == "/roms/SEGA/naomi.zip")
+        } else {
+            Issue.record("expected SEGA's copy to be claimed by default")
+        }
+
+        // Now the user just scanned SEGA specifically — its copy must lose
+        // the claim to CPS2's, and be the one reported as the duplicate.
+        let afterScanningSega = try ROMMatcher.match(
+            dat: singleGameDAT, hashedFiles: [inSega, inCPS2],
+            recentlyScannedPaths: [URL(fileURLWithPath: "/roms/SEGA")]
+        )
+        if case .correct(let file, _)? = afterScanningSega.games.first?.matches.first?.status {
+            #expect(file.file.url.path == "/roms/CPS2/naomi.zip")
+        } else {
+            Issue.record("expected CPS2's copy to be claimed once SEGA was the recently-scanned folder")
+        }
+        #expect(afterScanningSega.surplusFiles.count == 1)
+        #expect(afterScanningSega.surplusFiles.first?.file.file.url.path == "/roms/SEGA/naomi.zip")
+        #expect(afterScanningSega.surplusFiles.first?.requiredByGameDescription == "Naomi Bios")
+    }
+
+    @Test("recentlyScannedPaths can NEVER flip the claim to a LESS complete archive — jensyleo's own real, live incident (2026-09-17): SEGA/naomi.zip (the real, complete 37-rom Naomi BIOS, represented here by 2 roms) had merely been rescanned more recently than CAPCOM/CPS2/naomi.zip (a stray file holding only ONE, different rom) — recency alone wrongly picked CPS2 as primary, stripped every one of SEGA's own roms out into 'redundant' surplus entries, and 'Remove Redundant File(s)…' then permanently deleted the user's real, complete BIOS archive while leaving the genuinely incomplete stray untouched. Completeness must always outrank recency; recency only arbitrates a genuine tie (see the identical-content test above)")
+    func recencyNeverOutranksCompleteness() throws {
+        let romA = DATRom(name: "epr-a.ic27", size: 4, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let romB = DATRom(name: "epr-b.ic27", size: 4, crc: "bbbbbbbb", md5: nil, sha1: nil)
+        let game = DATGame(name: "naomi", description: "Naomi Bios", cloneOf: nil, romOf: nil, roms: [romA, romB])
+        let singleGameDAT = DATFile(header: dat.header, games: [game])
+
+        // SEGA's naomi.zip has BOTH of naomi's own roms — genuinely
+        // complete on its own.
+        let segaRomA = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/SEGA/naomi.zip"), name: "epr-a.ic27", size: 4),
+            hash: FileHash(crc32: "aaaaaaaa", md5: nil, sha1: nil)
+        )
+        let segaRomB = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/SEGA/naomi.zip"), name: "epr-b.ic27", size: 4),
+            hash: FileHash(crc32: "bbbbbbbb", md5: nil, sha1: nil)
+        )
+        // CPS2's naomi.zip is a totally different, incomplete file: only
+        // one DIFFERENT rom, under the SAME archive name.
+        let cps2StrayRom = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/CPS2/naomi.zip"), name: "epr-c.ic27", size: 4),
+            hash: FileHash(crc32: "cccccccc", md5: nil, sha1: nil)
+        )
+
+        // Even with SEGA as the recently-scanned folder (the exact real
+        // incident's own trigger), SEGA must still win — it's the only
+        // candidate that can satisfy naomi's own roms at all.
+        let report = try ROMMatcher.match(
+            dat: singleGameDAT, hashedFiles: [segaRomA, segaRomB, cps2StrayRom],
+            recentlyScannedPaths: [URL(fileURLWithPath: "/roms/SEGA")]
+        )
+
+        let matches = report.games.first?.matches ?? []
+        #expect(matches.count == 2)
+        for match in matches {
+            if case .correct(let file, _) = match.status {
+                #expect(file.file.url.path == "/roms/SEGA/naomi.zip", "SEGA must stay the owner of its own roms regardless of recency — it's strictly more complete than CPS2's unrelated stray file")
+            } else {
+                Issue.record("expected both of naomi's own roms to be claimed from SEGA's own, complete archive, recency notwithstanding")
+            }
+        }
+        // CPS2's own stray rom is a completely different, unrelated rom
+        // (not one of naomi's own) — it's simply unrecognized here, never
+        // "redundant duplicate" of anything SEGA has.
+        #expect(report.surplusFiles.count == 1)
+        #expect(report.surplusFiles.first?.file.file.url.path == "/roms/CPS2/naomi.zip")
+    }
+
+    @Test("two DIFFERENT physical archives sharing one name never get pooled together — an incomplete stray copy never borrows content from (or silently completes) the other one's own audit")
+    func sameNameDifferentContentArchivesAreNeverPooled() throws {
+        // jensyleo's own real collection (2026-09-17): `SEGA/naomi.zip` is
+        // the genuine, complete Naomi BIOS; a stray, unrelated
+        // `CPS2/naomi.zip` contains only ONE other rom the DAT also
+        // recognizes as belonging to "naomi" — a real, valid rom, just an
+        // incomplete, independent file, byte-different from SEGA's own
+        // copy. jensyleo's own rule: a duplicate requires the SAME name
+        // AND byte-identical content — these two are NOT byte-identical
+        // (different CRCs), so pooling their content together (letting
+        // CPS2's one rom count toward "naomi" being fully correct) was the
+        // bug: both files read green/"Correct" even though CPS2's copy is,
+        // on its own, missing the other rom entirely.
+        let romA = DATRom(name: "epr-a.ic27", size: 4, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let romB = DATRom(name: "epr-b.ic27", size: 4, crc: "bbbbbbbb", md5: nil, sha1: nil)
+        let game = DATGame(name: "naomi", description: "Naomi Bios", cloneOf: nil, romOf: nil, roms: [romA, romB])
+        let singleGameDAT = DATFile(header: dat.header, games: [game])
+
+        // SEGA's naomi.zip has BOTH roms — genuinely complete on its own.
+        let segaRomA = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/SEGA/naomi.zip"), name: "epr-a.ic27", size: 4),
+            hash: FileHash(crc32: "aaaaaaaa", md5: nil, sha1: nil)
+        )
+        let segaRomB = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/SEGA/naomi.zip"), name: "epr-b.ic27", size: 4),
+            hash: FileHash(crc32: "bbbbbbbb", md5: nil, sha1: nil)
+        )
+        // CPS2's naomi.zip is a totally different, incomplete file: only
+        // romB, under the SAME archive name.
+        let cps2RomB = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/CPS2/naomi.zip"), name: "epr-b.ic27", size: 4),
+            hash: FileHash(crc32: "bbbbbbbb", md5: nil, sha1: nil)
+        )
+
+        let report = try ROMMatcher.match(dat: singleGameDAT, hashedFiles: [segaRomA, segaRomB, cps2RomB])
+
+        // SEGA's own archive must be resolved entirely from ITS OWN
+        // content — both roms correct, both pointing at SEGA's own file.
+        let matches = report.games.first?.matches ?? []
+        #expect(matches.count == 2)
+        for match in matches {
+            if case .correct(let file, _) = match.status {
+                #expect(file.file.url.path == "/roms/SEGA/naomi.zip")
+            } else {
+                Issue.record("expected every rom to be claimed from SEGA's own, complete archive")
+            }
+        }
+        // CPS2's own romB entry must NOT be silently absorbed as bonus
+        // content for SEGA's archive — it's a leftover, independent file,
+        // reported as required by "naomi" (a real, known rom), never
+        // silently swallowed into someone else's "Correct" verdict.
+        #expect(report.surplusFiles.count == 1)
+        #expect(report.surplusFiles.first?.file.file.url.path == "/roms/CPS2/naomi.zip")
+        #expect(report.surplusFiles.first?.requiredByGameDescription == "Naomi Bios")
+    }
+
     @Test("the same archive present in FOUR different ROM folders: exactly one is claimed and ALL THREE extras are tagged as duplicates — never left unrecognized")
     func sameArchiveInManyFoldersTagsEverySingleExtra() throws {
         // jensyleo's own question (2026-08-06), after seeing scenario #4
@@ -810,5 +1007,140 @@ struct ROMMatcherTests {
 
         let surplus = try #require(report.surplusFiles.first { $0.file.file.name == "Screenshot.png" })
         #expect(surplus.isInKnownArchive == false)
+    }
+
+    // MARK: - requiredByGameConfirmedRedundant (2026-09-19 real incident)
+
+    @Test("requiredByGameConfirmedRedundant is false when the owning game does NOT actually have this content satisfied anywhere real — jensyleo's own real incident (2026-09-19): a stray naomi.zip full of genuine NAOMI BIOS content got deleted as 'safe, required elsewhere' right as NAOMI BIOS's own real archive was ALSO removed, leaving NAOMI BIOS with no real copy left outside the Maintenance folder. requiredByGameDescription alone only ever means 'the DAT declares this belongs to X', never 'X already has a good copy elsewhere' — confirmedRedundant is the extra check that distinguishes the two")
+    func requiredByGameConfirmedRedundantIsFalseWhenOwnerHasNoRealCopy() throws {
+        let neededRom = DATRom(name: "chip.bin", size: 4, crc: "deadbeef", md5: nil, sha1: nil)
+        let owner = DATGame(name: "naomi", description: "Naomi Bios", cloneOf: nil, romOf: nil, roms: [neededRom])
+        // A second, unrelated real game, owning nothing to do with "chip.bin"
+        // at all — exists purely so `isInClaimedArchive` (a structural check:
+        // "is this entry's containing archive's own basename a real DAT
+        // machine name") reads TRUE for the stray copy below, which sits
+        // inside an archive literally named after THIS game, not naomi's.
+        // Per `ROMMatcher`'s own `.foundElsewhere` gate (`gameOwnsRealFiles
+        // || !isInClaimedArchive(...)`), naomi — which owns no real archive
+        // of its own here — is correctly blocked from claiming this as
+        // "found elsewhere" (that's reserved for content sitting loose or
+        // inside an unrecognized archive, a genuine reorganization problem;
+        // content sitting inside some OTHER real game's own-named archive is
+        // treated as an ordinary coincidence instead, per that gate's own
+        // doc comment) — so naomi's own rom correctly resolves to a genuine
+        // `.missing`, exactly like the real incident (naomi's own archive
+        // had been deleted, and its content, while still recognized by
+        // hash, wasn't sitting anywhere that counts as "naomi already has
+        // it").
+        let unrelatedRom = DATRom(name: "unrelated.bin", size: 4, crc: "cafef00d", md5: nil, sha1: nil)
+        let otherGame = DATGame(name: "prizefight", description: "Prize Fighter", cloneOf: nil, romOf: nil, roms: [unrelatedRom])
+        let dat = DATFile(
+            header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"),
+            games: [owner, otherGame]
+        )
+        // Genuinely claims prizefight's OWN rom, making this an
+        // archive-organized scan and giving prizefight real, claimed
+        // content of its own.
+        let prizefightOwnArchiveEntry = zipEntryHashedFile(archiveName: "prizefight", entryName: "unrelated.bin", size: 4, crc: "cafef00d", sha1: "1111111111111111111111111111111111111b")
+        // The ONLY copy of naomi's own declared content anywhere in the
+        // scan — a leftover, UNCLAIMED entry sitting inside prizefight's
+        // own archive (prizefight itself never declares this rom, so its
+        // own resolution never claims it) — exactly the real
+        // multi-content-donor-archive shape the actual incident had.
+        let strayEntryInPrizefightZip = zipEntryHashedFile(archiveName: "prizefight", entryName: "chip.bin", size: 4, crc: "deadbeef", sha1: "0000000000000000000000000000000000000a")
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [prizefightOwnArchiveEntry, strayEntryInPrizefightZip])
+
+        let namingGame = try #require(report.games.first { $0.game.name == "naomi" })
+        #expect(namingGame.matches.first?.status == .missing, "naomi must genuinely be missing this rom — nothing here claims it, or even offers it informationally, as naomi's own")
+        let surplus = try #require(report.surplusFiles.first { $0.file.file.name == "chip.bin" })
+        #expect(surplus.requiredByGameDescription == "Naomi Bios", "still informative — this IS recognized content")
+        #expect(surplus.requiredByGameConfirmedRedundant == false, "must NOT be offered as a safe delete — naomi has no real copy of this anywhere else")
+    }
+
+    @Test("requiredByGameConfirmedRedundant is true when the owning game genuinely already has this content satisfied elsewhere — the safe, correct case Remove Redundant Files/ROMs should still handle")
+    func requiredByGameConfirmedRedundantIsTrueWhenOwnerHasARealCopy() throws {
+        let neededRom = DATRom(name: "chip.bin", size: 4, crc: "deadbeef", md5: nil, sha1: nil)
+        let owner = DATGame(name: "naomi", description: "Naomi Bios", cloneOf: nil, romOf: nil, roms: [neededRom])
+        let dat = DATFile(
+            header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"),
+            games: [owner]
+        )
+        // naomi's own archive genuinely has this rom, correctly.
+        let ownArchiveCopy = zipEntryHashedFile(archiveName: "naomi", entryName: "chip.bin", size: 4, crc: "deadbeef", sha1: "0000000000000000000000000000000000000a")
+        // A second, genuinely spare loose copy of the exact same content,
+        // sitting somewhere unrelated — THIS is the one that should be
+        // offered for removal.
+        let strayLooseFile = hashedFile(name: "chip.bin", size: 4, crc: "deadbeef", sha1: "0000000000000000000000000000000000000a")
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [ownArchiveCopy, strayLooseFile])
+
+        let namingGame = try #require(report.games.first { $0.game.name == "naomi" })
+        #expect(namingGame.matches.first?.status == .correct(ownArchiveCopy), "naomi's own archive claims its own rom normally")
+        let surplus = try #require(report.surplusFiles.first { $0.file.file.name == "chip.bin" })
+        #expect(surplus.requiredByGameConfirmedRedundant == true, "naomi already has a real, correct copy — this stray one genuinely is safe to remove")
+    }
+
+    @Test("requiredByGameConfirmedRedundant is false when the only 'confirmation' is a .foundElsewhere row pointing at the SAME unclaimed file — jensyleo's own real incident (2026-09-19), confirmed directly against the persisted database: a widely-shared hardware chip rom (315-6146.bin, declared by hundreds of real MAME machines) produced a `.foundElsewhere` row for '18wheelr' referencing the EXACT SAME loose file that was also flagged as a 'required by 18wheelr' surplus copy — the file was circularly confirming itself as safely redundant, since `.foundElsewhere` never claims/consumes anything")
+    func requiredByGameConfirmedRedundantIgnoresSelfReferentialFoundElsewhere() throws {
+        let sharedRom = DATRom(name: "chip.bin", size: 4, crc: "deadbeef", md5: nil, sha1: nil)
+        // Two DIFFERENT real machines both declare the exact same shared
+        // hardware chip rom — a real, common MAME pattern (a BIOS/security
+        // chip several unrelated games all need) — neither owns any
+        // archive of its own in this scan.
+        let owner = DATGame(name: "18wheelr", description: "18 Wheeler", cloneOf: nil, romOf: nil, roms: [sharedRom])
+        let sibling = DATGame(name: "18wheelro", description: "18 Wheeler (alt)", cloneOf: nil, romOf: nil, roms: [sharedRom])
+        // A third, unrelated real game exists purely to make this an
+        // archive-organized scan (mirrors the real collection, which has
+        // plenty of properly zipped games elsewhere).
+        let unrelatedRom = DATRom(name: "unrelated.bin", size: 4, crc: "cafef00d", md5: nil, sha1: nil)
+        let unrelatedGame = DATGame(name: "unrelatedgame", description: "Unrelated Game", cloneOf: nil, romOf: nil, roms: [unrelatedRom])
+        let dat = DATFile(
+            header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"),
+            games: [owner, sibling, unrelatedGame]
+        )
+        let unrelatedArchiveEntry = zipEntryHashedFile(archiveName: "unrelatedgame", entryName: "unrelated.bin", size: 4, crc: "cafef00d", sha1: "1111111111111111111111111111111111111b")
+        // The ONE and ONLY physical copy of the shared chip anywhere in the
+        // scan — a stray loose file, unclaimed by anyone.
+        let strayLooseFile = hashedFile(name: "chip.bin", size: 4, crc: "deadbeef", sha1: "0000000000000000000000000000000000000a")
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [unrelatedArchiveEntry, strayLooseFile])
+
+        // Both "18wheelr" and "18wheelro" see this same stray file via the
+        // unrestricted `.foundElsewhere` search (neither owns real files of
+        // its own, and a loose file is never "in a claimed archive").
+        let ownerResult = try #require(report.games.first { $0.game.name == "18wheelr" })
+        #expect(ownerResult.matches.first?.status == .foundElsewhere(strayLooseFile))
+        let surplus = try #require(report.surplusFiles.first { $0.file.file.name == "chip.bin" })
+        #expect(surplus.requiredByGameConfirmedRedundant == false, "the ONLY 'confirmation' is a .foundElsewhere pointing right back at this SAME file — that's not an independent second copy, so this must never be offered as a safe delete")
+    }
+
+    @Test("requiredByGameConfirmedRedundant is true when the exact same archive is physically copy-pasted into several folders, even when the shared content's DAT-declared 'owner' has no real archive anywhere — jensyleo's own real report (2026-09-19): copying naomi.zip/naomi2.zip/naomigd.zip into multiple folders stopped being detected as duplicated after the .foundElsewhere fix, because the shared hardware chip content inside them is declared FIRST by an unrelated game (e.g. 18wheelr) with no archive of its own — the fix must not break this already-working, genuinely-obvious case: the SAME hash sitting in multiple physically distinct, unclaimed files at once")
+    func requiredByGameConfirmedRedundantIsTrueForCopyPastedArchiveDuplicates() throws {
+        let sharedRom = DATRom(name: "chip.bin", size: 4, crc: "deadbeef", md5: nil, sha1: nil)
+        // "unrelatedowner" is declared FIRST in the DAT, so `indexRomsByHash`'s
+        // first-game-wins picks IT as the nominal "owner" of this hash —
+        // exactly like the real `18wheelr` case — even though it owns no
+        // archive anywhere in this scan.
+        let unrelatedOwner = DATGame(name: "unrelatedowner", description: "Unrelated Owner", cloneOf: nil, romOf: nil, roms: [sharedRom])
+        let dat = DATFile(
+            header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"),
+            games: [unrelatedOwner]
+        )
+        // The same archive, physically copy-pasted into two different
+        // folders — neither is "unrelatedowner"'s own archive (its name is
+        // "naomi", not "unrelatedowner"), so both copies are unclaimed.
+        let copyOne = zipEntryHashedFile(archiveName: "naomi", entryName: "chip.bin", size: 4, crc: "deadbeef", sha1: "0000000000000000000000000000000000000a")
+        let copyTwo = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/other-folder/naomi.zip"), name: "chip.bin", size: 4),
+            hash: FileHash(crc32: "deadbeef", md5: "00000000000000000000000000000000", sha1: "0000000000000000000000000000000000000a")
+        )
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [copyOne, copyTwo])
+
+        let surplusEntries = report.surplusFiles.filter { $0.file.file.name == "chip.bin" }
+        #expect(surplusEntries.count == 2)
+        #expect(surplusEntries.filter(\.requiredByGameConfirmedRedundant).count == 1, "exactly one of the two physically-identical copies keeps the other one 'confirmed' as its genuine duplicate")
+        #expect(surplusEntries.contains { !$0.requiredByGameConfirmedRedundant }, "the FIRST copy is the keeper, never itself flagged as its own duplicate")
     }
 }

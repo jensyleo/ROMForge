@@ -36,9 +36,9 @@ struct DuplicateSetDetectorTests {
         let duplicate = try! #require(duplicates.first)
         #expect(duplicate.status == .duplicateSet)
         #expect(duplicate.game == "sf2")
-        // The FIRST configured folder always wins as "primary" — same
-        // "earliest folder owns it" rule `ROMMatcher.uniqued` already
-        // guarantees for which physical copy `ROMMatcher` itself claims.
+        // The FIRST configured folder wins as "primary" by default (no
+        // `recentlyScannedPaths` passed) — see `recencyOverridesPrimaryFolder`
+        // below for the recency-aware override.
         #expect(duplicate.duplicateSetPrimaryPath == URL(fileURLWithPath: "/roms/folderA/sf2.zip"))
         #expect(duplicate.path == URL(fileURLWithPath: "/roms/folderB/sf2.zip"))
     }
@@ -178,5 +178,34 @@ struct DuplicateSetDetectorTests {
     func duplicateSetDoesNotAffectWorstStatus() {
         #expect(AuditStatus.worst(among: [.correct, .duplicateSet]) == .correct)
         #expect(AuditStatus.worst(among: [.duplicateSet]) == .correct)
+    }
+
+    // jensyleo's own report (2026-09-16), found live via a background
+    // audit after the same day's `ROMMatcher.match` recency fix: without
+    // this, the per-rom "Duplicated archive, not needed here" flag (which
+    // DOES respect which folder was just scanned) and this game-level
+    // "Duplicate set" flag (which previously always used static config
+    // order) could contradict each other about which folder is "the good
+    // one" for the exact same duplicated game.
+    @Test("recentlyScannedPaths overrides the earliest-configured-folder default, matching ROMMatcher.match's own recency rule")
+    func recencyOverridesPrimaryFolder() {
+        let folderA = URL(fileURLWithPath: "/roms/folderA")
+        let folderB = URL(fileURLWithPath: "/roms/folderB")
+        let report = AuditReport(
+            entries: [
+                correctEntry(game: "sf2", path: "/roms/folderA/sf2.zip"),
+                correctEntry(game: "sf2", path: "/roms/folderB/sf2.zip"),
+            ],
+            correct: 2, incorrect: 0, missing: 0, surplus: 0
+        )
+
+        // folderA was just scanned — it must lose "primary" to folderB,
+        // reversing the plain default (see `flagsCrossFolderDuplicate`).
+        let duplicates = DuplicateSetDetector.detect(in: report, rootFolders: [folderA, folderB], recentlyScannedPaths: [folderA])
+
+        #expect(duplicates.count == 1)
+        let duplicate = try! #require(duplicates.first)
+        #expect(duplicate.duplicateSetPrimaryPath == URL(fileURLWithPath: "/roms/folderB/sf2.zip"))
+        #expect(duplicate.path == URL(fileURLWithPath: "/roms/folderA/sf2.zip"))
     }
 }

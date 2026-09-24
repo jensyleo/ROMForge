@@ -351,6 +351,7 @@ public enum DATLoader {
                 isDevice: machine.isDevice,
                 disks: mergedDisks(for: machine, mode: mode, dataset: dataset),
                 hasSamples: machine.hasSamples,
+                sampleOf: machine.sampleOf,
                 year: machine.year.isEmpty ? nil : machine.year,
                 manufacturer: machine.manufacturer.isEmpty ? nil : machine.manufacturer,
                 mergedFamilyMachineNames: layout.mergedFamilyMachineNames,

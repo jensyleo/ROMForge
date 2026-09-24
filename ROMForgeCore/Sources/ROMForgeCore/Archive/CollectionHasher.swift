@@ -80,12 +80,19 @@ public enum CollectionHasher {
 
         for zipFile in zipFiles {
             try Task.checkCancellation()
+            if let entries = try hashEntirelyFromCache(zipFile, cache: cache, algorithms: algorithms) {
+                hashedFiles.append(contentsOf: entries)
+                zipEntryCount += entries.count
+                archivesRead += 1
+                onArchiveListed?(archivesRead, totalArchives)
+                continue
+            }
             let entries = try ZipArchiveScanner.scan(archive: zipFile.url)
             archivesRead += 1
             onArchiveListed?(archivesRead, totalArchives)
             for entry in entries {
                 zipEntryCount += 1
-                let entryFile = ScannedFile(url: zipFile.url, name: entry.name, size: entry.size, modificationDate: zipFile.modificationDate)
+                let entryFile = ScannedFile(url: zipFile.url, name: entry.name, size: entry.size, modificationDate: zipFile.modificationDate, entryPath: entry.entryPath)
                 if let cached = cache.lookup(for: entryFile, algorithms: algorithms) {
                     hashedFiles.append(cached)
                     continue
@@ -112,6 +119,13 @@ public enum CollectionHasher {
         var sevenZipFallbackFiles: [ScannedFile] = []
         for sevenZipFile in sevenZipFiles {
             try Task.checkCancellation()
+            if let cachedHashed = try hashEntirelyFromCache(sevenZipFile, cache: cache, algorithms: algorithms) {
+                hashedFiles.append(contentsOf: cachedHashed)
+                sevenZipEntryCount += cachedHashed.count
+                archivesRead += 1
+                onArchiveListed?(archivesRead, totalArchives)
+                continue
+            }
             let entries: [ArchivedFile]
             do {
                 entries = try SevenZipArchiveScanner.scan(archive: sevenZipFile.url)
@@ -146,6 +160,29 @@ public enum CollectionHasher {
         hashedFiles.append(contentsOf: try await FileHasher.hash(files: allLooseFiles, cache: cache, algorithms: algorithms, progress: progress))
         hashedFiles.append(contentsOf: try await hashPending(pendingZip, algorithms: algorithms, progress: progress))
         hashedFiles.append(contentsOf: try await hashPendingSevenZip(pendingSevenZip, progress: progress))
+        return hashedFiles
+    }
+
+    /// Skips re-listing `archiveFile`'s own directory (a zip's central
+    /// directory, or `.7z`'s `7zz l -slt` — a real subprocess per file)
+    /// when `cache` already has a complete, still-valid entry set for it
+    /// (same mtime as now) — `nil` means the archive must actually be
+    /// listed, either because it's new/changed or because some entry
+    /// doesn't satisfy `algorithms` yet (e.g. hashing was reconfigured to
+    /// want an extra algorithm since the cache was built), in which case a
+    /// real re-list is required anyway to get each entry's real
+    /// `ArchivedFile` for hashing.
+    private static func hashEntirelyFromCache(_ archiveFile: ScannedFile, cache: ScanCache, algorithms: HashAlgorithms) throws -> [HashedFile]? {
+        guard let cachedEntries = cache.cachedEntries(forArchive: archiveFile.url, modificationDate: archiveFile.modificationDate) else {
+            return nil
+        }
+        var hashedFiles: [HashedFile] = []
+        hashedFiles.reserveCapacity(cachedEntries.count)
+        for entry in cachedEntries {
+            let entryFile = ScannedFile(url: archiveFile.url, name: entry.name, size: entry.size, modificationDate: archiveFile.modificationDate, entryPath: entry.entryPath)
+            guard let cached = cache.lookup(for: entryFile, algorithms: algorithms) else { return nil }
+            hashedFiles.append(cached)
+        }
         return hashedFiles
     }
 

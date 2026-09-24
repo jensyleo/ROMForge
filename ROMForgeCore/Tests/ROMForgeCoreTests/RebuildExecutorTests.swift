@@ -361,6 +361,73 @@ struct RebuildExecutorTests {
         #expect(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport).isEmpty)
     }
 
+    // MARK: - Remove Redundant Files/ROMs (jensyleo's own request, 2026-09-13
+    // — the exact complement of "Remove Useless Files": a `SurplusFile` the
+    // DAT DOES recognize, just not needed at this exact location.)
+
+    @Test("deletes a loose redundant file the DAT recognizes elsewhere, leaves genuinely unrecognized junk and same-archive duplicates alone")
+    func removesOnlyLooseRedundantFiles() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        func hashedFile(name: String) -> HashedFile {
+            let url = root.appendingPathComponent(name)
+            try? Data(name.utf8).write(to: url)
+            return HashedFile(file: ScannedFile(url: url, name: name, size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        }
+
+        let redundant = SurplusFile(
+            file: hashedFile(name: "redundant.bin"), requiredByGameDescription: "Some Other Game",
+            requiredByGameConfirmedRedundant: true, requiredByGameOwnerSatisfiedElsewhere: true
+        )
+        let junk = SurplusFile(file: hashedFile(name: "junk.bin"))
+        let matchReport = MatchReport(games: [], surplusFiles: [redundant, junk])
+
+        let operations = RebuildPlanner.planRemoveRedundantFiles(matchReport: matchReport)
+        #expect(operations == [.delete(root.appendingPathComponent("redundant.bin"))])
+
+        try RebuildExecutor.execute(operations)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("redundant.bin").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("junk.bin").path))
+    }
+
+    @Test("removes only a redundant ENTRY inside a zip, never the whole archive, never a loose file")
+    func removesOnlyRedundantEntryFromZip() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let zipURL = root.appendingPathComponent("mixed.zip")
+        try makeZip(at: zipURL, entries: [("redundant.bin", "redundant-content"), ("needed.bin", "needed-content")])
+
+        let redundantInZip = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: zipURL, name: "redundant.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            requiredByGameDescription: "Some Other Game", requiredByGameConfirmedRedundant: true, requiredByGameOwnerSatisfiedElsewhere: true
+        )
+        let looseRedundant = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: root.appendingPathComponent("loose.bin"), name: "loose.bin", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "0", sha1: "0")),
+            requiredByGameDescription: "Some Other Game", requiredByGameConfirmedRedundant: true, requiredByGameOwnerSatisfiedElsewhere: true
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [redundantInZip, looseRedundant])
+
+        let operations = RebuildPlanner.planRemoveRedundantRoms(matchReport: matchReport)
+        #expect(operations == [.removeEntryFromZip(archive: zipURL, entryName: "redundant.bin")])
+
+        try RebuildExecutor.execute(operations)
+        #expect(FileManager.default.fileExists(atPath: zipURL.path), "the archive itself must survive")
+        let archive = try Archive(url: zipURL, accessMode: .read)
+        #expect(archive["redundant.bin"] == nil, "the redundant entry must be gone")
+        #expect(archive["needed.bin"] != nil, "every OTHER rom in the same archive must survive untouched")
+    }
+
+    @Test("a genuinely unrecognized surplus file is never touched by either redundant-removal planner")
+    func redundantPlannersIgnoreGenuinelyUnrecognizedJunk() throws {
+        let junk = SurplusFile(file: HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/junk.bin"), name: "junk.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")))
+        let matchReport = MatchReport(games: [], surplusFiles: [junk])
+
+        #expect(RebuildPlanner.planRemoveRedundantFiles(matchReport: matchReport).isEmpty)
+        #expect(RebuildPlanner.planRemoveRedundantRoms(matchReport: matchReport).isEmpty)
+    }
+
     // MARK: - Cross-set repair (Fase 2 Step 3)
 
     @Test("repairs a missing rom by borrowing it from a sibling clone's own zip, adding it into the broken set's existing zip in place")
@@ -494,6 +561,56 @@ struct RebuildExecutorTests {
         #expect(try String(contentsOf: donorURL, encoding: .utf8) == "shared-content")
     }
 
+    @Test("repairs a rom whose status is .foundElsewhere (not .missing) from a Maintenance-folder donor — jensyleo's own real incident (2026-09-21): a NAOMI BIOS rom (315-6146.bin) also declared by an unrelated game (mvsc2) showed \"Available in another game (mvsc2.zip)\" forever, since .foundElsewhere content is genuinely absent from naomi's OWN archive but the old .missing-only guard skipped it regardless of whether Maintenance had a clean donor")
+    func repairFromMaintenanceFolderAlsoRepairsFoundElsewhereRoms() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let gameZip = root.appendingPathComponent("naomi.zip")
+        try makeZip(at: gameZip, entries: [("a-only.bin", "A-only-content")])
+
+        let donorURL = root.appendingPathComponent("maintenance/315-6146.bin")
+        try FileManager.default.createDirectory(at: donorURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("shared-chip-content".utf8).write(to: donorURL)
+
+        let sharedRom = DATRom(name: "315-6146.bin", size: Int64("shared-chip-content".utf8.count), crc: "deadbeef", md5: nil, sha1: nil)
+        let aOnlyRom = DATRom(name: "a-only.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "naomi", description: "NAOMI BIOS", cloneOf: nil, romOf: nil, roms: [aOnlyRom, sharedRom])
+
+        // The unrelated game "mvsc2" also declares this exact hash, and its
+        // own unclaimed copy is what ROMMatcher reports as .foundElsewhere
+        // for naomi's own row — genuinely absent from naomi.zip itself.
+        let elsewhereFile = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/CPS2/mvsc2.zip"), name: "315-6146.bin", size: Int64("shared-chip-content".utf8.count)),
+            hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0")
+        )
+        let matchReport = MatchReport(
+            games: [
+                GameMatchResult(game: game, matches: [
+                    RomMatch(rom: aOnlyRom, status: .correct(HashedFile(file: ScannedFile(url: gameZip, name: "a-only.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")))),
+                    RomMatch(rom: sharedRom, status: .foundElsewhere(elsewhereFile)),
+                ]),
+            ],
+            surplusFiles: []
+        )
+        let donorFiles = [
+            HashedFile(file: ScannedFile(url: donorURL, name: donorURL.lastPathComponent, size: Int64("shared-chip-content".utf8.count)), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0")),
+        ]
+
+        let operations = RebuildPlanner.planRepairFromMaintenanceFolder(matchReport: matchReport, donorFiles: donorFiles)
+        #expect(operations.count == 1)
+        try RebuildExecutor.execute(operations)
+
+        let archive = try Archive(url: gameZip, accessMode: .read)
+        guard let entry = archive["315-6146.bin"] else {
+            Issue.record("naomi's own zip should now contain the repaired \"315-6146.bin\" entry")
+            return
+        }
+        var extracted = Data()
+        _ = try archive.extract(entry) { extracted.append($0) }
+        #expect(String(data: extracted, encoding: .utf8) == "shared-chip-content")
+    }
+
     @Test("never borrows from a Maintenance-folder donor whose content doesn't actually match the missing rom")
     func repairFromMaintenanceFolderSkipsNonMatchingDonor() throws {
         let root = try tempDirectory()
@@ -525,6 +642,98 @@ struct RebuildExecutorTests {
         ]
 
         #expect(RebuildPlanner.planRepairFromMaintenanceFolder(matchReport: matchReport, donorFiles: donorFiles).isEmpty)
+    }
+
+    // MARK: - Replace Corrupted ROMs
+
+    @Test("replaces a hash-mismatched zip entry's bad content with a verified-correct Maintenance-folder donor")
+    func replaceCorruptedRomsOverwritesBadZipEntryFromDonorContent() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let gameZip = root.appendingPathComponent("game.zip")
+        try makeZip(at: gameZip, entries: [("bad.bin", "wrong-content")])
+
+        let donorURL = root.appendingPathComponent("maintenance/some-random-dump-name.bin")
+        try FileManager.default.createDirectory(at: donorURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("correct-content".utf8).write(to: donorURL)
+
+        let rom = DATRom(name: "bad.bin", size: Int64("correct-content".utf8.count), crc: "deadbeef", md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let badHashedFile = HashedFile(file: ScannedFile(url: gameZip, name: "bad.bin", size: Int64("wrong-content".utf8.count)), hash: FileHash(crc32: "ffffffff", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .hashMismatch(badHashedFile))])],
+            surplusFiles: []
+        )
+        let donorFiles = [
+            HashedFile(file: ScannedFile(url: donorURL, name: donorURL.lastPathComponent, size: Int64("correct-content".utf8.count)), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0")),
+        ]
+
+        let operations = RebuildPlanner.planReplaceCorruptedRoms(matchReport: matchReport, donorFiles: donorFiles)
+        #expect(operations == [
+            .removeEntryFromZip(archive: gameZip, entryName: "bad.bin"),
+            .addEntryToZip(targetArchive: gameZip, entryName: "bad.bin", source: ArchiveEntrySource(source: donorURL, entryName: "bad.bin")),
+        ])
+        try RebuildExecutor.execute(operations)
+
+        let archive = try Archive(url: gameZip, accessMode: .read)
+        guard let entry = archive["bad.bin"] else {
+            Issue.record("game.zip should still have exactly one \"bad.bin\" entry, now with the correct content")
+            return
+        }
+        var extracted = Data()
+        _ = try archive.extract(entry) { extracted.append($0) }
+        #expect(String(data: extracted, encoding: .utf8) == "correct-content")
+        // The donor file itself must survive completely untouched.
+        #expect(try String(contentsOf: donorURL, encoding: .utf8) == "correct-content")
+    }
+
+    @Test("never touches a hash-mismatched rom when no donor's content actually matches it")
+    func replaceCorruptedRomsSkipsNonMatchingDonor() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let gameZip = root.appendingPathComponent("game.zip")
+        try makeZip(at: gameZip, entries: [("bad.bin", "wrong-content")])
+
+        let donorURL = root.appendingPathComponent("maintenance/unrelated.bin")
+        try FileManager.default.createDirectory(at: donorURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("totally-unrelated-content".utf8).write(to: donorURL)
+
+        let rom = DATRom(name: "bad.bin", size: 1, crc: "deadbeef", md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let badHashedFile = HashedFile(file: ScannedFile(url: gameZip, name: "bad.bin", size: 1), hash: FileHash(crc32: "ffffffff", md5: "0", sha1: "0"))
+
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .hashMismatch(badHashedFile))])],
+            surplusFiles: []
+        )
+        let donorFiles = [
+            HashedFile(file: ScannedFile(url: donorURL, name: "unrelated.bin", size: Int64("totally-unrelated-content".utf8.count)), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+        ]
+
+        #expect(RebuildPlanner.planReplaceCorruptedRoms(matchReport: matchReport, donorFiles: donorFiles).isEmpty)
+    }
+
+    @Test("never plans a replacement for a .missing rom — that's Repair from Maintenance Folder's own job")
+    func replaceCorruptedRomsIgnoresMissingRoms() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let donorURL = root.appendingPathComponent("donor.bin")
+        try Data("correct-content".utf8).write(to: donorURL)
+
+        let rom = DATRom(name: "missing.bin", size: Int64("correct-content".utf8.count), crc: "deadbeef", md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .missing)])],
+            surplusFiles: []
+        )
+        let donorFiles = [
+            HashedFile(file: ScannedFile(url: donorURL, name: "donor.bin", size: Int64("correct-content".utf8.count)), hash: FileHash(crc32: "deadbeef", md5: "0", sha1: "0")),
+        ]
+
+        #expect(RebuildPlanner.planReplaceCorruptedRoms(matchReport: matchReport, donorFiles: donorFiles).isEmpty)
     }
 
     // MARK: - Convert to non-merged (Fase 2 Step 4)
@@ -1295,6 +1504,105 @@ struct RebuildExecutorTests {
 
         #expect(RebuildPlanner.planConvertToMerged(matchReport: matchReport).isEmpty)
     }
+
+    // MARK: - Create Dummy ROMs / Remove Zip Comments
+
+    @Test("creates a zero-byte dummy loose file")
+    func createsDummyLooseFile() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("Game/missing.bin")
+
+        try RebuildExecutor.execute([.createDummyFile(at: target, size: 4)])
+
+        let data = try Data(contentsOf: target)
+        #expect(data.count == 4)
+        #expect(data == Data(count: 4))
+    }
+
+    @Test("refuses to overwrite an existing dummy file destination")
+    func createDummyFileRefusesExistingDestination() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("existing.bin")
+        try Data("real content".utf8).write(to: target)
+
+        #expect(throws: RebuildError.destinationExists(target)) {
+            try RebuildExecutor.execute([.createDummyFile(at: target, size: 4)])
+        }
+        #expect(try Data(contentsOf: target) == Data("real content".utf8))
+    }
+
+    @Test("caps a dummy file's size at the safety ceiling instead of honoring an absurd DAT-declared size")
+    func createDummyFileCapsSize() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("huge.bin")
+
+        try RebuildExecutor.execute([.createDummyFile(at: target, size: Int64.max)])
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
+        let size = attributes[.size] as? Int ?? -1
+        #expect(size == 64 * 1024 * 1024)
+    }
+
+    @Test("adds a dummy zip entry without disturbing existing entries")
+    func createsDummyZipEntry() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let zip = root.appendingPathComponent("game.zip")
+        try makeZip(at: zip, entries: [("present.bin", "content")])
+
+        try RebuildExecutor.execute([.createDummyZipEntry(targetArchive: zip, entryName: "missing.bin", size: 3)])
+
+        let archive = try Archive(url: zip, accessMode: .read)
+        #expect(archive["present.bin"] != nil)
+        guard let entry = archive["missing.bin"] else {
+            Issue.record("dummy entry was not added")
+            return
+        }
+        var data = Data()
+        try archive_extract(archive, entry, into: &data)
+        #expect(data == Data(count: 3))
+    }
+
+    @Test("removes a zip's own trailing comment without touching its entries")
+    func clearsZipComment() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let zip = root.appendingPathComponent("commented.zip")
+        try makeZip(at: zip, entries: [("rom.bin", "content")])
+
+        var data = try Data(contentsOf: zip)
+        let comment = Data("hello world".utf8)
+        var lengthBytes = Data(count: 2)
+        lengthBytes[0] = UInt8(comment.count & 0xff)
+        lengthBytes[1] = UInt8((comment.count >> 8) & 0xff)
+        data.replaceSubrange((data.count - 22 + 20)..<(data.count - 22 + 22), with: lengthBytes)
+        data.append(comment)
+        try data.write(to: zip)
+
+        try RebuildExecutor.execute([.clearZipComment(archive: zip)])
+
+        let rewritten = try Data(contentsOf: zip)
+        #expect(!rewritten.suffix(comment.count).elementsEqual(comment))
+        let archive = try Archive(url: zip, accessMode: .read)
+        #expect(archive["rom.bin"] != nil)
+    }
+
+    @Test("clearing an already-commentless zip's comment is a harmless no-op")
+    func clearZipCommentNoOpWhenAlreadyEmpty() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let zip = root.appendingPathComponent("plain.zip")
+        try makeZip(at: zip, entries: [("rom.bin", "content")])
+        let before = try Data(contentsOf: zip)
+
+        try RebuildExecutor.execute([.clearZipComment(archive: zip)])
+
+        #expect(try Data(contentsOf: zip) == before)
+    }
+
 }
 
 /// Small local helper so the "fold roms into parent" test above can read

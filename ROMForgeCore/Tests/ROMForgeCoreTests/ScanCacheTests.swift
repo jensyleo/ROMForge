@@ -155,6 +155,41 @@ struct ScanCacheTests {
         #expect(results.first?.hash == staleButValidHash, "should serve the cached entry hash instead of re-extracting/re-hashing it")
     }
 
+    @Test("CollectionHasher skips re-listing an unchanged zip's own directory entirely, not just re-hashing its entries")
+    func collectionHasherSkipsRelistingUnchangedZip() async throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let loosePath = root.appendingPathComponent("game.bin")
+        try Data("123456789".utf8).write(to: loosePath)
+        let archiveURL = root.appendingPathComponent("Game.zip")
+        let archive = try Archive(url: archiveURL, accessMode: .create)
+        try archive.addEntry(with: "game.bin", fileURL: loosePath, compressionMethod: .deflate)
+
+        let zipAttrs = try FileManager.default.attributesOfItem(atPath: archiveURL.path)
+        let zipMTime = zipAttrs[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
+        let zipSize = Int64(zipAttrs[.size] as? Int ?? 0)
+        let zipFile = ScannedFile(url: archiveURL, name: "Game.zip", size: zipSize, modificationDate: zipMTime)
+
+        // A real first pass — actually lists and hashes the zip, building a
+        // complete, genuine cache for it (unlike the sibling test above,
+        // which hand-builds a cache without ever really scanning).
+        let warmCache = ScanCache.build(from: try await CollectionHasher.hash(scannedFiles: [zipFile], cache: ScanCache()))
+
+        // Now corrupt the archive on disk WITHOUT touching its mtime —
+        // if `CollectionHasher` actually tried to re-list this zip's
+        // central directory on the next call, that would throw. A second
+        // call that still succeeds, with the same result, proves the
+        // listing itself was skipped — not just the per-entry hashing
+        // (already covered above).
+        try Data("not a zip file anymore".utf8).write(to: archiveURL)
+        try FileManager.default.setAttributes([.modificationDate: zipMTime], ofItemAtPath: archiveURL.path)
+
+        let results = try await CollectionHasher.hash(scannedFiles: [zipFile], cache: warmCache)
+        #expect(results.count == 1)
+        #expect(results.first?.file.name == "game.bin")
+    }
+
     @Test("round-trips through JSON, save and load")
     func roundTripsThroughJSON() throws {
         let root = try tempDirectory()

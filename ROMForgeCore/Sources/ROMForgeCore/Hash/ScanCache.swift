@@ -104,10 +104,62 @@ public struct ScanCache: Sendable, Codable, Equatable {
         return true
     }
 
+    /// One entry's (name, size) as already known from a previous scan of
+    /// the containing archive — enough to serve `CollectionHasher` a hit
+    /// via `lookup(key:size:modificationDate:algorithms:)` without ever
+    /// touching disk to re-list the archive itself.
+    public struct CachedArchiveEntry: Sendable {
+        public let name: String
+        public let size: Int64
+        /// See `ScannedFile.entryPath`'s own doc comment — carried through
+        /// the cache too so a cache HIT (the common case on a second scan)
+        /// doesn't lose it and regress back to the same "Source file does
+        /// not exist" bug a fresh, uncached scan already fixed.
+        public let entryPath: String?
+    }
+
+    /// Every entry this cache already knows about for `archiveURL`,
+    /// provided the archive's own `modificationDate` still matches what was
+    /// cached — `nil` if the archive was never scanned before, or if its
+    /// mtime changed since (a real edit, or eviction via
+    /// `removingEntries(under:)`), either of which means its directory must
+    /// actually be re-listed to see what changed.
+    ///
+    /// Exists so `CollectionHasher` can skip re-listing an unchanged
+    /// `.zip`'s central directory or `.7z`'s `7zz l -slt` output — cheap for
+    /// a `.zip`, but a real per-file subprocess cost for `.7z` that was
+    /// previously paid on every single scan, changed or not (jensyleo's own
+    /// collection review, 2026-09-18: hundreds of `.7z` files, each
+    /// re-listed every "Scan All Folders" even though almost none had
+    /// actually changed).
+    public func cachedEntries(forArchive archiveURL: URL, modificationDate: Date) -> [CachedArchiveEntry]? {
+        let prefix = archiveURL.path + "::"
+        var found: [CachedArchiveEntry] = []
+        for (key, entry) in entries {
+            guard key.hasPrefix(prefix) else { continue }
+            guard entry.modificationDate == modificationDate else { return nil }
+            // The key's own suffix is `ScannedFile.effectiveEntryPath` (see
+            // `key(for:)`'s own doc comment below) — usually just the plain
+            // entry name, but a real nested entry (e.g. a "__MACOSX/._foo"
+            // AppleDouble sidecar) carries its subfolder here too. `name`
+            // stays the short, DAT-matching-safe form either way.
+            let suffix = String(key.dropFirst(prefix.count))
+            let shortName = (suffix as NSString).lastPathComponent
+            found.append(CachedArchiveEntry(name: shortName, size: entry.size, entryPath: suffix == shortName ? nil : suffix))
+        }
+        return found.isEmpty ? nil : found
+    }
+
     public static func key(for file: ScannedFile) -> String {
         // A zip entry's ScannedFile reuses the archive's url with a
         // different name — the same test CollectionHasher's docs already
-        // establish for "this came from inside an archive."
+        // establish for "this came from inside an archive." Uses
+        // `effectiveEntryPath` (the entry's real, full path inside the zip
+        // when it lives in a subfolder there — see `ScannedFile`'s own doc
+        // comment) rather than plain `name` alone — for the overwhelming
+        // majority of entries (already at the archive's own top level) the
+        // two are identical, so this changes nothing about the key for any
+        // collection that never hits that case.
         //
         // jensyleo's own live report (2026-09-10) of a File-level case-only
         // rename not refreshing on screen led to trying `.resolvingSymlinksInPath()`
@@ -120,7 +172,8 @@ public struct ScanCache: Sendable, Codable, Equatable {
         // direction. Plain `.path` (no resolution) is what keeps a scan's
         // own written key and a same-scan eviction lookup consistent with
         // each other, confirmed correct by that same reproduction.
-        file.url.lastPathComponent == file.name ? file.url.path : "\(file.url.path)::\(file.name)"
+        let effectivePath = file.effectiveEntryPath
+        return file.url.lastPathComponent == effectivePath ? file.url.path : "\(file.url.path)::\(effectivePath)"
     }
 
     /// Builds a fresh cache from a completed scan's results, ready to

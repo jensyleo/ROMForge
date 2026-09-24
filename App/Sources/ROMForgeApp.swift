@@ -57,6 +57,11 @@ struct ROMForgeApp: App {
     // own configured value until the user happened to reopen that panel.
     init() {
         MaxSubfolderDepthSettings.applyPersistedValue()
+        // jensyleo's own request (2026-09-24), right after the app's own
+        // uninstall flow wiped it along with everything else: "Eso debe
+        // quedar siempre. No debe desaparecer." See
+        // `MAMELaunchSettings.autoConfigureIfNeeded()`'s own doc comment.
+        MAMELaunchSettings.autoConfigureIfNeeded()
     }
 
     var body: some Scene {
@@ -169,5 +174,11 @@ private struct HelpMenuButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("ROMForge Help") { openWindow(id: "help") }
+        Divider()
+        // jensyleo's own request (2026-09-23): a real "Uninstall" menu
+        // item, same idea as the other apps he's built — see
+        // `ROMForgeUninstaller`'s own doc comment for exactly what it does
+        // and deliberately does NOT touch.
+        Button("Uninstall ROMForge…") { ROMForgeUninstaller.confirmAndRun() }
     }
 }

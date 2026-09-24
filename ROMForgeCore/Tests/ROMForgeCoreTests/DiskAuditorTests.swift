@@ -138,6 +138,40 @@ struct DiskAuditorTests {
         #expect(leftover?.requiredByGameDescription == "3rd Strike")
     }
 
+    @Test("CHDDuplicatePreference picks the root-folder or subfolder copy as instructed — jensyleo's own real case (2026-09-19): a real kinst2.chd byte-identical in BOTH Nintendo/kinst2.chd (root) and Nintendo/kinst2/kinst2.chd (subfolder)")
+    func duplicateCHDPreferenceChoosesTheRequestedCopy() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let subfolder = root.appendingPathComponent("kinst2")
+        try FileManager.default.createDirectory(at: subfolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sha1: [UInt8] = Array(repeating: 0x44, count: 20)
+        let rootCopy = root.appendingPathComponent("kinst2.chd")
+        let subfolderCopy = subfolder.appendingPathComponent("kinst2.chd")
+        try diskAuditorTestV5Header(sha1: sha1).write(to: rootCopy)
+        try diskAuditorTestV5Header(sha1: sha1).write(to: subfolderCopy)
+
+        let disk = DATDisk(name: "kinst2", sha1: diskAuditorTestHex(sha1))
+        let dat = DATFile(header: header(), games: [DATGame(name: "kinst2", description: "Killer Instinct 2", cloneOf: nil, romOf: nil, roms: [], disks: [disk])])
+
+        // No third "no preference" option on purpose — jensyleo's own
+        // correction (2026-09-19): an unpredictable, order-of-discovery
+        // pick is exactly the ambiguity this whole setting exists to
+        // remove, so the default itself is `.preferRootFolder`, checked
+        // explicitly here as the real default, not merely "whatever
+        // happens to come first".
+        let usingDefault = try DiskAuditor.audit(dat: dat, chdFiles: [subfolderCopy, rootCopy])
+        #expect(usingDefault.first { $0.status == .correct }?.path == rootCopy, "the default is .preferRootFolder, not order-of-discovery — must still pick the root copy even when the subfolder one is listed first")
+
+        let preferRoot = try DiskAuditor.audit(dat: dat, chdFiles: [subfolderCopy, rootCopy], duplicatePreference: .preferRootFolder)
+        #expect(preferRoot.first { $0.status == .correct }?.path == rootCopy)
+        #expect(preferRoot.first { $0.path == subfolderCopy }?.status == .incorrect)
+
+        let preferSubfolder = try DiskAuditor.audit(dat: dat, chdFiles: [rootCopy, subfolderCopy], duplicatePreference: .preferSubfolder)
+        #expect(preferSubfolder.first { $0.status == .correct }?.path == subfolderCopy)
+        #expect(preferSubfolder.first { $0.path == rootCopy }?.status == .incorrect)
+    }
+
     @Test("an undumped disk (no declared sha1) with a same-named CHD present reads .unverifiable, not .missing")
     func undumpedDiskWithSameNamedFileIsUnverifiable() throws {
         let chd = try tempCHD(stem: "undumped-media", sha1: Array(repeating: 0x33, count: 20))

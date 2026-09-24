@@ -42,8 +42,34 @@ public enum ROMMatcher {
     /// (independent of `Task` cancellation entirely) and phase 1's workers
     /// poll periodically — the only mechanism that can actually interrupt
     /// GCD-dispatched work like this.
-    public static func match(dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil, cancellationFlag: CancellationFlag? = nil) throws -> MatchReport {
+    /// - Parameter recentlyScannedPaths: jensyleo's own explicit rule
+    ///   (2026-09-16), after finding the SAME game's content physically
+    ///   duplicated across two ROM folders (e.g. `naomi.zip` in both
+    ///   "SEGA" and "CPS2") always flagged the SAME one as redundant no
+    ///   matter which folder was actually just scanned — the claim below
+    ///   was previously decided purely by `hashedFiles`' own array order
+    ///   (itself just an alphabetical `(path, name)` sort, see
+    ///   `LibraryViewModel.scan`'s own doc comment on why), with zero
+    ///   awareness of what the user just did: "si hay archivos/roms
+    ///   redundantes, estas deben quedar declaradas como redundantes en
+    ///   la ÚLTIMA carpeta escaneada." A file whose path falls under one
+    ///   of these folders is deprioritized as a claim candidate — tried
+    ///   only after every candidate NOT just rescanned — so the
+    ///   just-rescanned copy is the one left unclaimed (reported
+    ///   "Duplicated archive, not needed here") whenever an
+    ///   already-claimed twin exists elsewhere. Empty by default,
+    ///   preserving the original array-order behavior for any caller that
+    ///   doesn't pass this (every existing test, and any scan with no
+    ///   real notion of "what did the user just scan").
+    public static func match(
+        dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil, cancellationFlag: CancellationFlag? = nil,
+        recentlyScannedPaths: [URL] = []
+    ) throws -> MatchReport {
         try Task.checkCancellation()
+        let recentlyScannedPrefixes = recentlyScannedPaths.map(\.path)
+        let isRecentlyScanned: [Bool] = recentlyScannedPrefixes.isEmpty
+            ? Array(repeating: false, count: hashedFiles.count)
+            : hashedFiles.map { file in recentlyScannedPrefixes.contains { ScanCache.key(file.file.url.path, isUnder: $0) } }
         let crcIndex = indexOptional(hashedFiles, by: \.hash.crc32)
         let md5Index = indexOptional(hashedFiles, by: \.hash.md5)
         let sha1Index = indexOptional(hashedFiles, by: \.hash.sha1)
@@ -138,6 +164,7 @@ public enum ROMMatcher {
             crcIndex: crcIndex, md5Index: md5Index, sha1Index: sha1Index, sizeIndex: sizeIndex,
             crcIndexStripped: crcIndexStripped, md5IndexStripped: md5IndexStripped, sha1IndexStripped: sha1IndexStripped, sizeIndexStripped: sizeIndexStripped,
             archiveNameIndex: archiveNameIndex, nameIndex: nameIndex, isArchiveOrganized: isArchiveOrganized, allGameNames: allGameNames,
+            isRecentlyScanned: isRecentlyScanned,
             onProgress: onProgress, cancellationFlag: cancellationFlag
         )
 
@@ -235,7 +262,39 @@ public enum ROMMatcher {
 
             for (index, candidate) in orderedRomCandidates.enumerated() {
                 let rom = candidate.rom
-                if let matchIndex = candidate.scopedCandidates.first(where: { !consumed[$0] && matches(hashedFiles[$0], rom) }) {
+                // Real bug found live by jensyleo (2026-09-13, "chasehq"/
+                // "thndzone" PAL sets): several roms in one game can
+                // legitimately declare the exact same content under
+                // different names (the same PAL chip dumped once but wired
+                // to N sockets, e.g. `pal20l8b-b52-17.ic16`/`.ic18`/`.ic53`/
+                // `.ic55` all sharing one CRC) — every one of those roms
+                // then has the SAME `scopedCandidates` list. Picking "the
+                // first unconsumed candidate" (by index, ignoring name) let
+                // rom `.ic18` claim the physical entry already correctly
+                // named `.ic16` (because it happened to sort first), leaving
+                // rom `.ic16` to claim the entry already correctly named
+                // `.ic18` — a needless swap that reported both as
+                // `.misnamed`. Worse, "Fix Misnamed ROMs…" then failed
+                // outright: renaming `.ic16`'s entry to `.ic18` collided
+                // with the entry ALSO scheduled to vacate that exact name,
+                // since a plain add-then-remove can't perform a two-way
+                // swap. Preferring a candidate whose entry name already
+                // equals this rom's own declared name (when one is still
+                // unconsumed) means an already-correctly-named entry always
+                // self-claims first, so this ambiguity never arises unless
+                // the archive itself is genuinely missing an entry.
+                // Each tier below tries every NOT-recently-scanned candidate
+                // before falling back to a recently-scanned one — see this
+                // function's own `recentlyScannedPaths` doc comment. A tier
+                // is skipped entirely (not just deprioritized) when
+                // `recentlyScannedPaths` is empty, since `isRecentlyScanned`
+                // is then all-`false` and both halves of each `??` pair
+                // search the exact same candidates in the exact same
+                // order — byte-for-byte the original behavior.
+                if let matchIndex = candidate.scopedCandidates.first(where: { !consumed[$0] && !isRecentlyScanned[$0] && hashedFiles[$0].file.name == rom.name && matches(hashedFiles[$0], rom) })
+                    ?? candidate.scopedCandidates.first(where: { !consumed[$0] && hashedFiles[$0].file.name == rom.name && matches(hashedFiles[$0], rom) })
+                    ?? candidate.scopedCandidates.first(where: { !consumed[$0] && !isRecentlyScanned[$0] && matches(hashedFiles[$0], rom) })
+                    ?? candidate.scopedCandidates.first(where: { !consumed[$0] && matches(hashedFiles[$0], rom) }) {
                     consumed[matchIndex] = true
                     let hashedFile = hashedFiles[matchIndex]
                     if hashedFile.file.url.lastPathComponent != hashedFile.file.name {
@@ -403,6 +462,46 @@ public enum ROMMatcher {
         // could actually be *claimed*, so it can't reopen the cross-game
         // "steal" problem the rest of this file guards against.
         let romsByHash = indexRomsByHash(dat.games)
+        // jensyleo's own real incident (2026-09-19): which hashes each game
+        // ALREADY has genuinely satisfied — see `SurplusFile
+        // .requiredByGameConfirmedRedundant`'s own doc comment for the full
+        // incident. Built from `gameResults` (already fully resolved by this
+        // point, right above) rather than from `hashedFiles` directly, so it
+        // reflects each rom's actual real status (a `.missing`/
+        // `.hashMismatch` rom contributes nothing here, even if some
+        // unrelated file elsewhere happens to share its declared hash by
+        // coincidence).
+        var satisfiedHashesByGameName: [String: Set<String>] = [:]
+        for result in gameResults {
+            var hashes: Set<String> = []
+            for match in result.matches {
+                let satisfiedFile: HashedFile?
+                switch match.status {
+                case .correct(let f, _), .misnamed(let f, _), .nodump(let f):
+                    satisfiedFile = f
+                // `.foundElsewhere` is deliberately EXCLUDED — real bug
+                // found live by jensyleo (2026-09-19), confirmed directly
+                // against the persisted database: it never claims/consumes
+                // a file (see `RomMatchStatus.foundElsewhere`'s own doc
+                // comment), so the SAME unclaimed loose file that becomes a
+                // `SurplusFile` can ALSO independently satisfy some OTHER
+                // game's `.foundElsewhere` check for the identical hash —
+                // a real widely-shared hardware chip rom (`315-6146.bin`,
+                // declared by hundreds of DAT machines) produced a
+                // `.foundElsewhere` row for "18wheelr" pointing at the
+                // EXACT SAME physical file that was also flagged as a
+                // "required by 18wheelr" surplus copy — the file was
+                // effectively confirming itself as safely redundant, a
+                // circular, self-referential "yes" with no independent
+                // second copy behind it at all.
+                case .foundElsewhere, .hashMismatch, .missing:
+                    satisfiedFile = nil
+                }
+                guard let satisfiedFile else { continue }
+                hashes.formUnion([satisfiedFile.hash.crc32, satisfiedFile.hash.md5, satisfiedFile.hash.sha1].compactMap { $0 })
+            }
+            satisfiedHashesByGameName[result.game.name.lowercased(), default: []].formUnion(hashes)
+        }
         var gamesByName: [String: DATGame] = [:]
         for game in dat.games where gamesByName[game.name.lowercased()] == nil {
             gamesByName[game.name.lowercased()] = game
@@ -425,11 +524,62 @@ public enum ROMMatcher {
         let nodumpRomNames = Set(dat.games.lazy.flatMap(\.roms).filter { $0.status == .nodump }.map { $0.name.lowercased() })
         var owningGameByIndex: [Int: DATGame] = [:]
         let unclaimedForSurplus = hashedFiles.indices.filter { !consumed[$0] && !reportedAsHashMismatch.contains($0) }
+        // jensyleo's own report (2026-09-19): the fix above (only trusting
+        // `.correct`/`.misnamed`/`.nodump` as "the owner genuinely has it")
+        // broke a DIFFERENT, already-working case — several physical
+        // copies of the SAME archive (`naomi.zip`/`naomi2.zip`/`naomigd.zip`
+        // copy-pasted into more than one folder), where the shared content
+        // is a hardware chip rom some UNRELATED game happens to declare
+        // FIRST in the DAT (see `indexRomsByHash`'s own first-game-wins
+        // doc comment) — that unrelated game never has a real archive
+        // anywhere, so it can never "confirm" anything via
+        // `satisfiedHashesByGameName`, even though the duplication here is
+        // completely real and obvious: the EXACT SAME hash sitting in
+        // MULTIPLE physically distinct, unclaimed files at once. This
+        // tracks that directly — independent of which DAT game nominally
+        // "owns" the hash — first occurrence (in `hashedFiles`'s own
+        // already-established stable order) is the keeper, every other
+        // physically distinct file sharing that hash is a confirmed,
+        // genuine duplicate of it.
+        var firstUnclaimedIndexByHash: [String: Int] = [:]
+        var duplicateAmongSurplusIndices = Set<Int>()
+        for index in unclaimedForSurplus {
+            let file = hashedFiles[index]
+            let keys = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
+            guard !keys.isEmpty else { continue }
+            if let firstIndex = keys.compactMap({ firstUnclaimedIndexByHash[$0] }).first, hashedFiles[firstIndex].file.url != file.file.url {
+                duplicateAmongSurplusIndices.insert(index)
+                continue
+            }
+            for key in keys where firstUnclaimedIndexByHash[key] == nil {
+                firstUnclaimedIndexByHash[key] = index
+            }
+        }
         var surplusFiles = unclaimedForSurplus.map { index -> SurplusFile in
             let file = hashedFiles[index]
-            let owner = requiredByGame(for: file, gamesByName: gamesByName, romsByHash: romsByHash, claimedArchiveURLsByGame: claimedArchiveURLsByGame)
+            let ownerResult = requiredByGame(
+                for: file, gamesByName: gamesByName, romsByHash: romsByHash, claimedArchiveURLsByGame: claimedArchiveURLsByGame,
+                satisfiedHashesByGameName: satisfiedHashesByGameName
+            )
+            let owner = ownerResult?.game
             if let owner { owningGameByIndex[index] = owner }
             let requiredBy = owner?.description
+            let requiredByMachineName = owner?.name
+            // The "genuine duplicate among surplus files" signal only ever
+            // matters once there's a recognized owner to begin with — a
+            // file nobody's DAT declares anything about is `.unknownFile`/
+            // "Remove Useless Files…" territory regardless of how many
+            // identical unrecognized copies exist, never this "Remove
+            // Redundant" path.
+            // Keep these two separate — see `SurplusFile.requiredByGameOwnerSatisfiedElsewhere`'s
+            // doc comment: only `ownerSatisfiedElsewhere` (situation A) means
+            // the owner genuinely already has real content; the broader
+            // `requiredByConfirmedRedundant` (A or B) additionally covers
+            // "duplicate among unclaimed surplus files" (situation B), which
+            // is only safe to delete for a whole, directly-usable unit
+            // (an entire archive or CHD), never a loose fragment.
+            let ownerSatisfiedElsewhere = owner != nil && (ownerResult?.confirmedRedundant ?? false)
+            let requiredByConfirmedRedundant = ownerSatisfiedElsewhere || (owner != nil && duplicateAmongSurplusIndices.contains(index))
             let matchesNodumpName = requiredBy == nil && nodumpRomNames.contains(file.file.name.lowercased())
             // Per-file (not the scan-wide `isArchiveOrganized` flag) — a
             // loose file's own URL *is* the file itself, so its last path
@@ -443,7 +593,12 @@ public enum ROMMatcher {
             let isInArchive = file.file.url.lastPathComponent != file.file.name
             let archiveBaseName = file.file.url.deletingPathExtension().lastPathComponent.lowercased()
             let isInKnownArchive = isInArchive && allGameNames.contains(archiveBaseName)
-            return SurplusFile(file: file, requiredByGameDescription: requiredBy, matchesNodumpRomName: matchesNodumpName, isInKnownArchive: isInKnownArchive)
+            return SurplusFile(
+                file: file, requiredByGameDescription: requiredBy, requiredByGameMachineName: requiredByMachineName,
+                requiredByGameConfirmedRedundant: requiredByConfirmedRedundant,
+                requiredByGameOwnerSatisfiedElsewhere: ownerSatisfiedElsewhere,
+                matchesNodumpRomName: matchesNodumpName, isInKnownArchive: isInKnownArchive
+            )
         }
         annotateMisnamedArchives(
             &surplusFiles, hashedFiles: hashedFiles, owningGameByIndex: owningGameByIndex,
@@ -573,10 +728,25 @@ public enum ROMMatcher {
                   (claimedArchiveURLsByGame[topGameName] ?? []).isEmpty
             else { continue }
             for position in positions {
+                // jensyleo's own report (2026-09-19): this reconstruction
+                // dropped `requiredByGameMachineName`/
+                // `requiredByGameConfirmedRedundant` back to their default
+                // `nil`/`false` — genuinely duplicated archives
+                // (`naomi.zip`/`naomi2.zip`/`naomigd.zip` copy-pasted into
+                // several folders) stopped reading as confirmed-redundant
+                // the moment this SAME archive also happened to qualify as
+                // a misnamed one, since this was the only place in the
+                // whole matcher still constructing a `SurplusFile` field by
+                // field instead of copying `existing` in full. Every field
+                // now carries over from `existing` except the one this
+                // function actually means to change.
                 let existing = surplusFiles[position]
                 surplusFiles[position] = SurplusFile(
                     file: existing.file,
                     requiredByGameDescription: existing.requiredByGameDescription,
+                    requiredByGameMachineName: existing.requiredByGameMachineName,
+                    requiredByGameConfirmedRedundant: existing.requiredByGameConfirmedRedundant,
+                    requiredByGameOwnerSatisfiedElsewhere: existing.requiredByGameOwnerSatisfiedElsewhere,
                     matchesNodumpRomName: existing.matchesNodumpRomName,
                     isInKnownArchive: existing.isInKnownArchive,
                     misnamedArchiveForGameName: topGame.name
@@ -628,17 +798,18 @@ public enum ROMMatcher {
         crcIndex: [String: [Int]], md5Index: [String: [Int]], sha1Index: [String: [Int]], sizeIndex: [Int64: [Int]],
         crcIndexStripped: [String: [Int]], md5IndexStripped: [String: [Int]], sha1IndexStripped: [String: [Int]], sizeIndexStripped: [Int64: [Int]],
         archiveNameIndex: [String: [Int]], nameIndex: [String: [Int]], isArchiveOrganized: Bool, allGameNames: Set<String>,
+        isRecentlyScanned: [Bool],
         onProgress: (@Sendable (Int, Int) -> Void)?,
         cancellationFlag: CancellationFlag?
     ) -> [GameCandidates] {
         @Sendable func candidates(for game: DATGame) -> GameCandidates {
-            let ownArchiveIndices = Set(archiveNameIndex[game.name.lowercased()] ?? [])
+            let ownArchiveIndices = Set(primaryArchiveIndices(archiveNameIndex[game.name.lowercased()] ?? [], hashedFiles: hashedFiles, isRecentlyScanned: isRecentlyScanned, game: game))
             // Every archive belonging to this merged family (already
             // lowercased — see `DATGame.mergedFamilyMachineNames`'s own doc
             // comment) — empty for Split/Non-merged, where it's simply never
             // consulted (`familyNameMatchIndex` below only matters for a
             // `nodump` rom's claim logic).
-            let familyArchiveIndices = Set(game.mergedFamilyMachineNames.flatMap { archiveNameIndex[$0] ?? [] })
+            let familyArchiveIndices = Set(game.mergedFamilyMachineNames.flatMap { primaryArchiveIndices(archiveNameIndex[$0] ?? [], hashedFiles: hashedFiles, isRecentlyScanned: isRecentlyScanned, game: game) })
             let perRom = game.roms.map { rom -> (rom: DATRom, candidates: [Int], hashVerifiedCandidates: [Int], nameMatchIndex: Int?, familyNameMatchIndex: Int?) in
                 let candidates = candidateIndices(
                     for: rom,
@@ -700,6 +871,16 @@ public enum ROMMatcher {
         @Sendable func reportProgress() {
             progressCounter?.increment()
         }
+        // jensyleo's own report (2026-09-19): the matching phase "feels"
+        // slow even when it finishes quickly — `ScanProgressCounter` never
+        // calls back until its OWN first throttled increment (roughly
+        // `total / 200` games in), so the UI has nothing but a fixed
+        // "Comparing against the database…" spinner with no numbers for
+        // that entire opening stretch. Reporting the real total up front,
+        // at 0 completed, switches the UI to a genuine "0 of N" progress
+        // bar the instant matching starts, instead of leaving it
+        // indistinguishable from a hang until the first real tick lands.
+        onProgress?(0, games.count)
 
         // Checked before *every* game, not throttled — real bug found live
         // by jensyleo (2026-08-04): an earlier version only checked every
@@ -894,7 +1075,10 @@ public enum ROMMatcher {
     /// also read its machine name — needed to tell a user the correct
     /// filename for a misnamed archive (see
     /// `SurplusFile.misnamedArchiveForGameName`).
-    private static func requiredByGame(for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame], claimedArchiveURLsByGame: [String: Set<URL>]) -> DATGame? {
+    private static func requiredByGame(
+        for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame], claimedArchiveURLsByGame: [String: Set<URL>],
+        satisfiedHashesByGameName: [String: Set<String>]
+    ) -> (game: DATGame, confirmedRedundant: Bool)? {
         let fileHashes = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
         let isArchiveEntry = file.file.url.lastPathComponent != file.file.name
         if isArchiveEntry {
@@ -916,7 +1100,17 @@ public enum ROMMatcher {
             }
         }
         for key in fileHashes {
-            if let game = romsByHash[key] { return game }
+            if let game = romsByHash[key] {
+                // See `SurplusFile.requiredByGameConfirmedRedundant`'s own
+                // doc comment: `game` is who the DAT says this content
+                // belongs to, completely independent of whether `game`
+                // actually has it satisfied anywhere real yet. Only when
+                // `game`'s own claim of THIS exact hash is already
+                // genuinely satisfied elsewhere does this file count as a
+                // confirmed, safe-to-remove spare copy.
+                let confirmedRedundant = satisfiedHashesByGameName[game.name.lowercased()]?.contains(key) ?? false
+                return (game, confirmedRedundant)
+            }
         }
         return nil
     }
@@ -982,6 +1176,110 @@ public enum ROMMatcher {
             result[archiveName, default: []].append(offset)
         }
         return result
+    }
+
+    /// `archiveNameIndex` groups by archive NAME alone (already
+    /// extension-agnostic — `.deletingPathExtension()` above means a
+    /// `naomi.zip` and a `naomi.7z` share one bucket) — but a name can be
+    /// shared by two PHYSICALLY DISTINCT archives (two different real
+    /// files, in two different ROM folders) that are not the same archive
+    /// at all, just two files that happen to be called the same thing.
+    /// Real case found live by jensyleo (2026-09-17): `SEGA/naomi.zip`
+    /// (the genuine, 37-rom Naomi BIOS) and a stray, unrelated
+    /// `CPS2/naomi.zip` containing exactly one rom the DAT also recognizes
+    /// as belonging to "naomi" — pooling both archives' entries into one
+    /// candidate set for resolving "naomi"'s own roms let the stray CPS2
+    /// file silently patch in as extra content for the SEGA archive's own
+    /// audit, so BOTH files displayed green/"Correct" even though the
+    /// CPS2 one is, on its own, missing all but one of "naomi"'s roms.
+    /// jensyleo's own rule (2026-09-17): a duplicate requires the SAME
+    /// name AND byte-identical content — anything sharing just the name
+    /// must be judged on its own, so an incomplete stray copy reads as
+    /// incomplete, not silently absorbed into a different archive's
+    /// "Correct" verdict. This keeps every OTHER index sharing the name
+    /// out of `ownArchiveIndices`/`familyArchiveIndices`; whatever's left
+    /// unconsumed here still gets a real verdict through the ordinary
+    /// surplus/`requiredByGameDescription` path afterward (already
+    /// byte-identical content there still reads as a true duplicate, same
+    /// as before this change).
+    ///
+    /// Picks the single owning URL the same way `uniqued(_:)` already
+    /// establishes as this file's own "first folder always owns it"
+    /// convention (lowest index = earliest folder in scan order) — with
+    /// the same `isRecentlyScanned` override already used for the
+    /// exact-duplicate tie-break elsewhere in this file: a folder just
+    /// re-scanned loses the claim, so re-scanning one same-named archive
+    /// alone can't strand the OTHER one's already-correct audit.
+    /// CRITICAL SAFETY FIX (2026-09-17, jensyleo's own real, live incident):
+    /// recency alone used to decide the "primary" URL above, exactly like
+    /// the genuine-duplicate tie-break elsewhere in this file. That's safe
+    /// ONLY when every candidate is an equally-valid, interchangeable copy
+    /// (true duplicates — recency is a fair coin flip between them). It is
+    /// NOT safe here: `naomi.zip` in `SEGA` (the real, complete 37-rom
+    /// Naomi BIOS) and `naomi.zip` in `CAPCOM/CPS2` (a stray file holding
+    /// just ONE unrelated rom) share a name but are wildly unequal in
+    /// actual completeness. Because SEGA had merely been rescanned more
+    /// recently, recency alone picked CPS2 as "primary" — stripping ALL 37
+    /// of SEGA's own roms out of `ownArchiveIndices` for "naomi", turning
+    /// every one of them into a `SurplusFile` (100% of SEGA's own archive
+    /// now "redundant"), which the SAME day's "Remove Redundant File(s)…"
+    /// then correctly-per-its-own-logic, catastrophically deleted —
+    /// permanently destroying the user's real, complete BIOS archive while
+    /// leaving the genuinely-incomplete stray file untouched. Recency must
+    /// never outrank actual completeness. `completeness(_:)` below counts
+    /// how many of THIS game's own declared roms a candidate URL can
+    /// satisfy; the URL winning on completeness is primary regardless of
+    /// scan history, and recency only arbitrates a true tie (both
+    /// candidates equally complete — the genuine-duplicate case this
+    /// mechanism originally shipped for, still handled the same way).
+    private static func primaryArchiveIndices(_ indices: [Int], hashedFiles: [HashedFile], isRecentlyScanned: [Bool], game: DATGame) -> [Int] {
+        guard !indices.isEmpty else { return [] }
+        var indicesByURL: [URL: [Int]] = [:]
+        for index in indices {
+            indicesByURL[hashedFiles[index].file.url, default: []].append(index)
+        }
+        guard indicesByURL.count > 1 else { return indices }
+
+        func completeness(_ urlIndices: [Int]) -> Int {
+            var satisfiedRomNames = Set<String>()
+            for rom in game.roms {
+                guard !satisfiedRomNames.contains(rom.name) else { continue }
+                if urlIndices.contains(where: { matches(hashedFiles[$0], rom) }) {
+                    satisfiedRomNames.insert(rom.name)
+                }
+            }
+            return satisfiedRomNames.count
+        }
+
+        let candidates = indicesByURL.map { url, urlIndices -> (url: URL, indices: [Int], completeness: Int, minIndex: Int) in
+            (url, urlIndices, completeness(urlIndices), urlIndices.min() ?? Int.max)
+        }
+        let bestCompleteness = candidates.map(\.completeness).max() ?? 0
+        let mostComplete = candidates.filter { $0.completeness == bestCompleteness }
+        let winner: (url: URL, indices: [Int], completeness: Int, minIndex: Int)
+        if mostComplete.count == 1 {
+            winner = mostComplete[0]
+        } else {
+            // A genuine tie in completeness (the true-duplicate case, or
+            // several equally-incomplete strays) — recency, then earliest
+            // folder order, exactly as before this fix. A real bug caught
+            // here before it ever shipped: `mostComplete.first { ... }`
+            // over a `[URL: [Int]]`-derived array has NO guaranteed order
+            // (dictionary iteration order is unspecified in Swift) — when
+            // every candidate is equally "not recently scanned" (the
+            // common case, `recentlyScannedPaths` empty), `.first` would
+            // pick whichever happened to land first in that unordered
+            // array, not necessarily the earliest folder. `min(by:)` over
+            // an explicit (recency, index) comparison is deterministic
+            // regardless of dictionary ordering.
+            winner = mostComplete.min { a, b in
+                let aRecent = isRecentlyScanned[a.minIndex]
+                let bRecent = isRecentlyScanned[b.minIndex]
+                if aRecent != bRecent { return bRecent }
+                return a.minIndex < b.minIndex
+            }!
+        }
+        return indices.filter { hashedFiles[$0].file.url == winner.url }
     }
 
     private static func indexStripped<Key: Hashable>(_ hashedFiles: [HashedFile], by keyPath: KeyPath<HeaderStrippedHash, Key>) -> [Key: [Int]] {

@@ -265,6 +265,32 @@ public struct AuditEntry: Equatable, Sendable {
     /// the DAT at all, and for every rom/disk entry that has a real
     /// expected `game` of its own.
     public let requiredByGameDescription: String?
+    /// The real DAT machine name (e.g. `"naomi"`) behind
+    /// `requiredByGameDescription` above — see
+    /// `SurplusFile.requiredByGameMachineName`'s own doc comment for why
+    /// this exists separately from the human-readable description:
+    /// `MaintenanceDonorDetector`/`RebuildPlanner` need an actual lookup
+    /// key, not display text. `nil` whenever `requiredByGameDescription`
+    /// is `nil` too.
+    public let requiredByGameMachineName: String?
+    /// See `SurplusFile.requiredByGameConfirmedRedundant`'s own doc comment
+    /// for the full real incident this exists to prevent — `true` only when
+    /// the game named by `requiredByGameDescription` already has this exact
+    /// rom's content independently satisfied elsewhere in the real scanned
+    /// collection. `RebuildPlanner`'s redundant-removal planners must check
+    /// this before ever offering to delete such an entry; every other use of
+    /// `requiredByGameDescription` (display text, Maintenance donor lookups)
+    /// is unaffected.
+    public let requiredByGameConfirmedRedundant: Bool
+    /// See `SurplusFile.requiredByGameOwnerSatisfiedElsewhere`'s own doc
+    /// comment. Strict subset of `requiredByGameConfirmedRedundant` above —
+    /// `true` only when the owner has a real, independent copy already
+    /// (never merely because this is one of several unclaimed physically-
+    /// duplicate loose files/entries while the owner has nothing real).
+    /// `RebuildPlanner.planRemoveRedundantFiles`/`planRemoveRedundantRoms`
+    /// require THIS field, not the broader one, before offering to delete a
+    /// loose file or a single archived rom entry.
+    public let requiredByGameOwnerSatisfiedElsewhere: Bool
     /// The DAT machine name this entry's containing archive really belongs to
     /// when that archive is a whole game's set under the wrong filename — see
     /// `SurplusFile.misnamedArchiveForGameName` for jensyleo's own ≥50%
@@ -317,6 +343,41 @@ public struct AuditEntry: Equatable, Sendable {
     /// performance reasoning), same "flag an already-computed row" shape as
     /// `isOrphanedBios` above. `false` until that pass has actually run.
     public let hasInternalZipCRCMismatch: Bool
+    /// True for a `.correct` archived entry (right entry name, right hash)
+    /// whose own CONTAINER filename matches the DAT's expected archive name
+    /// case-INsensitively but differs in exact case (e.g. "AWBIOS.zip" vs.
+    /// the expected "awbios.zip") — jensyleo's own report (2026-09-11).
+    /// Deliberately NOT reflected in `status` itself (`status` stays
+    /// `.correct`): this is a FILE-level naming problem, not a ROM-level
+    /// one — the entry's own name and content are both genuinely right, so
+    /// the Roms panel (one row per rom entry) must keep showing it green,
+    /// exactly like `GameNode.infoText`'s own long-standing distinction
+    /// between "Bad file name" (archive-level, fixed by renaming the
+    /// archive) and "Rom need fix" (entry-level, fixed by renaming inside
+    /// it) already assumes. `GameStatusRollup.gameCategory` still treats
+    /// this as `.incorrect` severity for the GAME-level rollup (Games
+    /// panel, one row per File) — that's the only place it should read
+    /// yellow. A first attempt at this fix (reverted the same day)
+    /// downgraded `status` itself, which also silently misfired on
+    /// legitimate cross-archive `.correct` matches (a Merged-mode clone's
+    /// roms inside its parent's own archive, or a machine's roms inside its
+    /// BIOS's own archive) — see `AuditReporter.correctedStatus`'s own doc
+    /// comment for the exact guard that prevents that. Always `false` for a
+    /// loose (non-archived) file, which has no container identity to check
+    /// at all, and for every non-`.correct` status.
+    public let hasContainerCaseMismatch: Bool
+    /// True for a `.missing` rom whose exact declared content (size + one
+    /// shared hash) was found sitting in this system's own Maintenance
+    /// folder — jensyleo's own request (2026-09-14), after finding that a
+    /// donor already staged there for exactly this rom still showed the
+    /// same plain red "Missing" as any other, giving no visual hint that
+    /// "Find ROMs…" could satisfy it. Purely informational, same read-only
+    /// spirit as `isOrphanedBios`/`hasFilenameCRCMismatch`: nothing is
+    /// copied or written by setting this — that still only happens when
+    /// "Find ROMs…" itself is actually run. Set only by
+    /// `MaintenanceDonorDetector`'s own post-pass. Always `false` for any
+    /// status other than `.missing`, and before that pass has run.
+    public let hasMaintenanceDonor: Bool
     /// The DAT's own declared name for this rom — what it's SUPPOSED to be
     /// called, regardless of what's actually on disk right now. Always
     /// `rom.name`, for every status including `.correct`/`.misnamed` alike.
@@ -380,11 +441,16 @@ public struct AuditEntry: Equatable, Sendable {
         isDisk: Bool = false,
         foundElsewhereArchiveName: String? = nil,
         requiredByGameDescription: String? = nil,
+        requiredByGameMachineName: String? = nil,
+        requiredByGameConfirmedRedundant: Bool = false,
+        requiredByGameOwnerSatisfiedElsewhere: Bool = false,
         misnamedArchiveForGameName: String? = nil,
         duplicateSetPrimaryPath: URL? = nil,
         isOrphanedBios: Bool = false,
         hasFilenameCRCMismatch: Bool = false,
         hasInternalZipCRCMismatch: Bool = false,
+        hasContainerCaseMismatch: Bool = false,
+        hasMaintenanceDonor: Bool = false,
         name: String,
         actualEntryName: String? = nil,
         path: URL?,
@@ -425,11 +491,16 @@ public struct AuditEntry: Equatable, Sendable {
         self.isDisk = isDisk
         self.foundElsewhereArchiveName = foundElsewhereArchiveName
         self.requiredByGameDescription = requiredByGameDescription
+        self.requiredByGameMachineName = requiredByGameMachineName
+        self.requiredByGameConfirmedRedundant = requiredByGameConfirmedRedundant
+        self.requiredByGameOwnerSatisfiedElsewhere = requiredByGameOwnerSatisfiedElsewhere
         self.misnamedArchiveForGameName = misnamedArchiveForGameName
         self.duplicateSetPrimaryPath = duplicateSetPrimaryPath
         self.isOrphanedBios = isOrphanedBios
         self.hasFilenameCRCMismatch = hasFilenameCRCMismatch
         self.hasInternalZipCRCMismatch = hasInternalZipCRCMismatch
+        self.hasContainerCaseMismatch = hasContainerCaseMismatch
+        self.hasMaintenanceDonor = hasMaintenanceDonor
         self.name = name
         self.actualEntryName = actualEntryName
         self.path = path
@@ -453,9 +524,11 @@ public struct AuditEntry: Equatable, Sendable {
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
             requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
             driverStatus: driverStatus, displayType: displayType, displayRotate: displayRotate, players: players, coins: coins, matchedViaHeaderStrip: matchedViaHeaderStrip,
-            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
+            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription, requiredByGameMachineName: requiredByGameMachineName,
+            requiredByGameConfirmedRedundant: requiredByGameConfirmedRedundant,
+            requiredByGameOwnerSatisfiedElsewhere: requiredByGameOwnerSatisfiedElsewhere,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
-            isOrphanedBios: true, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
+            isOrphanedBios: true, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch, hasContainerCaseMismatch: hasContainerCaseMismatch, hasMaintenanceDonor: hasMaintenanceDonor,
             name: name, actualEntryName: actualEntryName, path: path, expectedSize: expectedSize, actualSize: actualSize,
             expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
             actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
@@ -472,9 +545,11 @@ public struct AuditEntry: Equatable, Sendable {
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
             requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
             driverStatus: driverStatus, displayType: displayType, displayRotate: displayRotate, players: players, coins: coins, matchedViaHeaderStrip: matchedViaHeaderStrip,
-            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
+            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription, requiredByGameMachineName: requiredByGameMachineName,
+            requiredByGameConfirmedRedundant: requiredByGameConfirmedRedundant,
+            requiredByGameOwnerSatisfiedElsewhere: requiredByGameOwnerSatisfiedElsewhere,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
-            isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: true, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch,
+            isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: true, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch, hasContainerCaseMismatch: hasContainerCaseMismatch, hasMaintenanceDonor: hasMaintenanceDonor,
             name: name, actualEntryName: actualEntryName, path: path, expectedSize: expectedSize, actualSize: actualSize,
             expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
             actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
@@ -491,9 +566,32 @@ public struct AuditEntry: Equatable, Sendable {
             mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
             requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
             driverStatus: driverStatus, displayType: displayType, displayRotate: displayRotate, players: players, coins: coins, matchedViaHeaderStrip: matchedViaHeaderStrip,
-            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
+            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription, requiredByGameMachineName: requiredByGameMachineName,
+            requiredByGameConfirmedRedundant: requiredByGameConfirmedRedundant,
+            requiredByGameOwnerSatisfiedElsewhere: requiredByGameOwnerSatisfiedElsewhere,
             misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
-            isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: true,
+            isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: true, hasContainerCaseMismatch: hasContainerCaseMismatch, hasMaintenanceDonor: hasMaintenanceDonor,
+            name: name, actualEntryName: actualEntryName, path: path, expectedSize: expectedSize, actualSize: actualSize,
+            expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
+            actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1
+        )
+    }
+
+    /// Same entry, `hasMaintenanceDonor` flipped to `true` —
+    /// `MaintenanceDonorDetector`'s own post-pass equivalent of
+    /// `markedOrphanedBios` above.
+    public func markedMaintenanceDonor() -> AuditEntry {
+        AuditEntry(
+            status: status, game: game, gameDescription: gameDescription, cloneOf: cloneOf, isBios: isBios, isDevice: isDevice,
+            hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: isOptional, romDumpStatus: romDumpStatus,
+            mergeName: mergeName, chdNames: chdNames, gameYear: gameYear, gameManufacturer: gameManufacturer,
+            requiredBiosNames: requiredBiosNames, deviceRefNames: deviceRefNames, cpuChipNames: cpuChipNames, audioChipNames: audioChipNames,
+            driverStatus: driverStatus, displayType: displayType, displayRotate: displayRotate, players: players, coins: coins, matchedViaHeaderStrip: matchedViaHeaderStrip,
+            isDisk: isDisk, foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription, requiredByGameMachineName: requiredByGameMachineName,
+            requiredByGameConfirmedRedundant: requiredByGameConfirmedRedundant,
+            requiredByGameOwnerSatisfiedElsewhere: requiredByGameOwnerSatisfiedElsewhere,
+            misnamedArchiveForGameName: misnamedArchiveForGameName, duplicateSetPrimaryPath: duplicateSetPrimaryPath,
+            isOrphanedBios: isOrphanedBios, hasFilenameCRCMismatch: hasFilenameCRCMismatch, hasInternalZipCRCMismatch: hasInternalZipCRCMismatch, hasContainerCaseMismatch: hasContainerCaseMismatch, hasMaintenanceDonor: true,
             name: name, actualEntryName: actualEntryName, path: path, expectedSize: expectedSize, actualSize: actualSize,
             expectedCRC: expectedCRC, expectedMD5: expectedMD5, expectedSHA1: expectedSHA1,
             actualCRC: actualCRC, actualMD5: actualMD5, actualSHA1: actualSHA1

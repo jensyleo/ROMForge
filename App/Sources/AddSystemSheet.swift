@@ -8,15 +8,40 @@ import AppKit
 import ROMForgeCore
 import SwiftUI
 
+/// The fixed choices for "Category" in `AddSystemSheet` — jensyleo's own
+/// request (2026-09-23), start of real NES support: this used to be plain
+/// free text (e.g. "Nintendo"), used only for grouping systems in the
+/// sidebar. Now it's ALSO what decides which "generate a DAT for me" button
+/// (if any) makes sense to offer, and what `RomSystem.isMAMEStyle` gets set
+/// to — a fixed list reads clearly ("what kind of system is this") in a way
+/// free text never could, and avoids ever showing a MAME-only action for a
+/// console/PC system, which is exactly what looked like "this app is
+/// MAME-only" before this change.
+///
+/// Only `.arcade` is treated as MAME-style — every other case is a plain
+/// "point me at a DAT you already have" system, since ROMForge has no known
+/// way to *generate* a DAT for any of them (no console/handheld/PC emulator
+/// has an equivalent to `mame -listxml`; those DATs are downloaded
+/// ready-made from No-Intro/Redump/TOSEC). Deliberately NOT claiming a fake
+/// "Generate from Installed <emulator>…" for any of these — jensyleo's own
+/// concern, having no idea whether even Homebrew has a matching package for
+/// every possible console: better to offer nothing than to promise
+/// something that might not exist.
+enum SystemCategoryKind: String, CaseIterable, Identifiable {
+    case arcade = "Arcade"
+    case console = "Console"
+    case handheld = "Handheld"
+    case computer = "PC"
+    case other = "Other"
+    var id: String { rawValue }
+}
+
 struct AddSystemSheet: View {
-    /// Existing categories from other configured systems, offered so the
-    /// user doesn't have to retype "Nintendo" the same way every time.
-    var existingCategories: [String] = []
     let onAdd: (RomSystem) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
-    @State private var category = ""
+    @State private var category: SystemCategoryKind = .arcade
     @State private var datURL: URL?
     @State private var romFolderURLs: [URL] = []
     /// jensyleo's own request (2026-08-13): "agregar la opción de sacar el
@@ -39,28 +64,27 @@ struct AddSystemSheet: View {
             TextField("Name (e.g. Super Nintendo)", text: $name)
                 .textFieldStyle(.roundedBorder)
 
-            TextField("Category (optional, e.g. Nintendo)", text: $category)
-                .textFieldStyle(.roundedBorder)
-            if !existingCategories.isEmpty {
-                HStack(spacing: 6) {
-                    Text("Existing:").font(.caption).foregroundStyle(.secondary)
-                    ForEach(existingCategories, id: \.self) { existing in
-                        Button(existing) { category = existing }
-                            .font(.caption)
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.blue)
-                    }
+            Picker("Category", selection: $category) {
+                ForEach(SystemCategoryKind.allCases) { kind in
+                    Text(kind.rawValue).tag(kind)
                 }
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            Text("Decides which of the DAT options below make sense to offer, and groups this system in the sidebar.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             HStack {
                 Button("Select DAT…") { chooseDAT() }
-                // Only offered once a real MAME executable is configured
-                // (Settings → Systems → MAME) — nothing to generate from
-                // otherwise. Disabled while a generation is already
-                // running, rather than letting a second click start a
-                // second overlapping `mame -listxml` process.
-                if MAMELaunchSettings.executablePath != nil {
+                // Only ever offered for Arcade — see `SystemCategoryKind`'s
+                // own doc comment for why every other category only ever
+                // gets "Select DAT…". Also requires a real MAME executable
+                // already configured (Settings → Systems → MAME) — nothing
+                // to generate from otherwise. Disabled while a generation is
+                // already running, rather than letting a second click start
+                // a second overlapping `mame -listxml` process.
+                if category == .arcade, MAMELaunchSettings.executablePath != nil {
                     Button("Generate from Installed MAME…") { generateDATFromMAME() }
                         .disabled(isGeneratingDAT)
                 }
@@ -117,10 +141,16 @@ struct AddSystemSheet: View {
             // it's now one global setting (Settings → Systems → "MAME")
             // that applies to every MAME system uniformly, since it isn't
             // really a per-DAT preference (see `RomSystem`'s own doc
-            // comment for the full reasoning).
-            Text("MAME's Rom/Bios merge mode is configured once for every system, in Settings (⌘,) → Systems.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            // comment for the full reasoning). Only relevant for Arcade —
+            // real gap found live by jensyleo (2026-09-23): this used to
+            // show unconditionally, even while adding a plain console DAT
+            // (e.g. a No-Intro NES set) that has no concept of Rom/Bios
+            // merge mode whatsoever.
+            if category == .arcade {
+                Text("MAME's Rom/Bios merge mode is configured once for every system, in Settings (⌘,) → Systems.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Spacer(minLength: 0)
 
@@ -159,7 +189,8 @@ struct AddSystemSheet: View {
     /// (ClrMamePro has direct precedent for it, per research done the same
     /// day this was requested). Names the system "MAME" if nothing's been
     /// typed yet, same convention `chooseDAT()` already uses for a
-    /// manually-picked file.
+    /// manually-picked file. Only ever reachable with `category == .arcade`
+    /// already selected (see the button's own condition above).
     private func generateDATFromMAME() {
         isGeneratingDAT = true
         generateDATErrorMessage = nil
@@ -188,9 +219,10 @@ struct AddSystemSheet: View {
         onAdd(
             RomSystem(
                 name: name.trimmingCharacters(in: .whitespaces),
-                category: category.trimmingCharacters(in: .whitespaces),
+                category: category.rawValue,
                 datURL: datURL,
-                romFolderURLs: romFolderURLs
+                romFolderURLs: romFolderURLs,
+                isMAMEStyle: category == .arcade
             )
         )
         dismiss()

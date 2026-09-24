@@ -94,6 +94,17 @@ public struct SurplusFile: Equatable, Sendable {
     /// `ROMMatcher.match`'s own `romsByHash`). `nil` for a file that
     /// matches nothing in the DAT at all — genuinely unrecognized junk.
     public let requiredByGameDescription: String?
+    /// The real DAT machine name (e.g. `"naomi"`) behind
+    /// `requiredByGameDescription` above — that field is a human-readable
+    /// description ("Naomi Bios"), not usable as a lookup key. jensyleo's
+    /// own report (2026-09-17): a stray file recognized as belonging to
+    /// another game (`requiredByGameDescription` set, `AuditEntry.game`
+    /// left `nil`) could never get a "Repair from Maintenance Folder"
+    /// donor search at all — `MaintenanceDonorDetector`/`RebuildPlanner`
+    /// key their lookups by the DAT's own machine name, which this file's
+    /// own entry never carried anywhere before this field existed. `nil`
+    /// whenever `requiredByGameDescription` is `nil` too.
+    public let requiredByGameMachineName: String?
     /// True when no game claimed this file and its content matches no known
     /// hash (`requiredByGameDescription` is `nil`), but its own entry NAME
     /// matches some DAT rom declared `nodump` — a rom with no hash to
@@ -142,13 +153,68 @@ public struct SurplusFile: Equatable, Sendable {
     /// correctly-named archive (jensyleo's Finder philosophy, 2026-08-05).
     /// This is purely a more accurate label on the misnamed archive itself.
     public let misnamedArchiveForGameName: String?
+    /// True only when the game named by `requiredByGameDescription` already
+    /// has THIS EXACT rom's content independently satisfied elsewhere in the
+    /// real scanned collection (a `.correct`/`.misnamed`/`.foundElsewhere`/
+    /// `.nodump` `RomMatch` for it) — i.e. this file is a genuine, safe-to-
+    /// remove spare copy, not the owner's only real source.
+    ///
+    /// jensyleo's own real incident (2026-09-19): `requiredByGameDescription`
+    /// has always meant "the DAT declares this content belongs to game X",
+    /// entirely independent of whether X's own archive is present, missing,
+    /// or complete — it is NOT "X already has a good copy elsewhere." A
+    /// stray `naomi.zip` full of NAOMI BIOS content got deleted (after being
+    /// extracted loose) because "Duplicated archive, not needed here
+    /// (required by NAOMI BIOS)" read as "safe, NAOMI BIOS already has it" —
+    /// but NAOMI BIOS's own archive had ALSO just been removed, so this was
+    /// genuinely the only real copy left outside the Maintenance folder,
+    /// just badly organized (loose, not zipped under the right name). This
+    /// flag is what `RebuildPlanner.planRemoveRedundantFiles`/
+    /// `planRemoveRedundantRoms`/`fullyRedundantArchiveContainers` now check
+    /// before ever offering to delete such a file — `requiredByGameDescription`
+    /// itself stays exactly as informative as before (still shown in the UI,
+    /// still keys "Repair from Maintenance Folder" donor lookups), only the
+    /// DELETE path gets the extra safety check.
+    public let requiredByGameConfirmedRedundant: Bool
+
+    /// True only for the strict subset of `requiredByGameConfirmedRedundant`
+    /// where the owner genuinely has a real, independent copy already
+    /// (situation "A" above) — never true merely because this file happens
+    /// to be one of two or more identical UNCLAIMED copies sitting around
+    /// while the owner has NO real copy anywhere (situation "B",
+    /// `duplicateAmongSurplusIndices`/`duplicateAmongUnclaimedCHDs`).
+    ///
+    /// Real incident, second round (2026-09-19, same day as the doc comment
+    /// above): a loose `epr-21576g.ic27` existed twice in SEGA (a Finder-
+    /// style "epr-21576g 2.ic27" copy) while its declared owner "NAOMI BIOS"
+    /// had NO real archive anywhere — `requiredByGameConfirmedRedundant`
+    /// still went `true` via the B signal, and the UI said "Duplicated
+    /// archive, not needed here (required by NAOMI BIOS)", which is false:
+    /// NAOMI BIOS still needs this content, and it isn't even an archive
+    /// (it's a loose rom fragment, not a directly-usable set). Unlike a
+    /// copy-pasted whole `naomi.zip` (B is safe there — the surviving copy
+    /// is a complete, directly usable archive), deleting one of two loose
+    /// fragment duplicates helps nobody and risks the exact same near-loss
+    /// pattern if the surviving copy is deleted later too. `RebuildPlanner`
+    /// now requires THIS field (not the broader `requiredByGameConfirmedRedundant`)
+    /// before offering to delete a loose file or a single rom entry inside
+    /// an otherwise-mixed archive; whole-archive-container and whole-CHD
+    /// deletion still accept the broader field, since a duplicate of a
+    /// complete, directly-usable unit is genuinely safe either way.
+    public let requiredByGameOwnerSatisfiedElsewhere: Bool
 
     public init(
-        file: HashedFile, requiredByGameDescription: String? = nil, matchesNodumpRomName: Bool = false,
+        file: HashedFile, requiredByGameDescription: String? = nil, requiredByGameMachineName: String? = nil,
+        requiredByGameConfirmedRedundant: Bool = false,
+        requiredByGameOwnerSatisfiedElsewhere: Bool = false,
+        matchesNodumpRomName: Bool = false,
         isInKnownArchive: Bool = false, misnamedArchiveForGameName: String? = nil
     ) {
         self.file = file
         self.requiredByGameDescription = requiredByGameDescription
+        self.requiredByGameMachineName = requiredByGameMachineName
+        self.requiredByGameConfirmedRedundant = requiredByGameConfirmedRedundant
+        self.requiredByGameOwnerSatisfiedElsewhere = requiredByGameOwnerSatisfiedElsewhere
         self.matchesNodumpRomName = matchesNodumpRomName
         self.isInKnownArchive = isInKnownArchive
         self.misnamedArchiveForGameName = misnamedArchiveForGameName

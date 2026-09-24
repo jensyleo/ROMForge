@@ -114,9 +114,21 @@ public enum GameNodeBuilder {
     public static func computeUnknownArchivesCount(baseNodes: [GameNode]) -> Int {
         // Excludes a surplus bucket `gameNodes(from:)` reclassified yellow
         // (`.incorrect`, "not needed here…") — genuinely unrecognized
-        // content (`.surplus`) is the only thing this count is meant to
-        // mean.
-        baseNodes.filter { $0.isSurplusBucket && $0.aggregateStatus == .surplus }.count
+        // content is the only thing this count is meant to mean.
+        //
+        // Checks `.unknownFile` (what `gameNodes(from:)` actually assigns
+        // a genuinely-unrecognized surplus bucket, at its own `hasAnyIdentifiedContent
+        // ? .incorrect : .unknownFile` branch) as well as the legacy
+        // decode-only `.surplus` case — real bug found live (2026-09-21,
+        // jensyleo's own collection: this counter always read 0 despite
+        // hundreds of visible gray "Unknown game" rows in the table).
+        // `.surplus` is never actually assigned by `gameNodes(from:)`
+        // itself (see `AuditReport.swift`'s own doc comment on that case),
+        // so checking only it here always failed — the same mistake was
+        // already caught and fixed at the App layer's own two equivalent
+        // filters (`LibraryDetailView.swift`'s `showUnknownArchives`
+        // predicates), just missed here.
+        baseNodes.filter { $0.isSurplusBucket && ($0.aggregateStatus == .unknownFile || $0.aggregateStatus == .surplus) }.count
     }
 
     /// Every real game's row for a "Database" category before any scan has
@@ -234,10 +246,27 @@ public enum GameNodeBuilder {
         // correct semantics and fully deterministic (it depends only on
         // this call's own inputs, never on a second, separately-built
         // dictionary that could disagree with it).
+        // Real incident (2026-09-21, jensyleo's own live collection): a
+        // loose rom copied fresh into CPS2 vanished entirely after
+        // scanning — not shown as Unknown, not shown anywhere. Root cause:
+        // a `.foundElsewhere` entry's own `path` points at whichever OTHER
+        // physical file its content was borrowed from — never a real file
+        // this game itself owns (see `scoped(_:)`/`recomputeGamesInFolder`'s
+        // own doc comments, which already carry this exact rule). The loop
+        // below built `gameNameByArchivePath` from EVERY one of a game's
+        // entries, `.foundElsewhere` included, so a `.missing` CPS2 rom
+        // whose content happened to hash-match the newly-copied loose file
+        // (`.foundElsewhere`, informational only) made that loose file's
+        // own path look like "this game's own archive" — its surplus
+        // bucket then folded into that unrelated game's row and was
+        // removed from `surplusOrder` below, with no standalone row ever
+        // created for it. `.foundElsewhere` is excluded here so this fold
+        // only ever applies to a physical archive a game's REAL match
+        // (`.correct`/`.misnamed`/`.hashMismatch`/etc.) actually came from.
         var gameNameByArchivePath: [String: String] = [:]
         for (name, gameEntries) in entriesByGame {
             for entry in gameEntries {
-                guard let path = entry.path?.path else { continue }
+                guard entry.foundElsewhereArchiveName == nil, let path = entry.path?.path else { continue }
                 gameNameByArchivePath[path] = name
             }
         }

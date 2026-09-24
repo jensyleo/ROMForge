@@ -8,6 +8,24 @@ import Foundation
 import Testing
 @testable import ROMForgeCore
 
+/// A lock-protected accumulator for a `@Sendable` progress callback's own
+/// ticks — plain array mutation from inside such a closure is a real
+/// Swift 6 strict-concurrency error, not just a style nit.
+private final class TickBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ticks: [(completed: Int, total: Int)] = []
+    func record(_ tick: (completed: Int, total: Int)) {
+        lock.lock()
+        defer { lock.unlock() }
+        ticks.append(tick)
+    }
+    var all: [(completed: Int, total: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ticks
+    }
+}
+
 @Suite("AuditReportDatabase")
 struct AuditReportDatabaseTests {
     private func tempDBPath() -> String {
@@ -58,6 +76,159 @@ struct AuditReportDatabaseTests {
         #expect(meta.datName == "GUI Test Set")
         #expect(meta.datVersion == "1.0")
         #expect(abs(meta.scannedAt.timeIntervalSince(scannedAt)) < 1)
+    }
+
+    @Test("saveReport diffs against what's already persisted: an unchanged entry survives untouched, a changed one updates in place, a dropped one is removed, and a new one is added")
+    func saveReportDiffsInsteadOfRewritingEverything() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let unchanged = AuditEntry(status: .correct, game: "Game One", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false, name: "gameone.bin", path: URL(fileURLWithPath: "/roms/gameone.bin"), expectedSize: 9, actualSize: 9)
+        let aboutToChange = AuditEntry(status: .missing, game: "Game Two", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false, name: "gametwo.bin", path: nil, expectedSize: 9)
+        let aboutToBeDropped = AuditEntry(status: .surplus, game: nil, name: "gone.bin", path: URL(fileURLWithPath: "/roms/gone.bin"), actualSize: 9)
+        let firstReport = AuditReport(entries: [unchanged, aboutToChange, aboutToBeDropped], correct: 1, incorrect: 0, missing: 1, surplus: 1)
+        try db.saveReport(firstReport, systemID: "sys-diff", datName: nil, datVersion: nil, scannedAt: Date())
+
+        // Same game/name identity as `aboutToChange`, but now repaired (found
+        // on disk) — this must be treated as an UPDATE of the same logical
+        // row, not a delete+insert, per `entryIdentityKey`'s own contract.
+        let nowRepaired = AuditEntry(status: .correct, game: "Game Two", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false, name: "gametwo.bin", path: URL(fileURLWithPath: "/roms/gametwo.bin"), expectedSize: 9, actualSize: 9)
+        let brandNew = AuditEntry(status: .surplus, game: nil, name: "new.bin", path: URL(fileURLWithPath: "/roms/new.bin"), actualSize: 9)
+        let secondReport = AuditReport(entries: [unchanged, nowRepaired, brandNew], correct: 2, incorrect: 0, missing: 0, surplus: 1)
+        try db.saveReport(secondReport, systemID: "sys-diff", datName: nil, datVersion: nil, scannedAt: Date())
+
+        let loaded = try #require(try db.loadReport(systemID: "sys-diff"))
+        #expect(Set(loaded.entries.map(\.name)) == ["gameone.bin", "gametwo.bin", "new.bin"], "gone.bin must be dropped, new.bin must be added, and the other two kept")
+        let reloadedGameTwo = try #require(loaded.entries.first { $0.name == "gametwo.bin" })
+        #expect(reloadedGameTwo.status == .correct)
+        #expect(reloadedGameTwo.path == URL(fileURLWithPath: "/roms/gametwo.bin"))
+        #expect(reloadedGameTwo.actualSize == 9)
+    }
+
+    @Test("saveReport reports real (completed, total) progress across deletes, updates and inserts, ending exactly at the total")
+    func saveReportReportsProgress() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let toKeep = AuditEntry(status: .correct, game: "Game One", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false, name: "gameone.bin", path: URL(fileURLWithPath: "/roms/gameone.bin"), expectedSize: 9, actualSize: 9)
+        let toChange = AuditEntry(status: .missing, game: "Game Two", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false, name: "gametwo.bin", path: nil, expectedSize: 9)
+        let toDrop = AuditEntry(status: .surplus, game: nil, name: "gone.bin", path: URL(fileURLWithPath: "/roms/gone.bin"), actualSize: 9)
+        try db.saveReport(AuditReport(entries: [toKeep, toChange, toDrop], correct: 1, incorrect: 0, missing: 1, surplus: 1), systemID: "sys-progress", datName: nil, datVersion: nil, scannedAt: Date())
+
+        let changed = AuditEntry(status: .correct, game: "Game Two", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false, name: "gametwo.bin", path: URL(fileURLWithPath: "/roms/gametwo.bin"), expectedSize: 9, actualSize: 9)
+        let brandNew = AuditEntry(status: .surplus, game: nil, name: "new.bin", path: URL(fileURLWithPath: "/roms/new.bin"), actualSize: 9)
+        let reportedTicks = TickBox()
+        try db.saveReport(
+            AuditReport(entries: [toKeep, changed, brandNew], correct: 2, incorrect: 0, missing: 0, surplus: 1),
+            systemID: "sys-progress", datName: nil, datVersion: nil, scannedAt: Date(),
+            onProgress: { completed, total in reportedTicks.record((completed, total)) }
+        )
+
+        // 1 delete (gone.bin) + 1 update (gametwo.bin) + 1 insert (new.bin) = 3.
+        let ticks = reportedTicks.all
+        #expect(!ticks.isEmpty)
+        #expect(ticks.last?.completed == 3)
+        #expect(ticks.allSatisfy { $0.total == 3 })
+    }
+
+    @Test("a large report (past the parallel-load threshold) round-trips identically to the plain single-connection path — jensyleo's own real collection (2026-09-17), 323,568 entries taking 6.5s to load, motivated splitting loadReport's read across several worker connections")
+    func largeReportRoundTripsViaParallelLoad() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        // Comfortably past the 20,000-row threshold that switches
+        // `loadEntries` from its plain single-connection loop to the
+        // multi-connection, rowid-range-partitioned one.
+        let entryCount = 25_000
+        var entries: [AuditEntry] = []
+        entries.reserveCapacity(entryCount)
+        for i in 0..<entryCount {
+            entries.append(
+                AuditEntry(
+                    status: i.isMultiple(of: 2) ? .correct : .missing,
+                    game: "game\(i)", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false,
+                    name: "rom\(i).bin",
+                    path: i.isMultiple(of: 2) ? URL(fileURLWithPath: "/roms/rom\(i).bin") : nil,
+                    expectedSize: Int64(i), actualSize: i.isMultiple(of: 2) ? Int64(i) : nil,
+                    expectedCRC: String(format: "%08x", i)
+                )
+            )
+        }
+        let correctCount = entries.filter { $0.status == .correct }.count
+        let missingCount = entries.filter { $0.status == .missing }.count
+        let report = AuditReport(entries: entries, correct: correctCount, incorrect: 0, missing: missingCount, surplus: 0)
+
+        try db.saveReport(report, systemID: "sys-large", datName: "Large Test Set", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-large"))
+
+        #expect(loaded.entries.count == entryCount)
+        #expect(loaded.correct == correctCount)
+        #expect(loaded.missing == missingCount)
+        // Order-independent: the parallel path merges chunks by index, not
+        // guaranteed to match the original save order row-for-row, but
+        // every name/status/expectedCRC combination must still be present
+        // exactly once.
+        #expect(Set(loaded.entries.map(\.name)) == Set(entries.map(\.name)))
+        let loadedByName = Dictionary(uniqueKeysWithValues: loaded.entries.map { ($0.name, $0) })
+        for original in entries {
+            let reloaded = try #require(loadedByName[original.name])
+            #expect(reloaded.status == original.status)
+            #expect(reloaded.expectedCRC == original.expectedCRC)
+            #expect(reloaded.path == original.path)
+        }
+    }
+
+    @Test("saveEntriesDiffed's own up-front read of what's already persisted uses the parallel rowid-partitioned path above the same threshold loadEntries does, and still diffs correctly against it")
+    func saveEntriesDiffedUsesParallelReadPastThreshold() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        // Past the 20,000-row parallel threshold — jensyleo's own report
+        // (2026-09-19): a real ~50,368-game "Scan All Folders" got stuck
+        // on a frozen progress bar for a long stretch, root-caused to
+        // `saveEntriesDiffed`'s own up-front read running as a single
+        // sequential decode loop over the WHOLE existing table (the exact
+        // same cost `loadEntries` was already parallelized for) — worse
+        // than the plain rewrite it replaced whenever most rows differ,
+        // exactly what a first save after this session's own schema/logic
+        // changes looks like.
+        let entryCount = 25_000
+        var firstEntries: [AuditEntry] = []
+        firstEntries.reserveCapacity(entryCount)
+        for i in 0..<entryCount {
+            firstEntries.append(
+                AuditEntry(
+                    status: .missing, game: "game\(i)", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false,
+                    name: "rom\(i).bin", path: nil, expectedSize: Int64(i)
+                )
+            )
+        }
+        try db.saveReport(
+            AuditReport(entries: firstEntries, correct: 0, incorrect: 0, missing: entryCount, surplus: 0),
+            systemID: "sys-diff-large", datName: nil, datVersion: nil, scannedAt: Date()
+        )
+
+        // Second save changes EVERY surviving entry's status (worst case
+        // for the diff — nothing is "unchanged"), drops the last 100, and
+        // adds 50 brand-new ones — exercising update, delete and insert
+        // together through the parallel read path.
+        var secondEntries: [AuditEntry] = (0..<(entryCount - 100)).map { i in
+            AuditEntry(
+                status: .correct, game: "game\(i)", cloneOf: nil, isBios: false, hasCHD: false, hasSamples: false, isBadDump: false,
+                name: "rom\(i).bin", path: URL(fileURLWithPath: "/roms/rom\(i).bin"), expectedSize: Int64(i), actualSize: Int64(i)
+            )
+        }
+        for i in 0..<50 {
+            secondEntries.append(
+                AuditEntry(
+                    status: .surplus, game: nil, name: "new\(i).bin", path: URL(fileURLWithPath: "/roms/new\(i).bin"), actualSize: Int64(i)
+                )
+            )
+        }
+        try db.saveReport(
+            AuditReport(entries: secondEntries, correct: entryCount - 100, incorrect: 0, missing: 0, surplus: 50),
+            systemID: "sys-diff-large", datName: nil, datVersion: nil, scannedAt: Date()
+        )
+
+        let loaded = try #require(try db.loadReport(systemID: "sys-diff-large"))
+        #expect(loaded.entries.count == entryCount - 100 + 50)
+        let loadedByName = Dictionary(uniqueKeysWithValues: loaded.entries.map { ($0.name, $0) })
+        #expect(loadedByName["rom0.bin"]?.status == .correct)
+        #expect(loadedByName["rom0.bin"]?.path == URL(fileURLWithPath: "/roms/rom0.bin"))
+        #expect(loadedByName["rom\(entryCount - 1).bin"] == nil, "the dropped tail must actually be gone, not just unreferenced")
+        #expect(loadedByName["new0.bin"]?.status == .surplus)
     }
 
     @Test("a system that's never been scanned has no persisted report")
@@ -283,6 +454,38 @@ struct AuditReportDatabaseTests {
         #expect(reloadedInUse.isOrphanedBios == false)
     }
 
+    @Test("an entry's hasContainerCaseMismatch flag survives a save/load round trip — added in the same commit as the field itself (v24), following the exact pattern the earlier isOrphanedBios/actualEntryName gaps established")
+    func hasContainerCaseMismatchSurvivesRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let mismatched = AuditEntry(status: .correct, game: "awbios", hasContainerCaseMismatch: true, name: "awbios.bin", path: URL(fileURLWithPath: "/roms/AWBIOS.zip"))
+        let matching = AuditEntry(status: .correct, game: "decocass", hasContainerCaseMismatch: false, name: "decocass.bin", path: URL(fileURLWithPath: "/roms/decocass.zip"))
+        let report = AuditReport(entries: [mismatched, matching], correct: 2, incorrect: 0, missing: 0, surplus: 0)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedMismatched = try #require(loaded.entries.first { $0.name == "awbios.bin" })
+        let reloadedMatching = try #require(loaded.entries.first { $0.name == "decocass.bin" })
+        #expect(reloadedMismatched.hasContainerCaseMismatch == true)
+        #expect(reloadedMatching.hasContainerCaseMismatch == false)
+    }
+
+    @Test("an entry's hasMaintenanceDonor flag survives a save/load round trip — added in the same commit as the field itself (v25); jensyleo's own live report caught this exact gap (the yellow icon reverted to plain red after every app relaunch) before this test did")
+    func hasMaintenanceDonorSurvivesRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let withDonor = AuditEntry(status: .missing, game: "gng", hasMaintenanceDonor: true, name: "mm_c_03", path: nil)
+        let withoutDonor = AuditEntry(status: .missing, game: "gng", hasMaintenanceDonor: false, name: "mm_c_06", path: nil)
+        let report = AuditReport(entries: [withDonor, withoutDonor], correct: 0, incorrect: 0, missing: 2, surplus: 0)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedWithDonor = try #require(loaded.entries.first { $0.name == "mm_c_03" })
+        let reloadedWithoutDonor = try #require(loaded.entries.first { $0.name == "mm_c_06" })
+        #expect(reloadedWithDonor.hasMaintenanceDonor == true)
+        #expect(reloadedWithoutDonor.hasMaintenanceDonor == false)
+    }
+
     @Test("an entry's actualEntryName survives a save/load round trip — added in the same commit as the field itself (v23), following the exact pattern the earlier isDisk/foundElsewhereArchiveName gaps established")
     func actualEntryNameSurvivesRoundTrip() throws {
         let db = try AuditReportDatabase(path: tempDBPath())
@@ -324,6 +527,25 @@ struct AuditReportDatabaseTests {
         let reloadedJunk = try #require(loaded.entries.first { $0.name == "random.txt" })
         #expect(reloadedRecognized.requiredByGameDescription == "Street Fighter II': Champion Edition")
         #expect(reloadedJunk.requiredByGameDescription == nil)
+    }
+
+    @Test("an entry's requiredByGameMachineName survives a save/load round trip — added in the same commit as the field itself (v26); jensyleo's own real collection (2026-09-17), CPS2/naomi.zip's own extra rom needed this real DAT machine name (not just the human-readable description already covered above) for \"Repair from Maintenance Folder\" to ever find it a donor")
+    func requiredByGameMachineNameSurvivesRoundTrip() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let recognizedSurplus = AuditEntry(
+            status: .incorrect, game: nil, requiredByGameDescription: "Naomi Bios", requiredByGameMachineName: "naomi",
+            name: "epr-21580a.ic27", path: nil
+        )
+        let junkSurplus = AuditEntry(status: .surplus, game: nil, name: "random.txt", path: nil)
+        let report = AuditReport(entries: [recognizedSurplus, junkSurplus], correct: 0, incorrect: 1, missing: 0, surplus: 1)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        let reloadedRecognized = try #require(loaded.entries.first { $0.name == "epr-21580a.ic27" })
+        let reloadedJunk = try #require(loaded.entries.first { $0.name == "random.txt" })
+        #expect(reloadedRecognized.requiredByGameMachineName == "naomi")
+        #expect(reloadedJunk.requiredByGameMachineName == nil)
     }
 
     @Test("re-opening the same database file preserves previously saved data")

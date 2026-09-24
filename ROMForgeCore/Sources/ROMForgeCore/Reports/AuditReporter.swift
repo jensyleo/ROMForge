@@ -29,8 +29,7 @@ public enum AuditReporter {
         // game already in this same DAT/scan.
         // Not `Dictionary(uniqueKeysWithValues:)` — that traps if the DAT
         // (an arbitrary user-chosen file) has two machines sharing the same
-        // name (malformed/hand-edited DAT), same class of real crash fixed
-        // in `DATVersionDiff.compare`. First occurrence wins,
+        // name (malformed/hand-edited DAT). First occurrence wins,
         // deterministically, instead of crashing.
         let gamesByName = matchReport.games.reduce(into: [String: DATGame]()) { result, gameResult in
             if result[gameResult.game.name] == nil {
@@ -69,7 +68,7 @@ public enum AuditReporter {
                 // and the `actual*` hash/size (present for a hashed file,
                 // absent for `.missing`) actually differ, so those are the
                 // only per-case parameters left.
-                let makeEntry: (AuditStatus, URL?, HashedFile?, Bool, String?) -> AuditEntry = { status, path, hashedFile, viaHeaderStrip, foundElsewhereArchiveName in
+                let makeEntry: (AuditStatus, URL?, HashedFile?, Bool, String?, Bool) -> AuditEntry = { status, path, hashedFile, viaHeaderStrip, foundElsewhereArchiveName, hasContainerCaseMismatch in
                     AuditEntry(
                         status: status, game: game.name, gameDescription: game.description, cloneOf: game.cloneOf, isBios: game.isBios, isDevice: game.isDevice,
                         hasCHD: hasCHD, hasSamples: hasSamples, isBadDump: isBadDump, isOptional: rom.optional, romDumpStatus: rom.status, mergeName: rom.mergeName,
@@ -79,6 +78,7 @@ public enum AuditReporter {
                         driverStatus: game.driverStatus, displayType: game.displayType, displayRotate: game.displayRotate,
                         players: game.players, coins: game.coins,
                         matchedViaHeaderStrip: viaHeaderStrip, foundElsewhereArchiveName: foundElsewhereArchiveName,
+                        hasContainerCaseMismatch: hasContainerCaseMismatch,
                         name: rom.name, actualEntryName: hashedFile?.file.name, path: path,
                         expectedSize: rom.size, actualSize: hashedFile?.file.size,
                         expectedCRC: rom.crc, expectedMD5: rom.md5, expectedSHA1: rom.sha1,
@@ -87,9 +87,9 @@ public enum AuditReporter {
                 }
                 switch romMatch.status {
                 case .correct(let hashedFile, let viaHeaderStrip):
-                    entries.append(makeEntry(.correct, hashedFile.file.url, hashedFile, viaHeaderStrip, nil))
+                    entries.append(makeEntry(.correct, hashedFile.file.url, hashedFile, viaHeaderStrip, nil, Self.hasContainerCaseMismatch(for: hashedFile, gameName: game.name)))
                 case .misnamed(let hashedFile, let viaHeaderStrip):
-                    entries.append(makeEntry(.incorrect, hashedFile.file.url, hashedFile, viaHeaderStrip, nil))
+                    entries.append(makeEntry(.incorrect, hashedFile.file.url, hashedFile, viaHeaderStrip, nil, false))
                 case .foundElsewhere(let hashedFile):
                     // Genuinely present in the collection — just not
                     // consolidated into this game's own self-contained
@@ -97,15 +97,15 @@ public enum AuditReporter {
                     // `RomMatchStatus.foundElsewhere`'s own doc comment) —
                     // a naming/organization problem, same bucket as
                     // `.misnamed`, not a true absence.
-                    entries.append(makeEntry(.incorrect, hashedFile.file.url, hashedFile, false, hashedFile.file.url.lastPathComponent))
+                    entries.append(makeEntry(.incorrect, hashedFile.file.url, hashedFile, false, hashedFile.file.url.lastPathComponent, false))
                 case .hashMismatch(let hashedFile):
                     // A file genuinely occupies this rom's own expected
                     // slot (same name, right archive) but its hash doesn't
                     // match — a real content problem ("Bad"), not a
                     // naming/location one.
-                    entries.append(makeEntry(.badDump, hashedFile.file.url, hashedFile, false, nil))
+                    entries.append(makeEntry(.badDump, hashedFile.file.url, hashedFile, false, nil, false))
                 case .missing:
-                    entries.append(makeEntry(.missing, nil, nil, false, nil))
+                    entries.append(makeEntry(.missing, nil, nil, false, nil, false))
                 case .nodump(let hashedFile):
                     // A file genuinely sits in this nodump rom's own
                     // expected slot, but the DAT itself has no hash to
@@ -113,7 +113,7 @@ public enum AuditReporter {
                     // confirm) nor "surplus" (the DAT explicitly documents
                     // this exact name/slot). See `AuditStatus.unverifiable`'s
                     // own doc comment.
-                    entries.append(makeEntry(.unverifiable, hashedFile.file.url, hashedFile, false, nil))
+                    entries.append(makeEntry(.unverifiable, hashedFile.file.url, hashedFile, false, nil, false))
                 }
             }
         }
@@ -161,8 +161,23 @@ public enum AuditReporter {
                 AuditEntry(
                     status: status, game: nil,
                     requiredByGameDescription: surplusFile.requiredByGameDescription,
+                    requiredByGameMachineName: surplusFile.requiredByGameMachineName,
+                    requiredByGameConfirmedRedundant: surplusFile.requiredByGameConfirmedRedundant,
+                    requiredByGameOwnerSatisfiedElsewhere: surplusFile.requiredByGameOwnerSatisfiedElsewhere,
                     misnamedArchiveForGameName: surplusFile.misnamedArchiveForGameName,
-                    name: hashedFile.file.name, path: hashedFile.file.url,
+                    name: hashedFile.file.name,
+                    // jensyleo's own report (2026-09-13): the Roms panel's
+                    // own "File name" column (and its detail-panel twin)
+                    // both read `actualEntryName ?? path?.lastPathComponent`
+                    // — left unset here, a surplus entry silently fell back
+                    // to the CONTAINER's own filename (e.g. "ganryu.zip")
+                    // instead of the actual unrecognized entry's own name
+                    // sitting inside it. Every matched-rom case already sets
+                    // this to `hashedFile.file.name`; a surplus entry's real
+                    // name lives in that exact same place, just never
+                    // threaded through.
+                    actualEntryName: hashedFile.file.name,
+                    path: hashedFile.file.url,
                     actualSize: hashedFile.file.size,
                     actualCRC: hashedFile.hash.crc32, actualMD5: hashedFile.hash.md5, actualSHA1: hashedFile.hash.sha1
                 )
@@ -187,6 +202,42 @@ public enum AuditReporter {
         }
 
         return AuditReport(entries: entries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
+    }
+
+    /// A `.correct` `RomMatchStatus` (entry name + hash both match exactly)
+    /// can still sit inside a container whose OWN filename differs from
+    /// the DAT's declared game name in CASE only — jensyleo's own report
+    /// (2026-09-11) that this should read yellow/"Bad file name" at the
+    /// FILE/game level, not green/"Ok" — see `AuditEntry
+    /// .hasContainerCaseMismatch`'s own doc comment for why this is
+    /// returned as a separate flag rather than downgrading `status`
+    /// itself (jensyleo's own follow-up report the same day: doing that
+    /// wrongly turned every ROM inside the container yellow too, in the
+    /// Roms panel, even though each rom's own entry name was perfectly
+    /// correct — this is a container-naming problem, not a rom-naming
+    /// one). The guard here is also the part an even earlier attempt at
+    /// this got wrong: it compared the container's name to `gameName` for
+    /// EXACT equality outright, which also flagged every legitimate
+    /// cross-archive `.correct` match — a Merged-mode clone whose roms
+    /// live inside its PARENT's own archive, or a machine whose roms live
+    /// inside its BIOS's own archive under bios-merged mode — since
+    /// neither of those containers is ever named after `gameName` at all,
+    /// case or no case. The fix: only ever flag a genuine CASE-ONLY
+    /// mismatch — the container's name must already match the expected
+    /// name case-INsensitively (i.e. it's unambiguously meant to be THIS
+    /// game's own container) before an exact-case difference flags it. A
+    /// container that doesn't match even case-insensitively is a
+    /// different archive by design, not a naming mistake, and returns
+    /// `false`. A loose (non-archived) file has no container identity to
+    /// check at all and always returns `false`.
+    private static func hasContainerCaseMismatch(for hashedFile: HashedFile, gameName: String) -> Bool {
+        let file = hashedFile.file
+        guard file.url.lastPathComponent != file.name else { return false }
+        let containerName = file.url.lastPathComponent
+        let containerExtension = file.url.pathExtension
+        let expectedContainerName = containerExtension.isEmpty ? gameName : "\(gameName).\(containerExtension)"
+        guard containerName.lowercased() == expectedContainerName.lowercased() else { return false }
+        return containerName != expectedContainerName
     }
 
     /// Folds `DiskAuditor.audit(...)`'s own entries into an existing ROM
@@ -219,9 +270,9 @@ public enum AuditReporter {
     /// from "two files inside the same one." A single-folder system (the
     /// common case) short-circuits inside `DuplicateSetDetector.detect`
     /// itself and returns `report` unchanged.
-    public static func addingDuplicateSets(to report: AuditReport, rootFolders: [URL]) throws -> AuditReport {
+    public static func addingDuplicateSets(to report: AuditReport, rootFolders: [URL], recentlyScannedPaths: [URL] = []) throws -> AuditReport {
         try Task.checkCancellation()
-        let duplicateEntries = DuplicateSetDetector.detect(in: report, rootFolders: rootFolders)
+        let duplicateEntries = DuplicateSetDetector.detect(in: report, rootFolders: rootFolders, recentlyScannedPaths: recentlyScannedPaths)
         guard !duplicateEntries.isEmpty else { return report }
         return AuditReport(
             entries: report.entries + duplicateEntries, correct: report.correct, incorrect: report.incorrect, badDump: report.badDump,
@@ -281,49 +332,59 @@ public enum AuditReporter {
     /// from (e.g. the system's very first scan), returns `newReport`
     /// unchanged — a full "Scan Folder"/"Scan All Folders" is untouched by
     /// this at all.
+    /// jensyleo's own reframing (2026-09-18) of a real-collection incident
+    /// this function used to mishandle (2026-09-17): a scoped rescan of
+    /// `naomi.zip`/`naomi2.zip` flipped which OTHER, untouched file
+    /// (`naomigd.zip`, in a folder never asked to be rescanned) owned a
+    /// game's roms — a real, correct ripple effect (matching always
+    /// considers the whole system, since a rom's true owner can live in any
+    /// folder), but the OLD version of this function only ever looked for
+    /// ripples inside `rescannedPaths`' own games, so it missed this one
+    /// entirely and let a stale/duplicate row reach the screen.
+    ///
+    /// The fix isn't to guess more carefully which OTHER folders a scoped
+    /// rescan *might* ripple into — no such guess can be proven exhaustive
+    /// in advance, and a wrong guess reproduces the same incident. Instead,
+    /// this compares the two reports directly, entry by entry: both
+    /// `previousReport` and `newReport` are already complete, correct
+    /// snapshots of the WHOLE system (matching never computes a partial
+    /// one) — so any entry whose value is identical in both is genuinely
+    /// unchanged and can be shown as its old, stable instance (no visual
+    /// flicker), and any entry that differs — whether inside
+    /// `rescannedPaths` or a ripple effect anywhere else in the system —
+    /// is shown as its fresh value. No scope-guessing, no bypass-everything
+    /// fallback: correctness no longer depends on `rescannedPaths` at all,
+    /// only on what the DAT considers each entry's stable identity — the
+    /// same approach `AuditReportDatabase.saveEntriesDiffed` uses to write
+    /// only what changed instead of guessing what a scan could have
+    /// touched.
     public static func replacingRescannedEntries(in previousReport: AuditReport?, with newReport: AuditReport, rescannedPaths: [URL]) -> AuditReport {
         guard let previousReport, !rescannedPaths.isEmpty else { return newReport }
-        let prefixes = rescannedPaths.map(\.path)
-        // A bare `hasPrefix` here would also match an unrelated sibling
-        // whose name happens to start with a rescanned folder's own (e.g.
-        // "CPS1" wrongly sweeping up "CPS10") — the same bug already found
-        // and fixed once for `LibraryViewModel.removeFolder`'s identical
-        // comparison, missed at this separate call site until now.
-        func pathIsRescanned(_ entry: AuditEntry) -> Bool {
-            guard let path = entry.path?.path else { return false }
-            return prefixes.contains { ScanCache.key(path, isUnder: $0) }
+        var previousByIdentity: [String: AuditEntry] = [:]
+        previousByIdentity.reserveCapacity(previousReport.entries.count)
+        for entry in previousReport.entries {
+            previousByIdentity[entryIdentityKey(entry)] = entry
         }
+        let mergedEntries = newReport.entries.map { entry -> AuditEntry in
+            guard let previous = previousByIdentity[entryIdentityKey(entry)], previous == entry else { return entry }
+            return previous
+        }
+        return counted(mergedEntries)
+    }
 
-        // A rescanned archive can change ANY of a game's own entries —
-        // including one that had no path at all before (a `.missing` rom
-        // this rescan just found) or has none now (a rom this rescan just
-        // lost). Path alone can't catch either direction — matching only
-        // by path would leave a stale `.missing` old entry sitting
-        // alongside a fresh `.correct` new one for the same rom, showing it
-        // twice. So instead, every entry belonging to a game that shows up
-        // under the rescanned path(s) in EITHER report gets fully replaced
-        // together, not just the individual entries whose own path happens
-        // to match.
-        var refreshedGames: Set<String> = []
-        for entry in previousReport.entries where pathIsRescanned(entry) {
-            if let game = entry.game { refreshedGames.insert(game) }
+    /// A stable identity for an entry across two reports of the SAME
+    /// system — not its current VALUES (a diff needs to be free to compare
+    /// those), but "which real thing is this row about": a DAT-declared
+    /// rom/disk is identified by its game + its own declared name,
+    /// regardless of where it currently lives (or whether it was found at
+    /// all); a game-less surplus entry has no DAT identity, so its own
+    /// on-disk path stands in instead (a surplus row only ever exists for a
+    /// file genuinely found on disk).
+    private static func entryIdentityKey(_ entry: AuditEntry) -> String {
+        if let game = entry.game {
+            return "g\u{0}\(game)\u{0}\(entry.name)"
         }
-        for entry in newReport.entries where pathIsRescanned(entry) {
-            if let game = entry.game { refreshedGames.insert(game) }
-        }
-
-        func isRefreshed(_ entry: AuditEntry) -> Bool {
-            if let game = entry.game { return refreshedGames.contains(game) }
-            // Game-less (surplus) entries have no grouping to fall back
-            // on — but always carry a real path (a surplus row only ever
-            // exists for a file actually found on disk), so path alone is
-            // enough here.
-            return pathIsRescanned(entry)
-        }
-
-        let untouchedEntries = previousReport.entries.filter { !isRefreshed($0) }
-        let refreshedEntries = newReport.entries.filter(isRefreshed)
-        return counted(untouchedEntries + refreshedEntries)
+        return "p\u{0}\(entry.path?.path ?? entry.name)"
     }
 
     /// Just the entries belonging to whichever game(s) `rescannedPaths`

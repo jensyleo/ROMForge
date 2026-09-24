@@ -75,48 +75,36 @@ public enum FixPreferencesSettings {
     public static let removeUselessRomsKey = "fixPreferences.removeUselessRoms"
     public static let removeUselessRomsDefault = false
 
-    // MARK: - Shell only — not yet connected to any real action
+    /// Where "Repair from Maintenance Folder…" looks for a donor file —
+    /// **wired** (2026-09-11, jensyleo's own request): the Maintenance
+    /// subfolder only (the original, narrower behavior), or that subfolder
+    /// plus every one of the system's own currently-configured ROM folders.
+    /// See `MissingRomsSearchScope`'s own doc comment.
+    public static let missingRomsSearchScopeKey = "fixPreferences.missingRomsSearchScope"
+    public static let missingRomsSearchScopeDefault = MissingRomsSearchScope.maintenanceFolderOnly
 
-    /// Searching user-configured "scavenging" folders for a same-hash file
-    /// before reporting a rom missing — needs a new scavenging-folder-list
-    /// setting and matcher variant, neither built yet. **Not yet connected.**
-    public static let findMissingRomsKey = "fixPreferences.findMissingRoms"
-    public static let findMissingRomsDefault = false
+    public static func currentMissingRomsSearchScope() -> MissingRomsSearchScope {
+        MissingRomsSearchScope(rawValue: UserDefaults.standard.string(forKey: missingRomsSearchScopeKey) ?? "") ?? missingRomsSearchScopeDefault
+    }
 
-    /// Generating placeholder files for a frontend's game list — low
-    /// priority per [[feedback_romforge_mame_first]]/the "never a launcher"
-    /// scope decision. **Not yet connected.**
-    public static let createDummyRomsKey = "fixPreferences.createDummyRoms"
-    public static let createDummyRomsDefault = false
+    /// Which physical copy counts as "correct" when the exact same CHD
+    /// (same header sha1) exists more than once — jensyleo's own real case
+    /// (2026-09-19), a `kinst2.chd` sitting BOTH directly in a ROM folder's
+    /// root AND inside a same-named subfolder. See `CHDDuplicatePreference`'s
+    /// own doc comment. **Wired** into `DiskAuditor.audit` via
+    /// `LibraryViewModel.scan(system:folders:)`.
+    public static let chdDuplicatePreferenceKey = "fixPreferences.chdDuplicatePreference"
+    // jensyleo's own correction (2026-09-19): dropped the original
+    // "No Preference" case entirely rather than just defaulting away from
+    // it — an unpredictable, order-of-discovery pick is exactly the
+    // ambiguity this setting exists to remove. "Prefer ROM Folder Root" is
+    // the more common real-world layout (a flat ROM folder, CHDs sitting
+    // right next to their `.zip`), so it's the least surprising default.
+    public static let chdDuplicatePreferenceDefault = CHDDuplicatePreference.preferRootFolder
 
-    /// Blocked entirely on the missing sample-scanning infrastructure noted
-    /// in the project's own pending items. **Not yet connected.**
-    public static let fixSamplesKey = "fixPreferences.fixSamples"
-    public static let fixSamplesDefault = false
-
-    /// Clearing a ZIP's end-of-central-directory comment field — small
-    /// addition to the binary ZIP writer path, not yet built. **Not yet
-    /// connected.**
-    public static let removeZipCommentsKey = "fixPreferences.removeZipComments"
-    public static let removeZipCommentsDefault = false
-
-    /// Forcing every archive through a full extract + rewrite regardless of
-    /// whether anything is wrong with it — needs a batch-mode entry point
-    /// into the rebuild engine not built yet. **Not yet connected.**
-    public static let unzipAndRezipKey = "fixPreferences.unzipAndRezip"
-    public static let unzipAndRezipDefault = false
-
-    /// Choosing an output container besides ZIP when rebuilding/fixing —
-    /// meaningless until a second write path (7z? raw loose files?) exists
-    /// beyond the current TorrentZip-only writer. **Not yet connected.**
-    public static let allowMultipleRomFormatsKey = "fixPreferences.allowMultipleRomFormats"
-    public static let allowMultipleRomFormatsDefault = false
-
-    /// A user-facing concurrency slider for the Fix pass specifically —
-    /// meaningless before the Fix engine itself has a concurrency primitive
-    /// to expose. **Not yet connected.**
-    public static let numberOfThreadsKey = "fixPreferences.numberOfThreads"
-    public static let numberOfThreadsDefault = 4
+    public static func currentCHDDuplicatePreference() -> CHDDuplicatePreference {
+        CHDDuplicatePreference(rawValue: UserDefaults.standard.string(forKey: chdDuplicatePreferenceKey) ?? "") ?? chdDuplicatePreferenceDefault
+    }
 
     /// One File-level case style, driving BOTH halves of one single "Fix"
     /// pass — **wired** into `RebuildPlanner.planRepair`'s own

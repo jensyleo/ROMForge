@@ -132,8 +132,17 @@ public struct DATGame: Equatable, Sendable, Codable {
     public let disks: [DATDisk]
     /// True if the DAT declares this game uses samples (`<sample>` /
     /// `sampleof`). Presence-only, like `disks` — ROMForge doesn't audit
-    /// sample files on disk.
+    /// individual sample files, only whether the whole `samples/<name>.zip`
+    /// this game expects exists at all (see `sampleOf`'s own doc comment
+    /// for which name that is) — "Fix Samples" (Settings → Systems → MAME).
     public let hasSamples: Bool
+    /// Mirrors `MAMEMachine.sampleOf`'s own doc comment: a different
+    /// machine's name whose own samples zip this game's samples actually
+    /// live in, when shared rather than dedicated. `nil` for non-MAME DATs
+    /// (no such concept) and for a MAME game with its own samples or none
+    /// at all. The samples zip this game actually needs is `sampleOf ??
+    /// name`.
+    public let sampleOf: String?
     /// Release year, when the DAT declares one (MAME `-listxml`'s
     /// `<year>`) — `nil` for formats/entries that don't.
     public let year: String?
@@ -205,6 +214,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         isDevice: Bool = false,
         disks: [DATDisk] = [],
         hasSamples: Bool = false,
+        sampleOf: String? = nil,
         year: String? = nil,
         manufacturer: String? = nil,
         mergedFamilyMachineNames: [String] = [],
@@ -226,6 +236,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         self.isDevice = isDevice
         self.disks = disks
         self.hasSamples = hasSamples
+        self.sampleOf = sampleOf
         self.year = year
         self.manufacturer = manufacturer
         self.biosSetNames = biosSetNames

@@ -483,23 +483,11 @@ collection yet — everything below needs your own MAME set.
 - [ ] Change the region order in Settings (move Japan above USA) and confirm
       the star moves to the Japan variant instead, without needing a rescan.
 
-### 10.4 DAT version comparison
-- [ ] With a system's DAT already loaded, click the toolbar's **"Compare DAT
-      Versions…"** button (enabled once a DAT is loaded).
-- [ ] In the sheet titled "Compare DAT Versions", click **"Choose Older
-      DAT…"** and pick a genuinely different/older version of the same
-      system's DAT (e.g. an older MAME `-listxml` dump, or the same DAT with
-      a few `<machine>` entries manually deleted/renamed in a text editor if
-      you don't have two real versions handy).
-- [ ] Confirm three sections appear: **"Added (`n`)"**, **"Removed (`n`)"**,
-      and **"Possible Renames (`n`)"**, each listing entries as `name —
-      description` (Added/Removed) or `oldName → newName  (matched rom:
-      romName)` (Renames), or "None" if a section is empty.
-- [ ] Confirm this never touches your actual scan/audit — closing the sheet
-      and checking the Games table shows no change from the comparison.
-- [ ] Click **"Export as Text…"**, save the file, and open it in a text
-      editor — confirm it contains the same Added/Removed/Possible Renames
-      breakdown as the sheet.
+### 10.4 DAT version comparison — removed (2026-09-11)
+"Compare DAT Versions…" was removed outright — jensyleo's own call after reviewing what it actually
+added beyond a plain rescan: "no me convence eso de comparar DATS, si no se justifica su uso mejor
+quitarlo". See CHANGELOG.md's own "Removed" entry for the full reasoning and exactly which files to
+resurrect from git history if this is ever worth reintroducing. Nothing to test here anymore.
 
 ### 10.5 Unused BIOS files (orphaned BIOS detection)
 - [ ] Open Settings → your MAME system's page → **"Database tree branches"**
@@ -602,6 +590,9 @@ in-place archive rewriting) and this is their first real-ROM test pass.
       immediately, before any folder picker or confirmation dialog
       appears.
 
+### 11.1/11.2 Rebuild to Folder — deliberately NOT part of jensyleo's own testing plan (decided 2026-09-11)
+jensyleo's own explicit call: "revisando los items 11.1/11.2 no lo vamos a tener en cuenta, Eso nunca se usa" — his own real workflow keeps ROMs as zip-per-game archives end to end; he has no actual use for "extract everything to loose files in a destination folder" (Step 1's own rebuild-to-loose-files feature). Left in place below purely as existing, already-tested-by-the-synthetic-suite functionality — not a gap in his own manual test coverage, and not something to schedule real-ROM testing time against. Skip straight to 11.3 for the next real test.
+
 ### 11.1 Rebuild to Folder — loose files (Step 1)
 - [ ] From your scratch scan, extract one game's `.zip` into loose files in
       its own subfolder (so you have a genuine loose-file source, not just
@@ -640,20 +631,46 @@ suite.
       this is the real proof the extracted bytes are actually right, not
       just "the right size by coincidence."
 
-### 11.3 Rebuild as TorrentZip (Step 2)
-- [ ] Currently reached the same way as 11.1/11.2 above (rebuild always
-      produces TorrentZip-conformant `.zip` output per game, per
-      `RebuildPlanner.planRebuildAsZip`) — if a later build adds a visible
-      "output format" choice in the UI, use that instead and note here
-      which one you tested.
-- [ ] Confirm each rebuilt `.zip` opens correctly in Finder (double-click)
+### 11.3 Rebuild as TorrentZip (Step 2) — NOT REACHABLE FROM THE UI (correction, 2026-09-11)
+This section previously claimed "Currently reached the same way as 11.1/11.2 above (rebuild always
+produces TorrentZip-conformant `.zip` output per game, per `RebuildPlanner.planRebuildAsZip`)" — that
+was wrong. Checked the real code: the toolbar's own "Rebuild to Folder…" (`LibraryViewModel
+.rebuildToFolder`) only ever calls `RebuildPlanner.planRebuild` (loose-file output), never
+`planRebuildAsZip`. `planRebuildAsZip`/`TorrentZipWriter` are fully implemented in `ROMForgeCore` and
+covered by the synthetic unit-test suite, but **no button, menu item, or CLI flag anywhere in the app
+calls them** — there is currently no way to reach this feature by hand at all, real ROMs or otherwise.
+jensyleo's own call (2026-09-11) when this gap was found: don't wire it up right now, just correct the
+record. Every checklist item below is blocked until a future UI hookup exists — skip this whole
+section for now; revisit once "Rebuild as Zip Sets…" (or similar) is an actual toolbar/menu action.
+- [ ] _(blocked)_ Confirm each rebuilt `.zip` opens correctly in Finder (double-click)
       and in `unzip -l`/The Unarchiver — a valid, standard zip.
-- [ ] `unzip -v <rebuilt.zip>` — confirm it lists every rom entry with a
+- [ ] _(blocked)_ `unzip -v <rebuilt.zip>` — confirm it lists every rom entry with a
       plausible CRC (compare against the DAT's own declared CRC for that
       rom if you want to cross-check by hand).
-- [ ] Rescan the rebuilt zip — confirm **Correct**.
+- [ ] _(blocked)_ Rescan the rebuilt zip — confirm **Correct**.
 
-### 11.4 Repair from Sibling Sets (Step 3)
+### 11.4 Repair from Sibling Sets (Step 3) — deliberately NOT prioritized for manual testing (decided 2026-09-11)
+jensyleo's own call after comparing this against "Find ROMS" (Settings → Fix → "Repair from
+Maintenance Folder…" search scope): "Documenta que no se va a implementar por ser técnicamente
+innecesario, pero que si alguien lo quiere implementar, lo haga." To be precise about what that means
+— **the feature itself is already fully implemented and stays in the app exactly as-is**
+(`RebuildPlanner.planCrossSetRepair`, wired to the toolbar's own "Fix" → "Repair from Sibling Sets…").
+Nothing is being removed. What's being skipped is spending real-ROM manual-testing time on this
+section, because for the common real case (a clone missing something its parent already has) "Find
+ROMS" set to "Maintenance Folder + All ROM Folders" reaches the exact same practical result — the
+parent's own `.zip`, sitting in a normal ROM folder, gets hashed as a donor just like everything else,
+so the missing rom gets copied in the same way. The two are NOT identical in every case (confirmed by
+reading the code, for whoever picks this section back up later):
+- "Repair from Sibling Sets…" needs no Maintenance folder configured at all; "Find ROMS" (any mode)
+  hard-requires one — `LibraryViewModel.planRepairFromMaintenanceFolderPreviewCount` returns `0`
+  outright with none set, regardless of search-scope choice.
+- "Repair from Sibling Sets…" only ever borrows from a genuine DAT-declared parent/clone relationship;
+  "Find ROMS" + "All ROM Folders" matches by raw content hash across every configured ROM folder,
+  with no relationship requirement at all — broader, not narrower.
+- "Repair from Sibling Sets…" reuses the already-in-memory scan (instant); "Find ROMS" + "All ROM
+  Folders" re-hashes every configured ROM folder's files on each run — real cost on a large collection.
+Given that overlap, this checklist section is skipped for now rather than scheduled — the items below
+are left in place, unmodified, for whoever wants to pick this section's manual testing back up later.
 - [ ] Using your parent/clone pair from the setup step: pick one rom that's
       genuinely SHARED between the parent and the clone (same CRC — check
       the DAT, or just pick a rom neither set's own description marks as
@@ -908,29 +925,46 @@ collection — for this one especially.
         deliberately-added colliding entry — nothing else from the clone
         leaked in partway.
 
-### 11.12 Repair from Maintenance Folder (optional, read-only donor folder)
+### 11.12 Repair from Maintenance Folder (optional, read-only donor AREA — per-system subfolders added 2026-09-11)
 - [ ] Open Settings → **General** → "Maintenance folder (optional)". Confirm it shows "Not set"
-      by default, with "Choose Folder…" and no "Clear" button until one is set.
-- [ ] Click "Choose Folder…", pick any empty scratch folder (e.g.
-      `~/Desktop/ROMForge-Fase2-Test/maintenance/`). Confirm the path now displays, and a "Clear"
-      button appears.
+      by default, with "Choose Location…" and no "Clear" button until one is set.
+- [ ] Click "Choose Location…", pick any empty scratch parent folder (e.g.
+      `~/Desktop/ROMForge-Fase2-Test/`) that does NOT already contain a "Maintenance" subfolder.
+      Confirm a "Create Maintenance Folder?" dialog appears naming the exact path and how many
+      system subfolders it will create; confirm it.
+- [ ] Confirm the path now shown is `.../Maintenance` (not the parent you picked), a "Clear" button
+      appears, and a caption reports "N system subfolder(s)". Check on disk (`ls`) that
+      `Maintenance/<EachConfiguredSystemName>/` genuinely exists for every system you have
+      configured.
+- [ ] Add a brand-new system (Settings isn't revisited) and open its detail view — confirm
+      `Maintenance/<NewSystemName>/` now exists too, created automatically just from opening it.
 - [ ] Take one rom your scratch collection is currently showing **Missing** (or make one missing:
       move a real rom's file out of its zip). Drop a copy of the exact same rom's real content
-      into the Maintenance folder, under **any filename you like** — the point of this test is
-      that the name is irrelevant, only the bytes matter.
-- [ ] Click the **"Fix"** toolbar dropdown → **"Repair from Maintenance Folder…"**.
-- [ ] Confirm the preview count is accurate (1, in this simple case), then confirm it.
+      into **that system's own** `Maintenance/<System>/` subfolder, under **any filename you
+      like** — the point of this part of the test is that the name is irrelevant, only the bytes
+      matter.
+- [ ] **Cross-system isolation check**: also drop a copy of that same rom's content into a
+      DIFFERENT system's own subfolder only (not this system's). Click the **"Fix"** toolbar
+      dropdown → **"Repair from Maintenance Folder…"** for the ORIGINAL system — confirm the
+      preview count is still accurate for what's in ITS OWN subfolder only; a donor sitting in a
+      different system's subfolder must never be used.
+- [ ] Confirm the preview count is accurate (1, in the simple same-subfolder case), then confirm
+      it.
 - [ ] Rescan, then `unzip -l` the game's own zip — confirm the missing rom is now genuinely
       **present**, under its own DAT-declared name (not the donor file's own filename), with the
       correct content.
-- [ ] Confirm the file you dropped into the Maintenance folder is **completely untouched** —
+- [ ] Confirm the file you dropped into the Maintenance subfolder is **completely untouched** —
       still there, unrenamed, unmoved — the whole point of it being read-only.
+- [ ] In the sidebar's own "ROM folder" list for this system, confirm a read-only row (lock icon)
+      for its Maintenance subfolder appears — confirm right-clicking it only offers "Reveal in
+      Finder" (no "Remove Folder"), and that clicking it does NOT select it as a scan/Fix scope
+      the way a normal ROM folder row does.
 - [ ] Clear the Maintenance folder setting (the "Clear" button in Settings) and confirm "Repair
       from Maintenance Folder…" now logs "No Maintenance folder configured…" instead of silently
-      doing nothing.
-- [ ] Separately: with the Maintenance folder set again but genuinely empty (or containing only
-      unrelated content), confirm the action reports a 0 preview count and makes no changes —
-      never a false match.
+      doing nothing, and the read-only sidebar row disappears.
+- [ ] Separately: with the Maintenance folder set again but this system's own subfolder genuinely
+      empty (or containing only unrelated content), confirm the action reports a 0 preview count
+      and makes no changes — never a false match.
 
 ### 11.13 Settings → Fix tab (rewritten 2026-09-10 — no more mismatch on/off toggle)
 There is deliberately **no toggle** to turn mismatch-correction off anymore

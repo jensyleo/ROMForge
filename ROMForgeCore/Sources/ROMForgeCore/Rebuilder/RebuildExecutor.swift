@@ -42,11 +42,149 @@ public enum RebuildExecutor {
             try addEntryToZip(targetArchive: targetArchive, entryName: entryName, source: source, fileManager: fileManager)
         case .removeEntryFromZip(let archiveURL, let entryName):
             try removeEntryFromZip(archive: archiveURL, entryName: entryName, fileManager: fileManager)
+        case .createDummyFile(let url, let size):
+            try createDummyFile(at: url, size: size, fileManager: fileManager)
+        case .createDummyZipEntry(let targetArchive, let entryName, let size):
+            try createDummyZipEntry(targetArchive: targetArchive, entryName: entryName, size: size, fileManager: fileManager)
+        case .clearZipComment(let archiveURL):
+            try clearZipComment(at: archiveURL, fileManager: fileManager)
+        }
+    }
+
+    /// Hard ceiling on a dummy placeholder's size — a malformed/malicious
+    /// DAT declaring an absurd `size` for a `nodump` rom must never turn
+    /// "Create Dummy ROMs" into an accidental multi-gigabyte write. 64 MiB
+    /// comfortably covers every real nodump placeholder found in practice
+    /// (an undumped PAL/GAL is a tiny marker, not real ROM content).
+    private static let maxDummyFileSize: Int64 = 64 * 1024 * 1024
+
+    private static func dummyData(size: Int64) -> Data {
+        Data(count: Int(max(0, min(size, maxDummyFileSize))))
+    }
+
+    /// Creates a placeholder LOOSE file — see `RebuildOperation
+    /// .createDummyFile`'s own doc comment.
+    private static func createDummyFile(at url: URL, size: Int64, fileManager: FileManager) throws {
+        guard !fileManager.fileExists(atPath: url.path) else {
+            throw RebuildError.destinationExists(url)
+        }
+        let parent = url.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: parent.path) {
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+        do {
+            try dummyData(size: size).write(to: url, options: .atomic)
+        } catch {
+            throw RebuildError.underlying(error.localizedDescription)
+        }
+    }
+
+    /// Adds a placeholder ZIP entry — see `RebuildOperation
+    /// .createDummyZipEntry`'s own doc comment. Same "add one new entry,
+    /// leave every other one untouched" shape as `addEntryToZip` above.
+    private static func createDummyZipEntry(targetArchive: URL, entryName: String, size: Int64, fileManager: FileManager) throws {
+        guard fileManager.fileExists(atPath: targetArchive.path) else {
+            throw RebuildError.sourceMissing(targetArchive)
+        }
+        let data = dummyData(size: size)
+        let archive: Archive
+        do {
+            archive = try Archive(url: targetArchive, accessMode: .update)
+        } catch {
+            throw RebuildError.underlying("Could not open ZIP archive for update at \(targetArchive.path)")
+        }
+        guard archive[entryName] == nil else {
+            throw RebuildError.destinationExists(targetArchive.appendingPathComponent(entryName))
+        }
+        do {
+            try archive.addEntry(with: entryName, type: .file, uncompressedSize: Int64(data.count), compressionMethod: .deflate) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        } catch {
+            throw RebuildError.underlying(error.localizedDescription)
+        }
+    }
+
+    /// Strips a `.zip`'s own trailing comment field, in place — see
+    /// `RebuildOperation.clearZipComment`'s own doc comment. Locates the
+    /// End-Of-Central-Directory record's fixed 22-byte header by scanning
+    /// BACKWARD from the end of the file for its signature — the comment
+    /// (if any) is always the very last thing in a ZIP, so this never has
+    /// to parse a single entry or the central directory itself. `65535` is
+    /// the ZIP format's own hard maximum comment length (a 2-byte length
+    /// field), so the backward search window is always bounded regardless
+    /// of how large the archive itself is.
+    private static func clearZipComment(at url: URL, fileManager: FileManager) throws {
+        guard fileManager.fileExists(atPath: url.path) else {
+            throw RebuildError.sourceMissing(url)
+        }
+        var data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw RebuildError.underlying(error.localizedDescription)
+        }
+        let signature: [UInt8] = [0x50, 0x4b, 0x05, 0x06]
+        let eocdFixedSize = 22
+        guard data.count >= eocdFixedSize else {
+            throw RebuildError.underlying("Not a valid ZIP archive (too small): \(url.path)")
+        }
+        let searchFloor = max(0, data.count - eocdFixedSize - 65535)
+        var eocdOffset: Int?
+        var i = data.count - eocdFixedSize
+        while i >= searchFloor {
+            if data[i] == signature[0], data[i + 1] == signature[1], data[i + 2] == signature[2], data[i + 3] == signature[3] {
+                eocdOffset = i
+                break
+            }
+            i -= 1
+        }
+        guard let offset = eocdOffset else {
+            throw RebuildError.underlying("Could not find the ZIP End-Of-Central-Directory record: \(url.path)")
+        }
+        // The comment-length field sits at bytes [offset+20, offset+22) of
+        // the EOCD record (a 2-byte little-endian count) — already zero
+        // means there's genuinely no comment to remove, a harmless no-op
+        // rather than an error.
+        let commentLengthOffset = offset + 20
+        guard data[commentLengthOffset] != 0 || data[commentLengthOffset + 1] != 0 else { return }
+        data[commentLengthOffset] = 0
+        data[commentLengthOffset + 1] = 0
+        data.removeSubrange((offset + eocdFixedSize)...)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw RebuildError.underlying(error.localizedDescription)
         }
     }
 
     /// Removes one entry from an EXISTING `.zip` — see
     /// `RebuildOperation.removeEntryFromZip`'s own doc comment.
+    ///
+    /// **Does NOT use `ZIPFoundation.Archive.remove(_:)`** — real crash
+    /// found live by jensyleo (2026-09-14): that function rewrites the
+    /// archive in place, computing each remaining entry's new offset as
+    /// `entryStart - offset` in **unsigned** (`UInt64`) arithmetic, where
+    /// `offset` comes from the REMOVED entry's own local-header size field.
+    /// A corrupted/inconsistent entry (exactly the kind this gets called
+    /// on — `RebuildPlanner.planReplaceCorruptedRoms`'s whole reason to
+    /// exist is a `.hashMismatch` rom) can carry a local-header size that
+    /// doesn't match its real position in the file, making that
+    /// subtraction underflow — an instant, uncatchable `SIGTRAP` (Swift
+    /// traps on unsigned overflow; no Swift `do`/`catch` around
+    /// `archive.remove` can prevent the crash, confirmed live).
+    ///
+    /// Instead, this rebuilds the archive from scratch: read EVERY OTHER
+    /// entry's own real bytes (`createArchive`, below — the same "read
+    /// each entry, write it into a brand-new `.zip`" path `createArchive`
+    /// already used for a `.createArchive` operation), write them into a
+    /// fresh temporary archive, then atomically swap it in for the
+    /// original (via a backup-then-restore-on-failure dance, never a
+    /// straight delete-then-move that could lose the original if the move
+    /// fails). This never touches the removed entry's own possibly-bad
+    /// metadata at all — every KEPT entry's bytes are read directly by
+    /// name and re-added fresh, so nothing here depends on whatever made
+    /// the removed entry's own header inconsistent in the first place.
     private static func removeEntryFromZip(
         archive archiveURL: URL,
         entryName: String,
@@ -55,20 +193,44 @@ public enum RebuildExecutor {
         guard fileManager.fileExists(atPath: archiveURL.path) else {
             throw RebuildError.sourceMissing(archiveURL)
         }
-        let archive: Archive
+        let sourceArchive: Archive
         do {
-            archive = try Archive(url: archiveURL, accessMode: .update)
+            sourceArchive = try Archive(url: archiveURL, accessMode: .read)
         } catch {
-            throw RebuildError.underlying("Could not open ZIP archive for update at \(archiveURL.path)")
+            throw RebuildError.underlying("Could not open ZIP archive at \(archiveURL.path)")
         }
-        guard let entry = archive[entryName] else {
+        guard sourceArchive[entryName] != nil else {
             throw RebuildError.sourceMissing(archiveURL.appendingPathComponent(entryName))
         }
+        let remainingEntries = sourceArchive
+            .map(\.path)
+            .filter { $0 != entryName }
+            .map { ArchiveEntrySource(source: archiveURL, entryName: $0, sourceArchiveEntryName: $0) }
+
+        let tempURL = archiveURL.deletingLastPathComponent()
+            .appendingPathComponent(".romforge-rebuild-\(UUID().uuidString)")
+            .appendingPathExtension("zip")
+        try createArchive(entries: remainingEntries, at: tempURL, fileManager: fileManager)
+
+        let backupURL = archiveURL.appendingPathExtension("romforge-bak-\(UUID().uuidString)")
         do {
-            try archive.remove(entry)
+            try fileManager.moveItem(at: archiveURL, to: backupURL)
         } catch {
-            throw RebuildError.underlying(error.localizedDescription)
+            try? fileManager.removeItem(at: tempURL)
+            throw RebuildError.underlying("Could not back up \(archiveURL.path) before rebuilding it: \(error.localizedDescription)")
         }
+        do {
+            try fileManager.moveItem(at: tempURL, to: archiveURL)
+        } catch {
+            // Restore the original untouched — never leave the real
+            // archive missing just because the rebuilt replacement
+            // couldn't be moved into place.
+            try? fileManager.removeItem(at: archiveURL)
+            try? fileManager.moveItem(at: backupURL, to: archiveURL)
+            try? fileManager.removeItem(at: tempURL)
+            throw RebuildError.underlying("Could not replace \(archiveURL.path) with its rebuilt copy: \(error.localizedDescription)")
+        }
+        try? fileManager.removeItem(at: backupURL)
     }
 
     /// Adds one entry to an EXISTING `.zip`, leaving every other entry in it

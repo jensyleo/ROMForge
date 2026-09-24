@@ -10,6 +10,29 @@ import Observation
 import ROMForgeCore
 import UniformTypeIdentifiers
 
+/// TEMP PERF INSTRUMENTATION (2026-09-17, jensyleo's own report of a slow
+/// launch) — writes straight to a fixed file path, bypassing the unified
+/// system log entirely. `NSLog`/`os_log` output from an ad-hoc-signed app
+/// gets redacted to `<private>` by macOS's log privacy filter, which made
+/// every earlier attempt at this invisible to `log show` even with the
+/// exact right predicate — the same reason this file-based approach was
+/// already the proven fallback earlier in this session (the ⌘-drag
+/// investigation). Remove this whole enum once the bottleneck is found.
+enum PerfDebugLog {
+    static func write(_ message: String) {
+        let line = "[\(Date())] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let path = "/tmp/romforge_perf_debug.log"
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            handle.closeFile()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+}
+
 /// Drives the audit workflow for one configured `RomSystem`: scan, review
 /// the report, export. Repairing (renaming/moving files) is temporarily
 /// disabled at the user's request — ROMForge only scans and reports for
@@ -51,6 +74,17 @@ final class LibraryViewModel {
     static var modificationsEnabled: Bool { ModificationsEnabledSettings.isEnabled }
 
     var datHeader: DATHeader?
+    /// When this system's own audit results were last actually produced by
+    /// a real scan — `nil` before this system has ever been scanned.
+    /// jensyleo's own request (2026-09-14), after twice mistaking a genuine
+    /// row from an OLD, since-superseded scan (loaded instantly on open via
+    /// `loadPersistedReport`, by design — see that function's own doc
+    /// comment) for a live, current problem: surfacing this in the header
+    /// lets a visibly-old timestamp warn "these results might not reflect
+    /// what's on disk right now" before re-reading a stale "Bad" row as
+    /// news. Set both when a persisted report loads on open AND after every
+    /// real scan finishes, so it always reflects whichever is more recent.
+    var lastScanDate: Date?
     var auditReport: AuditReport?
     var isBusy = false
     /// True from the start of a scan until the DAT finishes parsing — a
@@ -118,7 +152,104 @@ final class LibraryViewModel {
     /// overlay show a real determinate bar instead of just a spinner for
     /// however long this phase takes on a large DAT.
     var matchProgress: (completed: Int, total: Int)?
+    /// A short label for whichever real, synchronous post-matching pass is
+    /// currently running (disk auditing, duplicate-set detection, orphaned
+    /// BIOS, filename/CRC checks, Maintenance donor detection) — jensyleo's
+    /// own report (2026-09-19): once `ROMMatcher.match` finished (its own
+    /// progress bar at 100%), the overlay kept showing "Comparing against
+    /// the database… N of N games" frozen at that same text for however
+    /// long these several real passes then took, with nothing telling the
+    /// user any of them were even running. `nil` while `isMatching` is
+    /// false, or while `ROMMatcher.match` itself is still the thing
+    /// running (that phase already has its own real `matchProgress` text).
+    var scanPostMatchPhase: String?
+    /// True while a finished scan's (or "Verify ZIP Integrity"'s) report is
+    /// being written to `AuditReportDatabase` — jensyleo's own report
+    /// (2026-09-17): matching finishing (bar at 100%) didn't mean the
+    /// operation was actually done. `saveReport` was called directly,
+    /// synchronously, on this `@MainActor` class — for a real collection
+    /// (323,626 rows) that write itself takes real time, and running it on
+    /// the main actor blocked the whole app for that long, on top of
+    /// `isMatching` having already reset to its idle state by then (see
+    /// this session's own `isMatching`-reset fix), so the overlay fell all
+    /// the way through to its generic "Scanning folders…" fallback for a
+    /// phase that has nothing to do with folders at all. Moved onto its
+    /// own background task (`saveReportInBackground`), with its own honest
+    /// label here instead.
+    var isSavingReport = false
+    /// (completed, total) rows written so far while `isSavingReport` is
+    /// true — jensyleo's own report (2026-09-19): "Saving results…" showed
+    /// a bare, generic spinner with no numbers, unlike every other phase in
+    /// this same overlay. `nil` while `isSavingReport` is false, or before
+    /// `AuditReportDatabase.saveEntriesDiffed`'s own first throttled tick.
+    var saveReportProgress: (completed: Int, total: Int)?
+    /// A short label + (completed, total) progress for whichever Fix/File
+    /// Action is currently running its own real file operations —
+    /// jensyleo's own report (2026-09-19): "Remove Redundant Files…" only
+    /// ever showed the ordinary scan pipeline's own generic overlay phases
+    /// ("Scanning folders…", "Saving results…") — both real (the action's
+    /// own automatic verification rescan), but nothing in the overlay ever
+    /// named the actual file removal itself, or how far along it was.
+    /// `nil` whenever no such action is actively running its own
+    /// operations (including during its own follow-up rescan, which has
+    /// its own separate, already-real progress fields).
+    var fixActionProgress: (label: String, completed: Int, total: Int)?
     private(set) var logLines: [LogLine] = []
+
+    /// One Fix/File Action's own success-or-failure summary, for the
+    /// pop-up alert `FixResultPopupSettings` gates — jensyleo's own request
+    /// (2026-09-11), additive to (never a replacement for) the Log panel's
+    /// own lines for the same result. Same one-shot pattern as
+    /// `cancelledPhase` above: set once an action's own outcome is known,
+    /// cleared by the View once it's actually been shown, so re-showing
+    /// the same result twice (e.g. from a spurious `body` re-evaluation)
+    /// can never happen.
+    struct FixResultAlert: Identifiable, Equatable {
+        let id = UUID()
+        let title: String
+        let isSuccess: Bool
+        let message: String
+    }
+    var fixResultAlert: FixResultAlert?
+    /// jensyleo's own follow-up (2026-09-16), after the "Scan Failed"
+    /// pop-up landed: "verifica que solo muestre el mensaje al final...
+    /// pero igual lo que encuentre sí lo escanee. Los recursos que no
+    /// encontró debería marcarlos en rojo". A folder currently in this set
+    /// is one the LAST scan that actually covered it couldn't reach —
+    /// `ROM folder` rows read this to show a distinct marker. Cleared for
+    /// every folder a scan's own scope covers right before that scan
+    /// records its own result, so a folder that comes back online (NAS
+    /// reconnected) stops being marked the very next time it's scanned —
+    /// never left stuck red from a stale failure.
+    var lastScanUnreachableFolders: Set<URL> = []
+
+    /// Builds and posts `fixResultAlert` from the same succeeded/failed
+    /// counts (and, for a failure, the same per-item reason strings) every
+    /// write action already computes for its own Log lines — this never
+    /// recomputes anything, just mirrors it into the more visible pop-up
+    /// channel. No-ops entirely when `FixResultPopupSettings.isEnabled` is
+    /// off, or when there's nothing to report at all (nothing planned,
+    /// nothing succeeded, nothing failed — e.g. "Nothing to fix").
+    private func postFixResultPopup(action: String, succeeded: Int, failed: Int, failureLines: [String] = []) {
+        guard FixResultPopupSettings.isEnabled else { return }
+        guard succeeded > 0 || failed > 0 else { return }
+        var message: String
+        if failed == 0 {
+            message = "Succeeded — \(succeeded) item\(succeeded == 1 ? "" : "s")."
+        } else if succeeded == 0 {
+            message = "Failed — \(failed) item\(failed == 1 ? "" : "s")."
+        } else {
+            message = "\(succeeded) item\(succeeded == 1 ? "" : "s") succeeded, \(failed) item\(failed == 1 ? "" : "s") failed."
+        }
+        if !failureLines.isEmpty {
+            let shown = failureLines.prefix(8)
+            message += "\n\n" + shown.joined(separator: "\n")
+            if failureLines.count > shown.count {
+                message += "\n… and \(failureLines.count - shown.count) more (see the Log panel for the full list)."
+            }
+        }
+        fixResultAlert = FixResultAlert(title: action, isSuccess: failed == 0, message: message)
+    }
 
     /// Which long-running phase the user cancelled, if any — drives a
     /// one-time alert explaining the consequence of stopping partway
@@ -165,7 +296,90 @@ final class LibraryViewModel {
     /// signals it directly, independent of `Task` cancellation entirely.
     private var matchCancellationFlag: CancellationFlag?
 
-    private var matchReport: MatchReport?
+    private var matchReport: MatchReport? {
+        didSet {
+            matchedZipArchiveURLsCache = nil
+            unscopedFixOperationsCache = nil
+            unscopedRenameRomsOperationsCache = nil
+        }
+    }
+
+    /// Real perf bug found live by jensyleo (2026-09-22): right after
+    /// "Remove Zip Comment…" was added to the Games table's own context
+    /// menu, right-clicking ANY row (and, apparently, general scrolling —
+    /// SwiftUI's `.contextMenu(forSelectionType:)` closure can be
+    /// re-evaluated more eagerly than just "the menu is actually open")
+    /// made the whole app beachball. Root cause:
+    /// `RebuildPlanner.matchedZipArchiveURLs(matchReport:)` walks EVERY
+    /// game's EVERY rom match in the WHOLE system — not just the
+    /// right-clicked File's own scope — to find which archives are even
+    /// candidates, before any scope filtering or comment-reading ever
+    /// happens. For a real full MAME collection (hundreds of thousands of
+    /// matched roms), that's a genuinely expensive synchronous walk, and
+    /// it ran again on the main thread every single time this one
+    /// preview count was computed — unlike its sibling previews
+    /// (`removeUselessCount`/etc.), which only ever scan the much
+    /// smaller `surplusFiles` list. The actual candidate set only changes
+    /// when `matchReport` itself changes (a real scan completing), so
+    /// it's computed once and reused here instead of on every click.
+    private var matchedZipArchiveURLsCache: Set<URL>?
+
+    private func matchedZipArchiveURLs(for matchReport: MatchReport) -> Set<URL> {
+        if let cached = matchedZipArchiveURLsCache { return cached }
+        let urls = RebuildPlanner.matchedZipArchiveURLs(matchReport: matchReport)
+        matchedZipArchiveURLsCache = urls
+        return urls
+    }
+
+    /// This session's own cached Maintenance-folder donor hashes, keyed by
+    /// the exact folder path they came from — jensyleo's own report
+    /// (2026-09-14): every single scan (even "Scan This Folder" scoped to
+    /// one unrelated ROM folder) was re-reading and re-hashing the WHOLE
+    /// Maintenance folder from disk, purely to recompute
+    /// `MaintenanceDonorDetector`'s own flags — real, avoidable I/O on
+    /// every scan click, not just when Maintenance's own contents could
+    /// plausibly have changed. Reused across scans within this session
+    /// (real donor files only change when the user actually edits that
+    /// folder, which only "Scan Maintenance Folder" — seebe `LibraryDetailView
+    /// .startScanMaintenanceFolder`'s own doc comment — or "Scan All
+    /// Folders" are meant to notice) until explicitly invalidated by
+    /// `invalidateMaintenanceDonorCache()`.
+    private var cachedMaintenanceDonorFiles: (folderPath: String, files: [HashedFile])?
+
+    /// Forces the next scan (regardless of scope) to re-read the
+    /// Maintenance folder from disk instead of reusing
+    /// `cachedMaintenanceDonorFiles` — called wherever donor content might
+    /// have genuinely changed: "Scan Maintenance Folder" itself, and a full
+    /// "Scan All Folders" (the one scan scope broad enough that refreshing
+    /// everything, including this, is exactly what it promises).
+    func invalidateMaintenanceDonorCache() {
+        cachedMaintenanceDonorFiles = nil
+    }
+
+    /// Read access to `cachedMaintenanceDonorFiles` for
+    /// `LibraryDetailView.loadMaintenanceFolderFiles()` — jensyleo's own
+    /// report (2026-09-14): browsing the Maintenance folder re-read and
+    /// re-hashed it from scratch every single time (selecting it in the
+    /// sidebar, a DAT reload, the toolbar button…), taking ~10s against a
+    /// real ~250MB Maintenance folder and reading as "stuck" when
+    /// triggered back-to-back — the exact redundant-I/O problem this same
+    /// cache was already built to avoid for the donor-detection pass, just
+    /// never reused here. Returns `nil` on any mismatch/miss so the caller
+    /// always falls back to a real read.
+    func cachedMaintenanceDonorFiles(matchingFolderPath folderPath: String) -> [HashedFile]? {
+        guard let cachedMaintenanceDonorFiles, cachedMaintenanceDonorFiles.folderPath == folderPath else { return nil }
+        return cachedMaintenanceDonorFiles.files
+    }
+
+    /// Write access to `cachedMaintenanceDonorFiles` for
+    /// `LibraryDetailView.loadMaintenanceFolderFiles()` — see
+    /// `cachedMaintenanceDonorFiles(matchingFolderPath:)`'s own doc comment.
+    /// A fresh hash computed by either caller populates the ONE shared
+    /// cache, so whichever one runs first saves the other a redundant
+    /// re-hash of the same folder.
+    func cacheMaintenanceDonorFiles(folderPath: String, files: [HashedFile]) {
+        cachedMaintenanceDonorFiles = (folderPath, files)
+    }
 
     /// What scope the MOST RECENT successful `scan()` actually covered —
     /// jensyleo's own explicit rule (2026-09-10): "si le doy rescan file a
@@ -199,6 +413,31 @@ final class LibraryViewModel {
         case .paths(let scannedPaths):
             guard !scopeFolders.isEmpty else { return false }
             return scopeFolders.allSatisfy { Self.urlIsInScope($0, scopeFolders: scannedPaths) }
+        }
+    }
+
+    /// Folds a just-finished scan's own scope INTO whatever was already
+    /// tracked, rather than replacing it outright — see the call site's
+    /// own doc comment (`scan(system:folders:)`) for the real report this
+    /// fixes. `nil` (a whole-system scan) always wins outright: it's the
+    /// broadest possible coverage, and once reached nothing scoped after
+    /// it can ever narrow it back down. Otherwise, any of `folders` not
+    /// already covered by the existing scope gets appended — a scan can
+    /// only ever ADD coverage, never remove it (nothing here ever
+    /// invalidates a folder just because it wasn't part of THIS scan).
+    private nonisolated static func mergedScanScope(_ existing: ScanScope?, withNewScan folders: [URL]?) -> ScanScope {
+        guard let newFolders = folders else { return .wholeSystem }
+        switch existing {
+        case .none:
+            return .paths(newFolders)
+        case .wholeSystem:
+            return .wholeSystem
+        case .paths(let existingPaths):
+            var merged = existingPaths
+            for folder in newFolders where !urlIsInScope(folder, scopeFolders: existingPaths) {
+                merged.append(folder)
+            }
+            return .paths(merged)
         }
     }
 
@@ -245,6 +484,51 @@ final class LibraryViewModel {
     /// because which File(s)/scope weren't covered by the last Scan varies
     /// per call, and a fixed alert title can't say that on its own.
     var rescanRequiredAlertMessage: String?
+
+    /// Non-nil while the "Configuration Required" alert should be showing
+    /// — same "message on click, not just a log line nobody was watching"
+    /// reasoning as `rescanRequiredAlertMessage` right above. Real report,
+    /// live (2026-09-24), jensyleo: "si activo la opción sin configurar la
+    /// carpeta me sale el error en el log pero la app no muestra mensaje"
+    /// — "Organize BIOS Files…"/"Organize Complementary Chips…" (and every
+    /// other action gated on a Settings → Systems → MAME folder/toggle
+    /// being configured first) used to only ever call `logError`/
+    /// `logWarning` for this exact class of guard failure — invisible
+    /// unless the Log panel happened to already be in view. Set alongside
+    /// that same log line, never instead of it.
+    var configurationRequiredAlertMessage: String?
+
+    /// Sets both the Log line and the visible alert together, for the
+    /// "you tried a Fix action but its own required Settings toggle/folder
+    /// isn't configured" class of guard failure — see
+    /// `configurationRequiredAlertMessage`'s own doc comment.
+    /// Not `private` — `LibraryDetailView`'s own `startOrganizeBIOSFiles`/
+    /// `startOrganizeComplementaryChips` also call this directly (the
+    /// toolbar-click path that actually needs it — see their own doc
+    /// comment for why the async actions' own guards below almost never
+    /// fire in practice).
+    func logConfigurationRequired(_ message: String) {
+        logError(message)
+        configurationRequiredAlertMessage = message
+    }
+
+    /// Non-nil while the "Nothing Found" alert should be showing — same
+    /// "message on click, not just a log line nobody was watching"
+    /// reasoning as `configurationRequiredAlertMessage`/
+    /// `rescanRequiredAlertMessage` above. jensyleo's own request
+    /// (2026-09-24): "como parte de los fixes de BIOS y Samples y demás,
+    /// hay que colocar que si no encuentra nada avise desde la app, no
+    /// solo desde el log" — scanning the BIOS/Complementary Chips/Samples
+    /// folder specifically (the one place a genuinely empty result is
+    /// common and easy to miss) now warns visibly, not just in the Log.
+    var scanFoundNothingAlertMessage: String?
+
+    /// Sets both the Log line and the visible alert together — see
+    /// `scanFoundNothingAlertMessage`'s own doc comment.
+    func logScanFoundNothing(_ message: String) {
+        logWarning(message)
+        scanFoundNothingAlertMessage = message
+    }
 
     /// Every Fase 2 write action needs a live `matchReport` before doing
     /// anything — this centralizes that guard so each action gets the same
@@ -493,6 +777,7 @@ final class LibraryViewModel {
     /// re-fire usefully if this same session ever calls it again.
     func clearScanResults() {
         auditReport = nil
+        lastScanDate = nil
         datHeader = nil
         matchReport = nil
         lastScanScope = nil
@@ -517,26 +802,84 @@ final class LibraryViewModel {
     /// assigning, so a scan that finishes (or another call to this same
     /// function) while the read was in flight can never be stomped by a
     /// stale result arriving late.
+    /// True while `loadPersistedReport` is in flight for the currently
+    /// selected system — jensyleo's own report (2026-09-17): even after
+    /// `loadReport`'s own SQLite read was parallelized down to ~1.6s (from
+    /// 6.5s), the launch delay was still "notorio". Root cause found in the
+    /// perf log: `handleCachedDATFileChange()` (`LibraryDetailView.swift`)
+    /// unconditionally re-runs the whole expensive
+    /// `refreshCachedGameDataAfterAuditReportChangeAsync()` pipeline
+    /// (`OneGameOneROMSelector.compute` alone costs ~200ms over a
+    /// 50k-game DAT) the moment the DAT finishes preloading — which, now
+    /// that SQLite is fast, arrives just BEFORE the real report does, so
+    /// this whole ~280ms pass runs against a still-empty report and gets
+    /// thrown away moments later when the real one supersedes it. This
+    /// flag lets that caller skip its own redundant pass specifically
+    /// while it already knows the real, definitive one is imminent —
+    /// still runs for a genuinely never-scanned system (this flag settles
+    /// to `false` there too, once `loadReport` comes back `nil`), which is
+    /// the actual case that call exists for in the first place.
+    var isLoadingPersistedReport = false
+
     func loadPersistedReport(system: RomSystem) {
         guard auditReport == nil else { return }
+        isLoadingPersistedReport = true
         let systemID = system.id.uuidString
         Task.detached(priority: .userInitiated) { [weak self] in
+            // TEMP PERF INSTRUMENTATION (2026-09-17, jensyleo's own report
+            // of a slow-to-appear ROM folder on launch) — remove once the
+            // bottleneck is identified.
+            let t0 = Date()
             do {
                 let db = try AuditDatabaseLocation.open()
-                guard let report = try db.loadReport(systemID: systemID) else { return }
+                let tOpen = Date()
+                guard let report = try db.loadReport(systemID: systemID) else {
+                    Task { @MainActor [weak self] in self?.isLoadingPersistedReport = false }
+                    return
+                }
+                let tLoad = Date()
                 let meta = try? db.loadScanMeta(systemID: systemID)
-                Task { @MainActor in
-                    guard let self, self.auditReport == nil else { return }
+                let tMeta = Date()
+                PerfDebugLog.write("loadPersistedReport: open=\(tOpen.timeIntervalSince(t0))s loadReport=\(tLoad.timeIntervalSince(tOpen))s (\(report.entries.count) entries) loadScanMeta=\(tMeta.timeIntervalSince(tLoad))s")
+                Task { @MainActor [weak self] in
+                    let tMainStart = Date()
+                    guard let self else { return }
+                    defer { self.isLoadingPersistedReport = false }
+                    guard self.auditReport == nil else { return }
                     self.auditReport = report
                     if let meta, let name = meta.datName {
                         self.datHeader = DATHeader(name: name, description: "", version: meta.datVersion ?? "", author: "")
                     }
+                    self.lastScanDate = meta?.scannedAt
+                    PerfDebugLog.write("loadPersistedReport: mainActorAssign=\(Date().timeIntervalSince(tMainStart))s totalSinceStart=\(Date().timeIntervalSince(t0))s")
                 }
             } catch {
                 // A missing/corrupt database just means no cached results to
                 // show yet — not worth surfacing as a user-facing error.
+                Task { @MainActor [weak self] in self?.isLoadingPersistedReport = false }
             }
         }
+    }
+
+    /// Writes a finished report to `AuditReportDatabase` off the main
+    /// actor — jensyleo's own report (2026-09-17): both call sites used to
+    /// run `saveReport` directly, synchronously, right there on this
+    /// `@MainActor` class. For a real collection (323,626 rows) that write
+    /// itself takes real time, and blocking the main actor for it froze
+    /// the whole app (not just the overlay) for however long it took,
+    /// right after the matching bar had already reached 100% — the same
+    /// "stuck at the end" complaint `isMatching`'s own reset fix this
+    /// session was chasing, just one step further down the pipeline.
+    /// `nonisolated` (not a method on `self`) so callers can freely `await`
+    /// it from within their own `@MainActor` bodies without this itself
+    /// hopping back onto the main actor first.
+    nonisolated static func saveReportInBackground(_ report: AuditReport, systemID: String, datName: String?, datVersion: String?, scannedAt: Date, onProgress: (@Sendable (Int, Int) -> Void)? = nil) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let t0 = Date()
+            let db = try AuditDatabaseLocation.open()
+            try db.saveReport(report, systemID: systemID, datName: datName, datVersion: datVersion, scannedAt: scannedAt, onProgress: onProgress)
+            PerfDebugLog.write("saveReportInBackground: \(report.entries.count) entries in \(Date().timeIntervalSince(t0))s")
+        }.value
     }
 
     /// Purges everything tied to one removed ROM folder — jensyleo's own
@@ -631,10 +974,18 @@ final class LibraryViewModel {
     /// the `Task` handle is kept so `cancelCurrentOperation()` has
     /// something to actually cancel. Fire-and-forget from the UI's
     /// perspective (a plain, non-`async` call), same as tapping a button
-    /// always was.
-    func startScan(system: RomSystem, folders: [URL]? = nil) {
+    /// always was. `onComplete` (optional, `nil` for every ordinary caller)
+    /// runs right after the scan finishes, on the same `Task` — added
+    /// (2026-09-24) specifically so "Scan BIOS/Complementary Chips/Samples
+    /// Folder" can check whether anything was actually found there and
+    /// warn visibly if not; see `LibraryDetailView
+    /// .warnIfSpecialFolderEmpty(_:kind:)`'s own doc comment.
+    func startScan(system: RomSystem, folders: [URL]? = nil, onComplete: (() -> Void)? = nil) {
         runningTask?.cancel()
-        runningTask = Task { await scan(system: system, folders: folders) }
+        runningTask = Task {
+            await scan(system: system, folders: folders)
+            onComplete?()
+        }
     }
 
     /// Starts DAT preloading as a cancellable operation — see `startScan`.
@@ -789,6 +1140,58 @@ final class LibraryViewModel {
     /// disk, no fresh read) instead of a fresh walk, rather than actually
     /// not looking at it at all. See `ScanCache.reconstructedHashedFiles()`'s
     /// own doc comment for exactly how.
+    /// Every folder a scan/match pass actually walks for `system` — its own
+    /// configured `romFolderURLs`, plus the configured BIOS folder for a
+    /// MAME system, automatically. jensyleo's own request (2026-09-24):
+    /// "el sistema agrega la carpeta BIOS que se crea automáticamente,
+    /// ¿para qué la declaro como un romfolder? Esto debería aparecer en la
+    /// app como una carpeta con características similares a las de
+    /// mantenimiento" — right after being told he'd need to add it
+    /// manually. He's right that the Maintenance folder is the existing
+    /// precedent for "a folder the app itself already knows to check,
+    /// with no manual ROM-folder entry needed" — but Maintenance's own
+    /// automatic check (`scan`'s own "Checking the Maintenance folder for
+    /// donors…" phase) only ever flags a MISSING rom as "a donor is
+    /// available", it never actually satisfies the match — the file still
+    /// needs a real "Repair from Maintenance Folder…" copy to count as
+    /// present. The BIOS folder is different in kind: "Organize BIOS
+    /// Files…" physically MOVES a BIOS's own real container out of its
+    /// ROM folder — the exact same real file, just at a new path — so
+    /// treating it as "still not really there" the way Maintenance
+    /// donors are would make every game needing that BIOS show
+    /// "missing" the moment the very feature meant to tidy things up
+    /// runs. Folding the BIOS folder directly into what gets scanned and
+    /// matched (this is the ONE place `scan(system:folders:)` reads
+    /// `system.romFolderURLs` from — `allFolders` — everything else in
+    /// that function, `pathsToWalk`/`scannedScope`/`configuredFolders`,
+    /// derives from it) is what makes a moved BIOS keep showing correct,
+    /// with no extra manual step. Never appears in `system.romFolderURLs`
+    /// itself, so it stays invisible in the ROM-folder sidebar/Settings
+    /// folder list — exactly like the Maintenance folder.
+    private nonisolated static func effectiveScanFolders(for system: RomSystem) -> [URL] {
+        var folders = system.romFolderURLs
+        guard system.isMAMEStyle else { return folders }
+        if let biosFolder = BIOSFolderSettings.folderURL, !folders.contains(biosFolder) {
+            folders.append(biosFolder)
+        }
+        // Same reasoning as the BIOS folder right above — jensyleo's own
+        // request (2026-09-24): "lo mismo que BIOS pero para los demás
+        // chips."
+        if let chipsFolder = ComplementaryChipsFolderSettings.folderURL, !folders.contains(chipsFolder) {
+            folders.append(chipsFolder)
+        }
+        // jensyleo's own request (2026-09-24): "impleméntalo" (Samples,
+        // "lo mismo que BIOS") — walked here so it can be browsed/scanned
+        // like any other folder, but its content is filtered OUT of the
+        // actual match pipeline right below (see `SamplesFolderSettings
+        // .isUnderSamplesFolder`'s own doc comment for why: samples have
+        // no DAT hash to match against at all).
+        if let samplesFolder = SamplesFolderSettings.folderURL, !folders.contains(samplesFolder) {
+            folders.append(samplesFolder)
+        }
+        return folders
+    }
+
     func scan(system: RomSystem, folders: [URL]? = nil) async {
         isBusy = true
         // A cache hit skips the whole "Loading DAT" phase outright — there's
@@ -803,6 +1206,7 @@ final class LibraryViewModel {
         scanProgress = nil
         isMatching = false
         matchProgress = nil
+        scanPostMatchPhase = nil
         folderScanFilesFound = nil
         currentlyScanningFolder = nil
         archiveListingProgress = nil
@@ -845,7 +1249,7 @@ final class LibraryViewModel {
         // `ScanCache` (see `reconstructedHashedFiles()`) rather than a
         // blind, partial subset with nothing known about the rest at all.
         // ─────────────────────────────────────────────────────────────
-        let allFolders = system.romFolderURLs
+        let allFolders = Self.effectiveScanFolders(for: system)
         // Paths the user explicitly asked to re-read ("Scan Folder" on one
         // folder, "Rescan This File" on one archive) — their cached hashes
         // are dropped so they're genuinely rehashed even if size+mtime are
@@ -976,6 +1380,19 @@ final class LibraryViewModel {
                     self?.matchProgress = (completed, total)
                 }
             }
+            // jensyleo's own report (2026-09-19): once `ROMMatcher.match`
+            // itself finished (its own `matchProgress` bar at 100%), the
+            // overlay kept showing that same frozen text for however long
+            // the several real, synchronous passes below (disk auditing,
+            // duplicate-set detection, orphaned BIOS, filename/CRC checks,
+            // Maintenance donor detection) then took — none of them are
+            // internally progress-reportable (each is a single synchronous
+            // pass over the report, not a per-item loop worth throttling
+            // like `ScanProgressCounter` does), so this just names whichever
+            // one is currently running instead of leaving the text stale.
+            let postMatchPhaseHandler: @Sendable (String?) -> Void = { [weak self] phase in
+                Task { @MainActor in self?.scanPostMatchPhase = phase }
+            }
             let datLoadLogHandler: @Sendable (TimeInterval) -> Void = { [weak self] duration in
                 Task { @MainActor in
                     self?.isLoadingDAT = false
@@ -989,6 +1406,12 @@ final class LibraryViewModel {
             let cachedDATLogHandler: @Sendable () -> Void = { [weak self] in
                 Task { @MainActor in self?.log("Using already-loaded DAT — scanning folders…") }
             }
+            // Captured here, on the MainActor, before this scan's own
+            // detached work starts — `cachedMaintenanceDonorFiles` is
+            // MainActor-isolated state, so it can't be read directly from
+            // inside `Task.detached` below. See that property's own doc
+            // comment for why this cache exists at all.
+            let cachedMaintenanceDonor = cachedMaintenanceDonorFiles
             let detached = Task.detached(priority: .userInitiated) {
                 // Auto-detects Logiqx/ClrMamePro XML vs. MAME -listxml. A
                 // large MAME DAT is tens/hundreds of MB of XML, and parsing
@@ -1027,7 +1450,42 @@ final class LibraryViewModel {
                 // `folders`) since `FolderScanner.scan(paths:)` handles a
                 // whole folder or an individual file per entry.
                 let pathsToWalk = forcedRescanPaths.isEmpty ? allFolders : forcedRescanPaths
-                let scannedFiles = try FolderScanner.scan(paths: pathsToWalk, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler, onFolderStarted: folderStartedHandler)
+                // jensyleo's own philosophy statement (2026-09-13): the
+                // Maintenance folder is purely a DONOR source for "Repair
+                // from Maintenance Folder…"/"Replace Corrupted ROMs…" — it
+                // must never be pulled into this system's own audit at all,
+                // so nothing in it can ever be flagged surplus/duplicate/
+                // redundant, or count toward Correct/Missing/etc. That's
+                // already true by construction (`system.romFolderURLs` never
+                // includes it), but only as long as the Maintenance root
+                // happens to live OUTSIDE every configured ROM folder's own
+                // directory tree — `FolderScanner.scan` has no concept of
+                // "Maintenance" and would happily walk straight into it if a
+                // user ever chose (or nested) it that way. Filtered out
+                // here, defensively, right where files enter the audit
+                // pipeline — a no-op (`isUnderMaintenanceFolder` is always
+                // `false`) whenever no root is configured, or it simply
+                // isn't nested under anything being scanned.
+                // jensyleo's own report (2026-09-16): "¿Está parando ante
+                // la primera carpeta que no encuentra? ¿Revisa las demás o
+                // solo para en la primera?" — confirmed real: without this
+                // callback, one unreachable folder (a NAS gone offline)
+                // used to abort the walk for every OTHER configured folder
+                // too, even healthy local ones. Collected here (safe to
+                // mutate directly — every call happens sequentially in
+                // `FolderScanner.scan`'s own top-level loop, never
+                // concurrently) so the scan can still cover every reachable
+                // folder, with the unreachable one(s) reported afterward
+                // instead of silently skipped or fatal to the whole run.
+                var failedFolders: [(url: URL, name: String, message: String)] = []
+                let scannedFiles = try FolderScanner.scan(
+                    paths: pathsToWalk, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler,
+                    onFolderStarted: folderStartedHandler,
+                    onFolderFailed: { url, error in
+                        failedFolders.append((url, url.lastPathComponent, error.localizedDescription))
+                    }
+                )
+                .filter { !MaintenanceFolderSettings.isUnderMaintenanceFolder($0.url) && !SamplesFolderSettings.isUnderSamplesFolder($0.url) }
                 walkLogHandler(scannedFiles.count, Date().timeIntervalSince(walkStart))
                 let loadedCache = (try? ScanCache.load(contentsOf: cacheURL)) ?? ScanCache()
                 // A file whose size/mtime match a previous scan's cache
@@ -1108,7 +1566,20 @@ final class LibraryViewModel {
                 let chdFiles = freshCHDPaths + reconstructedCHDPaths
                 try? ScanCache.build(from: hashedFiles, chdPaths: chdFiles).save(to: cacheURL)
                 matchingStartedHandler()
-                let matchReport = try ROMMatcher.match(dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler, cancellationFlag: cancellationFlag)
+                // jensyleo's own explicit rule (2026-09-16): whichever
+                // folder was just scanned should be the one that loses a
+                // cross-folder duplicate claim, not whichever happens to
+                // sort first alphabetically — see `ROMMatcher.match`'s own
+                // `recentlyScannedPaths` doc comment. `forcedRescanPaths`
+                // is already exactly "what this specific scan call was
+                // actually asked to (re)read" (empty for a full "Scan All
+                // Folders", where there's no meaningful "last folder" to
+                // favor either way).
+                let matchReport = try ROMMatcher.match(
+                    dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler, cancellationFlag: cancellationFlag,
+                    recentlyScannedPaths: forcedRescanPaths
+                )
+                postMatchPhaseHandler("Generating the report…")
                 var auditReport = try AuditReporter.generate(from: matchReport)
                 // CHDs never go through `ROMMatcher` at all (a disk isn't a
                 // `DATRom`) — audited separately here, by each CHD's own
@@ -1136,7 +1607,8 @@ final class LibraryViewModel {
                 // so they reach `DiskAuditor` without ever reaching
                 // `ROMMatcher`.
                 if dat.games.contains(where: { !$0.disks.isEmpty }) {
-                    let diskEntries = try DiskAuditor.audit(dat: dat, chdFiles: chdFiles)
+                    postMatchPhaseHandler("Auditing CHDs…")
+                    let diskEntries = try DiskAuditor.audit(dat: dat, chdFiles: chdFiles, duplicatePreference: FixPreferencesSettings.currentCHDDuplicatePreference())
                     auditReport = try AuditReporter.merging(diskEntries: diskEntries, into: auditReport)
                 }
                 // Several ROM folders per system is common (different
@@ -1146,19 +1618,65 @@ final class LibraryViewModel {
                 // per-rom "Not needed here" surplus reporting that already
                 // exists. Run last, after every other pass has settled the
                 // real per-rom statuses this reads.
-                auditReport = try AuditReporter.addingDuplicateSets(to: auditReport, rootFolders: system.romFolderURLs)
+                // `forcedRescanPaths` — same signal `ROMMatcher.match` above
+                // just used — keeps the "Duplicate set" (blue) primary-folder
+                // pick from contradicting the per-rom "Duplicated archive,
+                // not needed here" (yellow) flag for the exact same game
+                // (found live during today's own duplicate-handling audit).
+                postMatchPhaseHandler("Detecting duplicate sets…")
+                auditReport = try AuditReporter.addingDuplicateSets(to: auditReport, rootFolders: Self.effectiveScanFolders(for: system), recentlyScannedPaths: forcedRescanPaths)
                 // Flags a BIOS archive nothing currently present actually
                 // needs (e.g. `neogeo.zip` sitting unused once every
                 // Neo-Geo game that used to depend on it was removed) — a
                 // pure flag on rows this same report already computed, so
                 // it can run after every other pass has settled them.
+                postMatchPhaseHandler("Checking for orphaned BIOS files…")
                 auditReport = AuditReporter.markingOrphanedBIOS(in: auditReport)
                 // Flags a TOSEC/GoodTools embedded-filename-CRC vs
                 // actual-content mismatch — cheap enough (filename parsing
                 // plus a string compare against a hash already computed
                 // above, no extra file reads) to run on every scan, unlike
                 // the ZIP-internal-CRC check below.
+                postMatchPhaseHandler("Checking filename/CRC consistency…")
                 auditReport = AuditReporter.markingFilenameCRCMismatches(in: auditReport)
+                // Flags a `.missing` rom whose exact declared content is
+                // already sitting in this system's own Maintenance folder —
+                // jensyleo's own request (2026-09-14), after confirming
+                // live that "Find ROMs…" already correctly plans this exact
+                // repair: the remaining gap was purely visual, a donor
+                // already staged for a missing rom looked identical to one
+                // with no fix in sight at all. Cheap enough to run on every
+                // scan (the Maintenance folder is typically a small staging
+                // area, not a full collection) — a no-op when no root is
+                // configured (`subfolderURL` returns `nil`) or the folder
+                // is simply empty.
+                if let maintenanceFolder = MaintenanceFolderSettings.subfolderURL(for: system) {
+                    postMatchPhaseHandler("Checking the Maintenance folder for donors…")
+                    let donorFiles: [HashedFile]
+                    if let cachedMaintenanceDonor, cachedMaintenanceDonor.folderPath == maintenanceFolder.path {
+                        // Reuse this session's cached hashes instead of
+                        // re-reading/re-hashing the whole Maintenance folder —
+                        // jensyleo's own report (2026-09-14): every scoped
+                        // "Scan This Folder" click was redundantly re-scanning
+                        // Maintenance too. Only a real Maintenance rescan
+                        // ("Scan Maintenance Folder"/"Scan All Folders") calls
+                        // `invalidateMaintenanceDonorCache()`, so this branch is
+                        // safe to trust until one of those explicitly refreshes it.
+                        donorFiles = cachedMaintenanceDonor.files
+                    } else if let maintenanceFiles = try? FolderScanner.scan(paths: [maintenanceFolder]), !maintenanceFiles.isEmpty {
+                        let freshDonorFiles = (try? await CollectionHasher.hash(scannedFiles: maintenanceFiles, algorithms: HashAlgorithmSettings.current)) ?? []
+                        donorFiles = freshDonorFiles
+                        let folderPath = maintenanceFolder.path
+                        Task { @MainActor [weak self] in
+                            self?.cachedMaintenanceDonorFiles = (folderPath, freshDonorFiles)
+                        }
+                    } else {
+                        donorFiles = []
+                    }
+                    if !donorFiles.isEmpty {
+                        auditReport = MaintenanceDonorDetector.markingDonorsAvailable(in: auditReport, matchReport: matchReport, donorFiles: donorFiles)
+                    }
+                }
                 // jensyleo's own report (2026-09-10): "Rescan This File"
                 // right after a case-only rename (e.g. "Fix Mismatched
                 // Files" with "Sets case" = Uppercase) could log "Done in
@@ -1178,10 +1696,62 @@ final class LibraryViewModel {
                 // "which entries did this rescan touch" question needs the
                 // corrected path too.
                 let freshlyObservedPaths = Set(freshHashedFiles.map(\.file.url.path)).map { URL(fileURLWithPath: $0) }
-                return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths)
+                return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths, failedFolders)
             }
             cancelDetachedWork = { detached.cancel() }
-            let (header, report, audit, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths) = try await detached.value
+            let (header, report, audit, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths, failedFolders) = try await detached.value
+            // jensyleo's own follow-up (2026-09-16): "verifica que solo
+            // muestre el mensaje al final... pero igual lo que encuentre
+            // sí lo escanee. Los recursos que no encontró debería
+            // marcarlos en rojo" — updated here, once, after the WHOLE
+            // scan (walk + hash + match) has finished, not mid-walk. Only
+            // folders THIS scan's own scope actually covered (`pathsToWalk`,
+            // captured below as part of the detached closure) are
+            // cleared/re-marked — a folder outside this scan's scope keeps
+            // whatever a PRIOR scan already determined about it.
+            let scannedScope = forcedRescanPaths.isEmpty ? allFolders : forcedRescanPaths
+            lastScanUnreachableFolders.subtract(scannedScope)
+            lastScanUnreachableFolders.formUnion(failedFolders.map(\.url))
+            // jensyleo's own report (2026-09-17): right after "Remove
+            // Redundant File(s)…" correctly deleted a redundant archive
+            // on purpose, its own automatic post-Fix verification rescan
+            // (scoped to that exact, now-intentionally-gone path) reported
+            // it through this SAME "Scan Failed"/"Couldn't reach" channel
+            // — designed for a genuinely alarming case (a NAS gone
+            // offline, a whole configured ROM folder disappearing) —
+            // making an entirely expected, successful deletion read as a
+            // scary failure. The two cases are told apart here: a whole
+            // CONFIGURED folder (`system.romFolderURLs`) going unreachable
+            // is always worth the alert, whatever the underlying error —
+            // but a narrower path (typically the single file a scoped
+            // Fix-verification rescan targets) that's simply gone
+            // (`ScannerError.folderNotFound`, not some other read/permission
+            // error) during a SCOPED rescan is treated as ordinary,
+            // expected information instead: logged plainly, never
+            // surfaced as "Scan Failed". A non-"not found" error (a real
+            // read failure) on ANY path still alerts, scoped or not.
+            let configuredFolders = Set(allFolders)
+            func isExpectedGoneRatherThanAFailure(_ failure: (url: URL, name: String, message: String)) -> Bool {
+                guard !forcedRescanPaths.isEmpty, !configuredFolders.contains(failure.url) else { return false }
+                return failure.message == ScannerError.folderNotFound(failure.url).localizedDescription
+            }
+            let alarmingFailures = failedFolders.filter { !isExpectedGoneRatherThanAFailure($0) }
+            let expectedGoneFailures = failedFolders.filter { isExpectedGoneRatherThanAFailure($0) }
+            for failure in alarmingFailures {
+                logError("Couldn't reach \(failure.url.path): \(failure.message)")
+            }
+            for failure in expectedGoneFailures {
+                log("\(failure.name) is gone (likely just removed by a Fix action) — the rest of the scoped rescan still completed normally.")
+            }
+            if !alarmingFailures.isEmpty {
+                fixResultAlert = FixResultAlert(
+                    title: "Scan Failed",
+                    isSuccess: false,
+                    message: alarmingFailures.count == 1
+                        ? "Couldn't reach \(alarmingFailures[0].name): \(alarmingFailures[0].message)\n\nEvery other reachable folder was still scanned normally."
+                        : "\(alarmingFailures.count) folders couldn't be reached:\n\n" + alarmingFailures.map { "\($0.name): \($0.message)" }.joined(separator: "\n") + "\n\nEvery other reachable folder was still scanned normally."
+                )
+            }
             let effectiveRescannedPaths = forcedRescanPaths.isEmpty ? [] : forcedRescanPaths + freshlyObservedPaths
             if let freshlyParsed, let freshlyParsedIdentity {
                 Self.sharedRawDatasetCache[system.id] = (freshlyParsedIdentity, freshlyParsed)
@@ -1219,12 +1789,45 @@ final class LibraryViewModel {
             // aplica" for Fix purposes — recorded here, at the exact same
             // success point `matchReport` itself is updated, so the two can
             // never drift apart.
-            lastScanScope = folders.map { .paths($0) } ?? .wholeSystem
+            //
+            // jensyleo's own report (2026-09-13): "rescaneo una carpeta,
+            // hago fix de un archivo, luego trato de hacer fix en otro
+            // archivo... me vuelve a pedir rescan" — this used to just
+            // overwrite `lastScanScope` with THIS scan's own scope,
+            // however narrow. A scoped Fix's own automatic verification
+            // rescan (`fix()`'s own `scan(folders: effectiveScopeFolders)`
+            // call, right above where it logs its result) is scoped to
+            // only the File(s) it just touched — far narrower than the
+            // whole folder a real "Scan Folder" had already covered a
+            // moment earlier — so that single-file rescan was silently
+            // discarding the broader coverage the user had already
+            // established, and the very next Fix on a DIFFERENT file in
+            // that same already-scanned folder failed the coverage check
+            // for no real reason. `Self.mergedScanScope` accumulates
+            // instead: a narrower scan's own scope is folded INTO
+            // whatever was already tracked, never replacing broader
+            // coverage that's still genuinely valid.
+            lastScanScope = Self.mergedScanScope(lastScanScope, withNewScan: folders)
             auditReport = displayedAudit
             scanProgress = nil
             folderScanFilesFound = nil
             currentlyScanningFolder = nil
             archiveListingProgress = nil
+            // jensyleo's own report (2026-09-17): "Verify ZIP Integrity"
+            // (and by the same mechanism, any other `isBusy` action run
+            // after a successful scan) showed the scan's own frozen
+            // "Comparing against the database… N of N games" text the
+            // whole time it ran, completely unrelated to what it was
+            // actually doing. Root cause: only the `catch` branches below
+            // (cancellation, error) ever reset `isMatching`/`matchProgress`
+            // back to their idle state — a scan that finishes normally,
+            // the common case, left `isMatching` stuck `true` forever
+            // after, since `scanProgressOverlay` checks that flag before
+            // any of the other progress indicators this success path DOES
+            // clear above.
+            isMatching = false
+            matchProgress = nil
+            scanPostMatchPhase = nil
             let totalDuration = Date().timeIntervalSince(scanStart)
             // jensyleo's own report (2026-09-11): this completion line read
             // whole-SYSTEM totals even for a scoped "Scan File"/"Scan
@@ -1246,13 +1849,36 @@ final class LibraryViewModel {
                 // when nothing needs the user's attention.
                 kind: (summary.incorrect > 0 || summary.missing > 0) ? .warning : .success
             )
+            let scanFinishedAt = Date()
+            lastScanDate = scanFinishedAt
+            isSavingReport = true
+            saveReportProgress = nil
+            // jensyleo's own report (2026-09-21): after a scoped scan's own
+            // "Done in Xs…" line, the Log stayed silent for the whole
+            // diffed-SQLite-save step (`saveReportInBackground`) — visible
+            // only as the overlay's own progress bar, never as a Log line
+            // — reading as the app having frozen ("se quedó escaneando
+            // folders") even though it was genuinely still working. This
+            // names the phase explicitly, with its own elapsed time, so a
+            // slow save (a large persisted collection's diff can
+            // legitimately take tens of seconds) reads as "still working"
+            // rather than "stuck".
+            log("Updating database…")
+            let saveStartedAt = Date()
+            let saveProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+                Task { @MainActor in self?.saveReportProgress = (completed, total) }
+            }
             do {
-                try AuditDatabaseLocation.open().saveReport(
-                    audit, systemID: system.id.uuidString, datName: header.name, datVersion: header.version, scannedAt: Date()
+                try await Self.saveReportInBackground(
+                    audit, systemID: system.id.uuidString, datName: header.name, datVersion: header.version, scannedAt: scanFinishedAt,
+                    onProgress: saveProgressHandler
                 )
+                log(String(format: "Database updated in %.1fs.", Date().timeIntervalSince(saveStartedAt)))
             } catch {
                 logWarning("Couldn't persist this scan's results: \(error)")
             }
+            isSavingReport = false
+            saveReportProgress = nil
         } catch is CancellationError {
             isLoadingDAT = false
             datFileReadProgress = nil
@@ -1265,6 +1891,7 @@ final class LibraryViewModel {
             scanProgress = nil
             isMatching = false
             matchProgress = nil
+            scanPostMatchPhase = nil
             logWarning("Scan cancelled.")
         } catch {
             isLoadingDAT = false
@@ -1278,7 +1905,22 @@ final class LibraryViewModel {
             scanProgress = nil
             isMatching = false
             matchProgress = nil
+            scanPostMatchPhase = nil
             logError("Failed: \(String(describing: error))")
+            // jensyleo's own report (2026-09-16): scanning a ROM folder
+            // that lives on a NAS, with the NAS currently unreachable,
+            // only ever showed up as a Log panel line — easy to miss,
+            // unlike a Fix action's own pop-up. Reuses the same
+            // `fixResultAlert` channel (never gated behind
+            // `FixResultPopupSettings.isEnabled`, unlike a routine Fix
+            // completion — a scan that genuinely failed to even reach the
+            // folder is a real problem the user needs to see, not a
+            // "nice to know" notification they might reasonably turn off).
+            fixResultAlert = FixResultAlert(
+                title: "Scan Failed",
+                isSuccess: false,
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -1309,15 +1951,26 @@ final class LibraryViewModel {
                 : "ZIP integrity check done: \(mismatchCount) entr\(mismatchCount == 1 ? "y" : "ies") with an internal CRC mismatch.",
             kind: mismatchCount == 0 ? .success : .warning
         )
+        isSavingReport = true
+        saveReportProgress = nil
+        log("Updating database…")
+        let saveStartedAt = Date()
+        let saveProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.saveReportProgress = (completed, total) }
+        }
         do {
             if let meta = try AuditDatabaseLocation.open().loadScanMeta(systemID: system.id.uuidString) {
-                try AuditDatabaseLocation.open().saveReport(
-                    verified, systemID: system.id.uuidString, datName: meta.datName, datVersion: meta.datVersion, scannedAt: meta.scannedAt
+                try await Self.saveReportInBackground(
+                    verified, systemID: system.id.uuidString, datName: meta.datName, datVersion: meta.datVersion, scannedAt: meta.scannedAt,
+                    onProgress: saveProgressHandler
                 )
+                log(String(format: "Database updated in %.1fs.", Date().timeIntervalSince(saveStartedAt)))
             }
         } catch {
             logWarning("Couldn't persist the ZIP integrity check's results: \(error)")
         }
+        isSavingReport = false
+        saveReportProgress = nil
         isBusy = false
     }
 
@@ -1333,10 +1986,50 @@ final class LibraryViewModel {
     /// this count always matches what actually happens.
     func planFixPreviewCount(scopeFolders: [URL] = []) -> Int {
         guard let matchReport = requireMatchReport() else { return 0 }
+        // Real bug found live by jensyleo (2026-09-22): this used to show a
+        // real, nonzero count from a STALE `matchReport` — e.g. left over
+        // from an earlier whole-system scan, or from SQLite on launch —
+        // even when the LAST actual scan only covered a narrower scope
+        // (say, one folder's own "Rescan" button). The menu enabled, the
+        // confirmation dialog promised "Fix N mismatched files", and only
+        // AFTER the user confirmed did `fix()`'s own `scopeCoveredByLastScan`
+        // guard refuse and demand a rescan — a real action that visibly
+        // "did tasks" (built the preview, showed the dialog) yet fixed
+        // nothing. Every preview count below gets the exact same guard its
+        // own execute function already has, so a scope the last scan
+        // didn't cover now shows 0 up front instead of a false promise.
+        //
+        // Silent (no `logRescanRequiredForFix` alert) — unlike the
+        // whole-system-only actions below, this one is also called from
+        // `GameTreeTableView`'s own context-menu construction closure
+        // (evaluated on every right-click, sometimes more eagerly than
+        // that — see that closure's own doc comment), so popping a modal
+        // alert from in here would fire it spuriously just from Browse,
+        // never mind an actual click. A 0 here just hides the menu item,
+        // same as "no scan yet at all" already does.
+        guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
+        return Self.restrictToScope(unscopedFixOperations(matchReport: matchReport), scopeFolders: scopeFolders).count
+    }
+
+    /// Real perf bug found live by jensyleo (2026-09-22) — same class as
+    /// `matchedZipArchiveURLsCache`'s own doc comment: `planRepair`/
+    /// `planApplySetsCasePolicy` each walk EVERY game's EVERY rom match in
+    /// the whole system, unscoped, and this ran again on every single
+    /// right-click (the Games table's own context menu computes this
+    /// preview for whichever File was clicked). The result only changes
+    /// when `matchReport` itself changes OR the case policy setting does
+    /// (rare, user-driven) — cached against both, recomputed only when
+    /// either actually differs from what's cached.
+    private var unscopedFixOperationsCache: (policy: FileCasePolicy, operations: [RebuildOperation])?
+
+    private func unscopedFixOperations(matchReport: MatchReport) -> [RebuildOperation] {
         let filesCasePolicy = FixPreferencesSettings.currentSetsCasePolicy()
+        if let cached = unscopedFixOperationsCache, cached.policy == filesCasePolicy { return cached.operations }
         let mismatchOperations = RebuildPlanner.planRepair(matchReport: matchReport, filesCasePolicy: filesCasePolicy)
         let caseOnlyOperations = RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: filesCasePolicy)
-        return Self.restrictToScope(mismatchOperations + caseOnlyOperations, scopeFolders: scopeFolders).count
+        let operations = mismatchOperations + caseOnlyOperations
+        unscopedFixOperationsCache = (filesCasePolicy, operations)
+        return operations
     }
 
     /// A short " inside …" clause naming the scope for a Log message —
@@ -1379,9 +2072,8 @@ final class LibraryViewModel {
         // exactly the confusion it caused live: Uppercase configured, a
         // collection full of wrong names, and a silent no-op with no
         // visible reason why. The only real knob left is HOW the
-        // corrected name is styled — `filesCasePolicy` below, always
-        // applied.
-        let filesCasePolicy = FixPreferencesSettings.currentSetsCasePolicy()
+        // corrected name is styled — read inside `unscopedFixOperations`
+        // below, always applied.
 
         // jensyleo's own report (2026-09-10): a single `try
         // RebuildExecutor.execute(eligible)` call over the WHOLE array
@@ -1393,38 +2085,45 @@ final class LibraryViewModel {
         // OTHER Fix action already executes its own operations one at a
         // time, tracking succeeded/failed independently, for exactly this
         // reason — this one was the odd one out.
+        // `planRepair` itself now only ever plans a genuine File-level
+        // rename (a loose file's own name, or a whole misnamed archive's
+        // own container name) — an entry mismatch INSIDE an otherwise-
+        // correctly-named archive is never touched by it at all (see
+        // `planRepair`'s own doc comment), so every operation it returns
+        // is eligible here, no separate filtering needed.
+        //
+        // jensyleo's own report (2026-09-10): 26 loose lowercase archives,
+        // "Sets case" set to Uppercase, ran "Fix Mismatched Files" and got
+        // "nothing to fix" — correctly, by this action's OLD, narrower
+        // definition (nothing there disagreed with the DAT), but not by
+        // his own, which matches ClrMamePro's actual model: one "Fix"
+        // pass applies every configured policy at once, including
+        // re-styling a name that's already otherwise correct. That was
+        // split into a separate "Apply Case Policy…" action instead —
+        // technically reachable, but two buttons sharing one Settings
+        // toggle ("Sets case") reads as a collision rather than two
+        // distinct features. Folding `planApplySetsCasePolicy` into THIS
+        // same pass makes "Fix Mismatched Files" match ClrMamePro's model
+        // for real: it repairs a wrong name AND re-cases an already-
+        // correct one, in one click, exactly as its own doc comment on
+        // `applyCasePolicy` already claimed the app does. The two plans
+        // never target the same File: `planRepair` only ever touches a
+        // `.misnamed` anchor, `planApplySetsCasePolicy` only ever a
+        // `.correct` one whose OWN name already matches the DAT apart
+        // from case (see that function's own doc comment) — mutually
+        // exclusive by construction, so there's no double-rename risk in
+        // combining them. Computed via the cached `unscopedFixOperations`
+        // (main-actor-isolated) BEFORE entering `Task.detached` — see
+        // `unscopedFixOperationsCache`'s own doc comment.
+        let allOperations = unscopedFixOperations(matchReport: matchReport)
+        // Real gap found live by jensyleo (2026-09-23), same class as
+        // `removeUselessFiles`'s own doc comment: never set
+        // `fixActionProgress`, so the overlay fell through to its generic
+        // "Scanning folders…" fallback with no moving numbers.
+        let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.fixActionProgress = ("Fixing mismatched files…", completed, total) }
+        }
         let outcome = await Task.detached(priority: .userInitiated) {
-            // `planRepair` itself now only ever plans a genuine File-level
-            // rename (a loose file's own name, or a whole misnamed
-            // archive's own container name) — an entry mismatch INSIDE an
-            // otherwise-correctly-named archive is never touched by it at
-            // all (see `planRepair`'s own doc comment), so every operation
-            // it returns is eligible here, no separate filtering needed.
-            let mismatchOperations = RebuildPlanner.planRepair(matchReport: matchReport, filesCasePolicy: filesCasePolicy)
-            // jensyleo's own report (2026-09-10): 26 loose lowercase
-            // archives, "Sets case" set to Uppercase, ran "Fix Mismatched
-            // Files" and got "nothing to fix" — correctly, by this
-            // action's OLD, narrower definition (nothing there disagreed
-            // with the DAT), but not by his own, which matches
-            // ClrMamePro's actual model: one "Fix" pass applies every
-            // configured policy at once, including re-styling a name
-            // that's already otherwise correct. That was split into a
-            // separate "Apply Case Policy…" action instead — technically
-            // reachable, but two buttons sharing one Settings toggle
-            // ("Sets case") reads as a collision rather than two distinct
-            // features. Folding `planApplySetsCasePolicy` into THIS same
-            // pass makes "Fix Mismatched Files" match ClrMamePro's model
-            // for real: it repairs a wrong name AND re-cases an
-            // already-correct one, in one click, exactly as its own doc
-            // comment on `applyCasePolicy` already claimed the app does.
-            // The two plans never target the same File: `planRepair` only
-            // ever touches a `.misnamed` anchor, `planApplySetsCasePolicy`
-            // only ever a `.correct` one whose OWN name already matches
-            // the DAT apart from case (see that function's own doc
-            // comment) — mutually exclusive by construction, so there's
-            // no double-rename risk in combining them.
-            let caseOnlyOperations = RebuildPlanner.planApplySetsCasePolicy(matchReport: matchReport, policy: filesCasePolicy)
-            let allOperations = mismatchOperations + caseOnlyOperations
             let scopedEligible = Self.restrictToScope(allOperations, scopeFolders: scopeFolders)
             var succeeded = 0
             var failed = 0
@@ -1437,7 +2136,8 @@ final class LibraryViewModel {
             // logged for real after the verification rescan (which clears
             // the Log, so logging from inside this task would be erased).
             var failureLines: [String] = []
-            for operation in scopedEligible {
+            let total = scopedEligible.count
+            for (index, operation) in scopedEligible.enumerated() {
                 do {
                     try RebuildExecutor.execute([operation])
                     succeeded += 1
@@ -1449,6 +2149,7 @@ final class LibraryViewModel {
                         failureLines.append("Operation failed: \(error.localizedDescription)")
                     }
                 }
+                fixProgressHandler(index + 1, total)
             }
             // Counted separately from `matchReport` itself (not from
             // `planRepair`'s output, which no longer includes these at
@@ -1479,6 +2180,7 @@ final class LibraryViewModel {
                 failureLines: failureLines
             )
         }.value
+        fixActionProgress = nil
         let (succeeded, failed, skippedCount) = (outcome.succeeded, outcome.failed, outcome.skippedCount)
 
         // jensyleo's own report (2026-09-11): the messages above already
@@ -1557,8 +2259,9 @@ final class LibraryViewModel {
             // "Sets case" would re-style — see `mismatchOperations`/
             // `caseOnlyOperations` above. Nothing planned means nothing
             // for either half to do, uppercase or not.
-            logWarning("Nothing to fix\(scopeSuffix) — every File name already matches the DAT, styled exactly per \"Sets case\" (\(filesCasePolicy.rawValue)).")
+            logWarning("Nothing to fix\(scopeSuffix) — every File name already matches the DAT, styled exactly per \"Sets case\" (\(FixPreferencesSettings.currentSetsCasePolicy().rawValue)).")
         }
+        postFixResultPopup(action: "Fix Mismatched Files", succeeded: succeeded, failed: failed, failureLines: outcome.failureLines)
     }
 
     /// How many file operations a "Rebuild to Folder…" against `destination`
@@ -1569,6 +2272,12 @@ final class LibraryViewModel {
     /// guard.
     func planRebuildPreviewCount(destination: URL, move: Bool) -> Int {
         guard let matchReport = requireMatchReport() else { return 0 }
+        // Same "rescan required" false-promise class as `planFixPreviewCount`'s
+        // own doc comment — `rebuildToFolder` below is whole-system-only.
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return 0
+        }
         return RebuildPlanner.planRebuild(matchReport: matchReport, destination: destination, move: move).count
     }
 
@@ -1619,14 +2328,52 @@ final class LibraryViewModel {
         } else {
             logSuccess("Rebuild complete: \(succeeded) file(s) \(verb) to \"\(destination.lastPathComponent)\".")
         }
+        postFixResultPopup(action: "Rebuild to Folder", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// How many files "Remove Useless Files…" would actually delete, without
     /// touching disk — the same preview-before-confirm pattern as
     /// `planRebuildPreviewCount`. Returns `0` before any scan has run.
-    func planRemoveUselessFilesPreviewCount() -> Int {
+    ///
+    /// jensyleo's own correction (2026-09-13), after live-testing this
+    /// action himself and finding it deleted surplus files across every
+    /// configured ROM folder at once, not just the one he had selected:
+    /// "Remove Useless Files… debe actuar solo en la carpeta
+    /// SELECCIONADA." Scoped the same way `fix(system:scopeFolders:)`
+    /// already scopes "Fix Mismatched Files" — via `restrictToScope`,
+    /// which already knows how to read a path out of every
+    /// `RebuildOperation` case this planner ever produces (`.delete`'s own
+    /// target, `.removeEntryFromZip`'s own container archive).
+    func planRemoveUselessFilesPreviewCount(scopeFolders: [URL]) -> Int {
         guard let matchReport = requireMatchReport() else { return 0 }
-        return RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport).count
+        // Silent on scope mismatch — see `planFixPreviewCount`'s own doc
+        // comment: also read from `GameTreeTableView`'s context-menu
+        // construction closure, where a modal alert would fire spuriously.
+        guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
+        return Self.restrictToScope(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport), scopeFolders: scopeFolders).count
+    }
+
+    /// Which of "File(s)"/"ROM(s)" the context menu's own "Remove Useless…"
+    /// label should say for this exact scope — real report found live by
+    /// jensyleo (2026-09-22): `RebuildPlanner.planRemoveUselessFiles`
+    /// itself always handles BOTH a whole loose junk file (`.delete`) AND a
+    /// single unrecognized entry inside an otherwise-known archive
+    /// (`.removeEntryFromZip`) — unlike "Remove Redundant Files…"/"Remove
+    /// Redundant ROMs…", which are genuinely two separate planner
+    /// functions/menu items for that exact distinction. The menu item here
+    /// always said "File(s)" regardless, even when scoped to a File whose
+    /// only useless content is an ENTRY inside it (e.g. "Thunder Zone
+    /// (World 4 Players)"'s own `thndzone4.zip` holding two unrecognized
+    /// roms) — reading as a naming mismatch against the app's own
+    /// established Files/ROMs vocabulary everywhere else.
+    enum UselessRemovalKind { case files, roms, mixed }
+    func planRemoveUselessFilesPreviewKind(scopeFolders: [URL]) -> UselessRemovalKind {
+        guard let matchReport = requireMatchReport() else { return .files }
+        let operations = Self.restrictToScope(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport), scopeFolders: scopeFolders)
+        let hasLooseFile = operations.contains { if case .delete = $0 { return true }; return false }
+        let hasRomEntry = operations.contains { if case .removeEntryFromZip = $0 { return true }; return false }
+        if hasLooseFile && hasRomEntry { return .mixed }
+        return hasRomEntry ? .roms : .files
     }
 
     /// Permanently deletes every file the DAT recognizes nothing about at
@@ -1636,9 +2383,245 @@ final class LibraryViewModel {
     /// runs. Each deletion is attempted independently (same reasoning as
     /// `rebuildToFolder` above) so one locked/already-gone file doesn't
     /// abort the rest.
-    func removeUselessFiles(system: RomSystem) async {
+    ///
+    /// `scopeFolders` is never optional in practice — see
+    /// `planRemoveUselessFilesPreviewCount`'s own doc comment for why this
+    /// was narrowed to the selected folder only; `LibraryDetailView` never
+    /// calls this without one selected. Kept as `[URL]` rather than a bare
+    /// `URL`, matching every other scoped Fix action's own signature, so
+    /// `restrictToScope`/`scopeCoveredByLastScan` need no special case for
+    /// this one action.
+    func removeUselessFiles(system: RomSystem, scopeFolders: [URL]) async {
         guard Self.modificationsEnabled else {
             logError("Removing files is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport = requireMatchReport() else { return }
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        // Real gap found live by jensyleo (2026-09-23), same class as
+        // `removeRedundantFiles`'s/`repairFromMaintenanceFolder`'s own doc
+        // comments: this action never set `fixActionProgress` at all, so
+        // the overlay fell through to its generic, indeterminate "Scanning
+        // folders…" fallback with no moving numbers for however long the
+        // actual deletes took.
+        let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.fixActionProgress = ("Removing useless files…", completed, total) }
+        }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            let operations = Self.restrictToScope(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport), scopeFolders: scopeFolders)
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            let total = operations.count
+            for (index, operation) in operations.enumerated() {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("Could not \(Self.describeOperation(operation)): \(error.localizedDescription)")
+                }
+                fixProgressHandler(index + 1, total)
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        fixActionProgress = nil
+
+        // jensyleo's own report (2026-09-11): logging this action's own
+        // result BEFORE the verification rescan meant `scan()`'s own
+        // `logLines.removeAll()` erased it right away — the Log ended up
+        // showing only the rescan's narration, never what this action
+        // itself actually did. Same fix as `fix()`/`renameRomsInArchive()`
+        // above: scan first, log the result after.
+        //
+        // jensyleo's own report (2026-09-16), testing "Repair from
+        // Maintenance Folder…" scoped to one folder (SEGA) and seeing the
+        // verification rescan's own progress narrate an entirely
+        // UNRELATED one (CPS3): this rescan used to always cover the
+        // WHOLE system regardless of how narrow `scopeFolders` was —
+        // `fix()`/`renameRomsInArchive()` already scope their own
+        // verification rescan this same way; this action (and its
+        // siblings below) just never got that same treatment. An empty
+        // `scopeFolders` (the toolbar-wide, whole-system version of this
+        // action) still rescans everything, same as before.
+        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        for line in failureLines {
+            logWarning(line)
+        }
+        if failed > 0 {
+            logWarning("Removed \(succeeded) useless file(s); \(failed) failed (see the lines just above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Removed \(succeeded) useless file(s).")
+        } else {
+            logWarning("Nothing to remove — no unrecognized files in the current scan.")
+        }
+        postFixResultPopup(action: "Remove Useless Files", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// How many LOOSE files "Remove Redundant Files…" would actually delete
+    /// — same preview-before-confirm pattern as
+    /// `planRemoveUselessFilesPreviewCount`. Returns `0` before any scan has
+    /// run.
+    func planRemoveRedundantFilesPreviewCount(scopeFolders: [URL]) -> Int {
+        guard let matchReport = requireMatchReport() else { return 0 }
+        // Silent on scope mismatch — see `planFixPreviewCount`'s own doc
+        // comment: also read from the context-menu construction closure.
+        guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
+        let fileOperations = RebuildPlanner.planRemoveRedundantFiles(matchReport: matchReport)
+        let diskOperations = RebuildPlanner.planRemoveRedundantDisks(auditEntries: auditReport?.entries ?? [])
+        let wholeArchiveOperations = RebuildPlanner.planRemoveRedundantWholeArchives(
+            matchReport: matchReport, entryCounts: Self.redundantArchiveEntryCounts(matchReport: matchReport)
+        )
+        return Self.restrictToScope(fileOperations + diskOperations + wholeArchiveOperations, scopeFolders: scopeFolders).count
+    }
+
+    /// Lists (never decompresses — both `SevenZipArchiveScanner.scan` and
+    /// `ZipArchiveScanner.scan` are cheap listings, same cost the initial
+    /// scan itself already pays) every distinct archive container (`.7z`
+    /// OR `.zip`, generalized 2026-09-17 — see
+    /// `RebuildPlanner.planRemoveRedundantWholeArchives`'s own doc comment
+    /// for why `.zip` needed this too) a redundant surplus rom lives in,
+    /// so that function can tell "the redundant entry is this container's
+    /// ONLY content" (safe to delete the whole archive) from "other,
+    /// still-needed content shares this same archive" (must be left
+    /// alone). Real disk I/O, deliberately kept in the App layer rather
+    /// than `RebuildPlanner` itself (see that type's own "never touches
+    /// disk" doc comment).
+    private nonisolated static func redundantArchiveEntryCounts(matchReport: MatchReport) -> [URL: Int] {
+        let containers = Set(
+            matchReport.surplusFiles
+                .filter { $0.requiredByGameDescription != nil }
+                .map(\.file.file.url)
+                .filter { $0.pathExtension.lowercased() == "7z" || $0.pathExtension.lowercased() == "zip" }
+        )
+        var counts: [URL: Int] = [:]
+        for container in containers {
+            if container.pathExtension.lowercased() == "7z" {
+                counts[container] = (try? SevenZipArchiveScanner.scan(archive: container))?.count
+            } else {
+                counts[container] = (try? ZipArchiveScanner.scan(archive: container))?.count
+            }
+        }
+        return counts
+    }
+
+    /// Permanently deletes every LOOSE file that's a redundant duplicate of
+    /// content the DAT recognizes elsewhere — jensyleo's own request
+    /// (2026-09-13), the exact complement of "Remove Useless Files" (which
+    /// deliberately excludes this exact case — see
+    /// `RebuildPlanner.planRemoveUselessFiles`'s own doc comment). Split
+    /// from the archive-entry version (`removeRedundantRoms`, below)
+    /// mirroring the existing Files/ROMs split every other Fix action here
+    /// already uses.
+    func removeRedundantFiles(system: RomSystem, scopeFolders: [URL]) async {
+        guard Self.modificationsEnabled else {
+            logError("Removing files is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport = requireMatchReport() else { return }
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let diskEntries = auditReport?.entries ?? []
+        let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.fixActionProgress = ("Removing redundant files…", completed, total) }
+        }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            let fileOperations = RebuildPlanner.planRemoveRedundantFiles(matchReport: matchReport)
+            let diskOperations = RebuildPlanner.planRemoveRedundantDisks(auditEntries: diskEntries)
+            let wholeArchiveOperations = RebuildPlanner.planRemoveRedundantWholeArchives(
+                matchReport: matchReport, entryCounts: Self.redundantArchiveEntryCounts(matchReport: matchReport)
+            )
+            let operations = Self.restrictToScope(fileOperations + diskOperations + wholeArchiveOperations, scopeFolders: scopeFolders)
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            let total = operations.count
+            for (index, operation) in operations.enumerated() {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("Could not \(Self.describeOperation(operation)): \(error.localizedDescription)")
+                }
+                fixProgressHandler(index + 1, total)
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        fixActionProgress = nil
+
+        // jensyleo's own report (2026-09-16) — see `removeUselessFiles`'s
+        // own doc comment on this exact scoping fix.
+        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        for line in failureLines {
+            logWarning(line)
+        }
+        if failed > 0 {
+            logWarning("Removed \(succeeded) redundant file(s); \(failed) failed (see the lines just above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Removed \(succeeded) redundant file(s).")
+        } else {
+            logWarning("Nothing to remove — no redundant files in the current scan.")
+        }
+        postFixResultPopup(action: "Remove Redundant Files", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// How many operations "Organize BIOS Files…" would actually perform —
+    /// same preview-before-confirm pattern as
+    /// `planRemoveUselessFilesPreviewCount`/`planRemoveRedundantFilesPreviewCount`.
+    /// Whole-system only (BIOSes can live under any of a system's ROM
+    /// folders) — `0` before any scan, or when no BIOS folder is configured
+    /// in Settings → Systems → MAME.
+    func planOrganizeBIOSFilesPreviewCount() -> Int {
+        guard let biosFolder = BIOSFolderSettings.folderURL else { return 0 }
+        guard let matchReport = requireMatchReport() else { return 0 }
+        guard scopeCoveredByLastScan([]) else { return 0 }
+        return RebuildPlanner.planOrganizeBIOSFiles(matchReport: matchReport, biosFolder: biosFolder).count
+    }
+
+    /// One human-readable line per BIOS machine "Organize BIOS Files…"
+    /// would touch — jensyleo's own request (2026-09-23), so its own
+    /// confirmation dialog can list exactly which BIOSes were found,
+    /// instead of just a bare count. See `RebuildPlanner
+    /// .describeOrganizeBIOSFiles`'s own doc comment.
+    func planOrganizeBIOSFilesPreviewLines() -> [String] {
+        guard let biosFolder = BIOSFolderSettings.folderURL else { return [] }
+        guard let matchReport = requireMatchReport() else { return [] }
+        guard scopeCoveredByLastScan([]) else { return [] }
+        return RebuildPlanner.describeOrganizeBIOSFiles(matchReport: matchReport, biosFolder: biosFolder)
+    }
+
+    /// jensyleo's own request (2026-09-23): "Debe buscar en todos los ROM
+    /// folders y moverlos a la carpeta BIOS. Si hay repetidos, los
+    /// elimina." — a toolbar-only action (never in a per-row context menu,
+    /// per point 3 of that same request), always whole-system since a BIOS
+    /// can be referenced by games under any of a system's configured ROM
+    /// folders. Moves each BIOS's own loose file into the configured BIOS
+    /// folder (see `BIOSFolderSettings`), and removes any further loose or
+    /// zip-entry copy of that same BIOS this scan found still sitting
+    /// somewhere a game only needed because another copy is now confirmed
+    /// safe elsewhere (`RebuildPlanner.planOrganizeBIOSFiles`'s own
+    /// `requiredByGameOwnerSatisfiedElsewhere` check — the exact same
+    /// safety guard `removeRedundantFiles` above already relies on, never
+    /// a plain "delete every duplicate" pass).
+    func organizeBIOSFiles(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logConfigurationRequired("Organizing BIOS files is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let biosFolder = BIOSFolderSettings.folderURL else {
+            logConfigurationRequired("No BIOS folder configured — set one in Settings → Systems → MAME first.")
             return
         }
         guard let matchReport = requireMatchReport() else { return }
@@ -1649,8 +2632,842 @@ final class LibraryViewModel {
         isBusy = true
         defer { isBusy = false }
 
+        // Captured from the PRE-move `matchReport`, before `scan(system:
+        // folders: nil)` below replaces it — jensyleo's own request
+        // (2026-09-24): "debe... indicar que BIOS cargó después de
+        // terminar", right after asking for the same list in the
+        // confirmation dialog (`planOrganizeBIOSFilesPreviewLines`). Same
+        // underlying describe function, just logged as the RESULT instead
+        // of a preview.
+        let summaryLines = RebuildPlanner.describeOrganizeBIOSFiles(matchReport: matchReport, biosFolder: biosFolder)
+
+        let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.fixActionProgress = ("Organizing BIOS files…", completed, total) }
+        }
         let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
-            let operations = RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport)
+            let operations = RebuildPlanner.planOrganizeBIOSFiles(matchReport: matchReport, biosFolder: biosFolder)
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            let total = operations.count
+            for (index, operation) in operations.enumerated() {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("Could not \(Self.describeOperation(operation)): \(error.localizedDescription)")
+                }
+                fixProgressHandler(index + 1, total)
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        fixActionProgress = nil
+
+        await scan(system: system, folders: nil)
+        for line in failureLines {
+            logWarning(line)
+        }
+        if failed > 0 {
+            logWarning("Organized \(succeeded) BIOS file(s); \(failed) failed (see the lines just above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Organized \(succeeded) BIOS file(s) into \"\(biosFolder.lastPathComponent)\":")
+            for line in summaryLines {
+                logSuccess("  \(line)")
+            }
+        } else {
+            logWarning("Nothing to organize — no BIOS files found outside \"\(biosFolder.lastPathComponent)\" in the current scan.")
+        }
+        postFixResultPopup(action: "Organize BIOS Files", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// How many operations "Organize Complementary Chips…" would actually
+    /// perform — same preview-before-confirm pattern as
+    /// `planOrganizeBIOSFilesPreviewCount`.
+    func planOrganizeComplementaryChipsPreviewCount() -> Int {
+        guard let chipsFolder = ComplementaryChipsFolderSettings.folderURL else { return 0 }
+        guard let matchReport = requireMatchReport() else { return 0 }
+        guard scopeCoveredByLastScan([]) else { return 0 }
+        return RebuildPlanner.planOrganizeComplementaryChips(matchReport: matchReport, chipsFolder: chipsFolder).count
+    }
+
+    /// One human-readable line per chip "Organize Complementary Chips…"
+    /// would touch — same reasoning as `planOrganizeBIOSFilesPreviewLines`.
+    func planOrganizeComplementaryChipsPreviewLines() -> [String] {
+        guard let chipsFolder = ComplementaryChipsFolderSettings.folderURL else { return [] }
+        guard let matchReport = requireMatchReport() else { return [] }
+        guard scopeCoveredByLastScan([]) else { return [] }
+        return RebuildPlanner.describeOrganizeComplementaryChips(matchReport: matchReport, chipsFolder: chipsFolder)
+    }
+
+    /// jensyleo's own request (2026-09-24): "lo mismo que BIOS pero para
+    /// los demás chips" — see `RebuildPlanner
+    /// .planOrganizeComplementaryChips`'s own doc comment for the exact
+    /// distinction (`DATGame.isDevice`, confirmed against MAME's own
+    /// official "Device set" documentation) and `organizeBIOSFiles`'s own
+    /// doc comment above for why every other line here mirrors that
+    /// function exactly.
+    func organizeComplementaryChips(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logConfigurationRequired("Organizing complementary chips is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let chipsFolder = ComplementaryChipsFolderSettings.folderURL else {
+            logConfigurationRequired("No Complementary Chips folder configured — set one in Settings → Systems → MAME first.")
+            return
+        }
+        guard let matchReport = requireMatchReport() else { return }
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let summaryLines = RebuildPlanner.describeOrganizeComplementaryChips(matchReport: matchReport, chipsFolder: chipsFolder)
+
+        let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.fixActionProgress = ("Organizing complementary chips…", completed, total) }
+        }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            let operations = RebuildPlanner.planOrganizeComplementaryChips(matchReport: matchReport, chipsFolder: chipsFolder)
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            let total = operations.count
+            for (index, operation) in operations.enumerated() {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("Could not \(Self.describeOperation(operation)): \(error.localizedDescription)")
+                }
+                fixProgressHandler(index + 1, total)
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        fixActionProgress = nil
+
+        await scan(system: system, folders: nil)
+        for line in failureLines {
+            logWarning(line)
+        }
+        if failed > 0 {
+            logWarning("Organized \(succeeded) complementary chip file(s); \(failed) failed (see the lines just above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Organized \(succeeded) complementary chip file(s) into \"\(chipsFolder.lastPathComponent)\":")
+            for line in summaryLines {
+                logSuccess("  \(line)")
+            }
+        } else {
+            logWarning("Nothing to organize — no complementary chip files found outside \"\(chipsFolder.lastPathComponent)\" in the current scan.")
+        }
+        postFixResultPopup(action: "Organize Complementary Chips", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// How many archive ENTRIES "Remove Redundant ROMs…" would actually
+    /// remove — same preview-before-confirm pattern as
+    /// `planRemoveRedundantFilesPreviewCount` just above.
+    func planRemoveRedundantRomsPreviewCount(scopeFolders: [URL]) -> Int {
+        guard let matchReport = requireMatchReport() else { return 0 }
+        // Silent on scope mismatch — see `planFixPreviewCount`'s own doc
+        // comment: also read from the context-menu construction closure.
+        guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
+        let fullyRedundant = RebuildPlanner.fullyRedundantArchiveContainers(
+            matchReport: matchReport, entryCounts: Self.redundantArchiveEntryCounts(matchReport: matchReport)
+        )
+        return Self.restrictToScope(
+            RebuildPlanner.planRemoveRedundantRoms(matchReport: matchReport, fullyRedundantContainers: fullyRedundant), scopeFolders: scopeFolders
+        ).count
+    }
+
+    /// Removes every archive ENTRY that's a redundant duplicate of content
+    /// the DAT recognizes elsewhere — the archive-entry counterpart to
+    /// `removeRedundantFiles` above; see its own doc comment for the shared
+    /// "recognized, but not needed HERE" definition both act on. Never
+    /// removes a whole archive — same reasoning "Remove Useless Files"
+    /// already documents.
+    func removeRedundantRoms(system: RomSystem, scopeFolders: [URL]) async {
+        guard Self.modificationsEnabled else {
+            logError("Removing ROMs is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport = requireMatchReport() else { return }
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.fixActionProgress = ("Removing redundant ROMs…", completed, total) }
+        }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            let fullyRedundant = RebuildPlanner.fullyRedundantArchiveContainers(
+                matchReport: matchReport, entryCounts: Self.redundantArchiveEntryCounts(matchReport: matchReport)
+            )
+            let operations = Self.restrictToScope(
+                RebuildPlanner.planRemoveRedundantRoms(matchReport: matchReport, fullyRedundantContainers: fullyRedundant), scopeFolders: scopeFolders
+            )
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            let total = operations.count
+            for (index, operation) in operations.enumerated() {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("Could not \(Self.describeOperation(operation)): \(error.localizedDescription)")
+                }
+                fixProgressHandler(index + 1, total)
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        fixActionProgress = nil
+
+        // jensyleo's own report (2026-09-16) — see `removeUselessFiles`'s
+        // own doc comment on this exact scoping fix.
+        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        for line in failureLines {
+            logWarning(line)
+        }
+        if failed > 0 {
+            logWarning("Removed \(succeeded) redundant rom(s); \(failed) failed (see the lines just above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Removed \(succeeded) redundant rom(s).")
+        } else {
+            logWarning("Nothing to remove — no redundant roms in the current scan.")
+        }
+        postFixResultPopup(action: "Remove Redundant ROMs", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    // MARK: - Rom Entry Actions (jensyleo's own request, 2026-09-13)
+
+    /// One row's own target for the actions just below — a plain file
+    /// (`isArchived == false`, `url` is the file itself) or a `.zip` entry
+    /// (`isArchived == true`, `url` is the CONTAINING archive, `entryName`
+    /// the entry's own name inside it).
+    struct RomEntryTarget: Sendable {
+        let url: URL
+        let entryName: String
+        let isArchived: Bool
+    }
+
+    /// jensyleo's own report (2026-09-13): the Roms panel's own context
+    /// menu only ever offered "Fix This Misnamed ROM…", and only when a
+    /// rename was actually available — regardless of a rom's own DAT
+    /// status (Correct/Bad/Unknown/Missing), he wants the SAME kind of
+    /// File Actions the Games table already has (Trash/Delete/Extract),
+    /// just adapted for the fact a rom entry often lives INSIDE a `.zip`
+    /// rather than as its own loose file: "obviamente ahí hay que tener en
+    /// cuenta que el archivo está comprimido, por ende también debe tener
+    /// acciones de descompresión como Extract file". These three functions
+    /// are that: entry-aware equivalents of the existing loose-file-only
+    /// `moveFilesToTrash`/`deleteFilesPermanently`/`copyFiles`, dispatching
+    /// per target between a real Trash/delete of a loose file and a
+    /// `.removeEntryFromZip`/`.extractZipEntry` for an archived one — never
+    /// touching the archive as a whole. Deliberately independent of
+    /// `MatchReport`/`RebuildPlanner`, exactly like the existing generic
+    /// File Actions below: a rom's own DAT status is irrelevant to "get
+    /// this file out" or "get rid of this file".
+
+    /// Copies each target's own content out to `destination` as a plain
+    /// loose file, keeping its own name — never touches the source (the
+    /// containing archive, for an archived entry, is only ever READ from),
+    /// so no rescan is needed.
+    func extractRomEntries(system: RomSystem, _ entries: [RomEntryTarget], to destination: URL) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !entries.isEmpty else { return }
+        let scopeFolders = Self.romFolders(containing: entries.map(\.url), in: system)
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for entry in entries {
+                let target = destination.appendingPathComponent(entry.entryName)
+                let operation: RebuildOperation = entry.isArchived
+                    ? .extractZipEntry(archive: entry.url, entryName: entry.entryName, to: target)
+                    : .copy(from: entry.url, to: target)
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("\(entry.entryName): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        for line in failureLines { logWarning(line) }
+        if failed > 0 {
+            logWarning("Extracted \(succeeded) rom(s) to \(destination.path); \(failed) failed (see the lines just above for which).")
+        } else {
+            logSuccess("Extracted \(succeeded) rom(s) to \(destination.path).")
+        }
+        postFixResultPopup(action: "Extract to Folder", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// Moves each target to the Trash (a loose file) or removes just its
+    /// own entry from its containing archive (leaving every other rom in
+    /// that same archive untouched) — recoverable only for the loose-file
+    /// case, same as `moveFilesToTrash`. Rescans afterward.
+    func moveRomEntriesToTrash(system: RomSystem, _ entries: [RomEntryTarget]) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !entries.isEmpty else { return }
+        let scopeFolders = Self.romFolders(containing: entries.map(\.url), in: system)
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let looseURLs = entries.filter { !$0.isArchived }.map(\.url)
+        let archivedEntries = entries.filter(\.isArchived)
+        var succeeded = 0
+        var failed = 0
+        var failureLines: [String] = []
+        if !looseURLs.isEmpty {
+            do {
+                succeeded += try await NSWorkspace.shared.recycle(looseURLs).count
+            } catch {
+                failed += looseURLs.count
+                failureLines.append(error.localizedDescription)
+            }
+        }
+        let (archivedSucceeded, archivedFailed, archivedFailureLines) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for entry in archivedEntries {
+                do {
+                    try RebuildExecutor.execute([.removeEntryFromZip(archive: entry.url, entryName: entry.entryName)])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("\(entry.entryName): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        succeeded += archivedSucceeded
+        failed += archivedFailed
+        failureLines += archivedFailureLines
+
+        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        for line in failureLines { logWarning(line) }
+        if failed > 0 {
+            logWarning("Removed \(succeeded) rom(s); \(failed) failed (see the lines just above for which).")
+        } else {
+            logSuccess("Removed \(succeeded) rom(s) — loose file(s) went to the Trash, archive entries were removed from their own zip.")
+        }
+        postFixResultPopup(action: "Move to Trash", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// Permanently deletes each target — a real file delete for a loose rom,
+    /// or a `.removeEntryFromZip` for an archived one (same primitive
+    /// "Remove Useless Files…"/"Remove Redundant ROMs…" already use).
+    /// Irreversible. Rescans afterward.
+    func deleteRomEntriesPermanently(system: RomSystem, _ entries: [RomEntryTarget]) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !entries.isEmpty else { return }
+        let scopeFolders = Self.romFolders(containing: entries.map(\.url), in: system)
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for entry in entries {
+                let operation: RebuildOperation = entry.isArchived
+                    ? .removeEntryFromZip(archive: entry.url, entryName: entry.entryName)
+                    : .delete(entry.url)
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("\(entry.entryName): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        for line in failureLines { logWarning(line) }
+        if failed > 0 {
+            logWarning("Permanently deleted \(succeeded) rom(s); \(failed) failed (see the lines just above for which).")
+        } else {
+            logSuccess("Permanently deleted \(succeeded) rom(s).")
+        }
+        postFixResultPopup(action: "Delete Permanently", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    // MARK: - File Actions (generic, OS-level — jensyleo's own request, 2026-09-11)
+
+    /// Plain Finder-style operations (Move to Trash, Delete Permanently,
+    /// Copy/Move to Folder…) on whatever Files are currently selected —
+    /// unlike every other action in this file, these don't care whether a
+    /// file matches its expected DAT rom/name at all, so they never consult
+    /// `MatchReport`/`RebuildPlanner`. Still gated by `modificationsEnabled`
+    /// (they're real disk writes) and still refuse anything inside the
+    /// Maintenance folder (`LibraryDetailView.rejectIfUnderMaintenanceFolder`
+    /// checks that BEFORE any of these are ever called, so a rejection never
+    /// even reaches here) — that area is documented, deliberately read-only
+    /// donor storage.
+
+    /// Moves `urls` to the Trash (`NSWorkspace.recycle`, real Finder Trash —
+    /// recoverable, unlike `deleteFilesPermanently`). Rescans afterward
+    /// since this removes files from the scanned collection.
+    func moveFilesToTrash(system: RomSystem, urls: [URL]) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !urls.isEmpty else { return }
+        let scopeFolders = Self.romFolders(containing: urls, in: system)
+        // Real gap found live by jensyleo (2026-09-23): "File Actions" let
+        // you delete/move/duplicate/compress a File without ever having
+        // scanned it this session at all — every OTHER write action in
+        // this file refuses on exactly this same check
+        // (`scopeCoveredByLastScan`). These were originally exempted on
+        // purpose (see this section's own doc comment: they don't consult
+        // `MatchReport` at all, so nothing here technically NEEDS a scan
+        // to know what to do) — jensyleo's own explicit follow-up:
+        // "Todos los File Actions debe pedir escaneo previo" overrides
+        // that with the same standing "never act on possibly-stale data"
+        // rule every other write action already follows.
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let trashedURLs = try await NSWorkspace.shared.recycle(urls)
+            await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+            logSuccess("Moved \(trashedURLs.count) file(s) to the Trash.")
+            postFixResultPopup(action: "Move to Trash", succeeded: trashedURLs.count, failed: 0)
+        } catch {
+            await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+            logError("Move to Trash failed: \(error.localizedDescription)")
+            postFixResultPopup(action: "Move to Trash", succeeded: 0, failed: urls.count, failureLines: [error.localizedDescription])
+        }
+    }
+
+    /// Permanently deletes `urls` (`RebuildOperation.delete`, same primitive
+    /// "Remove Useless Files…" uses) — irreversible, unlike
+    /// `moveFilesToTrash`. Each file is attempted independently so one
+    /// failure doesn't abort the rest, same reasoning as
+    /// `removeUselessFiles` above. Rescans afterward.
+    func deleteFilesPermanently(system: RomSystem, urls: [URL]) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !urls.isEmpty else { return }
+        let scopeFolders = Self.romFolders(containing: urls, in: system)
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for url in urls {
+                do {
+                    try RebuildExecutor.execute([.delete(url)])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        for line in failureLines { logWarning(line) }
+        if failed > 0 {
+            logWarning("Permanently deleted \(succeeded) file(s); \(failed) failed (see the lines just above for which).")
+        } else {
+            logSuccess("Permanently deleted \(succeeded) file(s).")
+        }
+        postFixResultPopup(action: "Delete Permanently", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// Copies `urls` into `destination`, keeping each file's own name —
+    /// never touches the source, so no rescan needed. Each file attempted
+    /// independently, same reasoning as every other batch action here.
+    func copyFiles(system: RomSystem, _ urls: [URL], to destination: URL) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !urls.isEmpty else { return }
+        let scopeFolders = Self.romFolders(containing: urls, in: system)
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for url in urls {
+                let target = destination.appendingPathComponent(url.lastPathComponent)
+                do {
+                    try RebuildExecutor.execute([.copy(from: url, to: target)])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        for line in failureLines { logWarning(line) }
+        if failed > 0 {
+            logWarning("Copied \(succeeded) file(s) to \(destination.path); \(failed) failed (see the lines just above for which).")
+        } else {
+            logSuccess("Copied \(succeeded) file(s) to \(destination.path).")
+        }
+        postFixResultPopup(action: "Copy to Folder", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// Moves `urls` into `destination`, keeping each file's own name —
+    /// removes each from its source, so rescans afterward, same as
+    /// `moveFilesToTrash`/`deleteFilesPermanently`.
+    func moveFiles(system: RomSystem, urls: [URL], to destination: URL) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !urls.isEmpty else { return }
+        guard scopeCoveredByLastScan(Self.romFolders(containing: urls, in: system)) else {
+            logRescanRequiredForFix(scopeFolders: Self.romFolders(containing: urls, in: system))
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for url in urls {
+                let target = destination.appendingPathComponent(url.lastPathComponent)
+                do {
+                    try RebuildExecutor.execute([.move(from: url, to: target)])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        await scan(system: system)
+        for line in failureLines { logWarning(line) }
+        if failed > 0 {
+            logWarning("Moved \(succeeded) file(s) to \(destination.path); \(failed) failed (see the lines just above for which).")
+        } else {
+            logSuccess("Moved \(succeeded) file(s) to \(destination.path).")
+        }
+        postFixResultPopup(action: "Move to Folder", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// Finder-style "name copy.ext", "name copy 2.ext", … — the first
+    /// available name in the SAME folder as `url` that doesn't already
+    /// exist, same convention Finder's own "Duplicate" uses.
+    private nonisolated static func uniqueDuplicateURL(for url: URL, fileManager: FileManager = .default) -> URL {
+        let directory = url.deletingLastPathComponent()
+        let ext = url.pathExtension
+        let base = url.deletingPathExtension().lastPathComponent
+        func candidate(_ suffix: String) -> URL {
+            directory.appendingPathComponent(ext.isEmpty ? "\(base) \(suffix)" : "\(base) \(suffix).\(ext)")
+        }
+        var result = candidate("copy")
+        var n = 2
+        while fileManager.fileExists(atPath: result.path) {
+            result = candidate("copy \(n)")
+            n += 1
+        }
+        return result
+    }
+
+    /// Duplicates `urls` in place — Finder's own "Duplicate", via the same
+    /// `RebuildOperation.copy` primitive "Copy to Folder…" uses, just
+    /// targeting a generated name in the SAME folder instead of a
+    /// user-chosen one. Never touches the source, so no rescan needed for
+    /// safety, but a duplicate IS a new File the collection didn't have
+    /// before, so this still rescans to reflect it.
+    func duplicateFiles(system: RomSystem, urls: [URL]) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !urls.isEmpty else { return }
+        guard scopeCoveredByLastScan(Self.romFolders(containing: urls, in: system)) else {
+            logRescanRequiredForFix(scopeFolders: Self.romFolders(containing: urls, in: system))
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for url in urls {
+                let target = Self.uniqueDuplicateURL(for: url)
+                do {
+                    try RebuildExecutor.execute([.copy(from: url, to: target)])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+        await scan(system: system)
+        for line in failureLines { logWarning(line) }
+        if failed > 0 {
+            logWarning("Duplicated \(succeeded) file(s); \(failed) failed (see the lines just above for which).")
+        } else {
+            logSuccess("Duplicated \(succeeded) file(s).")
+        }
+        postFixResultPopup(action: "Duplicate File", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// Finder-style "Compress" output name: the source's own name with a
+    /// ".zip" extension for a single file ("game.zip" from "game" or, if
+    /// `url` is already a `.zip`, still just its own base name), or
+    /// "Archive.zip" for multiple — same convention Finder's own "Compress"
+    /// uses, with the same "append a number if taken" collision handling as
+    /// `uniqueDuplicateURL` above. Lands next to the FIRST selected file.
+    private nonisolated static func uniqueCompressedArchiveURL(for urls: [URL], fileManager: FileManager = .default) -> URL {
+        // `urls` is never actually empty here — `compressFiles` already
+        // guards `!urls.isEmpty` before this is ever called — but this
+        // fallback still uses `FileManager.default.temporaryDirectory` with
+        // a random `UUID` component rather than a fixed name (a code-audit
+        // finding, 2026-09-11: a hardcoded "Archive.zip" under
+        // `NSTemporaryDirectory()` would be a predictable path a symlink
+        // planted there ahead of time could hijack) — defensive, not a
+        // live vulnerability, since this branch is unreachable today.
+        guard let first = urls.first else {
+            return FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).zip")
+        }
+        let directory = first.deletingLastPathComponent()
+        let base = urls.count == 1 ? first.deletingPathExtension().lastPathComponent : "Archive"
+        var candidate = directory.appendingPathComponent("\(base).zip")
+        var n = 2
+        while fileManager.fileExists(atPath: candidate.path) {
+            candidate = directory.appendingPathComponent("\(base) \(n).zip")
+            n += 1
+        }
+        return candidate
+    }
+
+    /// Packs `urls` into one new `.zip` alongside them — Finder's own
+    /// "Compress", via the same `RebuildOperation.createArchive` primitive
+    /// the Fase 2 rebuild engine already uses for building game sets, just
+    /// packing whatever Files are selected verbatim (each as its own
+    /// top-level entry, named after itself) rather than DAT-matched roms.
+    /// Never touches the sources, but a compressed archive IS a new File
+    /// the collection didn't have before, so this still rescans afterward.
+    func compressFiles(system: RomSystem, urls: [URL]) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard !urls.isEmpty else { return }
+        guard scopeCoveredByLastScan(Self.romFolders(containing: urls, in: system)) else {
+            logRescanRequiredForFix(scopeFolders: Self.romFolders(containing: urls, in: system))
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        let destination = Self.uniqueCompressedArchiveURL(for: urls)
+        let entries = urls.map { ArchiveEntrySource(source: $0, entryName: $0.lastPathComponent) }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try RebuildExecutor.execute([.createArchive(entries: entries, to: destination)])
+            }.value
+            await scan(system: system)
+            logSuccess("Created \"\(destination.lastPathComponent)\" containing \(urls.count) file(s).")
+            postFixResultPopup(action: "Compress", succeeded: urls.count, failed: 0)
+        } catch {
+            await scan(system: system)
+            logError("Compress failed: \(error.localizedDescription)")
+            postFixResultPopup(action: "Compress", succeeded: 0, failed: urls.count, failureLines: [error.localizedDescription])
+        }
+    }
+
+    /// How many missing roms "Repair from Sibling Sets…" would actually fill
+    /// in, without touching disk — same preview-before-confirm pattern as
+    /// every other Fase 2 action. Returns `0` before any scan has run.
+    func planRepairFromSiblingSetsPreviewCount() -> Int {
+        guard let matchReport = requireMatchReport() else { return 0 }
+        // Real bug found live by jensyleo (2026-09-22): this is whole-
+        // system-only (its own `repairFromSiblingSets` below has no scope
+        // parameter at all), but showed a count from a STALE matchReport
+        // even when the last actual scan was only scoped to one folder —
+        // same false-promise class documented on `planFixPreviewCount`.
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return 0
+        }
+        return RebuildPlanner.planCrossSetRepair(matchReport: matchReport).count
+    }
+
+    /// How many dummy placeholder roms "Create Dummy ROMs" would actually
+    /// create, without touching disk. Returns `0` before any scan has run.
+    func planCreateDummyRomsPreviewCount() -> Int {
+        guard let matchReport = requireMatchReport() else { return 0 }
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return 0
+        }
+        return RebuildPlanner.planCreateDummyRoms(matchReport: matchReport).count
+    }
+
+    /// How many distinct archives "Remove Zip Comments" would actually
+    /// touch, without touching disk. Returns `0` before any scan has run.
+    /// `scopeFolders` — real gap found live by jensyleo (2026-09-22):
+    /// right-clicking a single File whose Info read "Ok — Has ZIP comment"
+    /// (e.g. `dlair.zip`) had no way to remove just that one archive's
+    /// comment — only the toolbar's own unscoped, whole-system version of
+    /// this action existed, unlike every other Fix action here. Empty
+    /// (the default) preserves the original whole-system behavior for the
+    /// toolbar's own caller.
+    func planRemoveZipCommentsPreviewCount(scopeFolders: [URL] = []) -> Int {
+        guard let matchReport = requireMatchReport() else { return 0 }
+        // Silent on scope mismatch — see `planFixPreviewCount`'s own doc
+        // comment: also read from the context-menu construction closure.
+        guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
+        let candidates = matchedZipArchiveURLs(for: matchReport)
+        return Self.planRemoveZipCommentsOperations(candidates: candidates, scopeFolders: scopeFolders).count
+    }
+
+    /// Shared by the preview count above and the real execution below —
+    /// see `RebuildPlanner.matchedZipArchiveURLs`'s own doc comment for
+    /// why the real disk read (which archive of the CANDIDATES actually
+    /// has a comment) happens here rather than inside `RebuildPlanner`
+    /// itself. Real bug found live by jensyleo (2026-09-22): before this
+    /// split, every matched zip was offered/removed unconditionally,
+    /// comment or not.
+    /// `candidates` — the caller already resolves these via the cached
+    /// `matchedZipArchiveURLs(for:)` above (main-actor-isolated, since it
+    /// touches `matchedZipArchiveURLsCache`) BEFORE calling this
+    /// `nonisolated` function, so the one genuinely expensive part (the
+    /// whole-system walk) never repeats needlessly, whether this runs on
+    /// the main actor (the preview count, cheap either way) or off it
+    /// (the real execution's own `Task.detached`).
+    private nonisolated static func planRemoveZipCommentsOperations(candidates: Set<URL>, scopeFolders: [URL]) -> [RebuildOperation] {
+        let scoped = scopeFolders.isEmpty ? candidates : candidates.filter { urlIsInScope($0, scopeFolders: scopeFolders) }
+        let archivesWithComments = Set(scoped.filter { url in
+            guard let comment = ZipCommentReader.comment(ofZipAt: url) else { return false }
+            return !comment.isEmpty
+        })
+        return RebuildPlanner.planRemoveZipComments(archivesWithComments: archivesWithComments)
+    }
+
+    /// How many sample-set zips "Fix Samples" would actually collect,
+    /// without touching disk. `0` when samples support is disabled, no
+    /// Samples folder is configured, or the loaded DAT declares no
+    /// samples at all. Does the same read-only folder search
+    /// `collectSamples(system:)` itself does — see that method's own doc
+    /// comment for why this needs a real (bounded) disk read even at
+    /// preview time, unlike every other Fase 2 preview count here.
+    func planCollectSamplesPreviewCount(system: RomSystem) async -> Int {
+        guard let samplesFolder = SamplesFolderSettings.folderURL else { return 0 }
+        let neededSetNames = Set(preloadedGames.filter(\.hasSamples).map { $0.sampleOf ?? $0.name })
+        guard !neededSetNames.isEmpty else { return 0 }
+        let searchFolders = system.romFolderURLs
+        return await Task.detached(priority: .userInitiated) {
+            let foundSampleZips = Self.findSampleZips(named: neededSetNames, in: searchFolders)
+            return RebuildPlanner.planCollectSamples(neededSetNames: neededSetNames, foundSampleZips: foundSampleZips, samplesFolder: samplesFolder).count
+        }.value
+    }
+
+    /// Searches `folders` (never anywhere else — always this system's own
+    /// already-configured ROM folders, never an arbitrary "scavenging"
+    /// location, per jensyleo's own standing rule against those) for a
+    /// loose `.zip` whose base filename exactly matches one of
+    /// `neededNames` — a MAME sample set has no hash to verify by (see
+    /// `RebuildPlanner.planCollectSamples`'s own doc comment), so filename
+    /// is the only signal there is. `FolderScanner` never looks INSIDE a
+    /// zip on its own (unlike `CollectionHasher`), so each matching zip
+    /// surfaces as exactly one `ScannedFile` here — nothing is hashed,
+    /// nothing is opened.
+    private nonisolated static func findSampleZips(named neededNames: Set<String>, in folders: [URL]) -> [String: URL] {
+        guard let scannedFiles = try? FolderScanner.scan(paths: folders) else { return [:] }
+        var found: [String: URL] = [:]
+        for file in scannedFiles {
+            guard file.url.pathExtension.lowercased() == "zip" else { continue }
+            let baseName = (file.url.lastPathComponent as NSString).deletingPathExtension
+            guard neededNames.contains(baseName), found[baseName] == nil else { continue }
+            found[baseName] = file.url
+        }
+        return found
+    }
+
+    /// Populates the MAME Samples folder (Settings → Systems → MAME) with
+    /// whichever sample-set zips it can find in this system's own
+    /// configured ROM folders — "Fix Samples". Never touches, renames, or
+    /// deletes anything in either location; only ever adds a new zip that
+    /// wasn't there before (`RebuildExecutor`'s own `.copy` refuses to
+    /// overwrite an existing destination, same as every other Fase 2
+    /// action). Unlike every other Fix action, this doesn't need — and
+    /// doesn't check — a prior scan/`matchReport` at all: sample sets
+    /// aren't part of the ROM audit pipeline in any way, just a plain
+    /// name lookup against the loaded DAT's own games.
+    func collectSamples(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("Collecting samples is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let samplesFolder = SamplesFolderSettings.folderURL else {
+            logWarning("Samples support is off, or no Samples folder is configured — set both in Settings → Systems → MAME first.")
+            return
+        }
+        let neededSetNames = Set(preloadedGames.filter(\.hasSamples).map { $0.sampleOf ?? $0.name })
+        guard !neededSetNames.isEmpty else {
+            logWarning("Nothing to collect — the loaded DAT declares no samples.")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let searchFolders = system.romFolderURLs
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            let foundSampleZips = Self.findSampleZips(named: neededSetNames, in: searchFolders)
+            let operations = RebuildPlanner.planCollectSamples(neededSetNames: neededSetNames, foundSampleZips: foundSampleZips, samplesFolder: samplesFolder)
             var succeeded = 0
             var failed = 0
             var failureLines: [String] = []
@@ -1666,31 +3483,17 @@ final class LibraryViewModel {
             return (succeeded, failed, failureLines)
         }.value
 
-        // jensyleo's own report (2026-09-11): logging this action's own
-        // result BEFORE the verification rescan meant `scan()`'s own
-        // `logLines.removeAll()` erased it right away — the Log ended up
-        // showing only the rescan's narration, never what this action
-        // itself actually did. Same fix as `fix()`/`renameRomsInArchive()`
-        // above: scan first, log the result after.
-        await scan(system: system)
         for line in failureLines {
             logWarning(line)
         }
         if failed > 0 {
-            logWarning("Removed \(succeeded) useless file(s); \(failed) failed (see the lines just above for which).")
+            logWarning("Collected \(succeeded) sample zip(s); \(failed) failed (see the lines just above for which).")
         } else if succeeded > 0 {
-            logSuccess("Removed \(succeeded) useless file(s).")
+            logSuccess("Collected \(succeeded) sample zip(s) into the Samples folder.")
         } else {
-            logWarning("Nothing to remove — no unrecognized files in the current scan.")
+            logWarning("Nothing to collect — no matching sample zip found in this system's own ROM folders.")
         }
-    }
-
-    /// How many missing roms "Repair from Sibling Sets…" would actually fill
-    /// in, without touching disk — same preview-before-confirm pattern as
-    /// every other Fase 2 action. Returns `0` before any scan has run.
-    func planRepairFromSiblingSetsPreviewCount() -> Int {
-        guard let matchReport = requireMatchReport() else { return 0 }
-        return RebuildPlanner.planCrossSetRepair(matchReport: matchReport).count
+        postFixResultPopup(action: "Fix Samples", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// Fills in a missing rom by copying it from a sibling parent/clone set
@@ -1741,6 +3544,107 @@ final class LibraryViewModel {
         } else {
             logWarning("Nothing to repair from sibling sets — no missing rom has a matching donor in this scan.")
         }
+        postFixResultPopup(action: "Repair from Sibling Sets", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// Creates a zero-byte placeholder for every `.missing`/`nodump` rom —
+    /// "Create dummy roms for nodump entries" (`RebuildPlanner
+    /// .planCreateDummyRoms`'s own doc comment covers exactly which roms
+    /// qualify). Same shape as `repairFromSiblingSets` above: no folder
+    /// picker needed, since every placeholder lands wherever that game's
+    /// OTHER roms already live.
+    func createDummyRoms(system: RomSystem) async {
+        guard Self.modificationsEnabled else {
+            logError("Creating dummy roms is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport = requireMatchReport() else { return }
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            let operations = RebuildPlanner.planCreateDummyRoms(matchReport: matchReport)
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for operation in operations {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("Could not \(Self.describeOperation(operation)): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+
+        await scan(system: system)
+        for line in failureLines {
+            logWarning(line)
+        }
+        if failed > 0 {
+            logWarning("Created \(succeeded) dummy rom(s); \(failed) failed (see the lines just above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Created \(succeeded) dummy rom(s) for nodump entries.")
+        } else {
+            logWarning("Nothing to create — no missing nodump rom found in this scan.")
+        }
+        postFixResultPopup(action: "Create Dummy ROMs", succeeded: succeeded, failed: failed, failureLines: failureLines)
+    }
+
+    /// Strips the trailing comment from every matched `.zip` — "Remove zip
+    /// comments" (`RebuildPlanner.planRemoveZipComments`). `scopeFolders`
+    /// — see `planRemoveZipCommentsPreviewCount`'s own doc comment; empty
+    /// (the toolbar's own default) keeps the original whole-system
+    /// behavior and its own whole-system verification rescan.
+    func removeZipComments(system: RomSystem, scopeFolders: [URL] = []) async {
+        guard Self.modificationsEnabled else {
+            logError("Removing zip comments is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport = requireMatchReport() else { return }
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        let candidates = matchedZipArchiveURLs(for: matchReport)
+        let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            let operations = Self.planRemoveZipCommentsOperations(candidates: candidates, scopeFolders: scopeFolders)
+            var succeeded = 0
+            var failed = 0
+            var failureLines: [String] = []
+            for operation in operations {
+                do {
+                    try RebuildExecutor.execute([operation])
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("Could not \(Self.describeOperation(operation)): \(error.localizedDescription)")
+                }
+            }
+            return (succeeded, failed, failureLines)
+        }.value
+
+        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        for line in failureLines {
+            logWarning(line)
+        }
+        if failed > 0 {
+            logWarning("Removed comments from \(succeeded) archive(s); \(failed) failed (see the lines just above for which).")
+        } else if succeeded > 0 {
+            logSuccess("Removed comments from \(succeeded) archive(s).")
+        } else {
+            logWarning("Nothing to remove — no matched archive in this scan has a comment.")
+        }
+        postFixResultPopup(action: "Remove Zip Comments", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// The plan `planRepairFromMaintenanceFolderPreviewCount` already
@@ -1750,32 +3654,148 @@ final class LibraryViewModel {
     /// disagreeing if a file appears/disappears there in between.
     private var pendingMaintenanceFolderOperations: [RebuildOperation] = []
 
+    /// jensyleo's own request (2026-09-14): "fusionalo con repair from
+    /// maintenance folder. A la larga es lo mismo" — replacing a
+    /// `.badDump` rom's bad content with a verified-correct donor copy is,
+    /// from the user's own point of view, the same "fix it from
+    /// Maintenance" action as filling a `.missing` one, just needing a
+    /// remove-then-add PAIR instead of a plain add (see
+    /// `RebuildPlanner.planReplaceCorruptedRoms`'s own doc comment for
+    /// why). Kept in its own array, alongside `pendingMaintenanceFolderOperations`
+    /// rather than merged into one list, purely because the two need
+    /// different execution shapes (singles vs. pairs-executed-together) —
+    /// there is no longer a separate "Replace Corrupted ROMs…" action;
+    /// this is planned and executed by the exact same "Repair from
+    /// Maintenance Folder…" entry point as the `.missing` case.
+    private var pendingMaintenanceFolderReplaceOperations: [RebuildOperation] = []
+
     /// Scans the optional, read-only Maintenance folder configured in
     /// Settings → General (`MaintenanceFolderSettings`) and plans every
-    /// rom it can donate to a `.missing` rom in the current scan — Fase
-    /// 2's "Repair from Maintenance Folder…". Nothing here ever writes
+    /// rom it can donate to a `.missing` OR `.badDump` rom in the current
+    /// scan — "Repair from Maintenance Folder…". Nothing here ever writes
     /// to, moves, or deletes anything in that folder; it's only ever
     /// read, exactly like `planRepairFromSiblingSetsPreviewCount`'s own
-    /// sibling donors. Returns the operation count for the caller's
-    /// preview-before-confirm dialog; the plan itself is cached in
-    /// `pendingMaintenanceFolderOperations` for `repairFromMaintenanceFolder`.
-    func planRepairFromMaintenanceFolderPreviewCount() async -> Int {
+    /// sibling donors. Returns the TOTAL rom count (fills + replacements)
+    /// for the caller's preview-before-confirm dialog; the plans
+    /// themselves are cached in `pendingMaintenanceFolderOperations`/
+    /// `pendingMaintenanceFolderReplaceOperations` for
+    /// `repairFromMaintenanceFolder` to execute.
+    func planRepairFromMaintenanceFolderPreviewCount(system: RomSystem, scopeFolders: [URL] = []) async -> Int {
         pendingMaintenanceFolderOperations = []
+        pendingMaintenanceFolderReplaceOperations = []
         guard let matchReport = requireMatchReport() else { return 0 }
-        guard let folderURL = MaintenanceFolderSettings.folderURL else {
-            logWarning("No Maintenance folder configured — set one in Settings → General first.")
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
             return 0
+        }
+        // jensyleo's own request (2026-09-11): scoped to THIS system's own
+        // subfolder only ("Maintenance/\(system.name)"), never the whole
+        // root — a donor dropped for one system can never accidentally
+        // satisfy a different system's missing rom just because they
+        // happen to share a hash. Lazily created here (idempotent) rather
+        // than requiring a prior visit to Settings — the same "just works"
+        // guarantee `LibraryDetailView`'s own `.onAppear` already gives
+        // this system's `ScanCache`/`DATCacheLocation` files.
+        guard let folderURL = MaintenanceFolderSettings.ensureSubfolderExists(for: system) else {
+            logWarning("No Maintenance folder configured — set one in Settings → Systems → MAME first.")
+            return 0
+        }
+        // jensyleo's own request (2026-09-11): Settings → Fix → "Search
+        // missing ROMs in" lets this also look across every one of the
+        // system's own currently-configured ROM folders, not just
+        // Maintenance — a rom that's merely misplaced in a sibling folder
+        // (a different drive, a region subfolder, an old backup location)
+        // can then donate too, not only one deliberately staged in
+        // Maintenance. Still strictly read-only, same guarantee as the
+        // Maintenance-only case — nothing here ever writes to a ROM folder,
+        // only reads from it as a donor source.
+        //
+        // jensyleo's own last-minute follow-up (2026-09-16), same session
+        // as the verification-rescan scoping fix just above: when this
+        // repair is scoped to one specific folder (e.g. right-clicking
+        // "SEGA"), the donor search should ALSO look inside that SAME
+        // folder — a sibling game's own already-correct copy is a
+        // perfectly good donor too — without going all the way to "every
+        // declared folder" (that's still exactly what the global "Search
+        // missing ROMs in" setting is for, and stays untouched for the
+        // unscoped, toolbar-wide version of this action). "Solo esas 2, la
+        // de Mantenimiento y la actual" — deliberately narrower than
+        // `.allDeclaredFolders`, and applies regardless of that setting's
+        // own value once a real scope is given.
+        let searchFolders: [URL]
+        if !scopeFolders.isEmpty {
+            searchFolders = [folderURL] + scopeFolders
+        } else {
+            switch FixPreferencesSettings.currentMissingRomsSearchScope() {
+            case .maintenanceFolderOnly:
+                searchFolders = [folderURL]
+            case .allDeclaredFolders:
+                searchFolders = [folderURL] + system.romFolderURLs
+            }
         }
         isBusy = true
         defer { isBusy = false }
+        // Real gap found live by jensyleo (2026-09-22): this donor scan
+        // never reported ANY progress (no folder-started/file-found/
+        // hashing callbacks at all, unlike `scan(system:)`'s own full set
+        // of handlers) — the overlay's generic "Scanning folders…"
+        // fallback stayed on screen with no moving numbers for however
+        // long a large Maintenance folder took to read and hash, reading
+        // as stuck even though it was genuinely working. Wired to the
+        // exact same overlay state `scan(system:)` already drives.
+        folderScanFilesFound = nil
+        currentlyScanningFolder = nil
+        scanProgress = nil
+        archiveListingProgress = nil
+        let folderStartedHandler: @Sendable (URL) -> Void = { [weak self] url in
+            Task { @MainActor in self?.currentlyScanningFolder = url }
+        }
+        let folderProgressHandler: @Sendable (Int) -> Void = { [weak self] count in
+            Task { @MainActor in self?.folderScanFilesFound = count }
+        }
+        let archiveListedHandler: @Sendable (Int, Int) -> Void = { [weak self] read, total in
+            Task { @MainActor in self?.archiveListingProgress = (read, total) }
+        }
+        let hashProgressHandler: @Sendable (ScanProgress) -> Void = { [weak self] progress in
+            Task { @MainActor in
+                self?.folderScanFilesFound = nil
+                self?.currentlyScanningFolder = nil
+                self?.archiveListingProgress = nil
+                self?.scanProgress = progress
+            }
+        }
+        defer {
+            folderScanFilesFound = nil
+            currentlyScanningFolder = nil
+            scanProgress = nil
+            archiveListingProgress = nil
+        }
         do {
-            let operations = try await Task.detached(priority: .userInitiated) {
-                let scannedFiles = try FolderScanner.scan(paths: [folderURL])
-                let donorFiles = try await CollectionHasher.hash(scannedFiles: scannedFiles, algorithms: HashAlgorithmSettings.current)
-                return RebuildPlanner.planRepairFromMaintenanceFolder(matchReport: matchReport, donorFiles: donorFiles)
+            let (fillOperations, replaceOperations) = try await Task.detached(priority: .userInitiated) {
+                let scannedFiles = try FolderScanner.scan(
+                    paths: searchFolders, onFileFound: folderProgressHandler, onFolderStarted: folderStartedHandler
+                )
+                let donorFiles = try await CollectionHasher.hash(
+                    scannedFiles: scannedFiles, algorithms: HashAlgorithmSettings.current,
+                    onProgress: hashProgressHandler, onArchiveListed: archiveListedHandler
+                )
+                return (
+                    RebuildPlanner.planRepairFromMaintenanceFolder(matchReport: matchReport, donorFiles: donorFiles),
+                    RebuildPlanner.planReplaceCorruptedRoms(matchReport: matchReport, donorFiles: donorFiles)
+                )
             }.value
-            pendingMaintenanceFolderOperations = operations
-            return operations.count
+            // jensyleo's own request (2026-09-14): "agrega [Repair from
+            // Maintenance Folder] al menú contextual" — right-clicking one
+            // specific File should only ever repair/replace THAT file, not
+            // silently act on every other repairable/replaceable rom in the
+            // whole system too. Same `restrictToScope`/`restrictPairsToScope`
+            // every other context-menu Fix action already uses — pairs
+            // (replace) restricted as PAIRS, never split apart.
+            let scopedFillOperations = Self.restrictToScope(fillOperations, scopeFolders: scopeFolders)
+            let scopedReplaceOperations = Self.restrictPairsToScope(replaceOperations, scopeFolders: scopeFolders)
+            pendingMaintenanceFolderOperations = scopedFillOperations
+            pendingMaintenanceFolderReplaceOperations = scopedReplaceOperations
+            return scopedFillOperations.count + scopedReplaceOperations.count / 2
         } catch {
             // jensyleo's own instruction (2026-09-10) to review the app's
             // whole logging for coherence: a bare `String(describing:
@@ -1794,29 +3814,73 @@ final class LibraryViewModel {
     /// collection's own existing archive/folder, never back into the
     /// Maintenance folder itself. Each operation is attempted
     /// independently, same reasoning as `repairFromSiblingSets` above.
-    func repairFromMaintenanceFolder(system: RomSystem) async {
+    ///
+    /// Two DIFFERENT "scopes" are in play here, deliberately never
+    /// conflated — jensyleo's own clarification (2026-09-16): "mientras se
+    /// use carpeta de Mantenimiento el Fix solo aplica desde ahí" (a
+    /// future, separate feature idea — searching a donor across every
+    /// declared ROM folder, not just Maintenance — is intentionally NOT
+    /// this one; that's already `FixPreferencesSettings
+    /// .currentMissingRomsSearchScope()`'s own `.allDeclaredFolders`
+    /// option, unrelated to what's described below):
+    /// 1. **Where a donor is searched for** — always the current system's
+    ///    own Maintenance subfolder (plus, if Settings → Fix → "Search
+    ///    missing ROMs in" is set to "every declared folder", every
+    ///    configured ROM folder too) — never affected by `scopeFolders`.
+    /// 2. **Which folder(s) get VERIFIED afterward** — `scopeFolders`,
+    ///    exactly like `fix()`'s own verification rescan. Real bug found
+    ///    live by jensyleo: scoping a repair to one folder ("SEGA") still
+    ///    triggered a full-system verification rescan, visibly narrating
+    ///    an unrelated folder's progress ("CPS3") — confusing, and
+    ///    needlessly slow on a NAS-backed folder. Fixed below to match
+    ///    `fix()`'s own scoped rescan.
+    func repairFromMaintenanceFolder(system: RomSystem, scopeFolders: [URL] = []) async {
         guard Self.modificationsEnabled else {
             logError("Repairing is disabled — enable file modifications in Settings → General first.")
             return
         }
-        guard scopeCoveredByLastScan([]) else {
-            logRescanRequiredForFix(scopeFolders: [])
+        // Real bug found live by jensyleo (2026-09-14): this used to always
+        // check `scopeCoveredByLastScan([])` — "is the WHOLE system
+        // covered" — regardless of what scope the preview this executes
+        // was actually planned against. A context-menu repair scoped to
+        // one specific File (whose scan already covers it, e.g. a scoped
+        // "Scan This Folder") was wrongly told to rescan, because `[]`
+        // (empty scope) only ever succeeds against a `.wholeSystem` last
+        // scan — see `scopeCoveredByLastScan`'s own guard. Must match the
+        // exact scope `planRepairFromMaintenanceFolderPreviewCount` was
+        // just called with.
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
             return
         }
-        let operations = pendingMaintenanceFolderOperations
+        let fillOperations = pendingMaintenanceFolderOperations
+        let replaceOperations = pendingMaintenanceFolderReplaceOperations
         pendingMaintenanceFolderOperations = []
-        guard !operations.isEmpty else {
+        pendingMaintenanceFolderReplaceOperations = []
+        guard !fillOperations.isEmpty || !replaceOperations.isEmpty else {
             logWarning("Nothing to repair from the Maintenance folder.")
             return
         }
         isBusy = true
         defer { isBusy = false }
 
+        // Real gap found live by jensyleo (2026-09-22): this action never
+        // set `fixActionProgress` at all — unlike `removeRedundantFiles`/
+        // `removeRedundantRoms`, which already do (see their own doc
+        // comments) — so the overlay fell through every specific phase
+        // check and landed on the generic, indeterminate "Scanning
+        // folders…" fallback for however long the actual repair writes
+        // took, with a label that didn't even describe what was
+        // happening.
+        let total = fillOperations.count + (replaceOperations.count + 1) / 2
+        let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.fixActionProgress = ("Repairing from the Maintenance folder…", completed, total) }
+        }
         let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
             var succeeded = 0
             var failed = 0
             var failureLines: [String] = []
-            for operation in operations {
+            for (index, operation) in fillOperations.enumerated() {
                 do {
                     try RebuildExecutor.execute([operation])
                     succeeded += 1
@@ -1824,13 +3888,36 @@ final class LibraryViewModel {
                     failed += 1
                     failureLines.append("Could not \(Self.describeOperation(operation)): \(error.localizedDescription)")
                 }
+                fixProgressHandler(index + 1, total)
+            }
+            // Each `.badDump` replacement plans as a PAIR (remove-then-add,
+            // or delete-then-copy/extract — see `RebuildPlanner
+            // .planReplaceCorruptedRoms`'s own doc comment) that must be
+            // executed TOGETHER, same `stride(by: 2)` shape
+            // `renameRomsInArchive`'s own pairs use: a donor read failure
+            // between the two halves then leaves that one rom `.missing`
+            // rather than silently duplicated or left half-written.
+            for pairStart in stride(from: 0, to: replaceOperations.count, by: 2) {
+                let pair = Array(replaceOperations[pairStart..<Swift.min(pairStart + 2, replaceOperations.count)])
+                do {
+                    try RebuildExecutor.execute(pair)
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    failureLines.append("Could not replace \(Self.describeOperation(pair[0])): \(error.localizedDescription)")
+                }
+                fixProgressHandler(fillOperations.count + pairStart / 2 + 1, total)
             }
             return (succeeded, failed, failureLines)
         }.value
+        fixActionProgress = nil
 
         // Scan first, log after — see `removeUselessFiles`'s own comment on
-        // this exact reordering.
-        await scan(system: system)
+        // this exact reordering. Scoped to `scopeFolders` (2026-09-16) —
+        // see that same function's own doc comment: jensyleo's own report,
+        // scoping this exact action to "SEGA" and seeing the verification
+        // rescan narrate an unrelated "CPS3" folder's progress instead.
+        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
         for line in failureLines {
             logWarning(line)
         }
@@ -1839,6 +3926,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Repaired \(succeeded) rom(s) from the Maintenance folder.")
         }
+        postFixResultPopup(action: "Repair from Maintenance Folder", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// How many roms "Make Self-Contained…" would actually copy in, without
@@ -1846,6 +3934,10 @@ final class LibraryViewModel {
     /// Fase 2 action. Returns `0` before any scan has run.
     func planMakeSelfContainedPreviewCount() -> Int {
         guard let matchReport = requireMatchReport() else { return 0 }
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return 0
+        }
         return RebuildPlanner.planConvertToNonMerged(matchReport: matchReport).count
     }
 
@@ -1899,6 +3991,7 @@ final class LibraryViewModel {
         } else {
             logWarning("Nothing to copy — every game in this scan is already self-contained.")
         }
+        postFixResultPopup(action: "Make Self-Contained", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// How many ROM entries "Fix Misnamed ROMs Inside Their Archives…"
@@ -1909,7 +4002,9 @@ final class LibraryViewModel {
     /// actually asked for.
     func planRenameRomsInArchivePreviewCount(scopeFolders: [URL] = [], entryKeys: Set<String> = []) -> Int {
         guard let matchReport = requireMatchReport() else { return 0 }
-        let romsCasePolicy = FixPreferencesSettings.currentRomsCasePolicy()
+        // Silent on scope mismatch — see `planFixPreviewCount`'s own doc
+        // comment: also read from the context-menu construction closure.
+        guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
         // jensyleo's own report (2026-09-10): "awbios.zip", Roms case =
         // Uppercase, "Fix Misnamed ROMs Inside This Archive…" (both the
         // toolbar's own and the new per-file context-menu action) logged
@@ -1923,13 +4018,27 @@ final class LibraryViewModel {
         // counting only the mismatch half, so a scan with zero mismatches
         // but real case-only work to do still reported 0 and never let
         // the real action run at all.
-        let mismatchOperations = RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport, romsCasePolicy: romsCasePolicy)
-        let caseOnlyOperations = RebuildPlanner.planApplyRomsCasePolicy(matchReport: matchReport, policy: romsCasePolicy)
         let operations = Self.restrictPairsToEntries(
-            Self.restrictPairsToScope(mismatchOperations + caseOnlyOperations, scopeFolders: scopeFolders),
+            Self.restrictPairsToScope(unscopedRenameRomsOperations(matchReport: matchReport), scopeFolders: scopeFolders),
             entryKeys: entryKeys
         )
         return operations.count / 2
+    }
+
+    /// Same perf fix, same reasoning, as `unscopedFixOperationsCache`'s
+    /// own doc comment — `planRenameRomsInArchive`/`planApplyRomsCasePolicy`
+    /// each walk every game's every rom match unscoped, and this ran again
+    /// on every right-click.
+    private var unscopedRenameRomsOperationsCache: (policy: FileCasePolicy, operations: [RebuildOperation])?
+
+    private func unscopedRenameRomsOperations(matchReport: MatchReport) -> [RebuildOperation] {
+        let romsCasePolicy = FixPreferencesSettings.currentRomsCasePolicy()
+        if let cached = unscopedRenameRomsOperationsCache, cached.policy == romsCasePolicy { return cached.operations }
+        let mismatchOperations = RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport, romsCasePolicy: romsCasePolicy)
+        let caseOnlyOperations = RebuildPlanner.planApplyRomsCasePolicy(matchReport: matchReport, policy: romsCasePolicy)
+        let operations = mismatchOperations + caseOnlyOperations
+        unscopedRenameRomsOperationsCache = (romsCasePolicy, operations)
+        return operations
     }
 
     /// Renames a misnamed ROM entry inside an otherwise-correctly-named
@@ -1962,20 +4071,25 @@ final class LibraryViewModel {
         isBusy = true
         defer { isBusy = false }
 
-        let romsCasePolicy = FixPreferencesSettings.currentRomsCasePolicy()
-
+        // Same unification as `fix()`'s own `mismatchOperations` +
+        // `caseOnlyOperations`, at the entry level: one "Fix" pass should
+        // both repair a wrong entry name AND re-case an already-correct
+        // one, matching ClrMamePro's single-pass model. `planRenameRomsInArchive`
+        // only ever touches a `.misnamed` entry; `planApplyRomsCasePolicy`
+        // only ever a `.correct` one — mutually exclusive, so combining
+        // them cannot double-rename the same entry. Computed via the
+        // cached `unscopedRenameRomsOperations` (main-actor-isolated)
+        // BEFORE entering `Task.detached` — see that cache's own doc
+        // comment.
+        let allOperations = unscopedRenameRomsOperations(matchReport: matchReport)
+        // Real gap found live by jensyleo (2026-09-23), same class as
+        // `removeUselessFiles`'s own doc comment: never set
+        // `fixActionProgress`, so the overlay fell through to its generic
+        // "Scanning folders…" fallback with no moving numbers.
+        let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
+            Task { @MainActor in self?.fixActionProgress = ("Renaming roms inside their archives…", completed, total) }
+        }
         let outcome = await Task.detached(priority: .userInitiated) {
-            // Same unification as `fix()`'s own `mismatchOperations` +
-            // `caseOnlyOperations` above, at the entry level: one "Fix"
-            // pass should both repair a wrong entry name AND re-case an
-            // already-correct one, matching ClrMamePro's single-pass
-            // model. `planRenameRomsInArchive` only ever touches a
-            // `.misnamed` entry; `planApplyRomsCasePolicy` only ever a
-            // `.correct` one — mutually exclusive, so combining them
-            // cannot double-rename the same entry.
-            let mismatchOperations = RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport, romsCasePolicy: romsCasePolicy)
-            let caseOnlyOperations = RebuildPlanner.planApplyRomsCasePolicy(matchReport: matchReport, policy: romsCasePolicy)
-            let allOperations = mismatchOperations + caseOnlyOperations
             let operations = Self.restrictPairsToEntries(
                 Self.restrictPairsToScope(allOperations, scopeFolders: scopeFolders),
                 entryKeys: entryKeys
@@ -1986,6 +4100,7 @@ final class LibraryViewModel {
             // swallowed error made "nothing happened" indistinguishable
             // from "every rewrite failed".
             var failureLines: [String] = []
+            let totalPairs = operations.count / 2
             for pairStart in stride(from: 0, to: operations.count, by: 2) {
                 let pair = Array(operations[pairStart..<Swift.min(pairStart + 2, operations.count)])
                 do {
@@ -1999,6 +4114,7 @@ final class LibraryViewModel {
                         failureLines.append("Rom rename failed: \(error.localizedDescription)")
                     }
                 }
+                fixProgressHandler(pairStart / 2 + 1, totalPairs)
             }
             return (
                 succeeded: succeeded, failed: failed,
@@ -2006,6 +4122,7 @@ final class LibraryViewModel {
                 failureLines: failureLines
             )
         }.value
+        fixActionProgress = nil
         let (succeeded, failed) = (outcome.succeeded, outcome.failed)
 
         // Same reasoning as `fix()`'s own comment just above: a scoped
@@ -2033,8 +4150,9 @@ final class LibraryViewModel {
             let where_ = scopeFolders.count == 1 ? scopeFolders[0].lastPathComponent : "the selected folder/File(s)"
             logWarning("Every one of the \(outcome.plannedCount) misnamed rom(s) this scan found lives OUTSIDE \(where_) — select the folder/File they're actually in (or \"Database\" for the whole system) and run this again.")
         } else {
-            logWarning("Nothing to fix\(scopeSuffix) — every rom entry already matches the DAT, styled exactly per \"Roms case\" (\(romsCasePolicy.rawValue)).")
+            logWarning("Nothing to fix\(scopeSuffix) — every rom entry already matches the DAT, styled exactly per \"Roms case\" (\(FixPreferencesSettings.currentRomsCasePolicy().rawValue)).")
         }
+        postFixResultPopup(action: "Fix Misnamed ROMs Inside Archives", succeeded: succeeded, failed: failed, failureLines: outcome.failureLines)
     }
 
     /// How many redundant roms "Strip Redundant ROMs (Split)…" would
@@ -2042,6 +4160,10 @@ final class LibraryViewModel {
     /// has run.
     func planConvertToSplitPreviewCount() -> Int {
         guard let matchReport = requireMatchReport() else { return 0 }
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return 0
+        }
         return RebuildPlanner.planConvertToSplit(matchReport: matchReport).count
     }
 
@@ -2094,6 +4216,7 @@ final class LibraryViewModel {
         } else {
             logWarning("Nothing to strip — no clone in this scan has a rom already, exactly, in its parent's own archive.")
         }
+        postFixResultPopup(action: "Strip Redundant ROMs (Split)", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// Live `CorruptedFilesPolicy` + quarantine folder as currently
@@ -2114,6 +4237,10 @@ final class LibraryViewModel {
     /// when no quarantine folder is configured yet.
     func planCorruptedFilesPolicyPreviewCount() -> Int {
         guard let matchReport = requireMatchReport() else { return 0 }
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return 0
+        }
         let (policy, quarantineFolder) = currentCorruptedFilesPolicy()
         return RebuildPlanner.planCorruptedFilesPolicy(matchReport: matchReport, policy: policy, quarantineFolder: quarantineFolder).count
     }
@@ -2169,6 +4296,7 @@ final class LibraryViewModel {
         } else {
             logWarning("Nothing to handle — no internally-corrupt rom found, or the configured policy has nothing to do.")
         }
+        postFixResultPopup(action: "Handle Corrupted Files", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// How many clones "Merge Clones (Merged)…" would actually fold into
@@ -2177,6 +4305,10 @@ final class LibraryViewModel {
     /// doc comment for exactly which clones qualify.
     func planConvertToMergedPreviewCount() -> Int {
         guard let matchReport = requireMatchReport() else { return 0 }
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return 0
+        }
         return RebuildPlanner.planConvertToMerged(matchReport: matchReport).count
     }
 
@@ -2234,6 +4366,7 @@ final class LibraryViewModel {
         } else {
             logWarning("Nothing to merge — no clone in this scan qualifies (see the toolbar action's own help text for what disqualifies one).")
         }
+        postFixResultPopup(action: "Merge Clones (Merged)", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// A short, human-readable description of what a single
@@ -2269,6 +4402,12 @@ final class LibraryViewModel {
             return "add \"\(entryName)\" to \"\(targetArchive.lastPathComponent)\""
         case .removeEntryFromZip(let archive, let entryName):
             return "remove \"\(entryName)\" from \"\(archive.lastPathComponent)\""
+        case .createDummyFile(let url, _):
+            return "create dummy rom \"\(url.lastPathComponent)\""
+        case .createDummyZipEntry(let targetArchive, let entryName, _):
+            return "create dummy rom \"\(entryName)\" in \"\(targetArchive.lastPathComponent)\""
+        case .clearZipComment(let archive):
+            return "remove comment from \"\(archive.lastPathComponent)\""
         }
     }
 
@@ -2307,6 +4446,34 @@ final class LibraryViewModel {
     /// (no specific folder/File selected — "Database" or nothing) means
     /// "don't restrict at all", preserving the original whole-system
     /// behavior in that case.
+    /// Which of `system`'s own configured ROM folders each of `urls`
+    /// actually lives under — feeds `scan(system:folders:)`'s own scoping
+    /// for the generic File Actions below (`moveFilesToTrash`/
+    /// `deleteFilesPermanently`/`moveRomEntriesToTrash`/
+    /// `deleteRomEntriesPermanently`), which take raw URLs/entries rather
+    /// than an already-known `scopeFolders` list the way
+    /// `removeUselessFiles`/`removeRedundantFiles`/`removeRedundantRoms`
+    /// do.
+    ///
+    /// Real report (2026-09-21, jensyleo): deleting even a single file from
+    /// one ROM folder "vuelve y escanea todo" — these four functions always
+    /// called the plain, unscoped `scan(system: system)`, which (per
+    /// `scan(system:folders:)`'s own doc comment) walks and force-rehashes
+    /// EVERY configured folder, not just the one the deleted file came
+    /// from. Every other destructive action in this file already scopes
+    /// its own verification rescan (see `removeUselessFiles`'s own doc
+    /// comment on this exact history) — these four just never got that
+    /// same treatment, since they were added later, generically, without a
+    /// `scopeFolders` parameter of their own to reuse.
+    private nonisolated static func romFolders(containing urls: [URL], in system: RomSystem) -> [URL] {
+        var result: [URL] = []
+        for url in urls {
+            guard let folder = system.romFolderURLs.first(where: { url.path.hasPrefix($0.path) }), !result.contains(folder) else { continue }
+            result.append(folder)
+        }
+        return result
+    }
+
     private nonisolated static func restrictToScope(_ operations: [RebuildOperation], scopeFolders: [URL]) -> [RebuildOperation] {
         guard !scopeFolders.isEmpty else { return operations }
         return operations.filter { operationTouchesFolder($0, scopeFolders) }
@@ -2395,6 +4562,12 @@ final class LibraryViewModel {
             path = archive
         case .createArchive, .createTorrentZipArchive:
             path = nil
+        case .createDummyFile(let at, _):
+            path = at
+        case .createDummyZipEntry(let targetArchive, _, _):
+            path = targetArchive
+        case .clearZipComment(let archive):
+            path = archive
         }
         guard let path else { return true }
         return urlIsInScope(path, scopeFolders: scopeFolders)

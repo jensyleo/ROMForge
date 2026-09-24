@@ -21,11 +21,34 @@ public struct ScannedFile: Equatable, Sendable {
     /// make two otherwise-identical `ScannedFile`s compare unequal) so
     /// existing call sites that don't care about caching are unaffected.
     public let modificationDate: Date
+    /// The exact path of this file INSIDE its containing zip, when it lives
+    /// under a real subfolder there — `nil` for a loose file, or a zip entry
+    /// that already sits at the archive's own top level (`name` alone is
+    /// already the whole story). Real bug found live by jensyleo
+    /// (2026-09-23): a `.zip` created from a folder that once lived on a
+    /// non-Mac filesystem can contain a real "__MACOSX/._<name>" AppleDouble
+    /// resource-fork sidecar subfolder — `RebuildPlanner
+    /// .planRemoveUselessFiles` used to plan `.removeEntryFromZip` with just
+    /// `name` ("._foo.bin", the entry's OWN doc comment on why that's
+    /// normally right for DAT-name matching), which ZIPFoundation's own
+    /// `Archive[entryName]` lookup then correctly failed to find — the REAL
+    /// entry lives at "__MACOSX/._foo.bin", not "._foo.bin" — "Source file
+    /// does not exist" for every single one, 0 removed. `effectiveEntryPath`
+    /// below is what any caller that needs to address the exact zip entry
+    /// (removal, rename-in-archive) should use instead of `name` alone.
+    public let entryPath: String?
 
-    public init(url: URL, name: String, size: Int64, modificationDate: Date = Date(timeIntervalSince1970: 0)) {
+    public init(url: URL, name: String, size: Int64, modificationDate: Date = Date(timeIntervalSince1970: 0), entryPath: String? = nil) {
         self.url = url
         self.name = name
         self.size = size
         self.modificationDate = modificationDate
+        self.entryPath = entryPath == name ? nil : entryPath
     }
+
+    /// The real identifier to use when addressing this file inside its own
+    /// container — `entryPath` when this is a nested zip entry, otherwise
+    /// `name` (a loose file, or a top-level zip entry, where the two are
+    /// already identical).
+    public var effectiveEntryPath: String { entryPath ?? name }
 }

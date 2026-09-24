@@ -104,6 +104,35 @@ struct ReorderGripHandle: View {
     /// never called for a drag that ends back where it began.
     let onCommit: (Int, Int) -> Void
 
+    /// jensyleo's own report (2026-09-17), for the "ROM folder" sidebar
+    /// list SPECIFICALLY (a real `List`, backed by `NSTableView`): macOS 27
+    /// started claiming the mouse-dragged event stream at the AppKit level
+    /// the instant it recognizes a drag starting on one of its cells — a
+    /// layer BELOW where `.highPriorityGesture` (below) can arbitrate (that
+    /// only settles conflicts between sibling SwiftUI gestures, never
+    /// against an ancestor's native AppKit gesture recognizer). Confirmed
+    /// live via temporary debug logging: exactly one `DragGesture.onChanged`
+    /// fired, then total silence, not even `onEnded` on mouse-up —
+    /// permanently "stuck". That ONE call site now bypasses this view
+    /// entirely — its own drag tracking moved to
+    /// `LibraryDetailView.installRomFolderReorderMonitor()`, a raw
+    /// `NSEvent.addLocalMonitorForEvents` (the same "listen at the AppKit
+    /// event-distribution level, before any gesture recognizer can claim
+    /// the stream" strategy that already fixed the earlier macOS 27
+    /// regression in `resultsArrowKeyMonitor`/cross-`Table` keyboard
+    /// routing this same session).
+    ///
+    /// This view's own `DragGesture` below is UNCHANGED and still backs
+    /// every OTHER reorderable list in the app (`ViewOptionsSettingsView`'s
+    /// three `Form`/`.formStyle(.grouped)`-hosted lists) — none of those
+    /// are `List`/`NSTableView`-backed, so none of them hit this exact
+    /// macOS 27 conflict, and jensyleo never reported them as broken.
+    /// Changing this shared type's own behavior for everyone to fix one
+    /// specific, `List`-backed caller would have been exactly the kind of
+    /// "fixing one thing breaks another already-working thing" jensyleo
+    /// explicitly warned against — confirmed the hard way when an earlier
+    /// version of this exact fix broke all three Settings call sites
+    /// (a compiler error, caught before ever installing a build).
     var body: some View {
         Image(systemName: "line.3.horizontal")
             .foregroundStyle(.secondary)

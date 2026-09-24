@@ -12,11 +12,15 @@ import Testing
 struct GameNodeBuilderTests {
     private func entry(
         status: AuditStatus, game: String?, isDisk: Bool = false, path: URL? = nil,
-        foundElsewhereArchiveName: String? = nil, requiredByGameDescription: String? = nil, name: String = "rom.bin"
+        foundElsewhereArchiveName: String? = nil, requiredByGameDescription: String? = nil,
+        requiredByGameConfirmedRedundant: Bool = false, requiredByGameOwnerSatisfiedElsewhere: Bool = false,
+        name: String = "rom.bin"
     ) -> AuditEntry {
         AuditEntry(
             status: status, game: game, isDisk: isDisk,
             foundElsewhereArchiveName: foundElsewhereArchiveName, requiredByGameDescription: requiredByGameDescription,
+            requiredByGameConfirmedRedundant: requiredByGameConfirmedRedundant,
+            requiredByGameOwnerSatisfiedElsewhere: requiredByGameOwnerSatisfiedElsewhere,
             name: name, path: path
         )
     }
@@ -111,6 +115,75 @@ struct GameNodeBuilderTests {
         #expect(!nodes[0].isSurplusBucket)
     }
 
+    @Test("GameNode.firstOwnedFileURL never returns a borrowed .foundElsewhere path — jensyleo's own real incident (2026-09-21): naomi's own genuinely-missing BIOS roms carry .foundElsewhere entries pointing at naomigd.zip (where that shared content was actually found); firstOwnedFileURL must never mistake that for naomi's own archive")
+    func actualFileURLExcludesBorrowedFoundElsewherePaths() {
+        let naomiArchive = URL(fileURLWithPath: "/roms/SEGA/naomi.zip")
+        let naomigdArchive = URL(fileURLWithPath: "/roms/SEGA/naomigd.zip")
+        let entries = [
+            // naomi's own real, owned rom — the only genuinely-present one.
+            entry(status: .correct, game: "naomi", path: naomiArchive, name: "boot_rom_64b8.ic606"),
+            // naomi's own genuinely-missing roms, each with a .foundElsewhere
+            // entry (informational only) pointing at naomigd's own archive,
+            // where that same BIOS content happens to also live.
+            entry(status: .incorrect, game: "naomi", path: naomigdArchive, foundElsewhereArchiveName: "naomigd.zip", name: "epr-21576d.ic27"),
+            entry(status: .incorrect, game: "naomi", path: naomigdArchive, foundElsewhereArchiveName: "naomigd.zip", name: "epr-21576c.ic27"),
+            entry(status: .incorrect, game: "naomi", path: naomigdArchive, foundElsewhereArchiveName: "naomigd.zip", name: "epr-21576b.ic27"),
+        ]
+        let nodes = GameNodeBuilder.gameNodes(from: entries, gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+        let naomiNode = nodes.first { $0.name == "naomi" }
+        #expect(naomiNode?.firstOwnedFileURL == naomiArchive, "must resolve to naomi's own real archive, never naomigd's borrowed path, even though 3 of 4 entries point at naomigd.zip")
+    }
+
+    @Test("a loose file's own surplus row never disappears just because a DIFFERENT game's .foundElsewhere entry happens to point at that same path — jensyleo's own real incident (2026-09-21): a rom copied fresh into CPS2 vanished entirely (not shown as Unknown, not shown anywhere) because a .missing game's .foundElsewhere row (path = the loose file's own path, content only ever BORROWED from it) made gameNameByArchivePath think the loose file WAS that unrelated game's own archive, folding its surplus bucket away with no standalone row left")
+    func looseFileSurplusSurvivesUnrelatedFoundElsewhereSharingItsPath() {
+        let loosePath = URL(fileURLWithPath: "/roms/CPS2/newrom.bin")
+        let entries = [
+            // The newly-copied loose file itself — unrecognized, becomes a
+            // surplus/unknown row.
+            entry(status: .unknownFile, game: nil, path: loosePath, name: "newrom.bin"),
+            // A totally different, unrelated game whose own rom is missing,
+            // but happens to hash-match the loose file's content — ROMMatcher
+            // reports this informationally as .foundElsewhere, with `path`
+            // pointing at the loose file (the only place the content was
+            // actually found), never at any real archive of its own.
+            entry(
+                status: .incorrect, game: "unrelatedgame", path: loosePath,
+                foundElsewhereArchiveName: "newrom.bin", name: "expected.bin"
+            ),
+        ]
+        let nodes = GameNodeBuilder.gameNodes(from: entries, gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+        let surplusNode = nodes.first { $0.isSurplusBucket }
+        #expect(surplusNode != nil, "the loose file must still get its own standalone row, never silently folded away")
+        let unrelatedGameNode = nodes.first { $0.name == "unrelatedgame" }
+        #expect(unrelatedGameNode?.entries.count == 1, "the unrelated game's own row must never gain the loose file's surplus entry")
+    }
+
+    @Test("infoText for a REAL game with a folded-in surplus rom never says 'Duplicated file, not needed here' unless that other game's own copy is actually confirmed — jensyleo's own real incident (2026-09-22): gng.zip (\"Ghosts'n Goblins (World? set 1)\", every one of its own roms genuinely correct) also holds unclaimed roms declared by \"set 2\", which has no real copy anywhere; the archive-level message said 'not needed here' while the Roms panel's own per-rom text for the identical data correctly said 'doesn't have it either' — the same isSurplusBucket-only 3-way fix from 2026-09-19 was missing on this non-surplus-bucket branch")
+    func infoTextForRealGameNeverClaimsSafeDuplicateWhenNotConfirmed() {
+        let archive = URL(fileURLWithPath: "/roms/gng.zip")
+        let unconfirmedEntries = [
+            entry(status: .correct, game: "gng", path: archive, name: "gng.bin"),
+            entry(
+                status: .incorrect, game: nil, path: archive,
+                requiredByGameDescription: "Ghosts'n Goblins (World? set 2)", requiredByGameConfirmedRedundant: false, name: "gg3.bin"
+            ),
+        ]
+        let unconfirmedNodes = GameNodeBuilder.gameNodes(from: unconfirmedEntries, gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+        #expect(!unconfirmedNodes[0].infoText.contains("Duplicated file"), "must never claim a confirmed duplicate exists when it wasn't actually verified")
+        #expect(unconfirmedNodes[0].infoText.contains("Ghosts'n Goblins (World? set 2)"), "still names the recognized owner")
+
+        let confirmedEntries = [
+            entry(status: .correct, game: "gng", path: archive, name: "gng.bin"),
+            entry(
+                status: .incorrect, game: nil, path: archive,
+                requiredByGameDescription: "Ghosts'n Goblins (World? set 2)", requiredByGameConfirmedRedundant: true,
+                requiredByGameOwnerSatisfiedElsewhere: true, name: "gg3.bin"
+            ),
+        ]
+        let confirmedNodes = GameNodeBuilder.gameNodes(from: confirmedEntries, gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+        #expect(confirmedNodes[0].infoText.contains("Duplicated file"), "the ordinary, confirmed-safe case must keep reading exactly as before")
+    }
+
     @Test("a surplus archive matching no known game becomes its own Unknown game row")
     func unrecognizedSurplusBecomesOwnRow() {
         let entries = [entry(status: .unknownFile, game: nil, path: URL(fileURLWithPath: "/roms/mystery.zip"), name: "junk.txt")]
@@ -127,6 +200,37 @@ struct GameNodeBuilderTests {
         ]
         let nodes = GameNodeBuilder.gameNodes(from: entries, gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
         #expect(nodes[0].aggregateStatus == .incorrect)
+    }
+
+    @Test("infoText never claims a safe 'Duplicated archive' when requiredByGameConfirmedRedundant is false — jensyleo's own real incident (2026-09-19): a stray naomi.zip full of genuine NAOMI BIOS content was deleted as a 'safe duplicate' while NAOMI BIOS's own real archive had ALSO just been removed, with nothing anywhere confirming a real copy existed")
+    func infoTextNeverClaimsSafeDuplicateWhenNotConfirmed() {
+        let unconfirmed = entry(
+            status: .incorrect, game: nil, path: URL(fileURLWithPath: "/roms/naomi.zip"),
+            requiredByGameDescription: "Naomi Bios", requiredByGameConfirmedRedundant: false, name: "chip.bin"
+        )
+        let unconfirmedNodes = GameNodeBuilder.gameNodes(from: [unconfirmed], gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+        #expect(!unconfirmedNodes[0].infoText.contains("Duplicated"), "must never claim a confirmed duplicate exists when it wasn't actually verified")
+        #expect(unconfirmedNodes[0].infoText.contains("Naomi Bios"), "still names the recognized owner — informative, just not falsely reassuring")
+
+        let confirmed = entry(
+            status: .incorrect, game: nil, path: URL(fileURLWithPath: "/roms/naomi.zip"),
+            requiredByGameDescription: "Naomi Bios", requiredByGameConfirmedRedundant: true,
+            requiredByGameOwnerSatisfiedElsewhere: true, name: "chip.bin"
+        )
+        let confirmedNodes = GameNodeBuilder.gameNodes(from: [confirmed], gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+        #expect(confirmedNodes[0].infoText.contains("Duplicated archive"), "the ordinary, confirmed-safe case must keep reading exactly as before")
+    }
+
+    @Test("infoText never claims 'Duplicated archive, not needed here' merely because this is one of several unclaimed physically-identical copies while the owner still has NO real content anywhere — jensyleo's own real incident, second round (2026-09-19): a loose epr-21576g.ic27 duplicated via a Finder-style 'epr-21576g 2.ic27' copy, with NAOMI BIOS having no real archive, must never say 'not needed here'")
+    func infoTextNeverClaimsSafeDuplicateForUnownedSurplusDuplicate() {
+        let surplusDuplicateOnly = entry(
+            status: .incorrect, game: nil, path: URL(fileURLWithPath: "/roms/epr-21576g.ic27"),
+            requiredByGameDescription: "Naomi Bios", requiredByGameConfirmedRedundant: true,
+            requiredByGameOwnerSatisfiedElsewhere: false, name: "epr-21576g.ic27"
+        )
+        let nodes = GameNodeBuilder.gameNodes(from: [surplusDuplicateOnly], gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+        #expect(!nodes[0].infoText.contains("Duplicated archive"), "must never say 'not needed here' when the owner has no real copy anywhere")
+        #expect(nodes[0].infoText.contains("Naomi Bios"), "still names the recognized owner")
     }
 
     @Test("computeUnknownArchivesCount counts only genuinely-unrecognized surplus buckets")

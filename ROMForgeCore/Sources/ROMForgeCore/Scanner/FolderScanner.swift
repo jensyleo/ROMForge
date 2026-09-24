@@ -247,9 +247,23 @@ public enum FolderScanner {
     ///   coming from. Fires for a single-file entry too (immediately, since
     ///   there's nothing to "walk"), so the caller's own progress display
     ///   can treat every entry in `urls` uniformly.
+    /// - Parameter onFolderFailed: jensyleo's own report (2026-09-16),
+    ///   testing with a ROM folder on a NAS: with the NAS unreachable, the
+    ///   very first folder in `urls` throwing used to abort this ENTIRE
+    ///   call immediately — every OTHER configured folder (including ones
+    ///   sitting on perfectly healthy local disks) was silently never even
+    ///   attempted, since a plain `for url in urls { throw ... }` loop
+    ///   can't tell "this one folder is gone" from "something is
+    ///   catastrophically wrong, stop everything". When this callback is
+    ///   provided, a folder that can't be reached (or fails partway
+    ///   through its own walk) is reported through it and skipped, instead
+    ///   of aborting every remaining entry in `urls` — every reachable
+    ///   folder still gets scanned normally. `nil` (the default) preserves
+    ///   the original all-or-nothing throwing behavior for every existing
+    ///   caller that doesn't pass this.
     public static func scan(
         paths urls: [URL], onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil,
-        onFolderStarted: (@Sendable (URL) -> Void)? = nil
+        onFolderStarted: (@Sendable (URL) -> Void)? = nil, onFolderFailed: ((URL, Error) -> Void)? = nil
     ) throws -> [ScannedFile] {
         var all: [ScannedFile] = []
         // Shared across every single-file entry in `urls` this call scans
@@ -263,15 +277,28 @@ public enum FolderScanner {
             onFolderStarted?(url)
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-                throw ScannerError.folderNotFound(url)
+                let error = ScannerError.folderNotFound(url)
+                if let onFolderFailed {
+                    onFolderFailed(url, error)
+                    continue
+                }
+                throw error
             }
-            if isDirectory.boolValue {
-                let alreadyFound = all.count
-                let files = try scan(folder: url, onFileFound: { count in onFileFound?(alreadyFound + count) }, onSkippedTooDeep: onSkippedTooDeep)
-                all.append(contentsOf: files)
-            } else {
-                all.append(try scanSingleFile(url, directoryCache: directoryCache))
-                onFileFound?(all.count)
+            do {
+                if isDirectory.boolValue {
+                    let alreadyFound = all.count
+                    let files = try scan(folder: url, onFileFound: { count in onFileFound?(alreadyFound + count) }, onSkippedTooDeep: onSkippedTooDeep)
+                    all.append(contentsOf: files)
+                } else {
+                    all.append(try scanSingleFile(url, directoryCache: directoryCache))
+                    onFileFound?(all.count)
+                }
+            } catch {
+                if let onFolderFailed {
+                    onFolderFailed(url, error)
+                    continue
+                }
+                throw error
             }
         }
         return all

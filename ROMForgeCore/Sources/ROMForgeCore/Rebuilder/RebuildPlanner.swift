@@ -252,7 +252,24 @@ public enum RebuildPlanner {
                 let ext = currentURL.pathExtension
                 let declaredName = ext.isEmpty ? gameResult.game.name : "\(gameResult.game.name).\(ext)"
                 let expectedName = mismatchFixName(declaredName: declaredName, policy: filesCasePolicy)
-                guard currentURL.lastPathComponent != expectedName else { continue }
+                // Real bug found live (2026-09-14, via the test suite —
+                // "planRepair and planApplySetsCasePolicy never target the
+                // same archive"): comparing only against `expectedName`
+                // (already STYLED per `filesCasePolicy`) meant an archive
+                // whose name is already EXACTLY what the DAT declares (no
+                // real mismatch at all) still got flagged here whenever
+                // `filesCasePolicy` wasn't `.datafileCase` — purely because
+                // it wasn't yet re-styled, which is `planApplySetsCasePolicy`'s
+                // own, separate job. Skipping whenever the current name
+                // already matches the DAT's own plain `declaredName` too
+                // (not just the styled `expectedName`) restores the
+                // "these two never target the same archive" guarantee
+                // `LibraryViewModel.fix()` relies on to run both in one
+                // pass safely — a genuine wrong-case mismatch (e.g.
+                // "AWBIOS.zip" vs. a declared "awbios") still matches
+                // neither name, so it's still caught and renamed exactly
+                // as the NEOGEO fix above intended.
+                guard currentURL.lastPathComponent != declaredName, currentURL.lastPathComponent != expectedName else { continue }
                 let destination = currentURL.deletingLastPathComponent().appendingPathComponent(expectedName)
                 operations.append(.rename(from: currentURL, to: destination))
             }
@@ -278,7 +295,12 @@ public enum RebuildPlanner {
             for romMatch in gameResult.matches {
                 guard case .misnamed(let hashedFile, _) = romMatch.status else { continue }
                 guard isZipEntry(hashedFile.file) else { continue }
-                let currentEntryName = hashedFile.file.name
+                // Real bug found live by jensyleo (2026-09-23): `.name`
+                // alone (just the last path component) is wrong for an
+                // entry nested inside a real subfolder in the zip (e.g. a
+                // "__MACOSX/._foo" AppleDouble sidecar) — see
+                // `ScannedFile.effectiveEntryPath`'s own doc comment.
+                let currentEntryName = hashedFile.file.effectiveEntryPath
                 let expectedEntryName = mismatchFixName(declaredName: romMatch.rom.name, policy: romsCasePolicy)
                 guard currentEntryName != expectedEntryName else { continue }
                 let zipURL = hashedFile.file.url
@@ -325,7 +347,7 @@ public enum RebuildPlanner {
                 guard let hashedFile else { continue }
                 let target = gameFolder.appendingPathComponent(safePathComponent(romMatch.rom.name))
                 if isZipEntry(hashedFile.file) {
-                    operations.append(.extractZipEntry(archive: hashedFile.file.url, entryName: hashedFile.file.name, to: target))
+                    operations.append(.extractZipEntry(archive: hashedFile.file.url, entryName: hashedFile.file.effectiveEntryPath, to: target))
                 } else if isUnrewritableArchiveEntry(hashedFile.file) {
                     continue
                 } else {
@@ -365,7 +387,7 @@ public enum RebuildPlanner {
                 // skipped, same "do what's possible, report what wasn't"
                 // spirit as `rebuildToFolder`'s own per-operation loop.
                 guard !isUnrewritableArchiveEntry(hashedFile.file) else { return nil }
-                let innerEntryName = isZipEntry(hashedFile.file) ? hashedFile.file.name : nil
+                let innerEntryName = isZipEntry(hashedFile.file) ? hashedFile.file.effectiveEntryPath : nil
                 return ArchiveEntrySource(source: hashedFile.file.url, entryName: safePathComponent(romMatch.rom.name), sourceArchiveEntryName: innerEntryName)
             }
             guard !entries.isEmpty else { continue }
@@ -420,8 +442,209 @@ public enum RebuildPlanner {
                 // `.7z`-held surplus entry is skipped rather than
                 // approximated by deleting its whole archive.
                 guard isZipPath(url) else { return nil }
-                return .removeEntryFromZip(archive: url, entryName: file.name)
+                // `effectiveEntryPath`, not plain `.name` — real bug found
+                // live by jensyleo (2026-09-23): a junk entry nested inside
+                // a real "__MACOSX/" subfolder (an AppleDouble sidecar
+                // macOS itself writes into a zip made from a folder that
+                // once lived on a non-Mac filesystem) has a `.name` that's
+                // just its own last path component ("._foo.bin"), never the
+                // REAL entry path ("__MACOSX/._foo.bin") ZIPFoundation's own
+                // lookup actually needs — every one of these failed with
+                // "Source file does not exist", 0 removed. See
+                // `ScannedFile.effectiveEntryPath`'s own doc comment.
+                return .removeEntryFromZip(archive: url, entryName: file.effectiveEntryPath)
             }
+    }
+
+    /// Deletes a redundant, LOOSE (non-archive) duplicate copy of content
+    /// the DAT genuinely recognizes — jensyleo's own request (2026-09-13),
+    /// deliberately split from `planRemoveUselessFiles` above rather than
+    /// folded into it: that function only ever targets content the DAT
+    /// recognizes NOTHING about at all (`requiredByGameDescription == nil`);
+    /// this one is its exact complement, targeting a `SurplusFile` the DAT
+    /// DOES recognize (`requiredByGameDescription != nil` — shown in the UI
+    /// as "Not needed here (required by X)") but that isn't needed at this
+    /// particular location, because some OTHER game already legitimately
+    /// claims an equivalent copy elsewhere. Deleting it loses nothing the
+    /// collection doesn't already have somewhere else.
+    ///
+    /// Loose files only, mirroring the `.zip`/loose split
+    /// `planReplaceCorruptedRoms` already uses — the archive-entry half of
+    /// this exact same duplicate is `planRemoveRedundantRoms`, below.
+    ///
+    /// Filters on `requiredByGameConfirmedRedundant`, NOT merely
+    /// `requiredByGameDescription != nil` — jensyleo's own real incident
+    /// (2026-09-19): `requiredByGameDescription` only ever means "the DAT
+    /// declares this content belongs to game X," regardless of whether X
+    /// actually has a good copy of it anywhere real. A stray `naomi.zip`
+    /// full of genuine NAOMI BIOS content got deleted this way, as "safe,"
+    /// right as NAOMI BIOS's own real archive was also removed — leaving
+    /// NAOMI BIOS with NO real copy left outside the Maintenance folder,
+    /// the opposite of what "redundant" is supposed to guarantee.
+    /// `requiredByGameConfirmedRedundant` additionally requires that the
+    /// owning game already has this exact content satisfied elsewhere in
+    /// the real scan (see `SurplusFile.requiredByGameConfirmedRedundant`'s
+    /// own doc comment) — `requiredByGameDescription` itself is untouched
+    /// and still drives the informational "Not needed here (required by
+    /// X)" text and Maintenance-donor lookups.
+    ///
+    /// Filters on `requiredByGameOwnerSatisfiedElsewhere`, NOT the broader
+    /// `requiredByGameConfirmedRedundant` — second round of the same
+    /// incident, same day (2026-09-19): that broader field ALSO goes true
+    /// merely because this loose file is one of 2+ physically identical,
+    /// UNCLAIMED copies (`duplicateAmongSurplusIndices`), even when the
+    /// owning game has NO real copy anywhere. That signal is only genuinely
+    /// safe for a whole, directly-usable unit (a duplicated whole archive —
+    /// see `fullyRedundantArchiveContainers`), never a loose rom fragment: a
+    /// loose `epr-21576g.ic27` duplicated via a Finder-style "epr-21576g
+    /// 2.ic27" copy, with "NAOMI BIOS" having no real archive anywhere,
+    /// must never be offered here — deleting either copy helps nobody and
+    /// risks the exact same near-loss pattern this whole field exists to
+    /// prevent. See `SurplusFile.requiredByGameOwnerSatisfiedElsewhere`'s
+    /// own doc comment.
+    public static func planRemoveRedundantFiles(matchReport: MatchReport) -> [RebuildOperation] {
+        matchReport.surplusFiles
+            .filter { $0.requiredByGameOwnerSatisfiedElsewhere }
+            .compactMap { surplus in
+                let file = surplus.file.file
+                guard !isArchivedEntry(file) else { return nil }
+                return .delete(file.url)
+            }
+    }
+
+    /// Removes a redundant ENTRY inside a `.zip` — the archive-entry
+    /// counterpart to `planRemoveRedundantFiles` just above (see its own
+    /// doc comment for the shared "recognized, but not needed HERE"
+    /// definition both of these act on). Never removes a whole archive,
+    /// same reasoning `planRemoveUselessFiles` already documents: a
+    /// redundant rom sitting next to other, genuinely-needed roms in the
+    /// same archive must lose only its own entry.
+    ///
+    /// `fullyRedundantContainers` — jensyleo's own request (2026-09-17,
+    /// generalizing `planRemoveRedundantWholeArchives`'s own `.7z`-only
+    /// mechanism below to `.zip` too): a `.zip` whose ENTIRE content is
+    /// redundant (e.g. `CPS2/naomi.zip` holding exactly one rom that's
+    /// itself a redundant duplicate, nothing else) is excluded here —
+    /// removing just its one entry would leave a pointless, empty zip
+    /// behind. That whole-file case belongs to "Remove Redundant
+    /// File(s)…" (`planRemoveRedundantWholeArchives`) instead, matching
+    /// what already happened by construction for `.7z` (never eligible
+    /// here at all, via `isZipPath`). A `.zip` with only SOME redundant
+    /// entries (other, still-needed roms sharing the same archive) keeps
+    /// the original per-entry behavior unchanged. Callers not yet passing
+    /// this (existing tests/call sites) get the exact old behavior via the
+    /// default empty set.
+    /// Same `requiredByGameOwnerSatisfiedElsewhere` (not the broader
+    /// `requiredByGameConfirmedRedundant`) reasoning as
+    /// `planRemoveRedundantFiles` above — a single entry inside an
+    /// otherwise-mixed archive is just as much a "fragment" as a loose
+    /// file: removing it because it merely duplicates another unclaimed
+    /// copy, while its declared owner still has no real content anywhere,
+    /// helps nobody and carries the same risk. The genuinely-safe
+    /// whole-duplicated-archive case is `fullyRedundantArchiveContainers`
+    /// below, which still accepts the broader field.
+    public static func planRemoveRedundantRoms(matchReport: MatchReport, fullyRedundantContainers: Set<URL> = []) -> [RebuildOperation] {
+        matchReport.surplusFiles
+            .filter { $0.requiredByGameOwnerSatisfiedElsewhere }
+            .compactMap { surplus in
+                let file = surplus.file.file
+                guard isArchivedEntry(file), isZipPath(file.url), !fullyRedundantContainers.contains(file.url) else { return nil }
+                return .removeEntryFromZip(archive: file.url, entryName: file.effectiveEntryPath)
+            }
+    }
+
+    /// Deletes a WHOLE archive (`.7z` or `.zip`) that's a redundant
+    /// duplicate, when EVERY entry inside it is independently redundant —
+    /// jensyleo's own
+    /// follow-up (2026-09-16), after "Remove Redundant Files…" correctly
+    /// deleted 4 duplicate CHDs but left a redundant `nss.7z` stuck
+    /// yellow: "pensaría que debería eliminarse en Redundant Files si y
+    /// solo si el contenido de las roms son exactamente iguales... aunque
+    /// tengan extensión diferente, si contienen los mismos archivos,
+    /// permita la eliminación." A real BIOS set is usually several roms,
+    /// not one — `nss.7z` turned out to hold all 6 of `nss.zip`'s own
+    /// roms, re-packed as `.7z`, every single one already independently
+    /// flagged `requiredByGameDescription` (content-identical, claimed
+    /// elsewhere) — an entry-COUNT check of exactly 1 (this function's
+    /// first cut) wrongly excluded it. The right question is never "how
+    /// many entries does this container have," only "does it hold
+    /// anything genuinely needed that isn't ALSO a redundant duplicate
+    /// somewhere else" — checked by comparing the archive's real, total
+    /// entry count against how many of ITS OWN entries this same scan
+    /// already flagged redundant; equal means nothing legitimate is left
+    /// to lose. For `.7z`, `planRemoveRedundantFiles`/`.planRemoveRedundantRoms`
+    /// above always skip a `.7z`-held entry entirely (no `SevenZipRunner`
+    /// entry add/remove support at all) — this is the ONLY way a `.7z`'s
+    /// redundant content can ever be removed. For `.zip`,
+    /// `planRemoveRedundantRoms` CAN remove just one entry, so it instead
+    /// excludes whatever this function already claims (via
+    /// `fullyRedundantContainers`, the exact same comparison below), so a
+    /// fully-redundant `.zip` is offered as a whole-file delete here
+    /// instead of a pointless "remove the only entry, leave an empty zip"
+    /// — same reasoning `planRemoveUselessFiles` already applies to a
+    /// wholly-junk archive.
+    ///
+    /// `entryCounts` is supplied by the caller (a real archive listing,
+    /// genuine disk I/O `RebuildPlanner` itself never performs — see this
+    /// file's own header) keyed by container URL; a container missing from
+    /// this map is left untouched rather than guessed at.
+    public static func planRemoveRedundantWholeArchives(matchReport: MatchReport, entryCounts: [URL: Int]) -> [RebuildOperation] {
+        fullyRedundantArchiveContainers(matchReport: matchReport, entryCounts: entryCounts).map { .delete($0) }
+    }
+
+    /// The exact same "every entry in this container is independently
+    /// redundant" comparison `planRemoveRedundantWholeArchives` uses to
+    /// decide what to delete — factored out so `planRemoveRedundantRoms`
+    /// can exclude these same containers from its own, finer-grained
+    /// per-entry removal (see that function's own `fullyRedundantContainers`
+    /// doc comment) without the two ever computing this independently and
+    /// risking disagreement.
+    ///
+    /// Generalized from `.7z`-only to any archived entry (2026-09-17,
+    /// jensyleo's own explicit request — "llévalo como regla general, es
+    /// obvio" — after noticing `CPS2/naomi.zip`, holding exactly one
+    /// redundant rom and nothing else, only ever offered "Remove Redundant
+    /// ROM(s)…" (leaving an empty, pointless zip behind) instead of
+    /// deleting the whole file).
+    /// Deliberately still filters on the BROADER `requiredByGameConfirmedRedundant`
+    /// (A or B), not the narrower `requiredByGameOwnerSatisfiedElsewhere` —
+    /// unlike a loose fragment (see `planRemoveRedundantFiles`'s own doc
+    /// comment), a whole duplicated archive whose EVERY entry is redundant
+    /// is a complete, directly-usable unit either way: deleting the extra
+    /// copy of `naomi.zip` genuinely loses nothing, since the surviving copy
+    /// is already a working set.
+    public static func fullyRedundantArchiveContainers(matchReport: MatchReport, entryCounts: [URL: Int]) -> Set<URL> {
+        let redundantEntries = matchReport.surplusFiles
+            .filter { $0.requiredByGameConfirmedRedundant }
+            .map(\.file.file)
+            .filter { isArchivedEntry($0) }
+        let redundantCountsByContainer = Dictionary(grouping: redundantEntries, by: \.url).mapValues(\.count)
+        return Set(redundantCountsByContainer.compactMap { container, redundantCount in
+            guard let totalCount = entryCounts[container], totalCount == redundantCount else { return nil }
+            return container
+        })
+    }
+
+    /// The CHD/disk counterpart to `planRemoveRedundantFiles` above —
+    /// jensyleo's own report (2026-09-16), testing "Remove Redundant
+    /// Files…" for the first time on a real MAME collection: several rows
+    /// clearly read "Duplicated archive, not needed here (required by X)"
+    /// (e.g. a second, leftover `kinst.chd` copy) yet the action reported
+    /// nothing to remove. Root cause: disk auditing (`DiskAuditor.audit`)
+    /// is a structurally separate pipeline from `ROMMatcher`/`MatchReport`
+    /// — a `.chd` is never one of a game's `DATRom` entries, so it was
+    /// never a `SurplusFile` for `planRemoveRedundantFiles` to see at all.
+    /// `DiskAuditor` already computes the exact same "recognized
+    /// elsewhere, but not needed HERE" signal for a leftover duplicate CHD
+    /// (`.incorrect` + `isDisk` + `requiredByGameDescription` set — see
+    /// its own doc comment on the loop building these), so this simply
+    /// reads that instead of a `SurplusFile`. A CHD is always a loose file
+    /// on disk, never a zip entry, so — unlike the rom/entry split above —
+    /// there is no separate "redundant disk ENTRY" counterpart needed.
+    public static func planRemoveRedundantDisks(auditEntries: [AuditEntry]) -> [RebuildOperation] {
+        auditEntries
+            .filter { $0.isDisk && $0.status == .incorrect && $0.requiredByGameConfirmedRedundant }
+            .compactMap { entry in entry.path.map { .delete($0) } }
     }
 
     /// Where a game's rom collection actually lives — the base every
@@ -494,7 +717,7 @@ public enum RebuildPlanner {
     }
 
     private static func archiveEntrySource(forDonor donor: HashedFile, outputEntryName: String) -> ArchiveEntrySource {
-        let innerEntryName = isZipEntry(donor.file) ? donor.file.name : nil
+        let innerEntryName = isZipEntry(donor.file) ? donor.file.effectiveEntryPath : nil
         return ArchiveEntrySource(source: donor.file.url, entryName: outputEntryName, sourceArchiveEntryName: innerEntryName)
     }
 
@@ -551,6 +774,26 @@ public enum RebuildPlanner {
         return false
     }
 
+    /// Groups `donorFiles` by size once, so every one of `donorMatches`'s
+    /// own callers below can narrow to same-size candidates first instead
+    /// of scanning the WHOLE Maintenance folder per rom. Found live via a
+    /// background performance audit (2026-09-17): with no index at all,
+    /// each of the four functions below did a full linear scan of
+    /// `donorFiles` for every `.missing`/`.hashMismatch` rom in the entire
+    /// scanned collection — effectively O(roms × donor files), and paid
+    /// TWICE per user action (once for the preview-count read, once for
+    /// the real plan) since neither call shared a cache. `donorMatches`
+    /// itself always requires an exact size match first, so grouping by
+    /// size turns this into a cheap dictionary lookup plus a scan of only
+    /// the (typically tiny) same-size bucket.
+    private static func donorsBySize(_ donorFiles: [HashedFile]) -> [Int64: [HashedFile]] {
+        Dictionary(grouping: donorFiles, by: \.file.size)
+    }
+
+    private static func findDonor(for rom: DATRom, in donorsBySize: [Int64: [HashedFile]]) -> HashedFile? {
+        (donorsBySize[rom.size] ?? []).first { donorMatches($0, rom: rom) }
+    }
+
     /// Repairs a `.missing` rom by borrowing it from an external,
     /// read-only "Maintenance folder" the user configures once, in
     /// Settings → General (`MaintenanceFolderSettings`), and drops new or
@@ -572,17 +815,42 @@ public enum RebuildPlanner {
     /// comment for why a game with none is skipped rather than guessed
     /// at).
     ///
-    /// Deliberately narrow to `.missing` roms only — a `.hashMismatch`
+    /// Covers `.missing` roms AND `.foundElsewhere` ones — a `.hashMismatch`
     /// rom already occupies its own correct slot under content that's
-    /// simply wrong, which would need an overwrite (remove the bad entry,
-    /// then add the good one) this function doesn't attempt yet.
+    /// simply wrong, which needs an overwrite (remove the bad entry, then
+    /// add the good one) instead; see `planReplaceCorruptedRoms` below,
+    /// which does exactly that, sharing this same donor mechanism.
+    ///
+    /// `.foundElsewhere` included since jensyleo's own live report
+    /// (2026-09-21): a NAOMI BIOS rom shared with an unrelated game
+    /// (`315-6146.bin`, also declared by `mvsc2`) showed "Available in
+    /// another game (mvsc2.zip)" forever — genuinely absent from naomi's
+    /// OWN archive (never `.correct`/`.misnamed` there), yet
+    /// `planRepairFromMaintenanceFolder`'s old `.missing`-only guard
+    /// skipped it outright regardless of whether a clean donor sat in
+    /// Maintenance, since `.foundElsewhere` is a distinct status from
+    /// `.missing`. `.foundElsewhere` never claims/consumes the file it
+    /// points at (see that case's own doc comment on `RomMatchStatus`), so
+    /// it means exactly the same thing `.missing` does for THIS game's own
+    /// archive: the content isn't there. Still only ever reads from
+    /// `donorFiles` (Maintenance/configured folders) — never from the
+    /// `.foundElsewhere` hashed file itself, which stays exactly the
+    /// informational pointer it always was. (2026-09-21: briefly reverted
+    /// this same day over a suspected overlap with `planConvertToNonMerged`
+    /// ("Make Self-Contained…"/Fase 2 Step 4) — jensyleo's own instruction:
+    /// that feature was already set aside earlier in this project and is
+    /// not the path to use here, so this stays the one real fix.)
     public static func planRepairFromMaintenanceFolder(matchReport: MatchReport, donorFiles: [HashedFile]) -> [RebuildOperation] {
         var operations: [RebuildOperation] = []
+        let donorsBySize = donorsBySize(donorFiles)
         for gameResult in matchReport.games {
             guard let anchor = existingAnchor(for: gameResult) else { continue }
             for romMatch in gameResult.matches {
-                guard case .missing = romMatch.status else { continue }
-                guard let donor = donorFiles.first(where: { donorMatches($0, rom: romMatch.rom) }) else { continue }
+                switch romMatch.status {
+                case .missing, .foundElsewhere: break
+                default: continue
+                }
+                guard let donor = findDonor(for: romMatch.rom, in: donorsBySize) else { continue }
                 guard !isUnrewritableArchiveEntry(donor.file) else { continue }
                 let outputEntryName = safePathComponent(romMatch.rom.name)
                 switch anchor {
@@ -603,6 +871,147 @@ public enum RebuildPlanner {
             }
         }
         return operations
+    }
+
+    /// Identifies exactly which `.missing` roms `planRepairFromMaintenanceFolder`
+    /// above would actually repair, without planning or touching anything —
+    /// `MaintenanceDonorDetector`'s own read (ROMForgeCore, purely for
+    /// display) needs this same "would Find ROMs really fix this" answer,
+    /// and computing it by literally sharing this function's own anchor/
+    /// donor-match guards (rather than a second, hand-written copy of
+    /// them) is what guarantees the two can never quietly disagree.
+    ///
+    /// jensyleo's own report (2026-09-14): a game with NO anchor at all
+    /// (its own archive/file doesn't exist on disk yet — e.g. deleted
+    /// entirely, not merely missing a few roms) still showed every one of
+    /// its roms as "donor available" (yellow) purely because the
+    /// Maintenance folder happened to have a matching donor for each —
+    /// misleading, since `planRepairFromMaintenanceFolder` itself can
+    /// never actually write anywhere without a real anchor to attach to,
+    /// so "Find ROMs…" would silently do nothing for it. Returned as a
+    /// `Set` of `"<game>\u{0}<rom name>"` keys — a plain tuple isn't
+    /// `Hashable` — rather than a new public struct, since this exists
+    /// purely for one internal cross-check, not a stable public API.
+    public static func romsRepairableFromMaintenanceFolder(matchReport: MatchReport, donorFiles: [HashedFile]) -> Set<String> {
+        var repairable: Set<String> = []
+        let donorsBySize = donorsBySize(donorFiles)
+        for gameResult in matchReport.games {
+            guard existingAnchor(for: gameResult) != nil else { continue }
+            for romMatch in gameResult.matches {
+                // See `planRepairFromMaintenanceFolder`'s own doc comment
+                // on why `.foundElsewhere` is included alongside `.missing`.
+                switch romMatch.status {
+                case .missing, .foundElsewhere: break
+                default: continue
+                }
+                guard let donor = findDonor(for: romMatch.rom, in: donorsBySize) else { continue }
+                guard !isUnrewritableArchiveEntry(donor.file) else { continue }
+                repairable.insert("\(gameResult.game.name)\u{0}\(romMatch.rom.name)")
+            }
+        }
+        return repairable
+    }
+
+    /// Replaces a `.hashMismatch` rom's own bad content with a
+    /// verified-correct copy found in the exact same external donor
+    /// source `planRepairFromMaintenanceFolder` already searches (the
+    /// Maintenance folder, optionally plus the system's own configured
+    /// ROM folders — see that function's own doc comment) — jensyleo's
+    /// own request (2026-09-13), after asking Claude to help track down a
+    /// correct dump online and being told that's out of bounds: "crea una
+    /// lógica... que si detecta la ROM correcta en alguna parte la
+    /// reemplace." "Replace Corrupted ROMs…" in the toolbar.
+    ///
+    /// The one real difference from that function: a `.missing` slot has
+    /// nothing to remove, so a plain `.addEntryToZip`/`.copy` is enough.
+    /// A `.hashMismatch` slot already has a REAL file sitting there under
+    /// the exact name this rom needs — `donorFiles`' own entry must land
+    /// under that identical name, so the bad one has to be removed FIRST
+    /// (an add under an already-occupied name is refused, same as every
+    /// other "never overwrite" operation in this app). Each rom therefore
+    /// plans as a PAIR — remove-then-add (or delete-then-copy/extract for
+    /// a loose file) — mirroring `planRenameRomsInArchive`'s own paired
+    /// shape (add-then-remove there, reversed here because THAT rename
+    /// targets a NEW, not-yet-occupied name while THIS one targets the
+    /// exact name already in use). Callers must execute each pair
+    /// together, same as `LibraryViewModel.renameRomsInArchive`'s own
+    /// `stride(by: 2)` loop: if the remove half succeeds but the add half
+    /// fails (e.g. a donor read error), the rom becomes `.missing` rather
+    /// than staying `.hashMismatch` or losing anything — recoverable by a
+    /// later "Find ROMs"/"Replace Corrupted ROMs…" pass, never silently
+    /// corrupting.
+    ///
+    /// A `.hashMismatch` rom whose bad content lives inside an
+    /// unsupported `.7z` is skipped — no 7z-entry rewrite support, same
+    /// "not yet" every other planner function here already accepts.
+    ///
+    /// A `.hashMismatch` rom living inside a `.zip` IS supported —
+    /// real crash found live by jensyleo (2026-09-14), first time this
+    /// action ever actually ran against a real corrupted zip entry: the
+    /// remove half used to call `ZIPFoundation.Archive.remove(_:)`
+    /// directly, which rewrites the archive in place using unsigned
+    /// arithmetic derived from the REMOVED entry's own (here: CORRUPTED)
+    /// local-header size — an inconsistent size there can underflow that
+    /// subtraction, an instant uncatchable `SIGTRAP`. Fixed properly at
+    /// `RebuildExecutor.removeEntryFromZip`'s own level (see its doc
+    /// comment): it now rebuilds the archive from scratch instead of
+    /// patching it in place, so this planner function needs no special
+    /// case for "the bad entry lives inside a zip" — the `.removeEntryFromZip`
+    /// operation it plans below is safe regardless.
+    public static func planReplaceCorruptedRoms(matchReport: MatchReport, donorFiles: [HashedFile]) -> [RebuildOperation] {
+        var operations: [RebuildOperation] = []
+        let donorsBySize = donorsBySize(donorFiles)
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                guard case .hashMismatch(let badFile) = romMatch.status else { continue }
+                guard !isUnrewritableArchiveEntry(badFile.file) else { continue }
+                guard let donor = findDonor(for: romMatch.rom, in: donorsBySize) else { continue }
+                guard !isUnrewritableArchiveEntry(donor.file) else { continue }
+                let outputEntryName = safePathComponent(romMatch.rom.name)
+                if isZipEntry(badFile.file) {
+                    let zipURL = badFile.file.url
+                    operations.append(.removeEntryFromZip(archive: zipURL, entryName: badFile.file.effectiveEntryPath))
+                    operations.append(.addEntryToZip(
+                        targetArchive: zipURL,
+                        entryName: outputEntryName,
+                        source: archiveEntrySource(forDonor: donor, outputEntryName: outputEntryName)
+                    ))
+                } else if isLooseFile(badFile.file) {
+                    let destination = badFile.file.url
+                    operations.append(.delete(destination))
+                    if isZipEntry(donor.file) {
+                        operations.append(.extractZipEntry(archive: donor.file.url, entryName: donor.file.name, to: destination))
+                    } else {
+                        operations.append(.copy(from: donor.file.url, to: destination))
+                    }
+                }
+            }
+        }
+        return operations
+    }
+
+    /// Identifies exactly which `.hashMismatch` roms `planReplaceCorruptedRoms`
+    /// above would actually replace, without planning or touching anything
+    /// — same "share the real guards, don't hand-write a second copy that
+    /// could quietly disagree" reasoning as `romsRepairableFromMaintenanceFolder`
+    /// just above, for `MaintenanceDonorDetector`'s own display-only read.
+    /// No anchor check needed here (unlike that function): a `.hashMismatch`
+    /// rom's own archive/file already exists on disk by definition — the
+    /// content is merely wrong, not absent — so there's nothing analogous
+    /// to "the game was fully deleted" that could make this misleading.
+    public static func romsReplaceableFromMaintenanceFolder(matchReport: MatchReport, donorFiles: [HashedFile]) -> Set<String> {
+        var replaceable: Set<String> = []
+        let donorsBySize = donorsBySize(donorFiles)
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                guard case .hashMismatch(let badFile) = romMatch.status else { continue }
+                guard !isUnrewritableArchiveEntry(badFile.file) else { continue }
+                guard let donor = findDonor(for: romMatch.rom, in: donorsBySize) else { continue }
+                guard !isUnrewritableArchiveEntry(donor.file) else { continue }
+                replaceable.insert("\(gameResult.game.name)\u{0}\(romMatch.rom.name)")
+            }
+        }
+        return replaceable
     }
 
     /// Makes every game in the scan self-contained by copying in any rom
@@ -681,7 +1090,7 @@ public enum RebuildPlanner {
                     }
                     guard let hashedFile, isZipEntry(hashedFile.file) else { continue }
                     guard parentAlreadyHas(romMatch.rom, in: parent) else { continue }
-                    operations.append(.removeEntryFromZip(archive: hashedFile.file.url, entryName: hashedFile.file.name))
+                    operations.append(.removeEntryFromZip(archive: hashedFile.file.url, entryName: hashedFile.file.effectiveEntryPath))
                 }
             }
         }
@@ -833,12 +1242,17 @@ public enum RebuildPlanner {
                 let currentEntryName = hashedFile.file.name
                 guard let targetEntryName = caseTransformTarget(current: currentEntryName, datafileDeclaredName: romMatch.rom.name, policy: policy) else { continue }
                 let zipURL = hashedFile.file.url
+                // `effectiveEntryPath` for the actual archive read/remove
+                // (see `ScannedFile`'s own doc comment) — `currentEntryName`
+                // above stays the plain name on purpose, since that's what
+                // `caseTransformTarget` needs to compare case against.
+                let currentEntryPath = hashedFile.file.effectiveEntryPath
                 operations.append(.addEntryToZip(
                     targetArchive: zipURL,
                     entryName: targetEntryName,
-                    source: ArchiveEntrySource(source: zipURL, entryName: targetEntryName, sourceArchiveEntryName: currentEntryName)
+                    source: ArchiveEntrySource(source: zipURL, entryName: targetEntryName, sourceArchiveEntryName: currentEntryPath)
                 ))
-                operations.append(.removeEntryFromZip(archive: zipURL, entryName: currentEntryName))
+                operations.append(.removeEntryFromZip(archive: zipURL, entryName: currentEntryPath))
             }
         }
         return operations
@@ -981,5 +1395,318 @@ public enum RebuildPlanner {
             }
         }
         return groups
+    }
+
+    /// Creates a zero-byte placeholder for every genuinely absent `nodump`
+    /// rom — "Create dummy roms for nodump entries".
+    ///
+    /// Real bug found live by Claude (2026-09-13), testing this against a
+    /// real MAME set for the first time: this used to filter
+    /// `gameResult.matches` for `.missing` + `rom.status == .nodump`, but
+    /// `ROMMatcher.match` deliberately never assigns `.missing` to an
+    /// unclaimed `nodump` rom in the first place — its own doc comment
+    /// there says exactly why ("there's still nothing to report... same
+    /// as before"): a `nodump` rom nobody's disk can ever satisfy isn't
+    /// treated as a real absence, so it's silently dropped from
+    /// `romMatches` entirely rather than ever reaching `.missing`. That
+    /// made this whole planner unreachable in practice — it could never
+    /// find anything to act on, no matter how many undumped roms a real
+    /// scan had.
+    ///
+    /// Fixed by going straight to `gameResult.game.roms` (the DAT's own
+    /// full declared list, independent of whatever `ROMMatcher` chose to
+    /// report) and checking which `nodump` roms have NO entry at all in
+    /// `gameResult.matches` — that absence is exactly what "genuinely
+    /// nowhere on disk, nothing claims it" means; a `nodump` rom that DOES
+    /// have a same-named file somewhere shows up as `.nodump(HashedFile)`
+    /// in `matches` instead (see `RomMatchStatus`'s own doc comment) and
+    /// is correctly left untouched here — this planner never overwrites
+    /// whatever a user already put there. Uses the same `existingAnchor`
+    /// borrowed-location logic as cross-set repair: a game with nowhere
+    /// real to put the placeholder (every rom missing, or its only present
+    /// roms sit inside an unsupported `.7z`) is skipped entirely rather
+    /// than inventing a destination folder from scratch.
+    public static func planCreateDummyRoms(matchReport: MatchReport) -> [RebuildOperation] {
+        var operations: [RebuildOperation] = []
+        for gameResult in matchReport.games {
+            guard let anchor = existingAnchor(for: gameResult) else { continue }
+            let claimedRomNames = Set(gameResult.matches.map(\.rom.name))
+            for rom in gameResult.game.roms {
+                guard rom.status == .nodump, !claimedRomNames.contains(rom.name) else { continue }
+                let outputEntryName = safePathComponent(rom.name)
+                switch anchor {
+                case .zip(let targetArchive):
+                    operations.append(.createDummyZipEntry(targetArchive: targetArchive, entryName: outputEntryName, size: rom.size))
+                case .looseFolder(let folder):
+                    operations.append(.createDummyFile(at: folder.appendingPathComponent(outputEntryName), size: rom.size))
+                }
+            }
+        }
+        return operations
+    }
+
+    /// Strips the trailing comment from every distinct `.zip` that holds at
+    /// least one correctly (or misnamed-but-correctly-hashed) matched rom —
+    /// "Remove zip comments". One operation per unique archive, regardless
+    /// of how many of its entries matched — `clearZipComment` already
+    /// touches the whole file's own tail, never a single entry, so
+    /// repeating it per-rom would just plan the same truncation N times.
+    /// Every distinct matched `.zip` "Remove Zip Comments…" could ever
+    /// possibly touch — pure candidate identification, no disk I/O (per
+    /// this whole file's own rule) and no opinion at all about whether any
+    /// of them actually HAS a comment to remove. The caller (`LibraryViewModel`,
+    /// which already does real disk reads elsewhere, e.g. `donorFiles`)
+    /// reads each candidate's own comment and passes back only the ones
+    /// that genuinely have one, via `planRemoveZipComments(archivesWithComments:)`
+    /// below.
+    public static func matchedZipArchiveURLs(matchReport: MatchReport) -> Set<URL> {
+        var archives = Set<URL>()
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                let hashedFile: HashedFile?
+                switch romMatch.status {
+                case .correct(let file, _), .misnamed(let file, _): hashedFile = file
+                default: hashedFile = nil
+                }
+                guard let hashedFile, isZipEntry(hashedFile.file) || (isLooseFile(hashedFile.file) && isZipPath(hashedFile.file.url)) else { continue }
+                archives.insert(hashedFile.file.url)
+            }
+        }
+        return archives
+    }
+
+    /// One `.clearZipComment` per archive in `archivesWithComments` —
+    /// real bug found live by jensyleo (2026-09-22): the OLD version of
+    /// this function (see `matchedZipArchiveURLs` just above for the part
+    /// that survived) planned a removal for EVERY matched zip
+    /// unconditionally, never checking whether it actually had a comment
+    /// at all — offering "Remove Zip Comment…" (added to the context menu
+    /// that same day) for `gryzor.zip`, which never had one, right next
+    /// to genuinely commented archives. `archivesWithComments` is real,
+    /// already-read data the caller supplies (this function itself still
+    /// never touches disk) — see `matchedZipArchiveURLs`'s own doc
+    /// comment for why the two are split this way.
+    public static func planRemoveZipComments(archivesWithComments: Set<URL>) -> [RebuildOperation] {
+        archivesWithComments.sorted { $0.path < $1.path }.map { .clearZipComment(archive: $0) }
+    }
+
+    /// Populates MAME's own "samples" folder — a `<name>.zip` per machine
+    /// (or per shared `sampleof` group), each holding the `.wav` recordings
+    /// a handful of early-80s arcade boards play back for sounds their
+    /// hardware never synthesized on its own. Deliberately narrow, for
+    /// reasons that don't apply to any other Fase 2 action: MAME's own DAT
+    /// declares a sample's NAME only, never a hash — there's no dump to
+    /// verify (these are original cabinet audio recordings, not a ROM
+    /// dump), so "Fix Samples" can only ever mean "does the whole zip this
+    /// game needs exist at all", never "is it the right one". This
+    /// planner just copies whichever candidate `foundSampleZips` already
+    /// found (by NAME alone, plain filesystem search — see
+    /// `LibraryViewModel.collectSamples` for where that search itself
+    /// happens; planning stays pure here, same as every other planner
+    /// function) into `samplesFolder`, one `<name>.zip` per resolved
+    /// sample-set name still missing there.
+    ///
+    /// `neededSetNames` is every DISTINCT resolved sample-set name the
+    /// caller's loaded DAT actually needs — already resolved via `sampleOf
+    /// ?? name` (mirrors `cloneOf`/`romOf`'s own one-hop sharing), so two
+    /// games sharing one `sampleof` group only ever plan ONE copy for it,
+    /// not once per game.
+    public static func planCollectSamples(
+        neededSetNames: Set<String>,
+        foundSampleZips: [String: URL],
+        samplesFolder: URL
+    ) -> [RebuildOperation] {
+        neededSetNames.sorted().compactMap { setName in
+            guard let source = foundSampleZips[setName] else { return nil }
+            let destination = samplesFolder.appendingPathComponent("\(safePathComponent(setName)).zip")
+            return .copy(from: source, to: destination)
+        }
+    }
+
+    /// "Organize BIOS Files…" — jensyleo's own request (2026-09-23),
+    /// exclusively a toolbar File Actions entry: moves every real,
+    /// standalone BIOS archive/loose file (`DATGame.isBios == true`)
+    /// found anywhere across the system's own configured ROM folders into
+    /// one dedicated `biosFolder`, and removes any OTHER unclaimed copy of
+    /// that same BIOS's content found elsewhere — jensyleo's own words:
+    /// "buscar en todos los ROMS folders y moverlos a la carpeta BIOS. Si
+    /// hay repetidos, los elimina." Deliberately works the SAME regardless
+    /// of Rom/Bios merge mode ("no importa el modo", his own words) — a
+    /// BIOS machine is always matched as its own `GameMatchResult`
+    /// independent of whatever merge mode does to fold its content into
+    /// OTHER games' own archives, so this only ever touches the BIOS's own
+    /// physical file, never anything folded elsewhere.
+    ///
+    /// Two passes:
+    /// 1. For each BIOS machine, `.move` its own real container into
+    ///    `biosFolder`, unless it's already sitting there. `hashedFile.file
+    ///    .url` is always the real on-disk container regardless of whether
+    ///    this particular rom is matched as a loose file or as one of
+    ///    several named entries inside a zip — a real BIOS zip
+    ///    (`neogeo.zip`, several distinct entries) is the common case, not
+    ///    the exception, and moving the whole container file needs no
+    ///    entry-level rewrite either way (an earlier version of this
+    ///    function wrongly required `isLooseFile`, which only recognizes a
+    ///    single-entry-named-after-itself zip — silently skipping every
+    ///    genuine multi-entry BIOS zip; caught by
+    ///    `planOrganizeBIOSFilesMovesAndDedups`'s own test).
+    /// 2. For every OTHER unclaimed copy of that same BIOS's content found
+    ///    anywhere in the scan (`SurplusFile.requiredByGameMachineName`
+    ///    pointing at one of these BIOS machines) — reusing the exact same
+    ///    safety field "Remove Redundant Files…" already relies on
+    ///    (`requiredByGameOwnerSatisfiedElsewhere`, the strict subset that
+    ///    means the owner genuinely already has a real copy — see that
+    ///    field's own doc comment for the 2026-09-19 incident this
+    ///    protects against) — plans its removal: `.removeEntryFromZip` for
+    ///    an entry inside another archive, `.delete` for a genuine loose
+    ///    duplicate.
+    public static func planOrganizeBIOSFiles(matchReport: MatchReport, biosFolder: URL) -> [RebuildOperation] {
+        organizeSharedMachineOperations(matchReport: matchReport, destinationFolder: biosFolder, isQualifying: { $0.isBios })
+    }
+
+    /// "Organize Complementary Chips…" — jensyleo's own request
+    /// (2026-09-24), right after a long, sourced investigation (MAME's own
+    /// official docs, `docs.mamedev.org/usingmame/aboutromsets.html`:
+    /// "Device sets contain reusable circuit designs and their associated
+    /// firmware that appear across multiple, otherwise unrelated arcade
+    /// boards... categorized as a Device, with the data stored as a Device
+    /// set" — the exact same NAMCO51.ZIP-style pattern as a BIOS, just
+    /// tagged `isdevice="yes"` instead of `isbios="yes"` in `-listxml`).
+    /// jensyleo's own final wording: "lo mismo que BIOS pero para los
+    /// demás chips."
+    ///
+    /// Same exact two-pass mechanics as `planOrganizeBIOSFiles` — see
+    /// `organizeSharedMachineOperations`'s own doc comment for why sharing
+    /// one implementation is safe here: a rom genuinely embedded INSIDE a
+    /// playable game's own archive (jensyleo's own explicit exclusion
+    /// rule, confirmed with real DAT data: CPS2's own QSound `region=
+    /// "qsound"` sample roms, declared directly under the GAME's own
+    /// `<machine>`, not a separate device machine) never shows up as one
+    /// of THIS device's own `gameResult.matches` at all — `ROMMatcher`
+    /// already claims that physical file for the game's own requirement,
+    /// so there's nothing here to move. Only a rom the DAT models as
+    /// belonging to the DEVICE's own separate `<machine isdevice="yes">`
+    /// entry (e.g. QSound's real chip firmware, `dl-1425.bin`, or Sega's
+    /// `segadimm`) ever becomes a candidate — exactly the distinction
+    /// jensyleo's own rule called for, with no extra filtering needed
+    /// beyond reusing `DATGame.isDevice` in place of `isBios`.
+    public static func planOrganizeComplementaryChips(matchReport: MatchReport, chipsFolder: URL) -> [RebuildOperation] {
+        organizeSharedMachineOperations(matchReport: matchReport, destinationFolder: chipsFolder, isQualifying: { $0.isDevice })
+    }
+
+    /// Shared two-pass mechanics behind both `planOrganizeBIOSFiles` and
+    /// `planOrganizeComplementaryChips` — the only real difference between
+    /// "a shared BIOS" and "a shared complementary chip" is which
+    /// `DATGame` flag marks it (`isBios` vs `isDevice`); everything else
+    /// (move the machine's own real container in, remove a further
+    /// confirmed-safe duplicate copy elsewhere) is identical.
+    private static func organizeSharedMachineOperations(
+        matchReport: MatchReport, destinationFolder: URL, isQualifying: (DATGame) -> Bool
+    ) -> [RebuildOperation] {
+        var operations: [RebuildOperation] = []
+        var qualifyingMachineNames = Set<String>()
+
+        for gameResult in matchReport.games where isQualifying(gameResult.game) {
+            qualifyingMachineNames.insert(gameResult.game.name)
+            var candidateURLs = Set<URL>()
+            for romMatch in gameResult.matches {
+                let hashedFile: HashedFile?
+                switch romMatch.status {
+                case .correct(let file, _), .misnamed(let file, _), .hashMismatch(let file): hashedFile = file
+                default: hashedFile = nil
+                }
+                guard let hashedFile else { continue }
+                candidateURLs.insert(hashedFile.file.url)
+            }
+            for url in candidateURLs where url.deletingLastPathComponent() != destinationFolder {
+                operations.append(.move(from: url, to: destinationFolder.appendingPathComponent(url.lastPathComponent)))
+            }
+        }
+
+        for surplus in matchReport.surplusFiles {
+            guard let machineName = surplus.requiredByGameMachineName, qualifyingMachineNames.contains(machineName) else { continue }
+            guard surplus.requiredByGameOwnerSatisfiedElsewhere else { continue }
+            let file = surplus.file.file
+            if isZipEntry(file) {
+                operations.append(.removeEntryFromZip(archive: file.url, entryName: file.effectiveEntryPath))
+            } else if isLooseFile(file) {
+                operations.append(.delete(file.url))
+            }
+            // A `.7z`-held entry (`isUnrewritableArchiveEntry`) is skipped
+            // entirely, same reasoning as every other entry-removal
+            // planner here — `SevenZipRunner` exposes no entry removal.
+        }
+        return operations
+    }
+
+    /// One human-readable line per BIOS machine "Organize BIOS Files…"
+    /// would actually touch — jensyleo's own request (2026-09-23): "en ese
+    /// menú de confirmación, quiero que muestre el listado de las BIOS que
+    /// encontró", right after asking what exactly the action does, worried
+    /// about losing BIOS files he already has. Deliberately separate from
+    /// `planOrganizeBIOSFiles` itself (that one stays a flat, ordered list
+    /// of raw `RebuildOperation`s to execute) — this walks the exact same
+    /// two passes purely to describe them, one line per BIOS machine
+    /// touched, e.g. `"neogeo — Neo Geo (move; 1 duplicate copy removed)"`,
+    /// sorted by machine name so the confirmation dialog reads the same
+    /// way every time.
+    public static func describeOrganizeBIOSFiles(matchReport: MatchReport, biosFolder: URL) -> [String] {
+        describeOrganizeSharedMachines(matchReport: matchReport, destinationFolder: biosFolder, isQualifying: { $0.isBios })
+    }
+
+    /// Same reasoning as `describeOrganizeBIOSFiles` — one line per
+    /// complementary chip "Organize Complementary Chips…" would touch,
+    /// for that action's own confirmation dialog/result log.
+    public static func describeOrganizeComplementaryChips(matchReport: MatchReport, chipsFolder: URL) -> [String] {
+        describeOrganizeSharedMachines(matchReport: matchReport, destinationFolder: chipsFolder, isQualifying: { $0.isDevice })
+    }
+
+    private static func describeOrganizeSharedMachines(
+        matchReport: MatchReport, destinationFolder: URL, isQualifying: (DATGame) -> Bool
+    ) -> [String] {
+        var descriptionByMachineName: [String: String] = [:]
+        var movedCountByMachineName: [String: Int] = [:]
+        var duplicateCountByMachineName: [String: Int] = [:]
+        var qualifyingMachineNames = Set<String>()
+
+        for gameResult in matchReport.games where isQualifying(gameResult.game) {
+            qualifyingMachineNames.insert(gameResult.game.name)
+            descriptionByMachineName[gameResult.game.name] = gameResult.game.description
+            var candidateURLs = Set<URL>()
+            for romMatch in gameResult.matches {
+                let hashedFile: HashedFile?
+                switch romMatch.status {
+                case .correct(let file, _), .misnamed(let file, _), .hashMismatch(let file): hashedFile = file
+                default: hashedFile = nil
+                }
+                guard let hashedFile else { continue }
+                candidateURLs.insert(hashedFile.file.url)
+            }
+            let toMove = candidateURLs.filter { $0.deletingLastPathComponent() != destinationFolder }
+            if !toMove.isEmpty {
+                movedCountByMachineName[gameResult.game.name] = toMove.count
+            }
+        }
+
+        for surplus in matchReport.surplusFiles {
+            guard let machineName = surplus.requiredByGameMachineName, qualifyingMachineNames.contains(machineName) else { continue }
+            guard surplus.requiredByGameOwnerSatisfiedElsewhere else { continue }
+            let file = surplus.file.file
+            guard isZipEntry(file) || isLooseFile(file) else { continue }
+            duplicateCountByMachineName[machineName, default: 0] += 1
+        }
+
+        let touchedMachineNames = Set(movedCountByMachineName.keys).union(duplicateCountByMachineName.keys)
+        return touchedMachineNames.sorted().map { machineName in
+            let description = descriptionByMachineName[machineName] ?? machineName
+            var parts: [String] = []
+            if let moved = movedCountByMachineName[machineName] {
+                parts.append(moved == 1 ? "move" : "move \(moved) files")
+            }
+            if let duplicates = duplicateCountByMachineName[machineName] {
+                parts.append(duplicates == 1 ? "1 duplicate copy removed" : "\(duplicates) duplicate copies removed")
+            }
+            return "\(machineName) — \(description) (\(parts.joined(separator: "; ")))"
+        }
     }
 }

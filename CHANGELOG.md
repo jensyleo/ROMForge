@@ -2,7 +2,426 @@
 
 All notable changes to ROMForge are documented in this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-24
+
+### Added — selecting the Maintenance folder for the first time in a session scans it automatically
+
+jensyleo's own request (2026-09-14): clicking any other ROM folder's row just shows its already-computed
+results instantly, never re-scanning — the Maintenance folder used to behave differently, requiring an
+explicit "Scan Maintenance Folder" before its contents showed up at all, even the very first time it was
+selected. Plain selection now triggers a real load automatically, but only once per session: the first
+click reads and matches the folder's contents against the currently loaded DAT (so its own "donor
+available" coloring is correct from the start), and every click after that just re-displays what's
+already known, exactly like a normal ROM folder — a genuine content change still needs an explicit
+"Scan Maintenance Folder" (or the toolbar's "Scan This Folder…"), since ROMForge never re-reads a folder
+nobody asked it to.
+
+### Fixed — a game with no anchor at all falsely showed every rom as "donor available"
+
+jensyleo's own live report (2026-09-14), right after confirming "Find ROMs…" genuinely repairs a
+partially-missing game: he deleted `gng.zip` entirely from CPS1 and it STILL showed yellow "donor
+available" for every rom, when it should read plain red — `planRepairFromMaintenanceFolder` can never
+write anywhere without an existing anchor (some rom of the game already correctly present) to attach
+to, so the yellow promise was false for a genuinely absent game. `MaintenanceDonorDetector` now reuses
+a new `RebuildPlanner.romsRepairableFromMaintenanceFolder` — the exact same anchor+donor-match guards
+"Find ROMs…" itself uses — instead of a second, independent hash comparison, so the indicator can never
+promise a fix the real action can't deliver.
+
+### Added — scanning the Maintenance folder now forces a real scan of this system's own ROM folders first, if one hasn't run yet this session
+
+jensyleo's own request (2026-09-14): the Maintenance folder's own "donor available" coloring is only
+ever computed as part of a real scan of this system's own ROM folders — browsing Maintenance before
+ever running one showed either no coloring or (worse) coloring computed against a stale/nonexistent
+match report. "Scan Maintenance Folder" (toolbar and sidebar) now runs a real "Scan All Folders" first
+when this system hasn't been scanned yet this session, then refreshes the Maintenance listing against
+that fresh result.
+
+### Added — a missing rom with a donor already staged in Maintenance now shows differently
+
+jensyleo's own request (2026-09-14): after confirming live that "Find ROMs…" already correctly plans
+the repair for a missing rom whose exact content sits in the Maintenance folder, the remaining gap was
+purely visual — such a rom still showed the exact same plain red "Missing" as one with no known fix at
+all. A new, purely informational post-pass (`MaintenanceDonorDetector`) flags a `.missing` rom whose
+size + one shared hash matches something in this system's own Maintenance folder; the Roms panel's own
+status icon now shows that rom with the same yellow triangle `.incorrect` already uses elsewhere,
+tooltipped "a matching donor is staged... run Fix → Find ROMs". Nothing is copied or written by this —
+the rom's real status stays `.missing` until "Find ROMs…" is actually run.
+
+### Added — ROM folder context menu: "Scan This Folder", confirmation on "Remove Folder…"
+
+jensyleo's own request (2026-09-14): each configured ROM folder's own sidebar row now offers "Scan
+This Folder" directly (same action as the toolbar's "Scan" dropdown's own "Scan Folder"), and "Remove
+Folder…" now asks for confirmation first (clarifying it only stops ROMForge from scanning that folder —
+nothing is deleted from disk) rather than removing it immediately on click. The Maintenance folder's
+own row got the same treatment — "Scan This Folder" (routed through its own read-only refresh, never a
+real audit scan) and "Delete Maintenance Subfolder…" (the same per-system delete Settings → General
+already offers), both reachable from the sidebar instead of a trip to Settings.
+
+### Added — Roms panel: File Actions regardless of DAT status (Extract/Move to Trash/Delete Permanently)
+
+jensyleo's own report (2026-09-13): the Roms panel's own right-click menu only ever offered "Fix This
+Misnamed ROM…", and only when a rename was actually available — he wanted the same kind of File
+Actions the Games table already has, available here too regardless of a rom's own DAT status
+(Correct/Bad/Unknown/Missing), adapted for the fact a rom entry is often INSIDE a `.zip` rather than a
+loose file. New right-click actions "Extract to Folder…" (a real decompression step for archived
+entries — copies the rom out as a plain loose file, leaving the archive untouched), "Move to Trash…",
+and "Delete Permanently…" — the latter two remove just the one entry from its own archive
+(`.removeEntryFromZip`) when archived, or act on the real file directly when loose, never touching a
+containing archive as a whole.
+
+### Added — delete a system's own Maintenance subfolder (Settings → General)
+
+jensyleo's own request (2026-09-13): "agregar la opción de eliminar Maintenance folder por sistema
+(MAME, NES, etc.)". Each configured system now has its own "Delete…" button next to its name in
+Settings → General → Maintenance folder, permanently removing just that system's own subfolder (and
+anything a user dropped inside it) without touching any other system's — re-created empty again the
+next time that system's own detail view is opened.
+
+### Fixed — several roms sharing identical PAL content could report a false "misnamed" swap, and "Fix Misnamed ROMs…" could fail outright trying to resolve it
+
+jensyleo's own report (2026-09-13), live-testing "Fix Misnamed ROMs Inside Their Archives…" against
+real MAME sets: `chasehq.zip`/`thndzone.zip`/`thndzone4.zip` — every entry already correctly named —
+logged "Could not rename a rom to 'pal20l8b-b52-17.ic18'… Refusing to overwrite existing file". Root
+cause: several roms in one game can legitimately declare IDENTICAL content under different names (one
+PAL chip wired to several sockets, e.g. `pal20l8b-b52-17.ic16`/`.ic18`/`.ic53`/`.ic55` all sharing one
+CRC) — `ROMMatcher` claimed each such rom's first unconsumed candidate by raw index, ignoring whether
+that candidate was already correctly named for it, so two already-correct entries could get cross-
+assigned to each other's rom names — reported as two needless "misnamed" roms, and renaming one into
+the other's name then collided with the very entry scheduled to vacate it. `ROMMatcher.match` now
+prefers a candidate whose own entry name already equals the rom's declared name, when one is still
+available, before falling back to the first unconsumed candidate — an already-correctly-named entry
+always self-claims first.
+
+### Added — "Remove Redundant Files…" / "Remove Redundant ROMs…" Fix actions
+
+jensyleo's own request (2026-09-13): two new Fix actions targeting a duplicate copy of content the DAT
+DOES recognize (shown as "Not needed here (required by X)"), just not needed at this exact location
+because another game already claims an equivalent copy elsewhere — the exact complement of "Remove
+Useless Files…" (which only ever targets content the DAT recognizes nothing about at all). Split into
+two actions mirroring the existing Files/ROMs convention: "Remove Redundant Files…" deletes a LOOSE
+duplicate file; "Remove Redundant ROMs…" removes just the duplicate ENTRY inside a `.zip`, never the
+whole archive. Both scoped to the selected ROM folder only, same as "Remove Useless Files…".
+
+### Added — "Replace Corrupted ROMs…" Fix action
+
+jensyleo's own request (2026-09-13), after finding a real "Bad (hash mismatch)" rom (a genuine file
+sitting in its expected slot, right name, wrong content) and asking whether a correct dump exists: a
+new Fix action searches the same donor sources "Repair from Maintenance Folder…" already uses (the
+Maintenance folder and/or the system's own ROM folders, per Settings → Fix → "Search missing ROMs
+in"), matched purely by content hash — never by name — and, when a verified-correct copy is found,
+removes the bad content and writes the correct one in its place. The donor file itself is only ever
+read, never modified. Not yet enabled for jensyleo's own manual testing round (see `TESTING.es.md`).
+
+### Fixed — Roms panel showed the wrong name for a surplus/unrecognized entry
+
+jensyleo's own report (2026-09-13): a genuinely unrecognized entry inside an otherwise-correct archive
+showed the CONTAINER's own filename (e.g. "ganryu.zip") under "File name" instead of the actual
+unrecognized entry's own name, and "Rom name" showed that same real entry name as if the DAT had
+declared it — misleading, since the DAT knows nothing about this file at all. `AuditReporter` now sets
+`actualEntryName` for a surplus entry too (mirroring every matched-rom case), so "File name" shows the
+entry's own real name; "Rom name" now shows "Unknown" for any entry with no owning DAT game.
+
+### Added — "Remove Useless Files" reachable from the Games table's own context menu
+
+jensyleo's own report (2026-09-13): scanning a folder with deliberately-planted unrecognized files
+showed "Extra file in archive" on the affected row, but nothing in the right-click menu could act on
+it — the toolbar's own "Remove Useless Files…" only ever scopes to the selected ROM FOLDER (itself
+narrowed to that scope earlier the same day), never to a row picked directly in the table. Right-click
+one or more Files now offers "Remove Useless File(s)…" whenever at least one of them actually has
+something the DAT recognizes nothing about — same "only shown when its own preview count is > 0" rule
+already governing "Fix Mismatched Files"/"Fix Misnamed ROMs Inside Their Archives…" there, and its own
+always-shown confirmation dialog (this one is genuinely destructive every time, never skippable).
+
+### Fixed — a scoped Fix's own verification rescan no longer narrows "rescan required" coverage
+
+jensyleo's own report (2026-09-13): "rescaneo una carpeta, hago fix de un archivo, luego trato de
+hacer fix en otro archivo y de nuevo me vuelve a pedir rescan, eso no es necesario, ya que ya se
+escaneó la carpeta." Root cause: every scoped Fix action's own automatic post-fix verification rescan
+(scoped to just the File(s) it touched, far narrower than the whole folder a prior "Scan Folder" had
+already covered) was overwriting `lastScanScope` outright instead of adding to it — silently discarding
+the broader coverage the folder-level scan had already established, so the very next Fix on a
+different file in that same folder failed the "was this scope actually scanned recently" check for no
+real reason. Scan scope now accumulates (`LibraryViewModel.mergedScanScope`): a narrower scan folds
+into whatever coverage already existed rather than replacing it, and a whole-system scan — the
+broadest possible — is never narrowed back down by a later scoped one.
+
+### Fixed — "Remove Useless Files…" now scoped to the selected ROM folder only
+
+jensyleo's own report (2026-09-13), caught live-testing this himself: it deleted unrecognized files
+across every configured ROM folder at once, not just the one he had selected — surprising and
+dangerous for the single most destructive action in the app. Now requires a real ROM folder selected
+(the toolbar item is disabled otherwise, and disabled for the read-only Maintenance folder too, same
+as "Scan Folder") and only ever plans deletions inside it, via the same `restrictToScope` mechanism
+"Fix Mismatched Files" already used for its own folder scoping.
+
+### Added — "Fix Samples" (Settings → Systems → MAME → "Samples")
+
+jensyleo's own request (2026-09-11): "implementalo, es clave para MAME." MAME's own DAT declares a
+sample's NAME only, never a hash — these are original arcade cabinet audio recordings a handful of
+early-80s boards play back (Gorf, Wizard of Wor, Sinistar, Star Wars, Berzerk...), distributed
+separately from any romset, so there's no dump to verify — "Fix" here can only ever mean "does the
+whole samples zip this machine needs exist", never "is it the right one". `MAMEMachine`/`DATGame` now
+parse the `sampleof="..."` attribute (mirrors `cloneof`/`romof`'s own one-hop sharing). A new,
+off-by-default "Samples" section in Settings → Systems → MAME (MAME-exclusive by design, not Settings
+→ General) lets a user enable this and choose a folder; "Fix Samples…" (toolbar → Fix) then searches a
+system's own already-configured ROM folders for a same-named zip (filename only, no hashing) and copies
+it in — never touches, renames, or deletes anything already in either location.
+
+### Added — a zip's own archive comment now shows on the Games panel too
+
+jensyleo's own follow-up (2026-09-11) after considering a dedicated "has a zip comment" column and
+deciding against it ("es mejor sumarsela a la columna info"): the Roms panel's "Info" column already
+surfaced a matched zip's own comment text (2026-07-30), via `ZipCommentReader`/`ZipCommentCache` — the
+Games panel's own "Info" column (table column, detail-pane row, and CSV export) now reuses that exact
+same mechanism, appending `" — <comment>"` when the game's own archive carries one. No new detection,
+no new persisted field — purely reusing what already existed.
+
+### Removed — "Unzip and rezip every archive" (built, then decided against)
+
+jensyleo's own decision (2026-09-11), after asking exactly how the action worked: "elimina eso, no lo
+vamos a usar, no tiene sentido para esta app." Fully removed from all three layers — `RebuildOperation
+.rewriteArchiveAsTorrentZip`, its `RebuildExecutor` implementation, `RebuildPlanner.planUnzipAndRezip`,
+the `LibraryViewModel`/`LibraryDetailView` wiring (toolbar action, confirmation dialog, preview count),
+and its Core unit tests — rather than left disabled. Documented in ROADMAP.md with the design that was
+already built, for a future implementer if this decision is ever revisited.
+
+### Removed — "Find missing roms in scavenging folders" (decided against, not deferred)
+
+jensyleo's own decision (2026-09-11): "la idea es que solo busque las ROMs para reparación de la
+carpeta de reparación o de las ya agregadas a Rom Folder" — an arbitrary scavenging folder unrelated
+to any system is explicitly out of scope by design. What this toggle would have searched is already
+fully covered by "Repair from Maintenance Folder…" plus its own "Search missing ROMs in" scope picker
+(Maintenance subfolder alone, or that subfolder plus the system's own configured ROM folders).
+Documented in ROADMAP.md for a future implementer if this decision is ever revisited.
+
+### Removed — "Allow multiple rom formats" (decided against, not deferred)
+
+jensyleo's own decision (2026-09-11): this "Not yet available" toggle in Settings → Fix is never going
+to be implemented (it would need a second write path besides the current TorrentZip-only one, with no
+decision on what that would even be), so it's removed from the UI outright rather than left as
+permanently-disabled clutter. Documented in ROADMAP.md, with its original scope, so a future
+implementer has an exact starting point if this is ever revisited.
+
+### Added — three new Fix actions: Create Dummy ROMs, Remove Zip Comments, Unzip and Rezip
+
+jensyleo's own request (2026-09-11): "implementa: Create dummy roms for nodump entries, Remove zip
+comments y Unzip and rezip every archive." All three moved out of Settings → Fix → "Not yet
+available" and are now fully implemented end to end (`RebuildOperation`/`RebuildExecutor`/
+`RebuildPlanner` + `LibraryViewModel` actions + toolbar confirmation dialogs + Core unit tests):
+- **Create Dummy ROMs…** creates a zero-byte placeholder for every rom the DAT itself declares
+  `nodump` and that is genuinely `.missing` — never for a `nodump` rom that already has some file
+  sitting in its expected slot. Capped at 64 MiB per placeholder regardless of what an absurd
+  DAT-declared size asks for.
+- **Remove Zip Comments…** strips the trailing comment field from every matched archive, in place —
+  a pure byte-level truncation of the ZIP's own End-Of-Central-Directory record, never touching a
+  single entry inside it.
+- **Unzip and Rezip Every Archive…** rebuilds each game's own existing `.zip` from scratch as a fresh
+  TorrentZip-conformant archive, written to a temp file and atomically swapped in so a failure never
+  leaves the original truncated. Per jensyleo's own explicit decision (2026-09-11: "Se pierden al
+  reempaquetar — más simple y seguro"), only roms the DAT still recognizes survive the rebuild —
+  everything else (an unmatched entry, a hash-mismatched/nodump rom actually present, unrelated junk)
+  is dropped rather than losslessly preserved.
+
+All three are reachable from the toolbar's own "Fix" dropdown once added to `LibraryDetailView
+.fixActionsEnabledForTesting`, per jensyleo's own one-at-a-time manual-testing policy (2026-09-09) —
+built, wired, and tested, but not yet exposed by default.
+
+### Added — a pop-up after every Fix/File Action reports success or failure (and why)
+
+jensyleo's own request (2026-09-11): "agrega un mensaje emergente que diga si fue exitoso y con la
+información de lo que hizo" plus a second one "que reporte cuando el fix falle y la razón del fallo."
+Every one of the 15 write actions (the "Fix" dropdown's 10 actions, plus the 6 new File Actions) now
+posts a `LibraryViewModel.FixResultAlert` right after it finishes, shown as a real alert dialog —
+"Succeeded — N item(s)." or "N item(s) succeeded, M item(s) failed." with up to 8 concrete failure
+reasons inline (same strings the Log panel already gets). Deliberately additive: every existing
+`logSuccess`/`logWarning`/`logError` line stays exactly as it was — this reverses jensyleo's own
+earlier stance (2026-08-17) that errors belong ONLY in the Log panel, not a separate modal, which is
+why it's the one new thing in this entry that's genuinely a preference reversal, not a bug fix. New
+Settings → General → "Notifications" → "Show pop-up after Fix/File Action completes" toggle (on by
+default, per jensyleo's own follow-up: "coloca en menú general que estas ventanas emergentes sean
+configurables") turns it back into Log-only reporting when off.
+
+### Fixed — code audit (2026-09-11): compiler warnings and a defensive temp-path hardening
+
+jensyleo's own request: a full pass for dead code, vulnerabilities, and warnings. Findings:
+- **Security**: no command injection (every `Process` call already uses array-based arguments, never
+  shell-interpolated strings), no zip-slip (every ZIP extraction writes to a destination `URL` ROMForge
+  builds itself via `RebuildPlanner.safePathComponent`, never a raw ZIP-entry path), XXE already
+  correctly hardened on every DAT `XMLParser` (`shouldResolveExternalEntities = false`, no DTD
+  processing) — clean.
+- **Crash risk**: no force-unwrap/`try!`/`as!` on untrusted DAT/ZIP/ROM data found.
+- **Dead code**: none found — every recently-added `private` helper is actually referenced.
+- **Hardening**: `LibraryViewModel.uniqueCompressedArchiveURL`'s empty-input fallback used a fixed,
+  predictable path (`NSTemporaryDirectory()/Archive.zip` — a classic symlink-race pattern) instead of a
+  random one; currently unreachable (its only caller already guards against empty input) but fixed
+  anyway to use `FileManager.default.temporaryDirectory` with a random `UUID` component.
+- **Compiler warnings, all fixed**: two redundant `fileprivate` modifiers in `LibraryDetailView.swift`;
+  two Swift 6 actor-isolation warnings in `ROMForgeToolbar.swift` (a KVO observer and a
+  `willTerminate` notification handler calling a main-actor method without hopping) — both now
+  dispatch via `DispatchQueue.main.async`, same pattern the file's own other observers already use.
+  Zero warnings remain in either target.
+
+### Changed — the Maintenance subfolder row now shows in the Games panel itself, not a separate popover
+
+jensyleo's own follow-up (2026-09-11): "lo que debe es permitir ver desde la app, en el panel games,
+asi este vacio" — replaced yesterday's popover with the same mechanism every other ROM folder already
+uses: clicking it sets `selectedRomFolder`, so the Games panel shows it directly (naturally empty,
+since nothing there is ever scanned into the audit). New `isSelectedFolderMaintenanceSubfolder` guard
+keeps "Scan Folder" disabled specifically for this one folder — donor files matching the DAT by design
+would otherwise get silently folded into the system's own audit as if they were part of the real
+collection.
+
+### Added — an empty-state message in the Games panel for ANY empty scope, not just Maintenance
+
+jensyleo's own broader follow-up, same day: "si cualquier carpeta esta vacia, debe mostrar un mensaje
+en la ventana de game." What started as Maintenance-specific generalizes to every genuinely empty
+scope, each with its own explanation instead of one generic line: the Maintenance folder itself, a real
+ROM folder with nothing matched yet, an empty "Database" filter, or no scan having run at all.
+
+### Changed — the Maintenance subfolder row (ROM folder list) is now clickable, showing what's inside it
+
+jensyleo's own report (2026-09-11): "doy click a la carpeta MAME [su Maintenance subfolder]... y no me
+lo permite, debería permitirme entrar y mostrarme que en este momento está en blanco." Read-only for
+WRITES was never meant to mean unclickable — the row now opens a small popover on click with a plain
+`FileManager` directory listing (file names, or "This folder is currently empty" when there's genuinely
+nothing there yet) plus its own "Reveal in Finder" button. Still deliberately NOT wired into
+`selectedRomFolder` — it's never scanned/audited like a real ROM folder, just browsed; this is a
+separate, lightweight read of the folder's own contents, nothing to do with the DAT-audit machinery.
+
+### Changed — Settings → Fix → "Find ROMS" now hides its picker when no Maintenance folder is configured
+
+jensyleo's own request (2026-09-11): "esta opción debe estar ligada a la opción de la pestaña General
+Maintenance folder — si esta no está configurado (el folder) no debe aparecer como configurable en la
+pestaña Fix." The "Search missing ROMs in" scope choice is meaningless without a Maintenance root set
+at all — even "+ All ROM Folders" mode still requires the Maintenance subfolder to exist as part of the
+search set, so "Repair from Maintenance Folder…" already refused outright with none configured. The
+section now checks `MaintenanceFolderSettings.folderURL` and, when unset, shows a plain explanation
+pointing to Settings → General → "Maintenance folder" instead of an interactive (but functionally
+inert) picker.
+
+### Added — "File Actions": Move to Trash, Delete Permanently, Copy/Move to Folder…
+
+jensyleo's own request (2026-09-11): "cosas de sistema operativo como eliminar y copiar a otra
+carpeta... en un boton del menu que se llame File action". New toolbar dropdown "File Actions"
+(operates on whatever is selected in the Games table) plus a matching "File Actions" submenu in the
+Games table's own right-click menu (operates on whatever's right-clicked): "Move to Trash…" (real
+Finder Trash, via `NSWorkspace.recycle` — recoverable), "Delete Permanently…" (irreversible, via the
+existing `RebuildOperation.delete` primitive), "Copy to Folder…" and "Move to Folder…" (both reuse the
+existing `RebuildOperation.copy`/`.move`, with a plain `NSOpenPanel` destination picker — same pattern
+"Rebuild to Folder…" already uses). Every action requires a confirmation dialog and the same
+`modificationsEnabled` write-gate as every other Fase 2 action; Move/Delete/Trash rescan the system
+afterward, Copy doesn't (the source is never touched). New `LibraryViewModel.moveFilesToTrash`/
+`.deleteFilesPermanently`/`.copyFiles`/`.moveFiles`. New `MaintenanceFolderSettings
+.isUnderMaintenanceFolder(_:)` (jensyleo's own follow-up, same day: "mover, copiar o modificar en las
+carpetas de mantenimiento, no es posible") refuses the WHOLE batch — with a log line AND a real, modal
+`NSAlert` (jensyleo's own further follow-up, same day: "no solo debe salir un log sino un mensaje
+emergente" — a log line alone is easy to miss) — if any selected File sits inside the Maintenance
+folder, checked before any confirmation dialog even opens. Also "Duplicate" (Finder-style "name copy",
+"name copy 2", …, via `RebuildOperation.copy`) and "Compress" (packs the selection into a new `.zip`
+alongside it, via `RebuildOperation.createArchive`) — jensyleo's own same-day follow-up request. Neither
+asks for confirmation first, matching Finder's own behavior for both (never destructive to the source,
+unlike Move/Delete/Trash). New `LibraryViewModel.duplicateFiles`/`.compressFiles`.
+
+### Changed — Settings → Fix tab: "Case" section renamed, new "Find ROMS" section; new "Performance" section on General
+
+jensyleo's own requests (2026-09-11): (1) the Fix tab's section holding "Sets case (archive names)"/
+"Roms case (entry names)" is renamed from "Fix" to "Case" — it only ever governs HOW a name is styled,
+not the toolbar's own "Fix" repair actions. (2) New Fix tab "Find ROMS" section with a "Search missing
+ROMs in" segmented picker for "Repair from Maintenance Folder…": "Maintenance Folder Only" (the
+original, narrower behavior) or "Maintenance Folder + All ROM Folders" — the latter also searches every
+one of the system's own currently-configured ROM folders for a donor, so a rom merely misplaced in a
+sibling folder can donate too, not just one deliberately staged in Maintenance. New
+`MissingRomsSearchScope` enum (`ROMForgeCore`). (3) New Settings → General "Performance" section with a
+real "Number of threads" stepper (0-100; 0 = Auto, the default) overriding `HashingConcurrency
+.workerCount(for:)`'s automatic core-count-minus-one policy, used by every scan/hash pass in the app —
+started life on the Fix tab, moved to General the same day ("deja esa opcion de performance en
+general") since it isn't specific to "Fix" at all. New `HashingConcurrencySettings` (`ROMForgeCore`) so
+`HashingConcurrency` can read the same `UserDefaults` key `GeneralSettingsView` writes to, without Core
+ever importing the App target. Recommendation, spelled out in the Settings caption itself: leave it at
+"Auto" — hashing is CPU-bound, so a value above your Mac's own core count rarely hashes anything
+faster; 100 is a generous hard ceiling, not a target worth reaching for on today's hardware. The
+stepper wraps instead of clamping (jensyleo's own follow-up report the same day: climbing from 0 to 100
+one click at a time was too slow, with no quick way back to "Auto" from the top) — incrementing past
+100 lands back on 0/Auto, and decrementing below 0 lands on 100.
+
+### Fixed — a container-level CASE-only mismatch used to report green/"Ok" instead of yellow/"Bad file name" (Games panel), without dragging each correctly-named ROM entry down to "Bad name" too (Roms panel)
+
+jensyleo's own report (2026-09-11), "rezagado de Fase 1": `ROMMatcher.isInClaimedArchive` deliberately
+matches an archive to its game CASE-INSENSITIVELY (so a case-mismatched container like "AWBIOS.zip"
+is still recognized as `awbios`'s own archive at all, for matching purposes) — but that meant a pure
+container-case mismatch, with every entry inside matching its own declared name+hash exactly, was
+entirely invisible to the audit: every entry reported `.correct`. New `AuditEntry
+.hasContainerCaseMismatch` flags a `.correct` archived entry whose container filename already matches
+the game's expected name case-INsensitively (i.e. it's unambiguously meant to be this game's own
+container) but differs in exact case; `GameStatusRollup.gameCategory` treats that flag as `.incorrect`
+severity for the GAME-level rollup, so the Games panel (one row per File) correctly reads "Bad file
+name"/yellow. Two earlier attempts at this fix (both reverted the same day) got progressively closer
+but still wrong: the first compared the container's name to the game's name for exact equality
+outright, which also wrongly downgraded every legitimate cross-archive `.correct` match — a
+Merged-mode clone whose roms live inside its parent's own archive, or a machine whose roms live inside
+its BIOS's own archive, since neither container is ever named after the clone/machine's own name at
+all, case or no case; the second added the case-insensitive guard but downgraded the entry's own
+`AuditStatus` to `.incorrect` directly, which — jensyleo's own follow-up report, same day — also
+turned every genuinely well-named ROM inside that same container yellow/"Bad name" in the Roms panel
+(one row per rom entry), even though each rom's own name and hash were perfectly correct: a
+container-naming problem isn't a rom-naming one. The new flag is deliberately NOT reflected in
+`status` itself, so the Roms panel keeps reading every such rom green, while the Games panel — via the
+separate rollup — still flags the file. A loose (non-archived) file has no container identity to check
+and is unaffected. New SQLite column `has_container_case_mismatch` (schema v24) persists the flag
+across app relaunches, same as every other post-scan flag.
+
+### Changed — Maintenance folder is now one folder PER SYSTEM, not one shared by all
+
+jensyleo's own request (2026-09-11): "que se cree un folder por cada sistema que se tenga, ejemplo:
+si se tiene MAME y NES, se creen folder así: Maintenance/MAME, Maintenance/NES... la app debe crear
+el folder Maintenance y los subfolders." Settings → General → "Maintenance folder" now has "Choose
+Location…" (was "Choose Folder…") — you pick a PARENT location, not an already-existing folder to
+use as-is; ROMForge creates "<parent>/Maintenance" itself (confirmed first if it doesn't already
+exist there) plus one subfolder inside it per currently-configured system, and keeps that in sync
+automatically afterward — `LibraryDetailView`'s own `.onAppear` calls the new, idempotent
+`MaintenanceFolderSettings.ensureSubfolderExists(for:)` every time a system's detail view opens, so
+a system added after the root was already set still gets its own subfolder with no need to revisit
+Settings. "Repair from Maintenance Folder…" (`LibraryViewModel
+.planRepairFromMaintenanceFolderPreviewCount(system:)`) now scans ONLY that system's own subfolder,
+never the whole root — a donor dropped for one system can no longer accidentally satisfy a
+different system's missing rom just because they happen to share a hash. A system's own subfolder
+also now shows up as a read-only, non-selectable row (lock icon, "Reveal in Finder" only — no
+"Remove Folder", no reorder, never wired into `selectedRomFolder`/Fix scoping) in its own "ROM
+folder" sidebar list. An existing flat root from before this change keeps working exactly as
+before — the migration is entirely lazy via `ensureSubfolderExists`, never a forced one-time
+re-setup.
+
+### Removed — "Compare DAT Versions…"
+
+jensyleo's own call (2026-09-11), after reviewing what it actually added beyond a plain rescan: "no
+me convence eso de comparar DATS, si no se justifica su uso mejor quitarlo" — its one genuinely
+unique value (detecting a game that looks renamed between two DAT versions, via a shared rom) didn't
+justify a dedicated toolbar button, its own sheet, and a whole `DATVersionDiff` type for something
+used only occasionally (updating to a newer MAME version), especially once "Update Database"
+(Settings → Systems → MAME) already forces a full rescan after any DAT change, which surfaces
+Added/Removed on its own. Removed outright rather than just hidden — the code is fully recoverable
+from git history if this is ever worth reintroducing:
+- `App/Sources/DATVersionCompareSheet.swift` (the sheet UI)
+- `ROMForgeCore/Sources/ROMForgeCore/Reports/DATVersionDiff.swift` (the comparison logic)
+- `ROMForgeCore/Tests/ROMForgeCoreTests/DATVersionDiffTests.swift` (its own test suite)
+- The `"compareDATVersions"` toolbar action and `isShowingDATCompareSheet` sheet state in
+  `LibraryDetailView.swift`, and its own row in the Help window's "Settings — General" topic.
+
+If reviving this: the rename-detection half (`DATVersionDiff.renamed`) is the one piece actually
+worth keeping — a plain re-add of the sheet/button as they were is probably not the right shape a
+second time around; consider surfacing "possibly renamed" directly in the Games table instead (e.g.
+a status hint on a Surplus row whose content matches a Missing row elsewhere), which wouldn't need a
+separate compare-two-files-by-hand step at all.
+
+### Changed — "Export Report…"/"Export Fix DAT…"/"Export List to CSV…" now share one "Export" dropdown
+
+jensyleo's own request (2026-09-11): "Los 3 iconos de export dejarlo en uno solo que se despliegan
+las opciones como en el de FIX" — the same one-icon-many-actions consolidation "Fix" itself already
+got (2026-09-01), applied to the three export actions, which were still each a separate toolbar
+button. `LibraryDetailView.exportSubActions` gathers all three (still individually gated exactly as
+before — `onExportCollectionReport` availability, `auditReport`/`cachedGameNodes` state) under one
+new `"export"` `ToolbarAction` with `subActions`, the same mechanism `fixSubActions`/`"fix"` already
+use for `NSMenuToolbarItem`.
 
 ### Changed — "Scan Folder"/"Scan File" now genuinely scope their own disk access
 
@@ -352,6 +771,95 @@ nothing about at all (`RebuildPlanner.planRemoveUselessFiles`) — never a file 
 own archive still needs, never a file whose name matches a declared-`nodump` placeholder. Its
 own explicit confirmation dialog, separate from every other Fase 2 confirmation and from the
 general Write access gate.
+
+### Added — multi-system UI separation (MAME vs. Console)
+
+`RomSystem.isMAMEStyle`, decided from a fixed Category picker (Arcade/Console/Handheld/PC/Other)
+in "Add System" rather than parsed from the DAT — Settings → Systems and the "Database" sidebar
+tree now branch by kind, laying the groundwork for real console (e.g. NES) support alongside MAME.
+
+### Added — a dedicated, auto-scanned BIOS folder
+
+Settings → Systems → MAME → "BIOS": pick (or create) a folder, and "Organize BIOS Files…"
+(toolbar → Fix) moves every shared BIOS machine's own file there from wherever it's currently
+sitting, removing a further redundant copy only once another copy is confirmed safe elsewhere.
+Once configured, every scan reads this folder automatically — it never needs to be added as an
+ordinary ROM folder, and a BIOS moved there keeps showing Correct, not Missing. Shows up as its
+own row (🖥️) at the bottom of the "ROM folder" sidebar list. Dynamic: the toolbar action is only
+enabled when the current scan actually found something to organize, its own confirmation dialog
+and the Log both list every BIOS touched by name, not just a count. Its own columns: save a
+column preset named exactly "BIOS" while this row is selected and it auto-applies/restores
+whenever you select (or leave) it.
+
+### Added — Complementary Chips (MAME's own "Device set" concept)
+
+The same mechanism as the BIOS folder above, for MAME's official "Device" concept instead —
+shared firmware for a sound DSP, an I/O board, a touchscreen controller, etc., each declared in
+the DAT as its own separate device machine (MAME's own documentation: "Device sets contain
+reusable circuit designs and their associated firmware that appear across multiple, otherwise
+unrelated arcade boards", e.g. NAMCO51.ZIP). Settings → Systems → MAME → "Complementary Chips",
+"Organize Complementary Chips…" (toolbar → Fix), its own sidebar row (🧩), same dynamic-enable
+and by-name reporting as BIOS. A chip's rom that's genuinely embedded inside a game's own archive
+(never its own separate device file — confirmed with real DAT data, e.g. CPS2's own QSound sample
+roms) is deliberately never touched; only a rom the DAT models as belonging to a standalone
+device machine qualifies (e.g. QSound's real firmware, `dl-1425.bin`, or Sega's `segadimm`).
+
+### Added — Samples folder now auto-scanned too
+
+The configured Samples folder (Settings → Systems → MAME → "Samples") is now automatically
+included in every scan and shown as its own sidebar row (🔊), the same convenience as BIOS/
+Complementary Chips — no manual ROM-folder entry needed. Deliberately different from those two in
+one way: since a sample has no DAT-declared hash to match against (only a name), its content is
+excluded from this system's own audit entirely, so selecting this row correctly shows an empty
+Games table rather than a table full of spurious "Surplus" rows.
+
+### Added — the MAME executable path is now self-healing
+
+If nothing is configured (including right after using "Uninstall ROMForge…", which resets every
+setting by design), ROMForge now automatically finds and persists a real, working `mame` at the
+conventional Homebrew path (`/opt/homebrew/bin/mame`) on launch, verified against the real
+filesystem — never assumed. "Generate from Installed MAME…" (Update Database, Add System) and
+"Play in MAME" no longer silently lose their configured executable.
+
+### Added — "Uninstall ROMForge…" in the Help menu
+
+A real, native uninstall action (confirmation dialog, resets TCC permissions, clears Preferences/
+Caches/Saved State/HTTP storage, deregisters from LaunchServices, moves the app to the Trash —
+never a permanent delete) — deliberately never touches `~/Library/Application Support/ROMForge/`
+(configured systems, scan history, cached DATs).
+
+### Added — visible alerts for "nothing found" and "not configured" (not just the Log)
+
+Attempting a Fix action whose own required folder/toggle isn't configured, or scanning the BIOS/
+Complementary Chips/Samples folder and finding it empty, now shows a proper alert ("Configuration
+Required" / "Nothing Found") in addition to the existing Log line — both were previously easy to
+miss unless the Log panel already happened to be in view.
+
+### Changed — Settings reorganized: MAME-only settings live under Systems → MAME
+
+The Maintenance folder (location, per-system subfolders, its two related toggles), the
+"Dependencies"/"Details" chip-visibility toggles, and "ROM folder order" all moved out of
+Settings → General/View Options and into Settings → Systems → MAME (or View Options → Panels,
+for the reordering-only case) — none of those settings ever had any real effect for a
+non-MAME system, or were general app preferences to begin with. "Database" (DAT update) renamed
+to "Update Database" and moved to the top of the MAME settings page; the Rom/Bios merge mode
+section (previously untitled, just "MAME") is now clearly labeled "Rom/Bios Merge Mode". Panel
+Presets (renamed from "Games/Roms table column layouts") now leads the "Panels" tab.
+
+### Fixed — several real bugs found live while building the above
+
+`ScannedFile` now tracks a zip entry's real internal path (`entryPath`/`effectiveEntryPath`),
+fixing deletion of `__MACOSX/._*` AppleDouble junk nested inside a real subfolder and a false
+"Unknown" rom name for a file that does have one. "Play in MAME"/"Reveal in Finder" and all 9
+File Actions functions (Trash/Delete/Copy/Move/Duplicate/Compress/Extract) now correctly require
+a prior scan, same as every other write action. The Fix progress bar is unified into one
+monotonic 0–100% fraction across all six real phases instead of several independently-scaled
+bars. Three Fix actions that never reported real progress (Remove Useless Files/Fix Mismatched
+Files/Fix Misnamed ROMs) now do. "Remove Zip Comments…" now refreshes the Games table
+immediately. Fixed two related causes of scroll/click hangs on large collections (zip comments
+read synchronously off the main thread only on scan completion, not on a plain ROM-folder
+selection change) and a "Scan Required" alert that could loop forever once a dynamically-enabled
+toolbar action's own `isEnabled` called a side-effecting check on every render.
 
 ## [0.2.6] - 2026-09-01
 

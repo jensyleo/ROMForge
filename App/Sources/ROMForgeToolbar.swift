@@ -308,13 +308,19 @@ final class ROMForgeToolbarController: NSObject, NSToolbarDelegate {
         // property either way — no separate handling needed for it here
         // anymore).
         displayModeObservation = toolbar.observe(\.displayMode, options: [.new]) { [weak self] _, _ in
-            self?.persistDisplayModeAndRefresh()
+            // Dispatched, same as every other observer above — KVO fires
+            // synchronously on whatever thread set the property (AppKit
+            // itself always does this on the main thread for a real
+            // toolbar, but the Swift 6 compiler can't see that from this
+            // closure's own signature alone, hence the actor-isolation
+            // warning this silences without changing behavior).
+            DispatchQueue.main.async { self?.persistDisplayModeAndRefresh() }
         }
         // Safety net, not the fix for the bug above: covers quitting while
         // some other, still-unknown reorder path also skipped the two
         // notifications above without a sheet ever closing.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { [weak self] _ in
-            self?.persistCurrentOrder()
+            DispatchQueue.main.async { self?.persistCurrentOrder() }
         }
     }
 

@@ -75,4 +75,23 @@ public enum RebuildOperation: Equatable, Sendable {
     /// originally documented as blocked on already exists in the ZIP
     /// library this app already depends on for `.addEntryToZip`.
     case removeEntryFromZip(archive: URL, entryName: String)
+    /// Creates a placeholder LOOSE file of `size` zero bytes at `to` —
+    /// "Create dummy roms for nodump entries" (`RebuildPlanner
+    /// .planCreateDummyRoms`), loose-anchor case. Never claims to BE a real
+    /// dump (there's no hash to fake, by definition — a nodump rom has
+    /// none); purely a stand-in so a tool that checks for a rom's mere
+    /// PRESENCE doesn't choke on its total absence. Refuses to overwrite an
+    /// existing file, same as every other operation here.
+    case createDummyFile(at: URL, size: Int64)
+    /// Same as `createDummyFile` above, but adds the placeholder as one
+    /// NEW entry inside an EXISTING `.zip`, leaving every other entry in it
+    /// untouched — the archive-anchor case.
+    case createDummyZipEntry(targetArchive: URL, entryName: String, size: Int64)
+    /// Strips the trailing comment field from an existing `.zip`, in
+    /// place — "Remove zip comments". The comment is always the LAST thing
+    /// in a ZIP file (after the End-Of-Central-Directory record), so this
+    /// never has to touch, re-read, or re-validate a single entry inside
+    /// the archive — it's a pure byte-level truncation of the file's own
+    /// tail.
+    case clearZipComment(archive: URL)
 }

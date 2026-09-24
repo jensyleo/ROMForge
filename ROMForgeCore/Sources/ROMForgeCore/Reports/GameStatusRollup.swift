@@ -21,6 +21,16 @@ public enum GameStatusRollup {
         if entries.contains(where: { $0.status == .missing && !$0.isOptional }) { return .missing }
         if entries.contains(where: { $0.status == .badDump }) { return .badDump }
         if entries.contains(where: { $0.status == .incorrect }) { return .incorrect }
+        // A `.correct` entry can still carry `hasContainerCaseMismatch` —
+        // its own name+hash are genuinely right, but its CONTAINER's own
+        // filename is wrong (see that flag's own doc comment). That's a
+        // real, actionable problem at the FILE/game level (surfaced as
+        // "Bad file name" by `GameNode.infoText`'s existing `.incorrect`
+        // branch) even though it must never taint the entry's own `status`
+        // — this is the one place that distinction is bridged: the game's
+        // own rollup reads `.incorrect`, while the entry the Roms panel
+        // renders stays `.correct`/green.
+        if entries.contains(where: { $0.status == .correct && $0.hasContainerCaseMismatch }) { return .incorrect }
         if entries.contains(where: { $0.status == .correct }) { return .correct }
         // A game whose only disk is DAT-declared with no sha1 at all
         // (undumped media) has no `.correct` entry to fall back on —

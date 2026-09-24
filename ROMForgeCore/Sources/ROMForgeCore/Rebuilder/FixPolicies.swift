@@ -57,3 +57,68 @@ public enum FileCasePolicy: String, CaseIterable, Identifiable, Sendable {
         }
     }
 }
+
+/// Which physical copy `CHDMatcher`/`DiskAuditor` treats as the "correct"
+/// one when the exact same disk (by header SHA1) exists more than once in
+/// the scan — jensyleo's own request (2026-09-19), after noticing a real
+/// `kinst2.chd` sitting BOTH directly in a ROM folder's own root AND inside
+/// a same-named subfolder one level down (`Nintendo/kinst2.chd` vs
+/// `Nintendo/kinst2/kinst2.chd`) — a real, common layout ambiguity (some
+/// tools/exports put a game's CHD in its own subfolder, others expect it
+/// sitting flat next to the `.zip`), with no single "obviously right"
+/// answer ROMForge could safely guess on its own. Deliberately has NO
+/// "no preference"/"whichever comes first" option — jensyleo's own
+/// correction (2026-09-19): an unpredictable, order-of-discovery pick is
+/// exactly the kind of ambiguity this setting exists to remove, so ALWAYS
+/// resolving to one explicit, named rule is safer than allowing a silently
+/// arbitrary one.
+public enum CHDDuplicatePreference: String, CaseIterable, Identifiable, Sendable {
+    /// The copy sitting directly in the ROM folder (its containing
+    /// directory's name does NOT match the disk's own declared name).
+    case preferRootFolder
+    /// The copy sitting inside a subfolder named after the disk itself
+    /// (its containing directory's name matches the disk's own declared
+    /// name) — the `<system>/<game>/<file>` convention `FolderScanner`
+    /// already walks one level into by default.
+    case preferSubfolder
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .preferRootFolder: return "Prefer ROM Folder Root"
+        case .preferSubfolder: return "Prefer Subfolder"
+        }
+    }
+}
+
+/// Where "Repair from Maintenance Folder…" looks for a donor file for a
+/// `.missing` rom — jensyleo's own request (2026-09-11). Lives in
+/// `ROMForgeCore` for the same reason as `CorruptedFilesPolicy`/
+/// `FileCasePolicy` above: `LibraryViewModel.planRepairFromMaintenanceFolder
+/// PreviewCount` plans directly from a value of this type.
+public enum MissingRomsSearchScope: String, CaseIterable, Identifiable, Sendable {
+    /// The system's own Maintenance subfolder only
+    /// (`MaintenanceFolderSettings.subfolderURL(for:)`) — the original,
+    /// narrower behavior this type replaces as the sole option. Nothing
+    /// outside that one folder is ever read.
+    case maintenanceFolderOnly
+    /// The Maintenance subfolder AND every one of the system's own
+    /// currently-configured ROM folders (`RomSystem.romFolderURLs`) — lets a
+    /// rom that's merely misplaced in a sibling folder (a different drive, a
+    /// region subfolder, an old backup location) donate to a `.missing` rom
+    /// elsewhere in the same system, not just a rom deliberately staged in
+    /// Maintenance. Still strictly read-only, same as the Maintenance-only
+    /// case — nothing here ever writes to a ROM folder, only reads from it
+    /// as a donor source.
+    case allDeclaredFolders
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .maintenanceFolderOnly: return "Maintenance Folder Only"
+        case .allDeclaredFolders: return "Maintenance Folder + All ROM Folders"
+        }
+    }
+}

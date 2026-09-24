@@ -42,6 +42,89 @@ struct AuditReporterTests {
         #expect(report.surplus == 1)
     }
 
+    @Test("a container whose OWN filename differs from the DAT's declared game name only in CASE keeps the ROM entry .correct/green but flags hasContainerCaseMismatch, and the GAME-level rollup reads .incorrect — jensyleo's own report (2026-09-11), refined the same day after 'las roms tienen bien el nombre' (per-rom status must stay green; only the File/game level should read Bad name)")
+    func containerCaseMismatchFlagsFileNotRom() throws {
+        let rom = DATRom(name: "awbios.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "awbios", description: "Neo-Geo BIOS", cloneOf: nil, romOf: nil, roms: [rom])
+        let entryFile = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/AWBIOS.zip"), name: "awbios.bin", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(entryFile))])],
+            surplusFiles: []
+        )
+
+        let report = try AuditReporter.generate(from: matchReport)
+
+        // The Roms panel (one row per entry) must read this ROM as green —
+        // its own name and hash are genuinely correct.
+        #expect(report.entries.first?.status == .correct)
+        #expect(report.entries.first?.hasContainerCaseMismatch == true)
+        #expect(report.correct == 1)
+        #expect(report.incorrect == 0)
+        // The Games panel (one row per File, via `GameStatusRollup`) must
+        // still read this game as "Bad file name"/yellow.
+        #expect(GameStatusRollup.gameCategory(for: report.entries) == .incorrect)
+    }
+
+    @Test("a container whose filename matches the DAT's declared game name EXACTLY still reports .correct")
+    func containerExactCaseMatchStaysCorrect() throws {
+        let rom = DATRom(name: "awbios.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "awbios", description: "Neo-Geo BIOS", cloneOf: nil, romOf: nil, roms: [rom])
+        let entryFile = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/awbios.zip"), name: "awbios.bin", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(entryFile))])],
+            surplusFiles: []
+        )
+
+        let report = try AuditReporter.generate(from: matchReport)
+
+        #expect(report.entries.first?.status == .correct)
+        #expect(report.entries.first?.hasContainerCaseMismatch == false)
+        #expect(report.correct == 1)
+        #expect(GameStatusRollup.gameCategory(for: report.entries) == .correct)
+    }
+
+    @Test("a game's rom legitimately living inside a DIFFERENT archive (Merged-mode clone inside its parent's zip, or a machine's rom inside its BIOS's zip) stays .correct even though the container isn't named after this game at all")
+    func legitimateCrossArchiveContainerStaysCorrect() throws {
+        // e.g. clone "mslug" under Merged mode has its own roms folded into
+        // its parent's own archive "mslugx.zip" — never named "mslug.zip"
+        // in any case — so it must never be flagged as a naming mismatch.
+        let rom = DATRom(name: "clone.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "mslug", description: "Metal Slug", cloneOf: "mslugx", romOf: "mslugx", roms: [rom])
+        let entryFile = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/mslugx.zip"), name: "clone.bin", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(entryFile))])],
+            surplusFiles: []
+        )
+
+        let report = try AuditReporter.generate(from: matchReport)
+
+        #expect(report.entries.first?.status == .correct)
+        #expect(report.correct == 1)
+    }
+
+    @Test("a loose (non-archived) .correct file has no container identity to check — always reports .correct")
+    func looseFileHasNoContainerCaseCheck() throws {
+        let rom = DATRom(name: "game.bin", size: 1, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let matchReport = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(hashedFile(name: "game.bin", size: 1)))])],
+            surplusFiles: []
+        )
+
+        let report = try AuditReporter.generate(from: matchReport)
+
+        #expect(report.entries.first?.status == .correct)
+    }
+
     @Test("counts one entry per status and includes surplus files")
     func countsEachStatus() throws {
         let correctRom = DATRom(name: "correct.bin", size: 1, crc: nil, md5: nil, sha1: nil)
@@ -68,6 +151,11 @@ struct AuditReporterTests {
         #expect(report.surplus == 1)
         #expect(report.entries.count == 4)
         #expect(report.entries.contains { $0.status == .unknownFile && $0.name == "extra.bin" && $0.game == nil })
+        // jensyleo's own report (2026-09-13): the Roms panel's "File name"
+        // column reads `actualEntryName ?? path?.lastPathComponent` — left
+        // unset for a surplus entry, it silently fell back to showing the
+        // CONTAINER's own filename instead of this entry's real name.
+        #expect(report.entries.first { $0.status == .unknownFile }?.actualEntryName == "extra.bin")
     }
 
     @Test("populates expected hashes from the DAT and actual hashes from the local file")
@@ -361,6 +449,44 @@ struct AuditReporterTests {
         #expect(merged.entries.count == 2)
         #expect(merged.entries.first { $0.name == "junk.txt" }?.status == .incorrect)
         #expect(merged.entries.first { $0.name == "other-junk.txt" } == previous.entries.first { $0.name == "other-junk.txt" })
+    }
+
+    @Test("replacingRescannedEntries never drops a THIRD, untouched file's row when a scoped rescan flips a duplicate tie-break elsewhere — jensyleo's own report (2026-09-17): 'no tiee sentido que la aplicaion de un FIX desaparezca archivos de la vizaualizacion'")
+    func replacingRescannedEntriesNeverDropsAFlippedThirdFileRow() {
+        let naomiArchive = URL(fileURLWithPath: "/roms/SEGA/naomi.zip")
+        let naomiGDArchive = URL(fileURLWithPath: "/roms/SEGA/naomigd.zip")
+        // Before this scan: naomi.zip is a normal claimed rom for "naomi",
+        // and naomigd.zip is a game-less surplus row (it lost the tie-break
+        // to some other folder's own naomigd.zip on a previous scan).
+        let previous = AuditReport(
+            entries: [
+                plainEntry(status: .correct, game: "naomi", name: "naomi.zip", path: naomiArchive),
+                AuditEntry(
+                    status: .incorrect, game: nil,
+                    requiredByGameDescription: "Naomi GD Bios",
+                    name: "naomigd.zip", path: naomiGDArchive
+                ),
+            ],
+            correct: 1, incorrect: 1, missing: 0, surplus: 1
+        )
+        // A scoped rescan of ONLY naomi.zip (e.g. "Remove Useless Files…" on
+        // it) flips the recency tie-break: naomigd.zip — never itself
+        // rescanned — now wins its own claim as a normally claimed rom.
+        let fresh = AuditReport(
+            entries: [
+                plainEntry(status: .correct, game: "naomi", name: "naomi.zip", path: naomiArchive),
+                plainEntry(status: .correct, game: "naomigd", name: "naomigd.zip", path: naomiGDArchive),
+            ],
+            correct: 2, incorrect: 0, missing: 0, surplus: 0
+        )
+        let merged = AuditReporter.replacingRescannedEntries(in: previous, with: fresh, rescannedPaths: [naomiArchive])
+        // naomigd's row must survive the merge, with its FRESH (winning)
+        // classification — not vanish, and not stay frozen at its old,
+        // superseded surplus classification.
+        let naomiGDRow = merged.entries.first { $0.name == "naomigd.zip" }
+        #expect(naomiGDRow != nil)
+        #expect(naomiGDRow?.status == AuditStatus.correct)
+        #expect(naomiGDRow?.game == "naomigd")
     }
 
     @Test("scopedSummary counts only the rescanned game's own entries, not the whole report — jensyleo's own report (2026-09-11) that the Log's completion line read whole-system totals for a scoped 'Scan File'")

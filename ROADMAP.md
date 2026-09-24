@@ -746,11 +746,26 @@ doing what we're doing."
      same content. Closing that gap would mean vendoring zlib 1.1.3 itself,
      which this project has deliberately avoided elsewhere (see `CZlib`'s
      reliance on the system library instead of a pinned vendored version).
-   - **Not wired into any rebuild/export feature** — ROMForge has no
-     rebuild/write action yet (the app is still read-only,
-     `LibraryViewModel.modificationsEnabled = false`); this is a standalone,
-     tested Core capability waiting for that feature, same pattern as
-     `CHDHunkReader`/`HeaderSkipRule` before their own wiring passes.
+   - **Still not wired into any rebuild/export feature — correction,
+     2026-09-11**: Fase 2 shipped real write actions long ago
+     (`LibraryViewModel.modificationsEnabled` is a real, user-facing toggle
+     now, default off but switchable in Settings → General), and
+     `RebuildPlanner.planRebuild` (loose-file rebuild) IS wired to the
+     toolbar's own "Rebuild to Folder…". But `planRebuildAsZip` (the
+     TorrentZip-producing sibling of `planRebuild`, right below it in
+     `RebuildPlanner.swift`) never got its own hookup — no button, menu
+     item, or CLI flag anywhere calls it, even today. Confirmed by reading
+     `LibraryViewModel.rebuildToFolder`'s own body: it only ever calls
+     `planRebuild`. For whoever picks this up: the missing piece is purely
+     UI — a new toolbar/menu action (e.g. "Rebuild as Zip Sets…", or a
+     format picker added to the existing "Rebuild to Folder…" flow) that
+     calls `RebuildPlanner.planRebuildAsZip(matchReport:destination:)`
+     instead of `planRebuild`, then routes its `.createTorrentZipArchive`
+     operations through `RebuildExecutor.execute(_:)` exactly like every
+     other Fase 2 write action already does — same preview-count-then-
+     confirm dialog pattern as "Rebuild to Folder…" itself. See TESTING.md
+     §11.3 for the manual test checklist already written and waiting for
+     this hookup to exist.
 
 All 7 items above are now implemented (see each item's own notes for exact
 scope and honest remaining gaps) — this section remains as the research
@@ -1036,15 +1051,30 @@ UI checkbox.
       distinct from any other Fix step — this is the most destructive
       item on the whole list and must never be bundled silently into a
       general "Fix everything" action.
-- [ ] **Find missing roms** — before reporting a ROM as missing, search
-      one or more user-configured "scavenging" folders (separate from the
-      system's own configured ROM folders) for a same-hash file and pull
-      it in. Needs: a new per-system or global setting for scavenging
-      folder paths (new UI, new persisted preference), plus matching logic
-      that's mostly a variant of the existing `ROMMatcher` hash lookup
-      pointed at a different folder set. Same underlying need as the
-      already-documented "rebuild from external scavenging folders" item
-      further down this roadmap — implement once, expose in both places.
+- [ ] **Find missing roms in scavenging folders** — **decided not to
+      implement** (jensyleo, 2026-09-11): "la idea es que solo busque las
+      ROMs para reparación de la carpeta de reparación o de las ya
+      agregadas a Rom Folder" — an arbitrary "scavenging" folder unrelated
+      to a system is explicitly out of scope by design, not just
+      unbuilt. Removed from Settings → Fix's "Not yet available" section
+      outright. What this would have searched is already fully covered by
+      "Repair from Maintenance Folder…" (`RebuildPlanner
+      .planRepairFromMaintenanceFolder`, `LibraryViewModel
+      .planRepairFromMaintenanceFolderPreviewCount`) plus its own Settings
+      → Fix → "Find ROMS" → "Search missing ROMs in" scope picker
+      (`FixPreferencesSettings.missingRomsSearchScopeKey`/
+      `MissingRomsSearchScope`): the Maintenance subfolder alone, or that
+      subfolder plus the system's own already-configured ROM folders
+      (`system.romFolderURLs`) — deliberately never anything broader.
+      Left documented here only so a future implementer has an exact
+      starting point if this scope decision is ever revisited. Original
+      scope: search one or more user-configured folders unrelated to any
+      system for a same-hash file and pull it in — would have needed a
+      new per-system or global scavenging-folder-list setting (new UI,
+      new persisted preference); the matching logic itself needs nothing
+      new (`RebuildPlanner.planRepairFromMaintenanceFolder` already
+      matches purely by content, agnostic of where `donorFiles` came
+      from — only the folder list feeding it would have differed).
 - [ ] **Create dummy roms / Create ghost games** — generate placeholder
       files/entries so a frontend's game list stays visually complete.
       Needs: deciding on a placeholder file format/size convention (no
@@ -1052,28 +1082,57 @@ UI checkbox.
       priority** — conflicts with [[feedback_romforge_mame_first]] and the
       "never a launcher" scope decision in [[project_romforge]]; only
       worth building if a concrete future need appears, not speculatively.
-- [ ] **Fix samples** — blocked entirely on the missing sample-scanning
-      infrastructure already noted in [[project_romforge]]'s Samples
-      pending item (no physical sample file inventory exists yet to fix
-      against). Cannot start before that infrastructure exists.
+- [x] **Fix samples** — **implemented 2026-09-11** (jensyleo: "implementalo,
+      es clave para MAME"). MAME's own DAT declares only a sample's NAME
+      (`<sample name="...">`), never a hash — no dump exists to verify
+      against, so this can only ever mean "does the whole
+      `samples/<name>.zip` this machine needs exist", never "is it the
+      right one". Design: `MAMEMachine`/`DATGame.sampleOf` now parses the
+      `sampleof="..."` attribute (mirrors `cloneof`/`romof`'s own one-hop
+      sharing — a clone that shares its family's samples resolves to
+      `sampleOf ?? name` for the zip it actually needs);
+      `RebuildPlanner.planCollectSamples` plans a plain `.copy` for every
+      needed sample-set name a filename-only search of the system's own
+      configured ROM folders (`LibraryViewModel.findSampleZips`, plain
+      `FolderScanner`, no hashing) actually found, into a Samples folder
+      configured in Settings → Systems → MAME → "Samples" (MAME-exclusive
+      placement, per jensyleo's own explicit instruction — off by default,
+      since not every collection uses sample-playing games). "Fix
+      Samples…" is a standalone toolbar action ("Fix" dropdown), reachable
+      once added to `LibraryDetailView.fixActionsEnabledForTesting` per
+      the one-at-a-time manual-testing policy.
 - [ ] **Remove zip comments** — mechanical: locate and clear the ZIP end-
       of-central-directory comment field. Needs a small addition to the
       binary ZIP writer path already built for TorrentZip — no new
       detection, no new UI beyond the toggle itself.
-- [ ] **Unzip and rezip** — force every archive in a system through a full
+- [ ] **Unzip and rezip every archive** — **built, then decided against**
+      (jensyleo, 2026-09-11): "elimina eso, no lo vamos a usar, no tiene
+      sentido para esta app" — fully implemented once (`RebuildOperation
+      .rewriteArchiveAsTorrentZip`, `RebuildExecutor`'s temp-file-then-
+      atomic-swap executor, `RebuildPlanner.planUnzipAndRezip`, the
+      `LibraryViewModel`/`LibraryDetailView` wiring, and Core unit tests),
+      then removed outright from all three layers rather than left as a
+      disabled toggle. Left documented here only so a future implementer
+      has an exact starting point if this decision is ever revisited.
+      Original scope: force every archive in a system through a full
       extract + rewrite via the TorrentZip writer, even when nothing else
-      about the archive is wrong. Needs: a batch-mode entry point into the
-      existing rebuild/TorrentZip code that runs unconditionally per
-      archive rather than only on detected problems, plus progress
-      reporting for a potentially large sweep (reuse the existing scan-
-      progress infra).
-- [ ] **Allow multiple rom formats** — don't force one output archive
-      format (zip only) when rebuilding/fixing. Needs: fase 2's rebuild
-      engine to support at least one alternative container before this
-      toggle means anything — currently there is only one write path
-      (zip via TorrentZip), so this setting has nothing to select between
-      yet. Depends on decisions not yet made about which other formats
-      (7z? raw loose files?) fase 2 will actually write.
+      about the archive is wrong, only carrying over roms the DAT still
+      recognizes (any unmatched/hash-mismatched/nodump entry, or unrelated
+      junk, gets dropped on rebuild) — the exact design already worked out
+      and built once; nothing here is actually missing, it was a genuine
+      product decision, not a technical gap.
+- [ ] **Allow multiple rom formats** — **decided not to implement**
+      (jensyleo, 2026-09-11): removed from Settings → Fix's "Not yet
+      available" section outright rather than kept as a disabled toggle.
+      Left documented here only so a future implementer has an exact
+      starting point if this is ever revisited. Original scope: don't
+      force one output archive format (zip only) when rebuilding/fixing.
+      Needs: fase 2's rebuild engine to support at least one alternative
+      container before this toggle would mean anything — currently there
+      is only one write path (zip via TorrentZip), so this setting had
+      nothing to select between. Would also depend on deciding which
+      other formats (7z? raw loose files?) fase 2 should actually write —
+      none of that groundwork exists today.
 - [ ] **Number of threads** — a user-facing concurrency slider for the Fix
       pass specifically. Needs: exposing whatever concurrency primitive
       the eventual Fix engine uses (likely mirroring

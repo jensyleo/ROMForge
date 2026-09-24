@@ -35,7 +35,7 @@ struct MAMEListXMLParserTests {
             <display tag="screen" type="raster" rotate="0" width="304" height="224" refresh="59.185606"/>
             <input players="2" coins="1"/>
         </machine>
-        <machine name="mslugx" cloneof="mslug" romof="mslug">
+        <machine name="mslugx" cloneof="mslug" romof="mslug" sampleof="mslug">
             <description>Metal Slug X</description>
             <year>1999</year>
             <manufacturer>SNK</manufacturer>
@@ -70,6 +70,7 @@ struct MAMEListXMLParserTests {
             MAMEChip(type: "cpu", name: "Motorola 68000"), MAMEChip(type: "audio", name: "Yamaha YM2610"),
         ])
         #expect(parent.hasSamples == true)
+        #expect(parent.sampleOf == nil, "declares its own samples, doesn't share another machine's")
         #expect(parent.driverStatus == "good")
         #expect(parent.displayType == "raster")
         #expect(parent.displayRotate == "0")
@@ -84,6 +85,7 @@ struct MAMEListXMLParserTests {
         #expect(clone.isBios == false)
         #expect(clone.roms.first { $0.name == "201-p1.p1" }?.mergeName == nil, "the clone's own unique rom has no merge marker")
         #expect(clone.roms.first { $0.name == "038-p1.p1" }?.mergeName == "038-p1.p1", "inherited from the parent, per MAME's merge= attribute")
+        #expect(clone.sampleOf == "mslug", "sampleof=\"...\" shares the parent's own samples zip rather than needing its own")
     }
 
     @Test("throws when the root <mame> element is missing")

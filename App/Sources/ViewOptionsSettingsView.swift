@@ -280,7 +280,7 @@ struct ViewOptionsSettingsView: View {
             case .general:
                 ViewOptionsGeneralTab(store: store)
             case .panels:
-                ViewOptionsPanelsTab()
+                ViewOptionsPanelsTab(store: store)
             case .oneGameOneROM:
                 ViewOptions1G1RTab()
             }
@@ -290,15 +290,15 @@ struct ViewOptionsSettingsView: View {
 
 /// "General" subtab — the purge/reset actions that aren't really about
 /// panels, columns, or 1G1R specifically, just leftover layout/scan-data
-/// housekeeping. Exactly the three sections ("Saved layout", "Saved scan
-/// results", "ROM folder order") that used to sit at the top level here
-/// before the 2026-08-24 subtab split, unchanged otherwise.
+/// housekeeping. "Saved layout" and "ROM folder order" (jensyleo's own
+/// request, 2026-09-24: "el rom folder order me parece que debería estar
+/// en panels") both moved to "Panels" over time, once each was recognized
+/// as a panel-layout concern rather than general housekeeping — only
+/// "Saved scan results" is left here now.
 private struct ViewOptionsGeneralTab: View {
     var store: SystemLibraryStore
     @State private var didPurgeDatabase = false
     @State private var purgedDatabaseCount = 0
-    @State private var didResetFolderOrder = false
-    @State private var resetFolderOrderCount = 0
 
     var body: some View {
         Form {
@@ -327,22 +327,6 @@ private struct ViewOptionsGeneralTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("ROM folder order") {
-                // jensyleo's own request (2026-08-12), right after adding
-                // ⌘-drag reordering to "ROM folder": a way back to the
-                // alphabetical starting order for every system at once,
-                // undoing any manual dragging — the per-system, one-folder-
-                // at-a-time "Add Folder…" insertion already keeps new
-                // folders alphabetical, but has no way to fix up folders
-                // that have since been dragged out of order by hand.
-                Button("Reset ROM Folder View") {
-                    resetFolderOrderCount = RomFolderOrderResetter.resetToAlphabetical(store: store)
-                    didResetFolderOrder = true
-                }
-                Text("Puts every configured system's \"ROM folder\" list back into alphabetical order, undoing any manual ⌘-drag reordering. Doesn't add, remove, or rescan any folder.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
         .padding()
@@ -355,15 +339,6 @@ private struct ViewOptionsGeneralTab: View {
                     : "No system had a saved scan result — there was nothing to clear."
             )
         }
-        .alert("ROM Folder Order Reset", isPresented: $didResetFolderOrder) {
-            Button("OK") {}
-        } message: {
-            Text(
-                resetFolderOrderCount > 0
-                    ? "Re-sorted \"ROM folder\" alphabetically for \(resetFolderOrderCount) system\(resetFolderOrderCount == 1 ? "" : "s")."
-                    : "Every system's \"ROM folder\" list was already alphabetical — nothing to change."
-            )
-        }
     }
 }
 
@@ -373,19 +348,13 @@ private struct ViewOptionsGeneralTab: View {
 /// on-screen location spelled out, per jensyleo's own 2026-08-27
 /// correction — see this view's own leading `Text` for the full map.
 private struct ViewOptionsPanelsTab: View {
+    var store: SystemLibraryStore
     @AppStorage(PanelVisibilitySettings.showDatabaseTreeKey) private var showDatabaseTree = true
     @AppStorage(PanelVisibilitySettings.showRomFolderTreeKey) private var showRomFolderTree = true
     @AppStorage(PanelVisibilitySettings.showGamesPanelKey) private var showGamesPanel = true
     @AppStorage(PanelVisibilitySettings.showRomsPanelKey) private var showRomsPanel = true
     @AppStorage(PanelVisibilitySettings.showDetailPanelKey) private var showDetailPanel = true
     @AppStorage(PanelVisibilitySettings.showLogPanelKey) private var showLogPanel = true
-    @AppStorage(DependencyColumnSettings.showBiosKey) private var showBiosBadge = true
-    @AppStorage(DependencyColumnSettings.showCHDKey) private var showCHDBadge = true
-    @AppStorage(DependencyColumnSettings.showHardwareKey) private var showHardwareBadge = true
-    @AppStorage(DependencyColumnSettings.showSamplesKey) private var showSamplesBadge = true
-    @AppStorage(DetailColumnSettings.showDriverStatusKey) private var showDriverStatusBadge = true
-    @AppStorage(DetailColumnSettings.showDisplayKey) private var showDisplayBadge = true
-    @AppStorage(DetailColumnSettings.showPlayersKey) private var showPlayersBadge = true
     @AppStorage(DetailPanelGameFieldSettings.showFileNameKey) private var showDetailGameFileName = true
     @AppStorage(DetailPanelGameFieldSettings.showExpectedFileNameKey) private var showDetailExpectedFileName = true
     @AppStorage(DetailPanelGameFieldSettings.showSizeKey) private var showDetailGameSize = true
@@ -415,6 +384,8 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelRomFieldSettings.showTypeKey) private var showDetailRomType = true
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
+    @State private var didResetFolderOrder = false
+    @State private var resetFolderOrderCount = 0
     /// Which game-field row is currently being ⌘-dragged, if any — see
     /// `ColumnPresetsPanel.draggingName`'s own doc comment for why this
     /// lives one level up from `ReorderGripHandle` itself.
@@ -479,6 +450,69 @@ private struct ViewOptionsPanelsTab: View {
             Text("ROMForge's library window has six panels: **Database**/**ROM folder** (left sidebar tree, whichever is selected), **Games** and **Roms** (the two tables across the top), and **Detail** and **Log** (the two areas across the bottom). Sections below are named after these same six.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            // jensyleo's own request (2026-08-13): "esas View Options
+            // llévalas a la sección MAME de System, tiene más sentido" —
+            // the "Database tree branches" toggles that briefly lived here
+            // moved to `SystemSettingsView`'s own "MAME" section instead
+            // (Settings → Systems → MAME) once it became clear every
+            // `DatabaseFilter` branch is a MAME-specific concept, and
+            // that's where every *other* MAME-specific setting (the
+            // executable path, both merge modes) already lives — not
+            // here, which is about panel layout in general. The storage
+            // enum (`DatabaseFilterVisibilitySettings`, below in this
+            // file) stayed regardless of where its own UI lives.
+            // Renamed from "Games/Roms table column layouts" to "Panel
+            // Presets" (jensyleo's own request, 2026-09-24), right after
+            // asking for it to lead this subtab.
+            Section("Panel Presets") {
+                // Inline, not a separate sheet (jensyleo's own request,
+                // 2026-08-31) — a sheet here meant closing Settings' own
+                // sheet first and reopening it after, playing the native
+                // sheet slide/fade animation twice each way; felt sluggish
+                // no matter how fast that round-trip itself was. This panel
+                // has no access to `LibraryDetailView`'s own preset storage
+                // or live table state (different window entirely) — every
+                // real action routes back there as one of five
+                // notifications (`.romForgeApplyColumnPreset` and siblings,
+                // see their own doc comment in `ROMForgeApp.swift`).
+                ColumnPresetsPanel()
+                Text("Save or switch between named column layouts for both tables (Games and Roms).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // "Saved layout" moved here from "General" (jensyleo's own
+            // request, 2026-08-25) — it resets remembered split sizes and
+            // selections, a panel-layout concern like everything else on
+            // this subtab. See `ViewOptionsGeneralTab`'s own doc comment.
+            Section("Saved layout") {
+                Button("Purge Saved Views") {
+                    purgedViewCount = SavedViewStatePurger.purgeViews()
+                    didPurgeViews = true
+                }
+                Text("Clears every remembered split-panel size and every system's remembered last-selected \"Database\"/\"ROM folder\" view — takes effect the next time you switch to (or reopen) that system, or on next launch, not instantly in a window already open. Falls back then to this system's first ROM folder (or first enabled \"Database\" branch) and each split's original proportions, exactly like a fresh install. Never touches any scan result — see \"Purge Database View\" (General) for that. Panel visibility and the \"Database\" branch visibility settings are untouched too — use their own \"Reset to Defaults\" for those.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // Moved here from "General" (jensyleo's own request,
+            // 2026-09-24: "el rom folder order me parece que debería estar
+            // en panels") — same reasoning as "Saved layout" right above:
+            // a panel-layout concern, not general housekeeping.
+            Section("ROM folder order") {
+                // jensyleo's own request (2026-08-12), right after adding
+                // ⌘-drag reordering to "ROM folder": a way back to the
+                // alphabetical starting order for every system at once,
+                // undoing any manual dragging — the per-system, one-folder-
+                // at-a-time "Add Folder…" insertion already keeps new
+                // folders alphabetical, but has no way to fix up folders
+                // that have since been dragged out of order by hand.
+                Button("Reset ROM Folder View") {
+                    resetFolderOrderCount = RomFolderOrderResetter.resetToAlphabetical(store: store)
+                    didResetFolderOrder = true
+                }
+                Text("Puts every configured system's \"ROM folder\" list back into alphabetical order, undoing any manual ⌘-drag reordering. Doesn't add, remove, or rescan any folder.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Panel visibility") {
                 Toggle("Database (left sidebar)", isOn: $showDatabaseTree)
                 Toggle("ROM folder (left sidebar)", isOn: $showRomFolderTree)
@@ -495,76 +529,6 @@ private struct ViewOptionsPanelsTab: View {
                     showLogPanel = true
                 }
                 Text("Hides a whole panel, freeing its space for the ones left showing — never discards anything, and re-checking a box (or Reset to Defaults) brings it straight back where it was.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            // jensyleo's own request (2026-08-13): "esas View Options
-            // llévalas a la sección MAME de System, tiene más sentido" —
-            // the "Database tree branches" toggles that briefly lived here
-            // moved to `SystemSettingsView`'s own "MAME" section instead
-            // (Settings → Systems → MAME) once it became clear every
-            // `DatabaseFilter` branch is a MAME-specific concept, and
-            // that's where every *other* MAME-specific setting (the
-            // executable path, both merge modes) already lives — not
-            // here, which is about panel layout in general. The storage
-            // enum (`DatabaseFilterVisibilitySettings`, below in this
-            // file) stayed regardless of where its own UI lives.
-            Section("Games/Roms table column layouts") {
-                // Inline, not a separate sheet (jensyleo's own request,
-                // 2026-08-31) — a sheet here meant closing Settings' own
-                // sheet first and reopening it after, playing the native
-                // sheet slide/fade animation twice each way; felt sluggish
-                // no matter how fast that round-trip itself was. This panel
-                // has no access to `LibraryDetailView`'s own preset storage
-                // or live table state (different window entirely) — every
-                // real action routes back there as one of five
-                // notifications (`.romForgeApplyColumnPreset` and siblings,
-                // see their own doc comment in `ROMForgeApp.swift`).
-                ColumnPresetsPanel()
-                Text("Save or switch between named column layouts for both tables (Games and Roms).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            // "Column layouts"/"Dependencies column" (jensyleo's own
-            // request, 2026-08-25): folded in from the now-removed
-            // "Columns" subtab — see this file's own `ViewOptionsSubtab`
-            // doc comment for why. Renamed from "Dependencies column" to
-            // plain "Dependencies" on 2026-08-27, once it stopped being
-            // column-only — see `DependencyColumnSettings`'s own doc
-            // comment for why this ended up the ONE toggle set for two
-            // different places instead of two separate ones.
-            Section("Dependencies (Games table column + Detail panel row)") {
-                Toggle("BIOS", isOn: $showBiosBadge)
-                Toggle("CHD", isOn: $showCHDBadge)
-                Toggle("Hardware", isOn: $showHardwareBadge)
-                Toggle("Samples", isOn: $showSamplesBadge)
-                Button("Reset to Defaults") {
-                    showBiosBadge = true
-                    showCHDBadge = true
-                    showHardwareBadge = true
-                    showSamplesBadge = true
-                }
-                Text("Which dependency chips show — both in the Games table's own \"Dependencies\" column and in the Detail panel's own \"Dependencies\" row, the exact same chips in both places. Turning one off hides that chip everywhere at once; it never affects scanning, matching, or any other column.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            // "Details" is deliberately a separate column/section from
-            // "Dependencies" above (jensyleo's own decision, 2026-08-28):
-            // descriptive machine metadata (MAME's own emulation-quality
-            // claim, display orientation, player/coin count) rather than
-            // something the game needs in order to run — keeping the two
-            // names distinct keeps "Dependencies" meaning exactly what it
-            // always has, rather than diluting it with unrelated metadata.
-            Section("Details (Games table column + Detail panel row)") {
-                Toggle("Emulation status", isOn: $showDriverStatusBadge)
-                Toggle("Display", isOn: $showDisplayBadge)
-                Toggle("Players", isOn: $showPlayersBadge)
-                Button("Reset to Defaults") {
-                    showDriverStatusBadge = true
-                    showDisplayBadge = true
-                    showPlayersBadge = true
-                }
-                Text("Which detail chips show — both in the Games table's own \"Details\" column and in the Detail panel's own \"Details\" row. Descriptive machine metadata from the DAT (MAME's own emulation status, screen orientation, player/coin count) — never a dependency the game needs to run (see \"Dependencies\" above for that). Turning one off hides that chip everywhere at once; it never affects scanning, matching, or any other column.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -678,19 +642,6 @@ private struct ViewOptionsPanelsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            // "Saved layout" moved here from "General" (jensyleo's own
-            // request, 2026-08-25) — it resets remembered split sizes and
-            // selections, a panel-layout concern like everything else on
-            // this subtab. See `ViewOptionsGeneralTab`'s own doc comment.
-            Section("Saved layout") {
-                Button("Purge Saved Views") {
-                    purgedViewCount = SavedViewStatePurger.purgeViews()
-                    didPurgeViews = true
-                }
-                Text("Clears every remembered split-panel size and every system's remembered last-selected \"Database\"/\"ROM folder\" view — takes effect the next time you switch to (or reopen) that system, or on next launch, not instantly in a window already open. Falls back then to this system's first ROM folder (or first enabled \"Database\" branch) and each split's original proportions, exactly like a fresh install. Never touches any scan result — see \"Purge Database View\" (General) for that. Panel visibility and the \"Database\" branch visibility settings are untouched too — use their own \"Reset to Defaults\" for those.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
         .padding()
@@ -717,6 +668,15 @@ private struct ViewOptionsPanelsTab: View {
                 purgedViewCount > 0
                     ? "Removed \(purgedViewCount) saved item\(purgedViewCount == 1 ? "" : "s") (remembered selections and/or split-panel sizes). Switch systems (or reopen this one) to see the fallback view."
                     : "Nothing was saved yet — there was nothing to remove."
+            )
+        }
+        .alert("ROM Folder Order Reset", isPresented: $didResetFolderOrder) {
+            Button("OK") {}
+        } message: {
+            Text(
+                resetFolderOrderCount > 0
+                    ? "Re-sorted \"ROM folder\" alphabetically for \(resetFolderOrderCount) system\(resetFolderOrderCount == 1 ? "" : "s")."
+                    : "Every system's \"ROM folder\" list was already alphabetical — nothing to change."
             )
         }
     }
@@ -818,7 +778,18 @@ private struct ViewOptions1G1RTab: View {
 /// for why, not a `Set` directly) under one `@AppStorage` key shared by
 /// this settings view and `LibraryDetailView.databaseCategoryListContent`.
 enum DatabaseFilterVisibilitySettings {
-    static let storageKey = "ROMForge.database.enabledFilters"
+    /// Real gap found live by jensyleo (2026-09-23), start of NES support:
+    /// this used to be one single key shared by EVERY system regardless of
+    /// kind — turning off "Bios files" for a console system (which can
+    /// never have one anyway) also turned it off for every MAME system, and
+    /// vice versa. Now two independent keys, one per `RomSystem.isMAMEStyle`
+    /// — `SystemSettingsView`'s two forms (`MAMEMergeSettingsForm`/
+    /// `ConsoleSettingsForm`) each read/write only their own, and
+    /// `LibraryDetailView` picks the right one for whichever system is
+    /// currently open.
+    static func storageKey(forMAME isMAMEStyle: Bool) -> String {
+        isMAMEStyle ? "ROMForge.database.enabledFilters" : "ROMForge.database.enabledFilters.console"
+    }
 
     /// jensyleo's own instruction (2026-08-12): "revisa como deje la vista
     /// de la base de datos y deja esa por defecto" — captured directly from
@@ -827,6 +798,9 @@ enum DatabaseFilterVisibilitySettings {
     /// not the original 10-branch set the toggle itself first shipped with
     /// a day earlier (2026-08-11). Whatever the user actually settles on
     /// through the toggles below is what "Reset to Defaults" now restores.
+    /// MAME-kind only — see `defaultEnabled(forMAME:)` below for the
+    /// console-kind counterpart, which can't reuse this set at all (every
+    /// one of these six branches past the first two is MAME-specific).
     static let defaultEnabled: Set<DatabaseFilter> = [
         .allGames, .verifiedGames, .originals, .clones, .gamesWithCHD, .gamesRequiringBIOS,
     ]
@@ -839,7 +813,20 @@ enum DatabaseFilterVisibilitySettings {
     /// file's own earlier guess of "just `.allGames` alone".
     static let minimumEnabled: Set<DatabaseFilter> = [.allGames, .verifiedGames, .originals]
 
-    static var defaultRawValue: String { rawValue(for: defaultEnabled) }
+    /// Console kind's own default — every `DatabaseFilter` case that isn't
+    /// MAME-specific (`isMAMESpecific`), which today happens to be exactly
+    /// `minimumEnabled` — kept as its own name/doc rather than a bare alias
+    /// so a future non-MAME-specific case added to `defaultEnabled` doesn't
+    /// have to be remembered to also add here; this derives itself from
+    /// `DatabaseFilter.isMAMESpecific` instead.
+    static var defaultEnabledForConsole: Set<DatabaseFilter> {
+        defaultEnabled.filter { !$0.isMAMESpecific }
+    }
+
+    static func defaultRawValue(forMAME isMAMEStyle: Bool) -> String {
+        rawValue(for: isMAMEStyle ? defaultEnabled : defaultEnabledForConsole)
+    }
+    static var defaultRawValue: String { defaultRawValue(forMAME: true) }
     static var minimumRawValue: String { rawValue(for: minimumEnabled) }
     static var noneRawValue: String { "" }
 

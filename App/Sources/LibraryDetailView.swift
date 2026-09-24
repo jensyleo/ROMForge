@@ -11,17 +11,26 @@ import UniformTypeIdentifiers
 /// `AuditEntry` isn't `Identifiable` (Core has no UI concerns), so the flat
 /// ROM table on the right wraps each one with the same id scheme used
 /// elsewhere to look an entry back up from a selection.
-private struct RomRow: Identifiable {
+// Widened from `private` to internal (2026-09-14, pure-extraction refactor:
+// see `GameTreeTableView`/`RomsTableView`) so the Roms table, now its own
+// standalone `View` in `RomsTableView.swift`, can reference it — `private`
+// at file scope behaves like `fileprivate` in Swift (visible everywhere in
+// THIS file already), so this only ever widens visibility to other files in
+// the same target, never narrows anything that used to be enforced.
+struct RomRow: Identifiable {
     let id: String
     let entry: AuditEntry
 }
+
 
 /// `GameNode` itself now lives in ROMForgeCore (2026-08-13, "Grupo B" of
 /// the App-logic extraction) — it never had any SwiftUI dependency, it
 /// was just declared in this View file. This alias keeps every existing
 /// call site below (`GameNode(...)`, `.isSurplusBucket`, `.infoText`, etc.)
 /// unchanged.
-private typealias GameNode = ROMForgeCore.GameNode
+// Widened from `private` for the same reason as `RomRow` above — needed by
+// `GameTreeTableView.swift`/`RomsTableView.swift`.
+typealias GameNode = ROMForgeCore.GameNode
 
 /// RomCenter's "Database" tree: predefined categories over the same audit,
 /// shown above the games list. "Games with CHD" and "Games with samples"
@@ -178,6 +187,26 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
         case .deviceMachines: return .deviceMachines
         }
     }
+
+    /// Whether this branch reflects a concept only a MAME-format DAT can
+    /// ever declare — parent/clone families, a shared BIOS, CHD discs,
+    /// samples, or MAME's own internal "device" sub-machines. A plain
+    /// console DAT (No-Intro/Redump/TOSEC, all parsed as Logiqx) never
+    /// populates any of these — jensyleo's own request (2026-09-23), start
+    /// of real NES support: "hay que hacer ajustes en la GUI de tal manera
+    /// que lo de MAME no se mezcle con los demás sistemas." Used to build
+    /// the Console kind's own, shorter "Database tree branches" toggle list
+    /// in Settings → Systems (`ConsoleSettingsForm`) — the MAME kind's own
+    /// list is untouched, still every case, exactly as before.
+    var isMAMESpecific: Bool {
+        switch self {
+        case .clones, .biosFiles, .gamesWithCHD, .gamesWithSamples, .gamesRequiringBIOS,
+             .gamesWithDeviceRefs, .unusedBiosFiles, .deviceMachines:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// One row of a "Database" category's expandable children — RomCenter-style
@@ -234,6 +263,47 @@ private final class ZipCommentCache {
         let comment = ZipCommentReader.comment(ofZipAt: url)
         storage[url] = comment
         return comment
+    }
+
+    /// Real bug found live by jensyleo (2026-09-22): "Remove Zip
+    /// Comment…" reported success (the comment genuinely IS gone from
+    /// the file on disk, and a fresh rescan even re-reports the archive
+    /// as no longer having one), yet the SAME running session kept
+    /// showing "— Has ZIP comment" for it — this cache never had any way
+    /// to forget a URL it once read, so every lookup after the first one
+    /// silently returned the stale, pre-removal comment forever, no
+    /// matter how many times the archive was rescanned or how successful
+    /// the removal actually was. Cleared entirely whenever the audit
+    /// report itself changes (any real scan completing) — cheap (just a
+    /// dictionary, lazily refilled from actual reads afterward) and
+    /// correct regardless of which specific archive(s) a scan touched.
+    func invalidateAll() {
+        storage.removeAll()
+    }
+
+    /// Warms the cache with already-computed reads — jensyleo's own report
+    /// (2026-09-23), "la app se traba cuando se hace scroll": `Table` on
+    /// macOS is virtualized (only visible rows actually render), so
+    /// `comment(forZipAt:)`'s own lazy-fill-on-first-read design meant the
+    /// FIRST time each newly-scrolled-into-view row's zip got checked, this
+    /// synchronously called `ZipCommentReader.comment(ofZipAt:)` — real
+    /// disk I/O, right there in the middle of rendering that row — on the
+    /// main thread, mid-scroll. For a NAS-backed ROM folder (this app's
+    /// whole reason CRC32/hash caching exists at all) that's a real,
+    /// per-row network round trip stuttering the scroll itself.
+    /// `refreshCachedGameDataAfterAuditReportChangeAsync` already
+    /// recomputes the currently-scoped node list in a background
+    /// `Task.detached` every time the audit report or selected folder/
+    /// category changes — reading every one of THOSE zips' comments there
+    /// too (still off the main thread, still bounded to what's about to be
+    /// shown, never the whole system) and merging the results in here
+    /// BEFORE the user ever starts scrolling means every visible row's
+    /// lookup is a cache hit by the time it matters — zero disk I/O left
+    /// in the actual per-row render path.
+    func preload(_ values: [URL: String?]) {
+        for (url, comment) in values {
+            storage[url] = comment
+        }
     }
 }
 
@@ -335,7 +405,7 @@ private extension View {
     /// wrong name in place) and is a literal no-op for the already-correct
     /// re-styling half (`RebuildPlanner.caseTransformTarget`) — neither can
     /// ever change an entry's case away from the DAT's own.
-    fileprivate func currentRomsCasePolicyRisksCaseMismatch() -> Bool {
+    func currentRomsCasePolicyRisksCaseMismatch() -> Bool {
         let policy = FixPreferencesSettings.currentRomsCasePolicy()
         return policy != .datafileCase && policy != .dontTouch
     }
@@ -347,7 +417,7 @@ private extension View {
     /// longer matching the DAT's own case) but never had a confirmation
     /// dialog at all to show it in, an asymmetry with no good reason to
     /// keep.
-    fileprivate func currentSetsCasePolicyRisksCaseMismatch() -> Bool {
+    func currentSetsCasePolicyRisksCaseMismatch() -> Bool {
         let policy = FixPreferencesSettings.currentSetsCasePolicy()
         return policy != .datafileCase && policy != .dontTouch
     }
@@ -465,21 +535,227 @@ private extension View {
 
     /// "Repair from Maintenance Folder…"'s own confirmation dialog, its
     /// own separate modifier for the same reason `fase2Step4SplitConfirmation`
-    /// above is.
+    /// above is. jensyleo's own request (2026-09-14): "fusionalo con
+    /// repair from maintenance folder" — this one action now covers BOTH
+    /// filling a `.missing` rom AND replacing a `.badDump` rom's bad
+    /// content with a verified-correct copy, so the wording no longer
+    /// says "Missing" specifically.
     func repairFromMaintenanceFolderConfirmation(
         isPresented: Binding<Bool>,
         count: Int,
         onConfirm: @escaping () -> Void
     ) -> some View {
         confirmationDialog(
-            "Repair \(count) Missing ROM\(count == 1 ? "" : "s") from the Maintenance Folder?",
+            "Repair \(count) ROM\(count == 1 ? "" : "s") from the Maintenance Folder?",
             isPresented: isPresented,
             titleVisibility: .visible
         ) {
             Button("Repair", action: onConfirm)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Each rom is copied from the read-only Maintenance folder configured in Settings → General. Nothing there is ever renamed, moved, or deleted.")
+            Text("Each missing rom is filled in, and each hash-mismatched rom's bad content is replaced, using a verified-correct copy found in the read-only Maintenance folder configured in Settings → Systems → MAME (or the system's own ROM folders, per Settings → Fix → \"Search missing ROMs in\"). Nothing there is ever renamed, moved, or deleted.")
+        }
+    }
+
+    /// The Roms panel's own entry-level File Actions (Extract/Trash/Delete)
+    /// — jensyleo's own request (2026-09-13): the same kind of File Actions
+    /// the Games table already offers, available here too regardless of a
+    /// rom's own DAT status, adapted for the fact an entry is often INSIDE
+    /// a `.zip` rather than loose (see `LibraryViewModel.RomEntryTarget`'s
+    /// own doc comment). Bundled into one modifier for the same reason
+    /// `fase2Confirmations` already bundles several — three separate
+    /// `confirmationDialog`s would each cost their own closure against the
+    /// type-checker's budget.
+    func romEntryActionsConfirmations(
+        showExtract: Binding<Bool>,
+        extractCount: Int,
+        extractDestination: URL?,
+        onExtract: @escaping () -> Void,
+        showTrash: Binding<Bool>,
+        trashCount: Int,
+        onTrash: @escaping () -> Void,
+        showDelete: Binding<Bool>,
+        deleteCount: Int,
+        onDelete: @escaping () -> Void
+    ) -> some View {
+        self
+            .confirmationDialog(
+                "Extract \(extractCount) Rom\(extractCount == 1 ? "" : "s") to Folder?",
+                isPresented: showExtract,
+                titleVisibility: .visible
+            ) {
+                Button("Extract", action: onExtract)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if let extractDestination {
+                    Text("Copied out into \"\(extractDestination.lastPathComponent)\" as plain loose files. The source (including any containing archive) is left untouched.")
+                }
+            }
+            .confirmationDialog(
+                "Move \(trashCount) Rom\(trashCount == 1 ? "" : "s") to the Trash?",
+                isPresented: showTrash,
+                titleVisibility: .visible
+            ) {
+                Button("Move to Trash", role: .destructive, action: onTrash)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("A loose rom goes to the real Finder Trash (recoverable from there). A rom inside a `.zip` has just its own entry removed from that archive — every other rom in it is untouched, and this part cannot be undone.")
+            }
+            .confirmationDialog(
+                "Permanently Delete \(deleteCount) Rom\(deleteCount == 1 ? "" : "s")?",
+                isPresented: showDelete,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive, action: onDelete)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This cannot be undone. A rom inside a `.zip` has just its own entry removed — every other rom in that same archive is untouched.")
+            }
+    }
+
+    /// "Remove Redundant Files" — its own separate modifier for the same
+    /// reason `fase2Step4SplitConfirmation` above is. jensyleo's own
+    /// request (2026-09-13): the exact complement of "Remove Useless
+    /// Files" — targets a LOOSE file the DAT genuinely recognizes, just not
+    /// needed at this exact location because another game already claims
+    /// an equivalent copy elsewhere.
+    func removeRedundantFilesConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Permanently Delete \(count) Redundant File\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each of these files is recognized DAT content, but a duplicate copy that isn't needed at this exact location — another game already has an equivalent copy elsewhere in this scan. This cannot be undone.")
+        }
+    }
+
+    /// "Organize BIOS Files" — jensyleo's own request (2026-09-23), same
+    /// separate-modifier reasoning as every other Fase 2 confirmation
+    /// factored out of `fase2Confirmations` above.
+    func organizeBIOSFilesConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        lines: [String],
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Organize \(count) BIOS File\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Organize", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            // jensyleo's own request (2026-09-23), right after asking what
+            // this action does exactly and worrying about losing BIOS
+            // files he already has: list every BIOS it actually found by
+            // name, not just a bare count — see `LibraryViewModel
+            // .planOrganizeBIOSFilesPreviewLines`'s own doc comment.
+            Text("Each BIOS file found across this system's own ROM folders is moved into the configured BIOS folder. A redundant further copy is only ever removed once another copy is confirmed safe elsewhere. This cannot be undone.\n\n" + lines.joined(separator: "\n"))
+        }
+    }
+
+    /// "Organize Complementary Chips" — same shape as
+    /// `organizeBIOSFilesConfirmation` right above.
+    func organizeComplementaryChipsConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        lines: [String],
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Organize \(count) Complementary Chip File\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Organize", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each complementary chip file found across this system's own ROM folders is moved into the configured Complementary Chips folder. A redundant further copy is only ever removed once another copy is confirmed safe elsewhere. This cannot be undone.\n\n" + lines.joined(separator: "\n"))
+        }
+    }
+
+    /// "Remove Redundant ROMs" — the archive-entry counterpart to
+    /// `removeRedundantFilesConfirmation` just above; same reasoning.
+    func removeRedundantRomsConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Permanently Remove \(count) Redundant Rom\(count == 1 ? "" : "s") from Their Archives?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each of these roms is recognized DAT content, but a duplicate ENTRY inside an archive that isn't needed at this exact location — another game already has an equivalent copy elsewhere in this scan. Only the entry is removed, never its containing archive. This cannot be undone.")
+        }
+    }
+
+    /// "Create Dummy ROMs" — placeholder for `nodump` entries — its own
+    /// separate modifier for the same reason `fase2Step4SplitConfirmation`
+    /// above is.
+    func createDummyRomsConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Create \(count) Dummy Rom\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Create", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each placeholder is a zero-byte stand-in for a rom the DAT itself declares \"nodump\" — no official dump exists to verify against, so this can never be a real dump, only a presence marker.")
+        }
+    }
+
+    /// "Fix Samples" — its own separate modifier for the same reason
+    /// `fase2Step4SplitConfirmation` above is.
+    func collectSamplesConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Collect \(count) Sample Zip\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Collect", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each zip is copied, unmodified, from this system's own ROM folders into the Samples folder configured in Settings → Systems → MAME. Matched by filename only — MAME's own DAT declares no hash for samples, so this can never verify content, only presence.")
+        }
+    }
+
+    /// "Remove Zip Comments" — its own separate modifier for the same
+    /// reason `fase2Step4SplitConfirmation` above is.
+    func removeZipCommentsConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Remove Comments from \(count) Archive\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Remove", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Strips each matched archive's own trailing ZIP comment, in place. Nothing else about the archive changes.")
         }
     }
 
@@ -533,6 +809,73 @@ private extension View {
         }
     }
 
+    /// "Remove Useless Files" (context menu, scoped to selected File(s)) —
+    /// its own separate modifier for the same reason
+    /// `fase2Step4SplitConfirmation` above is. Always shown (unlike
+    /// `fixMismatchedFilesConfirmation`'s "skip if not risky" shortcut) —
+    /// this one is always destructive, never a mere re-styling.
+    func contextMenuRemoveUselessFilesConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Permanently Delete \(count) File\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("These files are recognized as nothing the current DAT declares — not needed by this game or any other. This cannot be undone.")
+        }
+    }
+
+    /// "Remove Redundant File(s)" (context menu, scoped to selected
+    /// File(s)) — jensyleo's own request (2026-09-14): "agrega todas las
+    /// opciones que apliquen en el menú contextual" after noticing a row
+    /// reading "Duplicated file, not needed here" had no matching
+    /// right-click action, only the toolbar's own folder-scoped "Remove
+    /// Redundant Files…". Same shape as
+    /// `contextMenuRemoveUselessFilesConfirmation` just above.
+    func contextMenuRemoveRedundantFilesConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Permanently Delete \(count) Redundant File\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("These loose files are recognized by the DAT, but the content is a duplicate already present somewhere else this scan already covers — not needed here. This cannot be undone.")
+        }
+    }
+
+    /// The archive-entry counterpart to
+    /// `contextMenuRemoveRedundantFilesConfirmation` just above — same
+    /// "recognized, but not needed HERE" case, at the ROM-inside-an-archive
+    /// level instead of the whole-file level.
+    func contextMenuRemoveRedundantRomsConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Permanently Remove \(count) Redundant ROM\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("These roms are recognized by the DAT, but the content is a duplicate already present somewhere else this scan already covers — not needed here. This cannot be undone.")
+        }
+    }
+
     /// Fase 2 Step 8's own confirmation dialog, its own separate modifier
     /// for the same reason `fase2Step4SplitConfirmation` above is.
     func handleCorruptedFilesConfirmation(
@@ -573,6 +916,145 @@ private extension View {
             Text("Each clone's own unique roms are copied into its parent's archive FIRST — the clone's own archive is only deleted afterward, and only if every one of its roms was copied successfully. A clone whose migration fails partway through is left completely untouched.")
         }
     }
+
+    /// "File Actions" (Move to Trash, Delete Permanently, Copy/Move to
+    /// Folder…) confirmation dialogs — jensyleo's own request (2026-09-11):
+    /// plain, OS-level operations on whatever Files are currently selected,
+    /// independent of the DAT. Own separate modifier, same reasoning as
+    /// `fase2Step4SplitConfirmation`/`convertToMergedConfirmation` above.
+    func fileActionsConfirmations(
+        urlCount: Int,
+        destination: URL?,
+        showMoveToTrash: Binding<Bool>,
+        onMoveToTrash: @escaping () -> Void,
+        showDeletePermanently: Binding<Bool>,
+        onDeletePermanently: @escaping () -> Void,
+        showCopyToFolder: Binding<Bool>,
+        onCopyToFolder: @escaping () -> Void,
+        showMoveToFolder: Binding<Bool>,
+        onMoveToFolder: @escaping () -> Void
+    ) -> some View {
+        self
+            .confirmationDialog(
+                "Move \(urlCount) File\(urlCount == 1 ? "" : "s") to the Trash?",
+                isPresented: showMoveToTrash,
+                titleVisibility: .visible
+            ) {
+                Button("Move to Trash", role: .destructive, action: onMoveToTrash)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Sent to the Finder Trash — recoverable from there until it's emptied. This system will need a rescan afterward.")
+            }
+            .confirmationDialog(
+                "Permanently Delete \(urlCount) File\(urlCount == 1 ? "" : "s")?",
+                isPresented: showDeletePermanently,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive, action: onDeletePermanently)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This cannot be undone — unlike \"Move to Trash\", these files are removed immediately and permanently.")
+            }
+            .confirmationDialog(
+                "Copy \(urlCount) File\(urlCount == 1 ? "" : "s")?",
+                isPresented: showCopyToFolder,
+                titleVisibility: .visible
+            ) {
+                Button("Copy", action: onCopyToFolder)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if let destination {
+                    Text("Copied into \"\(destination.lastPathComponent)\". The originals are left untouched.")
+                }
+            }
+            .confirmationDialog(
+                "Move \(urlCount) File\(urlCount == 1 ? "" : "s")?",
+                isPresented: showMoveToFolder,
+                titleVisibility: .visible
+            ) {
+                Button("Move", role: .destructive, action: onMoveToFolder)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if let destination {
+                    Text("Moved into \"\(destination.lastPathComponent)\", removed from their current location. This system will need a rescan afterward.")
+                }
+            }
+    }
+
+    /// The pop-up alert after a Fix/File Action finishes — jensyleo's own
+    /// request (2026-09-11), additive to (never a replacement for) the Log
+    /// panel's own lines for the same result; see `LibraryViewModel
+    /// .postFixResultPopup`'s own doc comment. `isPresented`'s `set` clears
+    /// `alert` (via `onDismiss`) so the same result can never be shown
+    /// twice — same one-shot pattern this file already uses for
+    /// `cancelledPhase`.
+    func fixResultAlert(
+        alert: LibraryViewModel.FixResultAlert?,
+        onDismiss: @escaping () -> Void
+    ) -> some View {
+        self.alert(
+            alert?.title ?? "",
+            isPresented: Binding(get: { alert != nil }, set: { if !$0 { onDismiss() } }),
+            presenting: alert
+        ) { _ in
+            Button("OK") { onDismiss() }
+        } message: { alert in
+            Text(alert.message)
+        }
+    }
+}
+
+/// What kind of volume a configured ROM folder actually lives on —
+/// jensyleo's own request (2026-09-16), testing with ROM folders on a NAS:
+/// a visual distinction between local disk, a removable/external drive
+/// (pendrive, external HDD), and a network share (SMB, AFP, NFS). Detected
+/// via `URLResourceValues`, never assumed from the path string — a mounted
+/// network share's local mount point looks like any other folder path.
+enum RomFolderVolumeKind: Equatable {
+    case local
+    case removable
+    case network
+    case unknown
+
+    var symbolName: String {
+        switch self {
+        case .local: "internaldrive"
+        case .removable: "externaldrive.fill"
+        case .network: "externaldrive.connected.to.line.below"
+        case .unknown: "externaldrive"
+        }
+    }
+
+    var helpSuffix: String {
+        switch self {
+        case .local: " (local disk)"
+        case .removable: " (removable/external drive)"
+        case .network: " (network volume)"
+        case .unknown: ""
+        }
+    }
+
+    /// Real filesystem call — `.volumeIsLocalKey` for a network mount
+    /// (SMB/AFP/NFS) can itself round-trip over the network, so this must
+    /// only ever run off `@MainActor` (see `refreshRomFolderVolumeKindCache`'s
+    /// own doc comment). `.volumeIsLocalKey` is the authoritative signal
+    /// for "network or not"; `.volumeIsRemovableKey`/`.volumeIsInternalKey`
+    /// then distinguish a local-but-removable drive (USB stick, external
+    /// HDD) from the internal boot disk.
+    static func detect(for url: URL) -> RomFolderVolumeKind {
+        guard let values = try? url.resourceValues(forKeys: [
+            .volumeIsLocalKey, .volumeIsInternalKey, .volumeIsRemovableKey, .volumeIsEjectableKey,
+        ]) else {
+            return .unknown
+        }
+        if values.volumeIsLocal == false {
+            return .network
+        }
+        if values.volumeIsRemovable == true || values.volumeIsEjectable == true || values.volumeIsInternal == false {
+            return .removable
+        }
+        return .local
+    }
 }
 
 struct LibraryDetailView: View {
@@ -610,13 +1092,6 @@ struct LibraryDetailView: View {
     /// new preset) and *write* it (to restore a saved one). `nil` only in
     /// previews/tests.
     var isSidebarVisible: Binding<Bool>?
-    /// Called right after a scan/fix actually changes `viewModel.auditReport`
-    /// — lets `ContentView` refresh just this one system's cached sidebar
-    /// status dot instead of re-reading `AuditReportDatabase` for every
-    /// configured system on every render (see `ContentView.statusCache`'s
-    /// own doc comment for the real cost this avoids).
-    var onAuditReportChanged: (() -> Void)?
-
     /// jensyleo's own request (2026-08-12): "que la primera vista que tenga
     /// sea siempre la última antes de cerrar la app" — restores whichever
     /// "Database" category or "ROM folder" this exact system had selected
@@ -633,7 +1108,7 @@ struct LibraryDetailView: View {
     init(
         system: RomSystem, onAddFolder: @escaping ([URL]) -> Void, onDATAnalyzed: ((Bool) -> Void)? = nil,
         onExportCollectionReport: (() -> Void)? = nil, toolbarController: ROMForgeToolbarController? = nil,
-        isSidebarVisible: Binding<Bool>? = nil, onAuditReportChanged: (() -> Void)? = nil
+        isSidebarVisible: Binding<Bool>? = nil
     ) {
         self.system = system
         self.onAddFolder = onAddFolder
@@ -641,13 +1116,17 @@ struct LibraryDetailView: View {
         self.onExportCollectionReport = onExportCollectionReport
         self.toolbarController = toolbarController
         self.isSidebarVisible = isSidebarVisible
-        self.onAuditReportChanged = onAuditReportChanged
         let restored = Self.restoreLastSelection(for: system)
         _selectedDatabaseFilter = State(initialValue: restored.databaseFilter)
         _selectedRomFolder = State(initialValue: restored.romFolder)
     }
 
-    private static func lastSelectionKey(for system: RomSystem) -> String {
+    // Not `private` — `SystemLibraryStore.remove(_:)` also needs this exact
+    // key to purge the persisted selection when a system is removed
+    // (jensyleo's own report, 2026-09-16: "verifica que cuando se quite el
+    // sistema se purgue toda la información" — this was a real, if
+    // harmless, orphaned UserDefaults key left behind on every removal).
+    static func lastSelectionKey(for system: RomSystem) -> String {
         "ROMForge.system.\(system.id.uuidString).lastSelection"
     }
 
@@ -672,7 +1151,8 @@ struct LibraryDetailView: View {
         if let firstFolder = system.romFolderURLs.first {
             return (nil, firstFolder)
         }
-        let enabledRaw = UserDefaults.standard.string(forKey: DatabaseFilterVisibilitySettings.storageKey) ?? DatabaseFilterVisibilitySettings.defaultRawValue
+        let enabledRaw = UserDefaults.standard.string(forKey: DatabaseFilterVisibilitySettings.storageKey(forMAME: system.isMAMEStyle))
+            ?? DatabaseFilterVisibilitySettings.defaultRawValue(forMAME: system.isMAMEStyle)
         return (DatabaseFilterVisibilitySettings.enabledFilters(from: enabledRaw).first ?? .allGames, nil)
     }
 
@@ -712,7 +1192,27 @@ struct LibraryDetailView: View {
         // fires exactly then, so it's the right place to redo that
         // computation for real, same as `.onChange(of: regionOrderRaw)`
         // already does for a region-priority change.
-        refreshCachedGameDataAfterAuditReportChangeAsync()
+        //
+        // Skipped while `loadPersistedReport` is still in flight —
+        // jensyleo's own report (2026-09-17): once that SQLite read got
+        // fast enough (~1.6s, down from 6.5s), the DAT (~1s) now
+        // routinely finishes loading BEFORE the report does, so this call
+        // used to run its whole expensive pipeline (`OneGameOneROMSelector.compute`
+        // alone ~200ms over a 50k-game DAT) against a still-empty report,
+        // just to have it thrown away moments later when the real,
+        // definitive one supersedes it via `.onChange(of: viewModel.auditReport)`.
+        // Still runs for a genuinely never-scanned system, where
+        // `isLoadingPersistedReport` settles to `false` once `loadReport`
+        // comes back `nil` — the actual case this call exists for.
+        if !viewModel.isLoadingPersistedReport {
+            refreshCachedGameDataAfterAuditReportChangeAsync()
+        }
+        // The Maintenance folder's own match pass (`loadMaintenanceFolderFiles()`)
+        // needs a real DAT to color anything — if it's being browsed before
+        // the DAT finished loading, redo it now that one's actually here.
+        if isSelectedFolderMaintenanceSubfolder {
+            loadMaintenanceFolderFiles()
+        }
     }
 
     private func handleSelectedDatabaseFilterChange() {
@@ -874,6 +1374,347 @@ struct LibraryDetailView: View {
     /// (there's nowhere else useful to put it). Mutually exclusive with
     /// `selectedDatabaseFilter`: picking one clears the other.
     @State private var selectedRomFolder: URL?
+    /// True when `selectedRomFolder` IS this system's own Maintenance
+    /// subfolder — jensyleo's own request (2026-09-11) that clicking it
+    /// shows it in the Games panel like any other folder, but it must NEVER
+    /// actually be scanned/fixed like one (a donor file matching the DAT by
+    /// design would otherwise get silently folded into this system's own
+    /// audit as if it were part of the real collection). Checked by
+    /// "Scan Folder"'s own `isEnabled` above; Fix's own scope already
+    /// self-limits to whatever's actually in `matchReport` for this path, so
+    /// nothing additional is needed there as long as this folder is never
+    /// scanned into one in the first place.
+    private var isSelectedFolderMaintenanceSubfolder: Bool {
+        selectedRomFolder != nil && selectedRomFolder == MaintenanceFolderSettings.subfolderURL(for: system)
+    }
+
+    /// Raw disk contents of the Maintenance subfolder, shown in place of the
+    /// (always-empty, by design) audited Games table when it's selected —
+    /// jensyleo's own request (2026-09-13): a plain, Finder-style listing
+    /// (name/size/modified only, no Correct/Incorrect/Missing status), since
+    /// this folder is a donor source that's deliberately never compared
+    /// against the DAT or folded into duplicate-detection — see
+    /// `isSelectedFolderMaintenanceSubfolder`'s own doc comment on why.
+    /// Populated by `loadMaintenanceFolderFiles()`; never written to.
+    @State private var maintenanceFolderFiles: [ScannedFile] = []
+    @State private var isLoadingMaintenanceFolderFiles = false
+
+    /// Lists this system's own Maintenance subfolder AND, when the DAT is
+    /// already loaded, hashes and matches those files against it — jensyleo's
+    /// own correction (2026-09-13), after a first pass that only listed raw
+    /// files: "debe verse igual que las otras [carpetas]... con colores y
+    /// todo. Exactamente igual" — a donor rom that's genuinely Correct (or
+    /// Bad/Misnamed) must show that same real, colored status any other ROM
+    /// folder would, not a flat "not scanned yet" placeholder. This match is
+    /// its own entirely independent `ROMMatcher.match` call — its result
+    /// NEVER touches `viewModel.auditReport`/`matchReport` (the real,
+    /// official audit), so nothing here can affect this system's own
+    /// Correct/Incorrect/Missing counts, duplicate-set detection, or any
+    /// Fix action's own scope. Only the DISPLAY reuses the exact same
+    /// `GameNodeBuilder` pipeline every other folder's own colored Games
+    /// table already goes through — see `maintenanceGameNodes`'s own doc
+    /// comment. A missing/unset folder just clears everything rather than
+    /// erroring: the empty-state message already covers that case with its
+    /// own wording.
+    private func loadMaintenanceFolderFiles() {
+        guard let folderURL = MaintenanceFolderSettings.subfolderURL(for: system) else {
+            maintenanceFolderFiles = []
+            maintenanceGameNodes = []
+            maintenanceFolderReadErrorMessage = nil
+            return
+        }
+        isLoadingMaintenanceFolderFiles = true
+        maintenanceFolderFilesLoadGeneration += 1
+        let generation = maintenanceFolderFilesLoadGeneration
+        let preloadedGames = viewModel.preloadedGames
+        let dat = viewModel.cachedDATFile
+        let combine = combineRomAndCHD
+        let viewModel = viewModel
+        // jensyleo's own report (2026-09-19), a real screenshot: "Scan All
+        // Folders" (which owns `viewModel.isBusy`/`scanProgress`/
+        // `matchProgress`/`isMatching` for its own real run) and this
+        // Maintenance-folder auto-load (triggered independently by
+        // selection/DAT changes) can genuinely overlap — and since both
+        // used to drive the exact SAME shared fields, the result was TWO
+        // progress bars fighting over one set of numbers, shown at once.
+        // "Unifica el criterio... que sea global, no solo para este caso":
+        // rather than inventing a second flag, this claims the SAME
+        // `isBusy` every other busy action already respects — if
+        // something else already holds it, this run steps aside entirely
+        // (no progress reporting, exactly like before this file's
+        // 2026-09-19 change) rather than racing it for the same fields.
+        let ownsProgressReporting = !viewModel.isBusy
+        if ownsProgressReporting {
+            viewModel.isBusy = true
+        }
+        // jensyleo's own report (2026-09-14): this used to re-read AND
+        // re-hash the whole Maintenance folder from scratch every single
+        // time it ran — selecting it in the sidebar, a DAT reload, the
+        // toolbar button — taking real seconds against a real (~250MB)
+        // Maintenance folder and reading as "stuck" when re-triggered
+        // back-to-back. Reuses the SAME session-level cache
+        // `LibraryViewModel.scan(system:)` already built for its own
+        // donor-detection pass (`cachedMaintenanceDonorFiles`) — whichever
+        // of the two runs first saves the other a redundant re-hash of the
+        // exact same folder; both still respect the same invalidation
+        // rule (only a real "Scan Maintenance Folder"/"Scan All Folders"
+        // forces a fresh read).
+        // jensyleo's own report (2026-09-16): "el problema persiste" — the
+        // NAS-disconnected fix above never even ran, because this session
+        // already had a successful hash pass cached from earlier (while
+        // the NAS was still connected), and that stale cache was trusted
+        // blindly regardless of whether the folder can currently be
+        // reached at all. `maintenanceSubfolderUnreachable` (this same
+        // view's own sidebar-row check) is the freshest signal available —
+        // skip the cache and force a real, current read whenever it says
+        // this folder is currently unreachable.
+        let cachedHashedFiles = maintenanceSubfolderUnreachable ? nil : viewModel.cachedMaintenanceDonorFiles(matchingFolderPath: folderURL.path)
+        // jensyleo's own follow-up report (2026-09-14): caching the hash
+        // pass alone didn't fix "sigue igual" — a real, separate bug: this
+        // ran as a plain (non-detached) `Task`, which inherits the calling
+        // MainActor context. `FolderScanner.scan`/`ROMMatcher.match`/
+        // `AuditReporter.generate`/`computeBaseGameNodes` are all plain
+        // SYNCHRONOUS functions (no `await` of their own), so on a cache
+        // MISS they ran straight on the main thread for however long a
+        // real ~250MB scan+match takes — freezing the whole UI solid,
+        // including the `ProgressView`'s own animation, which is exactly
+        // why the message looked frozen/broken rather than merely slow.
+        // `Task.detached` moves all of that off the main thread, same
+        // pattern `LibraryViewModel.scan(system:)` already uses for its
+        // own heavy work — only the final state writes below still hop
+        // back to `@MainActor`.
+        Task.detached(priority: .userInitiated) { [combine, dat, preloadedGames, viewModel, ownsProgressReporting] in
+            let hashed: [HashedFile]
+            let files: [ScannedFile]
+            // jensyleo's own report (2026-09-16): with the NAS
+            // disconnected, this used to log "Maintenance folder: found 0
+            // file(s)" — a SUCCESS line — and the Games panel said "it's
+            // currently empty", both flatly wrong: `try?` here was
+            // silently collapsing a genuine "couldn't reach it" error
+            // (`ScannerError.folderNotFound`, exactly what an unreachable
+            // NAS mount throws) into the same empty array a truly empty
+            // folder produces. The two are never the same thing and must
+            // never be reported the same way — captured explicitly here so
+            // the caller (`readError`, below) can tell them apart.
+            var readErrorMessage: String?
+            // jensyleo's own report (2026-09-19): this only ever showed a
+            // bare indeterminate "Reading the Maintenance folder…" spinner,
+            // with no numbers, even though a real (uncached) read+hash+
+            // match pass here can take genuinely as long as the same pass
+            // does for an ordinary ROM folder. Wired to the exact same
+            // `viewModel` progress fields (`archiveListingProgress`,
+            // `scanProgress`, `isMatching`, `matchProgress`) `scan(system:
+            // folders:)` already drives — `scanProgressOverlay` already
+            // knows how to render all of them, so this reuses that same
+            // real, determinate bar instead of inventing a second one.
+            var archiveListedHandler: (@Sendable (Int, Int) -> Void)?
+            var hashProgressHandler: (@Sendable (ScanProgress) -> Void)?
+            if ownsProgressReporting {
+                archiveListedHandler = { [weak viewModel] read, total in
+                    Task { @MainActor in viewModel?.archiveListingProgress = (read, total) }
+                }
+                hashProgressHandler = { [weak viewModel] progress in
+                    Task { @MainActor in
+                        viewModel?.archiveListingProgress = nil
+                        viewModel?.scanProgress = progress
+                    }
+                }
+            }
+            if let cachedHashedFiles {
+                hashed = cachedHashedFiles
+                files = cachedHashedFiles.map(\.file).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            } else {
+                do {
+                    let scanned = try FolderScanner.scan(paths: [folderURL]).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                    files = scanned
+                    hashed = scanned.isEmpty ? [] : ((try? await CollectionHasher.hash(scannedFiles: scanned, algorithms: HashAlgorithmSettings.current, onProgress: hashProgressHandler, onArchiveListed: archiveListedHandler)) ?? [])
+                } catch {
+                    readErrorMessage = error.localizedDescription
+                    files = []
+                    hashed = []
+                }
+            }
+            var nodes: [GameNode] = []
+            if let dat, !hashed.isEmpty {
+                if ownsProgressReporting {
+                    await MainActor.run {
+                        viewModel.scanProgress = nil
+                        viewModel.isMatching = true
+                        viewModel.matchProgress = nil
+                    }
+                }
+                var matchProgressHandler: (@Sendable (Int, Int) -> Void)?
+                if ownsProgressReporting {
+                    matchProgressHandler = { [weak viewModel] completed, total in
+                        Task { @MainActor in viewModel?.matchProgress = (completed, total) }
+                    }
+                }
+                if let matchReport = try? ROMMatcher.match(dat: dat, hashedFiles: hashed, onProgress: matchProgressHandler),
+                   let auditReport = try? AuditReporter.generate(from: matchReport)
+                {
+                    let aggStatus = Self.computeGameAggregateStatusByName(entries: auditReport.entries, preloadedGames: preloadedGames)
+                    let gamesInFolder = Self.recomputeGamesInFolder(entries: auditReport.entries, selectedFolder: folderURL)
+                    nodes = Self.computeBaseGameNodes(
+                        hasAuditReport: true, auditEntries: auditReport.entries, selectedRomFolder: folderURL,
+                        preloadedGames: preloadedGames, selectedDatabaseFilter: nil,
+                        gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine
+                    )
+                }
+            }
+            await MainActor.run {
+                // Always reset, even on a stale/discarded generation — this
+                // run is the only one that ever claimed `isBusy`/the shared
+                // progress fields in the first place when
+                // `ownsProgressReporting` is true (a cache hit, or stepping
+                // aside for an already-busy main scan, never touches them
+                // at all), so nothing else could be relying on them still
+                // being set once this specific run is done.
+                if ownsProgressReporting {
+                    viewModel.archiveListingProgress = nil
+                    viewModel.scanProgress = nil
+                    viewModel.isMatching = false
+                    viewModel.matchProgress = nil
+                    viewModel.isBusy = false
+                }
+                if cachedHashedFiles == nil, !hashed.isEmpty {
+                    viewModel.cacheMaintenanceDonorFiles(folderPath: folderURL.path, files: hashed)
+                }
+                // Discard this result if a NEWER load has started since —
+                // see `maintenanceFolderFilesLoadGeneration`'s own doc
+                // comment. Note `isLoadingMaintenanceFolderFiles` is
+                // deliberately NOT reset here on a stale hit: the newer,
+                // still-in-flight run already owns that flag's next
+                // (correct) transition to `false`.
+                guard generation == maintenanceFolderFilesLoadGeneration else { return }
+                maintenanceFolderFiles = files
+                maintenanceGameNodes = nodes
+                isLoadingMaintenanceFolderFiles = false
+                // Only counts as "genuinely checked and confirmed empty"
+                // when there was no read error — jensyleo's own doc
+                // comment above on why the two must never be conflated.
+                // Left `false` on a read failure so the NEXT attempt
+                // (reconnecting, then reselecting/re-scanning) still tries
+                // a real read instead of trusting this failed one's own
+                // (wrong) "empty" result.
+                hasLoadedMaintenanceFolderFilesOnce = readErrorMessage == nil
+                maintenanceFolderReadErrorMessage = readErrorMessage
+                if let readErrorMessage {
+                    viewModel.logError("Couldn't read the Maintenance folder: \(readErrorMessage)")
+                } else {
+                    viewModel.logSuccess("Maintenance folder: found \(files.count) file(s).")
+                }
+            }
+        }
+    }
+
+    /// The plain-selection counterpart to `loadMaintenanceFolderFiles()` —
+    /// see `hasLoadedMaintenanceFolderFilesOnce`'s own doc comment for why
+    /// this exists at all. Call this from anywhere that merely means "the
+    /// Maintenance folder just became the selected one" (a sidebar click,
+    /// this view first appearing already pointed at it); call
+    /// `loadMaintenanceFolderFiles()` directly, unconditionally, from
+    /// anywhere that means "its own real content might have changed" (an
+    /// explicit Scan action, deleting/recreating its subfolder, a DAT
+    /// reload).
+    private func loadMaintenanceFolderFilesIfNeeded() {
+        // jensyleo's own request (2026-09-22), added a toggle for this
+        // after reporting a real live case: with the Maintenance root on
+        // an unreachable NAS, merely SELECTING this row (no Scan ever
+        // requested) still triggered a real disk read here — every other
+        // ROM folder row never re-reads anything on a plain click, only
+        // an explicit Scan does. `MaintenanceAutoScanOnSelectSettings`
+        // (Settings → General → "Scanning") lets Maintenance match that
+        // same behavior when turned off; on (the original, already-
+        // shipped default) keeps reading it automatically the first time
+        // each session, exactly as before.
+        guard MaintenanceAutoScanOnSelectSettings.isEnabled else { return }
+        guard !hasLoadedMaintenanceFolderFilesOnce else { return }
+        loadMaintenanceFolderFiles()
+    }
+
+    /// jensyleo's own report (2026-09-13): "scan maintenance folder no
+    /// funciona" — `loadMaintenanceFolderFiles()` on its own DID refresh
+    /// the list, but silently, in the background, unless the Maintenance
+    /// subfolder happened to already be the one selected in the sidebar
+    /// (`isSelectedFolderMaintenanceSubfolder` is what actually gates
+    /// showing `maintenanceFolderFilesList` at all) — from the toolbar
+    /// button alone, with some other folder/game selected, nothing visibly
+    /// changed, reading as completely broken. This also selects the
+    /// Maintenance subfolder itself first, so the refreshed listing is
+    /// immediately what's on screen — same as clicking it directly in the
+    /// sidebar, just from the toolbar instead.
+    /// - Parameter navigateToFolder: `true` (the toolbar's own "Scan
+    ///   Maintenance Folder" action) selects the Maintenance subfolder so
+    ///   the just-refreshed listing is immediately what's on screen — see
+    ///   this function's own history below for why that's the right
+    ///   default there. `false` (the sidebar row's own context menu,
+    ///   jensyleo's own request, 2026-09-22: "que no te haga saltar a ese
+    ///   folder, que se quede donde está") refreshes Maintenance's data in
+    ///   the background without disturbing whatever's currently selected —
+    ///   `loadMaintenanceFolderFiles()` below never depended on
+    ///   `selectedRomFolder` in the first place, so this is safe either way.
+    private func startScanMaintenanceFolder(navigateToFolder: Bool = true) {
+        if navigateToFolder {
+            // `selectedDatabaseFilter` and `selectedRomFolder` are mutually
+            // exclusive (see `selectedRomFolder`'s own doc comment) and the
+            // Games panel's own branch checks `selectedDatabaseFilter` FIRST —
+            // real bug just found live by jensyleo: the log correctly showed
+            // "found N file(s)" but the panel itself never changed, because a
+            // Database category was still selected and this function, unlike
+            // every real sidebar click (see line ~4062), wasn't clearing it.
+            selectedDatabaseFilter = nil
+            selectedRomFolder = MaintenanceFolderSettings.subfolderURL(for: system)
+            selectedGameID = nil
+            selectedRomID = nil
+        }
+        // jensyleo's own request (2026-09-14), after a real live bug this
+        // exact gap caused: `MaintenanceDonorDetector`'s own "donor
+        // available" flag is only ever computed as part of a REAL scan of
+        // this system's own ROM folders (`LibraryViewModel.scan`), never by
+        // `loadMaintenanceFolderFiles()` alone — so browsing Maintenance in
+        // a session that never ran a real Scan first showed donor
+        // indicators computed against a STALE or nonexistent match report.
+        // "Cuando se escanee la carpeta de mantenimiento, fuerza a que se
+        // escaneen las otras carpetas si se va a trabajar con ellas" — if
+        // this system hasn't been scanned yet this session, run a real
+        // "Scan All Folders" first, THEN refresh the Maintenance listing
+        // against its up-to-date result, instead of silently showing
+        // donor colors that might not reflect what's actually on disk.
+        // This is the one action that means "Maintenance itself just
+        // changed, trust nothing cached about it" — invalidate before
+        // refreshing the listing below so any scan running from here on
+        // (this one, or a later "Scan Folder"/"Scan All Folders") re-reads
+        // the real folder instead of reusing a now-possibly-stale cache.
+        viewModel.invalidateMaintenanceDonorCache()
+        if viewModel.hasMatchReport {
+            // A real scan already ran this session — Maintenance's own
+            // listing is about to refresh, but every OTHER already-scanned
+            // folder's own "donor available" coloring is computed from
+            // THAT earlier scan and won't reflect whatever just changed in
+            // Maintenance until it's rescanned itself. jensyleo's own
+            // request (2026-09-14): a one-line reminder, configurable in
+            // Settings → General, instead of silent staleness.
+            loadMaintenanceFolderFiles()
+            if MaintenanceRescanNoticeSettings.isEnabled {
+                let alert = NSAlert()
+                alert.alertStyle = .informational
+                alert.messageText = "Rescan Other Folders to Update Their View"
+                alert.informativeText = "The Maintenance folder's own listing just refreshed, but any other ROM folder already scanned this session keeps showing whatever donor availability it computed earlier — rescan it (Scan → Scan Folder/Scan All Folders) to bring its own \"Missing (available in Maintenance folder)\" coloring up to date."
+                alert.addButton(withTitle: "OK")
+                alert.showsSuppressionButton = true
+                alert.runModal()
+                if alert.suppressionButton?.state == .on {
+                    UserDefaults.standard.set(false, forKey: MaintenanceRescanNoticeSettings.storageKey)
+                }
+            }
+        } else {
+            Task {
+                await viewModel.scan(system: system)
+                loadMaintenanceFolderFiles()
+            }
+        }
+    }
+
     /// Resolves to whichever of `databaseStatusFilters`/`romFolderStatusFilters`
     /// currently applies, based on which of "Database"/"Rom files" is active
     /// — so the status buttons, the "Show all" action, and the entry
@@ -961,7 +1802,20 @@ struct LibraryDetailView: View {
     /// toggle off). Read here rather than duplicating the setting, so
     /// General Settings and the tree itself can never disagree about which
     /// branches are visible.
-    @AppStorage(DatabaseFilterVisibilitySettings.storageKey) private var enabledDatabaseFiltersRaw = DatabaseFilterVisibilitySettings.defaultRawValue
+    // Real gap found live by jensyleo (2026-09-23): this used to read ONE
+    // key shared by every system regardless of kind — see
+    // `DatabaseFilterVisibilitySettings.storageKey(forMAME:)`'s own doc
+    // comment. Both per-kind keys are declared unconditionally (a
+    // property-wrapper key must be a constant, it can't reference `system`
+    // — `LibraryDetailView` has no custom `init` to work around that) and
+    // `enabledDatabaseFiltersRaw` below just picks the one that matches the
+    // CURRENT system — still fully reactive to either key changing
+    // elsewhere (e.g. Settings), since both remain real `@AppStorage`.
+    @AppStorage(DatabaseFilterVisibilitySettings.storageKey(forMAME: true)) private var enabledDatabaseFiltersRawMAME = DatabaseFilterVisibilitySettings.defaultRawValue(forMAME: true)
+    @AppStorage(DatabaseFilterVisibilitySettings.storageKey(forMAME: false)) private var enabledDatabaseFiltersRawConsole = DatabaseFilterVisibilitySettings.defaultRawValue(forMAME: false)
+    private var enabledDatabaseFiltersRaw: String {
+        system.isMAMEStyle ? enabledDatabaseFiltersRawMAME : enabledDatabaseFiltersRawConsole
+    }
     private var visibleDatabaseFilters: [DatabaseFilter] {
         DatabaseFilterVisibilitySettings.enabledFilters(from: enabledDatabaseFiltersRaw)
     }
@@ -1059,6 +1913,259 @@ struct LibraryDetailView: View {
     /// Same fix, for the "ROM folder" pane — see `isDatabasePaneFocused`'s
     /// own doc comment.
     @FocusState private var isRomFolderPaneFocused: Bool
+
+    /// jensyleo's own report (2026-09-15), confirmed live via a screen
+    /// recording: after clicking a NEW row in the Games table (a genuine
+    /// `selection` value change, not merely a re-click), arrow keys kept
+    /// moving the ROMS table's own selection instead — `.focusable()`/
+    /// `.focused()` per-`Table`, the exact fix that already works for the
+    /// sidebar's plain `List`-based panes above, turned out NOT to
+    /// reliably move real AppKit key-window focus between two independent
+    /// `Table` (NSTableView-backed) views side by side on macOS 27, even
+    /// though SwiftUI's own `@FocusState` claimed it had. Rather than keep
+    /// fighting that per-view focus transfer, both tables now just report
+    /// "the user last clicked into me" via a plain closure
+    /// (`GameTreeTableView`/`RomsTableView`'s own `onFocusRequested`),
+    /// recorded here — and a single shared `NSEvent` monitor
+    /// (`installResultsArrowKeyMonitor()`, called from `.onAppear`) does
+    /// the actual up/down dispatch, sidestepping the unreliable
+    /// cross-Table focus transfer entirely.
+    private enum ResultsPane { case games, roms }
+    @State private var activeResultsPane: ResultsPane = .games
+    /// jensyleo's own report (2026-09-16): `romsList`'s own `.id(selectedGameNode
+    /// ?.id)` correctly forces the Roms `Table` to rebuild (clearing its own
+    /// stale selection highlight — see that modifier's own doc comment for
+    /// why a rebuild, not just clearing the `selection` binding, was needed)
+    /// whenever the selected GAME actually changes — but re-clicking the
+    /// SAME already-selected game never changes that `id` at all, so
+    /// nothing forces a rebuild then, and the Roms selection stayed stuck.
+    /// Bumped ONLY on a same-game reclick (see `lastGamesClickID`'s own doc
+    /// comment) and folded into that `.id(...)` so that specific case still
+    /// forces the rebuild — a real perf issue found by code audit
+    /// (2026-09-16): an earlier version of this fix bumped it on EVERY
+    /// click in the Games table, forcing a full Roms `Table` rebuild (every
+    /// `TableColumn`/context-menu closure) on the single most common
+    /// interaction in the whole app, even though a genuine game change
+    /// already gets a fresh `.id()` for free from `selectedGameNode?.id`
+    /// alone.
+    @State private var romsResetGeneration = 0
+    /// The Games selection `onFocusRequested` last saw, so it can tell a
+    /// genuine game change (does nothing extra — `.id(selectedGameNode?.id)`
+    /// already handles it) apart from a same-game reclick (bumps
+    /// `romsResetGeneration`, since the `.id()` alone wouldn't change).
+    @State private var lastGamesClickID: String?
+    /// Real bug found live by jensyleo (2026-09-15) in the FIRST version of
+    /// this fix: gating the monitor on `!isDatabasePaneFocused &&
+    /// !isRomFolderPaneFocused` assumed clicking a Games/Roms row would
+    /// naturally take real AppKit focus away from the sidebar — but since
+    /// neither Table claims `.focusable()`/`.focused()` anymore (the whole
+    /// point of this fix, see this monitor's own doc comment), a sidebar
+    /// pane's `@FocusState` never gets told to relinquish once true, so it
+    /// stays true FOREVER after the first sidebar click. The monitor then
+    /// always stepped aside, and the sidebar's own (correctly-working)
+    /// `.onKeyPress` kept eating every arrow key even after clicking into
+    /// Games/Roms. Tracked explicitly instead: `true` only while
+    /// Games/Roms was the last of the four panes actually clicked, set
+    /// `false` at every one of the sidebar's own `isDatabasePaneFocused`/
+    /// `isRomFolderPaneFocused = true` call sites.
+    @State private var resultsPaneIsActive = false
+    /// The token `NSEvent.addLocalMonitorForEvents` returns — held so
+    /// `.onDisappear` can remove it; never leave a monitor installed after
+    /// this view goes away, or every keystroke in every other window
+    /// keeps running its handler for nothing.
+    @State private var resultsArrowKeyMonitor: Any?
+
+    /// Installs the monitor `activeResultsPane`'s own doc comment
+    /// describes. Deliberately steps ASIDE (returns the event untouched)
+    /// whenever the sidebar's own `isDatabasePaneFocused`/
+    /// `isRomFolderPaneFocused` is true — that pane's own `.onKeyPress`
+    /// already handles its arrows correctly (it's a plain `List`, not a
+    /// `Table`, and was never affected by this bug), so this monitor must
+    /// never steal from it. Only NSEvent key codes 125 (down) and 126 (up)
+    /// are ever intercepted; everything else passes through completely
+    /// unmodified, exactly as if this monitor didn't exist.
+    private func installResultsArrowKeyMonitor() {
+        guard resultsArrowKeyMonitor == nil else { return }
+        resultsArrowKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard resultsPaneIsActive else { return event }
+            switch event.keyCode {
+            case 125:
+                if activeResultsPane == .games { moveGameSelection(by: 1) } else { moveRomSelection(by: 1) }
+                return nil
+            case 126:
+                if activeResultsPane == .games { moveGameSelection(by: -1) } else { moveRomSelection(by: -1) }
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeResultsArrowKeyMonitor() {
+        if let resultsArrowKeyMonitor {
+            NSEvent.removeMonitor(resultsArrowKeyMonitor)
+        }
+        resultsArrowKeyMonitor = nil
+    }
+
+    @State private var romFolderReorderMonitor: Any?
+    /// The drag's own starting Y, in the same top-left "window" coordinate
+    /// space `romFolderRowFrames` already uses (via `reportReorderFrame`'s
+    /// own `.global` `GeometryReader`) — captured once at mouse-down, so
+    /// every subsequent `.leftMouseDragged` can compute a running
+    /// translation the same way `DragGesture.translation` used to.
+    @State private var romFolderReorderStartY: CGFloat?
+
+    /// jensyleo's own report (2026-09-17): "⌘-arrastrar se pone a mover un
+    /// poco, queda congelado, y después no permite hacer ningún otro
+    /// intento" — root-caused live via temporary debug logging: macOS 27's
+    /// `NSTableView` (a `List` row's own backing) claims the mouse-dragged
+    /// event stream at the AppKit level as soon as it recognizes a drag
+    /// starting on one of its cells, a layer BELOW where SwiftUI's
+    /// `.highPriorityGesture` can arbitrate — so `ReorderGripHandle`'s own
+    /// `DragGesture` got exactly one `onChanged` and then total silence,
+    /// including no `onEnded` on mouse-up, permanently "stuck".
+    ///
+    /// Fixed the same way `resultsArrowKeyMonitor` above already fixed an
+    /// earlier macOS 27 regression (cross-`Table` keyboard routing): bypass
+    /// SwiftUI's gesture system entirely and track raw mouse events via a
+    /// local `NSEvent` monitor, which sees every event BEFORE any gesture
+    /// recognizer (AppKit's or SwiftUI's) gets a chance to claim it — it
+    /// can never be starved out by `NSTableView`'s own tracking the way a
+    /// child SwiftUI gesture could be.
+    ///
+    /// Hit-testing uses `romFolderRowFrames` (already published by every
+    /// row's own `reportReorderFrame(_:)`) — a mouse-down only starts a
+    /// drag when ⌘ is held AND the click lands within the trailing ~32pt
+    /// of some row's own frame (approximately where its grip icon sits;
+    /// generous on purpose, since this only ever needs to distinguish
+    /// "clicked near the grip" from "clicked the row's own selectable
+    /// area" a few dozen points to its left). Every event this monitor
+    /// doesn't recognize as part of an active reorder is returned
+    /// untouched, so it never affects any other click/drag anywhere else
+    /// in the app.
+    private func installRomFolderReorderMonitor() {
+        guard romFolderReorderMonitor == nil else { return }
+        romFolderReorderMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { event in
+            switch event.type {
+            case .leftMouseDown:
+                if NSEvent.modifierFlags.contains(.command),
+                   let point = windowTopLeftPoint(for: event),
+                   let index = romFolderGripIndex(at: point) {
+                    draggingRomFolderIndex = index
+                    dragPreviewRomFolderIndex = index
+                    dragRomFolderOffset = 0
+                    romFolderReorderStartY = point.y
+                    return nil
+                }
+                // jensyleo's own report (2026-09-19): selecting a ROM
+                // folder sometimes needed a second click to actually take —
+                // the same root cause as the reorder-grip regression this
+                // monitor already exists to work around: `NSTableView` can
+                // claim the mouse-down event at the AppKit level before
+                // SwiftUI's own `.onTapGesture` gets a chance to recognize
+                // it, so the first click's own gesture sometimes never
+                // fires. Applying the selection directly from the raw
+                // event guarantees it lands on the very first physical
+                // click; the event is still returned unmodified
+                // afterward, so `NSTableView`'s own normal handling
+                // (hover, focus, etc.) proceeds exactly as it did before.
+                if let point = windowTopLeftPoint(for: event) {
+                    if let hitIndex = romFolderRowIndex(at: point), localRomFolderOrder.indices.contains(hitIndex) {
+                        selectRomFolder(localRomFolderOrder[hitIndex])
+                    }
+                }
+                return event
+            case .leftMouseDragged:
+                guard let from = draggingRomFolderIndex, let startY = romFolderReorderStartY,
+                      let point = windowTopLeftPoint(for: event)
+                else { return event }
+                let translation = point.y - startY
+                dragRomFolderOffset = translation
+                let rowHeight = ReorderGripHandle.measuredRowPitch(at: from, rowFrames: romFolderRowFrames, fallback: 32)
+                let steps = (translation / rowHeight).rounded()
+                let target = min(max(from + Int(steps), 0), max(localRomFolderOrder.count - 1, 0))
+                if dragPreviewRomFolderIndex != target {
+                    dragPreviewRomFolderIndex = target
+                }
+                return nil
+            case .leftMouseUp:
+                guard let from = draggingRomFolderIndex else { return event }
+                if let to = dragPreviewRomFolderIndex, from != to {
+                    moveRomFolder(from: from, to: to)
+                }
+                draggingRomFolderIndex = nil
+                dragPreviewRomFolderIndex = nil
+                dragRomFolderOffset = 0
+                romFolderReorderStartY = nil
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeRomFolderReorderMonitor() {
+        if let romFolderReorderMonitor {
+            NSEvent.removeMonitor(romFolderReorderMonitor)
+        }
+        romFolderReorderMonitor = nil
+    }
+
+    /// Converts an `NSEvent`'s own window-relative, bottom-left-origin
+    /// `locationInWindow` into the same top-left-origin space
+    /// `reportReorderFrame(_:)`'s `.global` `GeometryReader` already
+    /// reports `romFolderRowFrames` in — both ultimately anchored to this
+    /// same window's own root, so comparing the two directly is safe
+    /// without ever needing real screen coordinates.
+    private func windowTopLeftPoint(for event: NSEvent) -> CGPoint? {
+        guard let window = event.window else { return nil }
+        let contentHeight = window.contentView?.bounds.height ?? window.frame.height
+        return CGPoint(x: event.locationInWindow.x, y: contentHeight - event.locationInWindow.y)
+    }
+
+    /// Which ROM folder row (if any) a point sits over, restricted to
+    /// roughly where that row's own grip icon actually is (its trailing
+    /// ~32pt) — see `installRomFolderReorderMonitor`'s own doc comment.
+    private func romFolderGripIndex(at point: CGPoint) -> Int? {
+        for (index, frame) in romFolderRowFrames {
+            let gripMinX = frame.maxX - 32
+            if point.x >= gripMinX, point.x <= frame.maxX, point.y >= frame.minY, point.y <= frame.maxY {
+                return index
+            }
+        }
+        return nil
+    }
+
+    /// Which ROM folder row (if any) a point sits over, anywhere within its
+    /// full frame — unlike `romFolderGripIndex(at:)`, not restricted to the
+    /// grip's own trailing edge. Used by `installRomFolderReorderMonitor`'s
+    /// plain-click fallback below, which needs to recognize a click
+    /// anywhere on the row, not just near the grip.
+    ///
+    /// jensyleo's own report (2026-09-19): a click landing exactly on the
+    /// hairline boundary between two rows sometimes hit neither frame at
+    /// all — adjacent rows' own published frames don't always share a
+    /// perfectly touching edge (sub-pixel rounding from SwiftUI's layout),
+    /// so a point sitting in that gap fails `frame.contains(point)` for
+    /// both. When that happens, this falls back to the row whose bottom
+    /// edge is closest just above the point — jensyleo's own preference:
+    /// a border-zone click should count as hitting the row ABOVE it, not
+    /// the one below.
+    private func romFolderRowIndex(at point: CGPoint) -> Int? {
+        for (index, frame) in romFolderRowFrames where frame.contains(point) {
+            return index
+        }
+        let boundaryTolerance: CGFloat = 6
+        return romFolderRowFrames
+            .filter { _, frame in
+                point.x >= frame.minX && point.x <= frame.maxX && point.y >= frame.maxY && point.y - frame.maxY <= boundaryTolerance
+            }
+            // The row whose bottom edge sits closest to (just above) the
+            // point — i.e. the largest `maxY` among the candidates found.
+            .max { $0.value.maxY < $1.value.maxY }
+            .map(\.key)
+    }
     /// A local mirror of `system.romFolderURLs`, rendered by
     /// `romFolderListContent` instead of `system.romFolderURLs` directly —
     /// jensyleo's own report (2026-08-13): reordering with the ↑/↓ buttons
@@ -1252,11 +2359,62 @@ struct LibraryDetailView: View {
     /// every click between views.
     @State private var cachedGamesInFolder: Set<String> = []
     /// User's show/hide, reorder, and resize choices for each table's
-    /// columns — restored once at launch (`Self.loadCustomization`) and
-    /// persisted on every change, so it survives relaunching the app, not
-    /// just the current session.
-    @State private var gameColumnCustomization = Self.loadCustomization(key: gameColumnCustomizationKey, default: TableColumnCustomization<GameNode>())
-    @State private var romColumnCustomization = Self.loadCustomization(key: romColumnCustomizationKey, default: TableColumnCustomization<RomRow>())
+    /// columns — persisted on every change under
+    /// `gameColumnCustomizationKey`/`romColumnCustomizationKey`, so it
+    /// survives relaunching the app, not just the current session.
+    ///
+    /// Real perf bug found live by jensyleo (2026-09-22): even after
+    /// `GameTreeTableView`/`RomsTableView` were split out into their own
+    /// `View` structs (2026-09-14, see that file's own doc comment) purely
+    /// to isolate re-renders, the live customization value stayed `@State`
+    /// HERE on `LibraryDetailView` (~4400 lines) with the child only
+    /// holding a `@Binding` into it — and mutating a parent's `@State`
+    /// ALWAYS invalidates the OWNING view's body, regardless of how the
+    /// value is actually consumed downstream. Every pixel of a
+    /// column-resize drag (and, less obviously, anything else that
+    /// happened to touch this same giant view's state around the same
+    /// time — reported as stutter on scroll/folder-switch too)
+    /// re-evaluated the entire `LibraryDetailView.body`. Each child now
+    /// owns its own live `@State`, loaded directly from `UserDefaults` at
+    /// this same key (`GameTreeTableView.loadStoredColumnCustomization()`/
+    /// `RomsTableView.loadStoredColumnCustomization()`) — this view no
+    /// longer holds a live copy of the value at all. Cross-cutting
+    /// features that genuinely need to push a value INTO the child from
+    /// here (column presets, "Reset Layout") go through
+    /// `gameColumnCustomizationOverride`/`romColumnCustomizationOverride`
+    /// instead — a one-shot push, not a continuous two-way binding — and
+    /// reading the CURRENT value (saving a preset) reads straight from
+    /// `UserDefaults` instead, since the child already persists there on
+    /// every change via `persistColumnCustomization`.
+    ///
+    /// One-shot pushes into each child's own local customization state —
+    /// see the doc comment just above. Set to non-nil to push a value in;
+    /// the child applies it and the parent never needs to clear it back to
+    /// nil itself (a fresh non-nil value is a new, distinct
+    /// `TableColumnCustomization` each time, so SwiftUI always sees a
+    /// genuine change even if applied twice in a row).
+    @State private var gameColumnCustomizationOverride: TableColumnCustomization<GameNode>?
+    @State private var romColumnCustomizationOverride: TableColumnCustomization<RomRow>?
+    /// Snapshot of whatever columns were showing right before one of the
+    /// special, app-managed rows (BIOS, Complementary Chips) got selected
+    /// — `nil` whenever neither is currently selected. jensyleo's own
+    /// request (2026-09-24): "como la vista de BIOS es específica,
+    /// considero que hay que dejarle unas columnas solo para esta vista"
+    /// (later, 2026-09-24, extended verbatim to Complementary Chips: "hay
+    /// que darle las mismas opciones de columnas... debe ser prácticamente
+    /// igual que BIOS") — reuses the EXISTING column-preset mechanism
+    /// (`columnPresets`/`applyColumnPreset`) rather than hand-building a
+    /// `TableColumnCustomization` in code: that type's own on-disk shape
+    /// is undocumented/private, and every other place this file constructs
+    /// one is by decoding JSON actually captured from a real, live
+    /// `defaults read` — never invented. A preset named exactly "BIOS" (or
+    /// "Complementary Chips", saved the normal way via "Save Column
+    /// Preset…" while that row is selected) auto-applies here; leaving the
+    /// row restores whatever was showing right before, so switching back
+    /// to an ordinary ROM folder doesn't leave the special-row-only
+    /// columns behind. One shared snapshot suffices — only one of these
+    /// rows can ever be selected at a time.
+    @State private var columnCustomizationBeforeSpecialRow: (game: TableColumnCustomization<GameNode>, rom: TableColumnCustomization<RomRow>, sidebarVisible: Bool?)?
     private static let gameColumnCustomizationKey = "ROMForge.gameTableColumnCustomization"
     private static let romColumnCustomizationKey = "ROMForge.romTableColumnCustomization"
 
@@ -1303,7 +2461,6 @@ struct LibraryDetailView: View {
     /// "merge saved order with current reality" shape already used for the
     /// toolbar's own saved item order.
     @State private var columnPresetOrder: [String] = Self.loadColumnPresetOrder()
-    @State private var isShowingDATCompareSheet = false
     /// Fase 2 Step 1 "Rebuild to Folder…" state — `rebuildDestination`/
     /// `rebuildOperationCount` are set together right after the user picks a
     /// folder (`startRebuildToFolder()`), then read by the confirmation
@@ -1311,6 +2468,19 @@ struct LibraryDetailView: View {
     @State private var rebuildDestination: URL?
     @State private var rebuildOperationCount = 0
     @State private var showRebuildConfirmation = false
+    /// "File Actions" (Move to Trash, Delete Permanently, Copy/Move to
+    /// Folder…) state — jensyleo's own request (2026-09-11). `pendingFile
+    /// ActionURLs` is set by whichever `start*` function fires (toolbar
+    /// dropdown or Games-table context menu, both operate on the SAME
+    /// selection-derived File URLs); `pendingFileActionDestination` is only
+    /// set for the two folder-picker actions. Both cleared once their own
+    /// confirmation is answered either way.
+    @State private var pendingFileActionURLs: [URL] = []
+    @State private var pendingFileActionDestination: URL?
+    @State private var showMoveToTrashConfirmation = false
+    @State private var showDeletePermanentlyConfirmation = false
+    @State private var showCopyToFolderConfirmation = false
+    @State private var showMoveToFolderConfirmation = false
     /// Fase 2 Step 7 "Remove Useless Files…" state — same preview-then-
     /// confirm shape as the rebuild state above, its own separate dialog.
     @State private var removeUselessFilesCount = 0
@@ -1319,6 +2489,12 @@ struct LibraryDetailView: View {
     /// confirm shape as the two above.
     @State private var repairFromSiblingSetsCount = 0
     @State private var showRepairFromSiblingSetsConfirmation = false
+    @State private var createDummyRomsCount = 0
+    @State private var showCreateDummyRomsConfirmation = false
+    @State private var removeZipCommentsCount = 0
+    @State private var showRemoveZipCommentsConfirmation = false
+    @State private var collectSamplesCount = 0
+    @State private var showCollectSamplesConfirmation = false
     /// Fase 2 Step 4 "Make Self-Contained…" state — same preview-then-
     /// confirm shape as the others above.
     @State private var makeSelfContainedCount = 0
@@ -1381,12 +2557,93 @@ struct LibraryDetailView: View {
     @State private var showContextMenuFixMismatchedFilesConfirmation = false
     @State private var contextMenuFixMismatchedFileURLs: [URL] = []
 
+    /// "Remove Useless Files" (context menu, scoped to the selected
+    /// File(s)) — jensyleo's own report (2026-09-13): scanning a folder
+    /// with deliberately-planted unrecognized entries showed "Extra file
+    /// in archive" on the affected row, but nothing in the context menu
+    /// could actually act on it — the toolbar's own "Remove Useless
+    /// Files…" only ever scopes to the SELECTED ROM FOLDER (itself
+    /// narrowed to that, 2026-09-13, after this same action used to run
+    /// system-wide by mistake), never to a row right-clicked in the Games
+    /// table. Same dedicated-state pattern as `contextMenuFixMismatchedFilesCount`
+    /// above, for the same can't-clobber-each-other reason.
+    @State private var contextMenuRemoveUselessFilesCount = 0
+    @State private var showContextMenuRemoveUselessFilesConfirmation = false
+    @State private var contextMenuRemoveUselessFilesURLs: [URL] = []
+
+    /// "Remove Zip Comments" (context menu, scoped to selected File(s)) —
+    /// real gap found live by jensyleo (2026-09-22): only the toolbar's
+    /// own unscoped, whole-system version existed. Same dedicated-state
+    /// pattern as `contextMenuRemoveUselessFilesCount` above, for the same
+    /// can't-clobber-each-other reason (the toolbar's own
+    /// `removeZipCommentsCount`/`showRemoveZipCommentsConfirmation`).
+    @State private var contextMenuRemoveZipCommentsCount = 0
+    @State private var showContextMenuRemoveZipCommentsConfirmation = false
+    @State private var contextMenuRemoveZipCommentsURLs: [URL] = []
+
+    /// "Remove Redundant File(s)"/"Remove Redundant ROM(s)" (context menu,
+    /// scoped to selected File(s)) — same dedicated-state pattern as
+    /// `contextMenuRemoveUselessFilesCount` just above, for the same
+    /// can't-clobber-each-other reason.
+    @State private var contextMenuRemoveRedundantFilesCount = 0
+    @State private var showContextMenuRemoveRedundantFilesConfirmation = false
+    @State private var contextMenuRemoveRedundantFilesURLs: [URL] = []
+    @State private var contextMenuRemoveRedundantRomsCount = 0
+    @State private var showContextMenuRemoveRedundantRomsConfirmation = false
+    @State private var contextMenuRemoveRedundantRomsURLs: [URL] = []
+
     /// "Repair from Maintenance Folder…" state — same preview-then-confirm
     /// shape as "Repair from Sibling Sets…", except the preview itself
     /// scans an external folder and so needs an `await`, unlike every
     /// other Fase 2 preview here (all instant, matchReport-only lookups).
     @State private var repairFromMaintenanceFolderCount = 0
     @State private var showRepairFromMaintenanceFolderConfirmation = false
+    /// The exact scope `startRepairFromMaintenanceFolder` just planned its
+    /// preview against — `commitRepairFromMaintenanceFolder` must execute
+    /// against this SAME scope, not always the whole system, or
+    /// `repairFromMaintenanceFolder`'s own `scopeCoveredByLastScan` check
+    /// disagrees with what was actually just previewed.
+    @State private var repairFromMaintenanceFolderScope: [URL] = []
+    @State private var removeRedundantFilesCount = 0
+    @State private var showRemoveRedundantFilesConfirmation = false
+    @State private var removeRedundantRomsCount = 0
+    @State private var showRemoveRedundantRomsConfirmation = false
+    @State private var organizeBIOSFilesCount = 0
+    @State private var organizeBIOSFilesLines: [String] = []
+    @State private var showOrganizeBIOSFilesConfirmation = false
+    /// Cached result of `viewModel.planOrganizeBIOSFilesPreviewCount() > 0`
+    /// — real report caught live (2026-09-24), jensyleo: "la app se tiende
+    /// a poner lenta, sobre todo cuando se da click en las romfolder y en
+    /// los scroll." Root cause: `organizeBIOSFilesAvailable` (this file's
+    /// own toolbar `isEnabled` gate) originally called that function
+    /// DIRECTLY, and a computed property referenced from the toolbar gets
+    /// re-evaluated on every render of this whole view — including every
+    /// ROM-folder click and (since the toolbar is part of this same view
+    /// hierarchy) most scroll-triggered re-renders too. That function
+    /// walks every BIOS machine plus the surplus-file list looking for a
+    /// duplicate — cheap once, but not something to redo dozens of times a
+    /// second. Exactly the same class of bug as the 2026-09-22 "beachball"
+    /// incidents (preview counts run uncached from a render path) — same
+    /// fix: compute it ONCE per real scan result
+    /// (`.onChange(of: viewModel.auditReport)` below), never from `body`.
+    @State private var organizeBIOSFilesAvailableCache = false
+    @State private var organizeComplementaryChipsCount = 0
+    @State private var organizeComplementaryChipsLines: [String] = []
+    @State private var showOrganizeComplementaryChipsConfirmation = false
+    /// Same reasoning as `organizeBIOSFilesAvailableCache`'s own doc
+    /// comment — learned that lesson up front this time, cached from the
+    /// start rather than computed live from `isEnabled`.
+    @State private var organizeComplementaryChipsAvailableCache = false
+    /// The Roms panel's own entry-level File Actions state — jensyleo's own
+    /// request (2026-09-13). `pendingRomEntryTargets` is shared by all
+    /// three actions (only one is ever pending at a time, gated by its own
+    /// `show...` flag); `pendingRomEntryDestination` only matters for
+    /// Extract.
+    @State private var pendingRomEntryTargets: [LibraryViewModel.RomEntryTarget] = []
+    @State private var pendingRomEntryDestination: URL?
+    @State private var showExtractRomEntriesConfirmation = false
+    @State private var showMoveRomEntriesToTrashConfirmation = false
+    @State private var showDeleteRomEntriesPermanentlyConfirmation = false
     /// Fase 2 Step 8 "Handle Corrupted Files…" state — same preview-then-
     /// confirm shape, own separate confirmation modifier for the same
     /// reason.
@@ -1401,10 +2658,109 @@ struct LibraryDetailView: View {
     /// `ColumnPresetsPanel.draggingName`'s own doc comment
     /// (`ViewOptionsSettingsView.swift`) for why this lives one level up
     /// from `ReorderGripHandle` itself.
+    /// Non-nil drives the "Remove Folder…" confirmation dialog — jensyleo's
+    /// own request (2026-09-14): removing a configured ROM folder used to
+    /// happen immediately on click, with no way to back out of an
+    /// accidental one.
+    @State private var pendingRomFolderRemoval: URL?
+    /// Drives the Maintenance subfolder's own "Delete Maintenance
+    /// Subfolder…" confirmation, reached from its sidebar row's context
+    /// menu — jensyleo's own request (2026-09-14). Same underlying
+    /// `MaintenanceFolderSettings.deleteSubfolder(for:)` Settings → General
+    /// already offers per-system; just reachable here too.
+    @State private var pendingMaintenanceSubfolderDeletionFromSidebar = false
+    // jensyleo's own report (2026-09-16), testing against a NAS-mounted
+    // (SMB) ROM folder: "Hay lentitud en la visualización, cuando paso
+    // entre carpetas... cuando es local la visualización [es rápida]" —
+    // root-caused to THIS exact check: `FileManager.default.fileExists`
+    // used to run inline inside the sidebar row's own body, which
+    // re-executes on every re-render of that row, including every single
+    // click on ANY other ROM folder (`selectedRomFolder` changing is what
+    // drives this row's own highlight). Locally `fileExists` is
+    // essentially free; over SMB/AFP it's a real network round-trip, so
+    // every folder click was paying that cost again for a check that had
+    // nothing to do with the folder just clicked. Now cached here and only
+    // recomputed when it can actually change (system, or a genuine
+    // create/delete of the subfolder) — never merely from re-rendering.
+    //
+    // jensyleo's own report (2026-09-16): "se perdió de vista la carpeta
+    // de mantenimiento" after a relaunch — turned out to be macOS itself
+    // dropping the NAS connection at that exact moment, not a deleted
+    // folder; then, right after that fix, a NEW report on cold launch with
+    // the NAS already offline: "las otras [ROM folder rows] sí se ven,
+    // unifica eso" — a real, correct point. Every ordinary ROM folder row
+    // is ALWAYS shown regardless of whether it can currently be verified
+    // (`romFolderRow`, below — a configured reference stays visible, red
+    // only once a scan proves it unreachable). This row used to work the
+    // opposite way — hidden by DEFAULT until a check proved it existed —
+    // which is exactly backwards from every other row in this same list.
+    // Rebuilt on the same two-flag model `LibraryViewModel
+    // .lastScanUnreachableFolders` uses for ROM folders:
+    /// `true` only after a DELIBERATE delete (all three delete entry
+    /// points) — the one and only thing that actually hides this row.
+    /// Never set by a mere failed existence check.
+    @State private var maintenanceSubfolderDeleted = false
+    /// `true` only after a completed check confirms the subfolder can't
+    /// currently be reached — drives the same red/⚠️ styling
+    /// `romFolderRow` already uses for an unreachable ROM folder. Starts
+    /// `false` (optimistic, same as every ROM folder row's own un-scanned
+    /// default) so this row renders normally on the very first frame,
+    /// never hidden just because nothing has checked it yet.
+    @State private var maintenanceSubfolderUnreachable = false
+    /// jensyleo's own request (2026-09-16), testing with ROM folders on a
+    /// NAS: "debería haber un distintivo... cuando la carpeta está en el
+    /// disco local o está en un pendrive, un disco duro externo o
+    /// conectado a una NAS (SMB, AFS, etc.)". Computed off-`@MainActor`
+    /// (`URLResourceValues` for a network path is itself a real round
+    /// trip — same class of cost `maintenanceSubfolderUnreachable`'s own
+    /// doc comment just fixed) and cached here, keyed by folder URL, never
+    /// recomputed on a plain re-render.
+    @State private var romFolderVolumeKindCache: [URL: RomFolderVolumeKind] = [:]
+    @State private var romFolderVolumeKindRefreshGeneration = 0
     @State private var draggingRomFolderIndex: Int?
     @State private var dragPreviewRomFolderIndex: Int?
     @State private var dragRomFolderOffset: CGFloat = 0
     @State private var romFolderRowFrames: [Int: CGRect] = [:]
+
+    /// jensyleo's own report (2026-09-17): "⌘-arrastrar se pone a mover
+    /// un poco, queda congelado, y después no permite hacer ningún otro
+    /// intento" — a macOS 27 event-delivery quirk (the same class already
+    /// seen elsewhere this session for keyboard/focus) can apparently stop
+    /// delivering further drag events mid-gesture, so `ReorderGripHandle`'s
+    /// own `.onEnded` never runs and `draggingRomFolderIndex` never gets
+    /// reset back to `nil` — permanently "stuck" believing a drag is still
+    /// in progress, which then blocks every later attempt (the ghost
+    /// overlay/opacity dimming all key off this same value). Called from
+    /// every plain click in this list as a self-heal: harmless when
+    /// nothing is actually stuck, but recovers on the very next ordinary
+    /// interaction instead of requiring the app to be relaunched.
+    private func resetStuckRomFolderDragIfNeeded() {
+        guard draggingRomFolderIndex != nil || dragPreviewRomFolderIndex != nil else { return }
+        draggingRomFolderIndex = nil
+        dragPreviewRomFolderIndex = nil
+        dragRomFolderOffset = 0
+    }
+
+    /// Selects `url` as the active ROM folder — shared by the row's own
+    /// `.onTapGesture` and `installRomFolderReorderMonitor`'s raw-mouse
+    /// fallback below, so both paths stay in lockstep instead of drifting
+    /// apart if only one of them gets updated later.
+    private func selectRomFolder(_ url: URL) {
+        resetStuckRomFolderDragIfNeeded()
+        selectedDatabaseFilter = nil
+        selectedRomFolder = url
+        isRomFolderPaneFocused = true
+        resultsPaneIsActive = false
+        // jensyleo's own instruction (2026-09-16): "la app solo debe
+        // iniciar, los escaneos se deben hacer por parte del usuario" — the
+        // volume-kind icon (local/removable/NAS) no longer computes itself
+        // automatically on `.onAppear`; only ever recomputed when the user
+        // genuinely interacts with this list (a click here) — never on the
+        // app launching.
+        if romFolderVolumeKindCache[url] == nil {
+            refreshRomFolderVolumeKindCache()
+        }
+    }
     static let columnPresetsKey = "ROMForge.columnPresets"
     static let columnPresetOrderKey = "ROMForge.columnPresetOrder"
 
@@ -1445,9 +2801,16 @@ struct LibraryDetailView: View {
     }
 
     private func saveColumnPreset(named name: String) {
+        // Reads the LIVE value from `UserDefaults`, not the `@State` above
+        // — see that property's own doc comment: the child table now owns
+        // live mutation and persists there on every change, so this is
+        // the current, real value without needing a two-way binding back
+        // to this giant view.
+        let currentGameCustomization = Self.loadCustomization(key: Self.gameColumnCustomizationKey, default: TableColumnCustomization<GameNode>())
+        let currentRomCustomization = Self.loadCustomization(key: Self.romColumnCustomizationKey, default: TableColumnCustomization<RomRow>())
         guard !name.isEmpty,
-              let gameData = try? JSONEncoder().encode(gameColumnCustomization),
-              let romData = try? JSONEncoder().encode(romColumnCustomization)
+              let gameData = try? JSONEncoder().encode(currentGameCustomization),
+              let romData = try? JSONEncoder().encode(currentRomCustomization)
         else { return }
         columnPresets[name] = ColumnPreset(gameData: gameData, romData: romData, sidebarVisible: isSidebarVisible?.wrappedValue)
         Self.persistColumnPresets(columnPresets)
@@ -1457,15 +2820,57 @@ struct LibraryDetailView: View {
         }
     }
 
+    /// Called from `.onChange(of: selectedRomFolder)` — see
+    /// `columnCustomizationBeforeSpecialRow`'s own doc comment for the
+    /// full reasoning. Entering either special row snapshots the current
+    /// columns (once) and applies a preset literally named after that row
+    /// ("BIOS"/"Complementary Chips") if the user has saved one; leaving
+    /// both restores that snapshot. Only one of `specialRowsAndPresetNames`
+    /// can ever be `selectedRomFolder` at a time, so one shared snapshot
+    /// is safe.
+    private var specialRowsAndPresetNames: [(folder: URL?, presetName: String)] {
+        guard system.isMAMEStyle else { return [] }
+        return [
+            (BIOSFolderSettings.folderURL, "BIOS"),
+            (ComplementaryChipsFolderSettings.folderURL, "Complementary Chips"),
+        ]
+    }
+
+    private func applyOrRestoreBIOSColumnsIfNeeded() {
+        if let match = specialRowsAndPresetNames.first(where: { $0.folder != nil && $0.folder == selectedRomFolder }) {
+            if columnCustomizationBeforeSpecialRow == nil {
+                columnCustomizationBeforeSpecialRow = (
+                    Self.loadCustomization(key: Self.gameColumnCustomizationKey, default: TableColumnCustomization<GameNode>()),
+                    Self.loadCustomization(key: Self.romColumnCustomizationKey, default: TableColumnCustomization<RomRow>()),
+                    isSidebarVisible?.wrappedValue
+                )
+            }
+            if columnPresets[match.presetName] != nil {
+                applyColumnPreset(named: match.presetName)
+            }
+        } else if let saved = columnCustomizationBeforeSpecialRow {
+            Self.persist(saved.game, key: Self.gameColumnCustomizationKey)
+            gameColumnCustomizationOverride = saved.game
+            Self.persist(saved.rom, key: Self.romColumnCustomizationKey)
+            romColumnCustomizationOverride = saved.rom
+            if let sidebarVisible = saved.sidebarVisible {
+                isSidebarVisible?.wrappedValue = sidebarVisible
+            }
+            columnCustomizationBeforeSpecialRow = nil
+        }
+    }
+
     private func applyColumnPreset(named name: String) {
         guard let preset = columnPresets[name] else { return }
         if let decoded = try? JSONDecoder().decode(TableColumnCustomization<GameNode>.self, from: preset.gameData) {
-            gameColumnCustomization = decoded
             Self.persist(decoded, key: Self.gameColumnCustomizationKey)
+            // One-shot push into the child's own local state — see
+            // `gameColumnCustomizationOverride`'s own doc comment.
+            gameColumnCustomizationOverride = decoded
         }
         if let decoded = try? JSONDecoder().decode(TableColumnCustomization<RomRow>.self, from: preset.romData) {
-            romColumnCustomization = decoded
             Self.persist(decoded, key: Self.romColumnCustomizationKey)
+            romColumnCustomizationOverride = decoded
         }
         if let sidebarVisible = preset.sidebarVisible {
             isSidebarVisible?.wrappedValue = sidebarVisible
@@ -1529,7 +2934,54 @@ struct LibraryDetailView: View {
     // exactly ClrMamePro's own single "Fix" model — and "Apply Case
     // Policy…" was removed outright as a separate action rather than kept
     // as a redundant second door to the same result.
-    private static let fixActionsEnabledForTesting: Set<String> = ["fixMisnamed", "renameRomsInArchive"]
+    // jensyleo's own decisions (2026-09-13): "makeSelfContained" and
+    // "convertToSplit" were each briefly enabled here, then deliberately
+    // taken back out — "Esa opción no la voy a implementar [probar].
+    // Documenta para que alguien lo active si lo considera útil... Solo
+    // voy a implementar el de Find ROMs." Both actions stay fully
+    // implemented and reachable by re-adding their id here (see
+    // TESTING.es.md's own §11.6/§11.8 notes for why jensyleo skipped
+    // manual testing of them) — nothing about either feature was
+    // removed, only its exposure in this dropdown. "Find ROMs"
+    // (`repairFromMaintenanceFolder`) is what he's testing next instead.
+    // jensyleo's own request (2026-09-13): "prueba tu todas las otras
+    // opciones así no las vaya yo a implementar" — every remaining action
+    // WAS enabled here temporarily for Claude's own live GUI testing pass
+    // (createDummyRoms, removeZipComments, makeSelfContained succeeded;
+    // convertToSplit's own confirmation correctly found 1,212 real
+    // candidates but was cancelled rather than run system-wide;
+    // handleCorruptedFiles/convertToMerged/collectSamples never reached).
+    // jensyleo's own follow-up the same day: "deja solo lo que yo he
+    // probado, mas lo de Find ROMS, que es lo que voy a probar yo" — this
+    // set now reflects only jensyleo's OWN manually-verified actions
+    // (fixMisnamed/renameRomsInArchive/removeUselessFiles, per
+    // TESTING.es.md's own confirmations) plus "Find ROMs"
+    // (repairFromMaintenanceFolder), which he's testing next. Every other
+    // action Claude tested stays fully implemented and reachable by
+    // re-adding its id here whenever jensyleo is ready for it himself.
+    private static let fixActionsEnabledForTesting: Set<String> = [
+        "fixMisnamed", "renameRomsInArchive", "removeUselessFiles", "repairFromMaintenanceFolder",
+        // jensyleo's own request (2026-09-14), right after live-testing
+        // "Find ROMs…" himself and discovering its own real, honest gap:
+        // it only ever ADDS a missing rom, so a repaired game's own
+        // now-obsolete leftover content (e.g. `gng.zip`'s old `gg3.bin`/
+        // `gg4.bin`/`gg5.bin`, superseded by the newly-added `mm_c_03`/
+        // `mm_c_04`/`mm_c_05`) stays behind as a "Duplicated file, not
+        // needed here" row — "Remove Redundant Files/ROMs…" is exactly
+        // the cleanup step for that, so he asked to test it too.
+        "removeRedundantFiles", "removeRedundantRoms",
+        // jensyleo's own request (2026-09-14): "actívalos y los pruebo
+        // mañana" — next in the queue, alongside "Remove Redundant
+        // Files/ROMs…" above.
+        "removeZipComments",
+        // jensyleo's own request (2026-09-24): "Si" — activado para que lo
+        // pruebe, justo después de validar el flujo de creación de la
+        // carpeta BIOS (ver `BIOSFolderSettings`'s own doc comment).
+        "organizeBIOSFiles",
+        // jensyleo's own request (2026-09-24): "habilítaselo" — right
+        // after finishing "Organize Complementary Chips…", same as BIOS.
+        "organizeComplementaryChips",
+    ]
 
     private var fixSubActions: [ToolbarAction] {
         [
@@ -1655,25 +3107,314 @@ struct LibraryDetailView: View {
             // (see `RebuildPlanner.planRepairFromMaintenanceFolder`'s own
             // doc comment). Distinct from "Repair from Sibling Sets…"
             // above, which only ever borrows from within this same scan.
+            // jensyleo's own request (2026-09-14): "fusionalo con repair
+            // from maintenance folder. A la larga es lo mismo" — this one
+            // action now ALSO replaces a `.badDump` rom's bad content with
+            // a verified-correct donor copy (previously a separate
+            // "Replace Corrupted ROMs…" entry) — see `RebuildPlanner
+            // .planReplaceCorruptedRoms`'s own doc comment for the
+            // remove-then-add overwrite that case needs that a plain fill
+            // doesn't; `planRepairFromMaintenanceFolderPreviewCount` plans
+            // both kinds together from one single donor-folder read.
+            // `skipConfirmation: true` — jensyleo's own follow-up
+            // (2026-09-14): "quitar ese mensaje emergente, la
+            // funcionalidad mantenla. Deja solo mensajes emergentes para
+            // casos de eliminación" — a popup confirmation now stays
+            // reserved for genuinely destructive actions (Remove Useless/
+            // Redundant Files/ROMs, below); this one only ever COPIES from
+            // the read-only Maintenance folder, never deletes/overwrites
+            // anything irrecoverably, matching the context-menu version's
+            // own no-confirmation behavior.
             ToolbarAction(
                 id: "repairFromMaintenanceFolder", title: "Repair from Maintenance Folder…",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
                 help: LibraryViewModel.modificationsEnabled
-                    ? "Fill in a missing rom by copying it from the optional, read-only Maintenance folder configured in Settings → General"
+                    ? "Fill in a missing rom, or replace a hash-mismatched rom's bad content, by copying a verified-correct copy from the optional, read-only Maintenance folder configured in Settings → Systems → MAME"
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
-                startRepairFromMaintenanceFolder()
+                // Real gap found live by jensyleo (2026-09-22): unlike "Fix
+                // Mismatched Files" right above (which already scopes its
+                // own toolbar call to `selectedRomFolder`), this always
+                // passed `scopeFolders: []` — forcing "the LAST scan must
+                // have covered the WHOLE system" (`scopeCoveredByLastScan`'s
+                // own `.wholeSystem` requirement) even for someone working
+                // folder-by-folder on a NAS specifically to avoid re-reading
+                // everything. `scopeFolders` already fully supports scoping
+                // both which donor search ALSO covers (see this action's
+                // own doc comment, point 2) and which folder gets verified
+                // afterward — nothing here ever needed the whole system.
+                startRepairFromMaintenanceFolder(scopeFolders: selectedRomFolder.map { [$0] } ?? [], skipConfirmation: true)
             },
+            // jensyleo's own correction (2026-09-13), after live-testing
+            // this himself: it deleted surplus files across every
+            // configured ROM folder at once, not just the one he'd
+            // selected — "Remove Useless Files… debe actuar solo en la
+            // carpeta SELECCIONADA." Now requires a real ROM folder
+            // selected (never the whole system, and never the read-only
+            // Maintenance subfolder — same exclusion `isEnabled`/help
+            // already applies to "Scan Folder") before it's even
+            // clickable.
             ToolbarAction(
                 id: "removeUselessFiles", title: "Remove Useless Files…",
-                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
-                help: LibraryViewModel.modificationsEnabled
-                    ? "Permanently delete every file the DAT recognizes nothing about at all"
-                    : "Disabled for now — enable file modifications in Settings → General first"
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy
+                    && selectedRomFolder != nil && !isSelectedFolderMaintenanceSubfolder,
+                help: !LibraryViewModel.modificationsEnabled
+                    ? "Disabled for now — enable file modifications in Settings → General first"
+                    : isSelectedFolderMaintenanceSubfolder
+                        ? "The Maintenance folder is a read-only donor area — nothing here is ever deleted"
+                        : selectedRomFolder != nil
+                            ? "Permanently delete every file inside \"\(selectedRomFolder!.lastPathComponent)\" the DAT recognizes nothing about at all"
+                            : "Select a ROM folder first — this only ever acts on the folder currently selected"
             ) {
                 startRemoveUselessFiles()
             },
+            // jensyleo's own request (2026-09-13): the exact complement of
+            // "Remove Useless Files" above — targets a LOOSE file the DAT
+            // DOES recognize, just not needed at this exact location
+            // because another game already claims an equivalent copy
+            // elsewhere ("Not needed here (required by X)"). Same
+            // selected-folder-only scoping and Maintenance-folder
+            // exclusion as "Remove Useless Files…".
+            ToolbarAction(
+                id: "removeRedundantFiles", title: "Remove Redundant Files…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy
+                    && selectedRomFolder != nil && !isSelectedFolderMaintenanceSubfolder,
+                help: !LibraryViewModel.modificationsEnabled
+                    ? "Disabled for now — enable file modifications in Settings → General first"
+                    : isSelectedFolderMaintenanceSubfolder
+                        ? "The Maintenance folder is a read-only donor area — nothing here is ever deleted"
+                        : selectedRomFolder != nil
+                            ? "Permanently delete every loose file inside \"\(selectedRomFolder!.lastPathComponent)\" that's a redundant duplicate of content the DAT recognizes elsewhere"
+                            : "Select a ROM folder first — this only ever acts on the folder currently selected"
+            ) {
+                startRemoveRedundantFiles()
+            },
+            // "Remove Redundant Files…"'s own archive-entry counterpart —
+            // same "recognized, but not needed HERE" definition, just for a
+            // rom sitting inside a `.zip` rather than loose on disk.
+            ToolbarAction(
+                id: "removeRedundantRoms", title: "Remove Redundant ROMs…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy
+                    && selectedRomFolder != nil && !isSelectedFolderMaintenanceSubfolder,
+                help: !LibraryViewModel.modificationsEnabled
+                    ? "Disabled for now — enable file modifications in Settings → General first"
+                    : isSelectedFolderMaintenanceSubfolder
+                        ? "The Maintenance folder is a read-only donor area — nothing here is ever deleted"
+                        : selectedRomFolder != nil
+                            ? "Permanently remove every archive entry inside \"\(selectedRomFolder!.lastPathComponent)\" that's a redundant duplicate of content the DAT recognizes elsewhere"
+                            : "Select a ROM folder first — this only ever acts on the folder currently selected"
+            ) {
+                startRemoveRedundantRoms()
+            },
+            // jensyleo's own request (2026-09-11): "implementa: Create dummy
+            // roms for nodump entries" — see `RebuildPlanner
+            // .planCreateDummyRoms`'s own doc comment for exactly which
+            // roms qualify (a genuinely `.missing` slot whose DAT entry is
+            // declared `nodump` — never a rom that already has some file
+            // sitting in its spot).
+            ToolbarAction(
+                id: "createDummyRoms", title: "Create Dummy ROMs…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Create a zero-byte placeholder for every missing rom the DAT declares \"nodump\""
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startCreateDummyRoms()
+            },
+            // jensyleo's own request (2026-09-11): "implementa: ... Remove
+            // zip comments" — strips the trailing comment field from every
+            // matched `.zip` (`RebuildPlanner.planRemoveZipComments`).
+            ToolbarAction(
+                id: "removeZipComments", title: "Remove Zip Comments…",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Strip the trailing comment field from every matched archive, in place"
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startRemoveZipComments()
+            },
+            // jensyleo's own request (2026-09-11): "implementalo, es clave
+            // para MAME" — populates the MAME Samples folder (Settings →
+            // Systems → MAME) from this system's own configured ROM
+            // folders, matched purely by filename (`RebuildPlanner
+            // .planCollectSamples`'s own doc comment covers why: MAME's
+            // DAT declares a sample's NAME only, never a hash). Unlike
+            // every other Fix action, this doesn't need a prior scan at
+            // all — its own real prerequisite is samples support being
+            // enabled with a folder configured.
+            ToolbarAction(
+                id: "collectSamples", title: "Fix Samples…",
+                isEnabled: LibraryViewModel.modificationsEnabled && SamplesFolderSettings.folderURL != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? (SamplesFolderSettings.folderURL != nil
+                        ? "Copy any matching sample zip found in this system's own ROM folders into the Samples folder"
+                        : "Disabled for now — enable samples support and choose a folder in Settings → Systems → MAME first")
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startCollectSamples()
+            },
+            // jensyleo's own request (2026-09-23): "quiero que vayas
+            // preparando la característica adicional de que se cree una
+            // carpeta llamada BIOS donde la idea es que la app tome las
+            // BIOS que identifique en las rom folder y las mueva allá" —
+            // point 3 of that request is explicit this belongs ONLY here
+            // (the toolbar's own "Fix" menu), never a per-row context menu
+            // item. Whole-system only, same reasoning `organizeBIOSFiles`'s
+            // own doc comment gives — a BIOS can be referenced by games
+            // under any of this system's configured ROM folders, not just
+            // whichever one happens to be selected.
+            ToolbarAction(
+                id: "organizeBIOSFiles", title: "Organize BIOS Files…", systemImage: "cpu",
+                // jensyleo's own request (2026-09-24): "debe ser dinámica,
+                // si en los escaneos se detectan BIOS en los rom folder la
+                // opción se debe activar" — unlike most other Fix actions
+                // here (which enable on preconditions alone — a scan
+                // exists, a folder's selected — and only compute their own
+                // real preview count on click), this one also checks
+                // `organizeBIOSFilesAvailable` so the button reads as truly
+                // inert when the last scan found nothing to organize, not
+                // just "click it to find out". Cheap enough to compute on
+                // every render — it only walks this DAT's own BIOS
+                // machines (a handful) plus their own surplus duplicates,
+                // never the whole collection.
+                isEnabled: LibraryViewModel.modificationsEnabled && BIOSFolderSettings.folderURL != nil
+                    && viewModel.auditReport != nil && !viewModel.isBusy && organizeBIOSFilesAvailable,
+                help: !LibraryViewModel.modificationsEnabled
+                    ? "Disabled for now — enable file modifications in Settings → General first"
+                    : BIOSFolderSettings.folderURL == nil
+                        ? "Disabled for now — enable a BIOS folder in Settings → Systems → MAME first"
+                        : !organizeBIOSFilesAvailable
+                            ? "Nothing to organize — no BIOS files found outside the configured BIOS folder in the current scan"
+                            : "Move every BIOS file found across this system's own ROM folders into the configured BIOS folder, removing redundant copies once confirmed safe elsewhere"
+            ) {
+                startOrganizeBIOSFiles()
+            },
+            // jensyleo's own request (2026-09-24): "lo mismo que BIOS pero
+            // para los demás chips" — see `RebuildPlanner
+            // .planOrganizeComplementaryChips`'s own doc comment for the
+            // exact `isDevice`-vs-`isBios` distinction, sourced against
+            // MAME's own official documentation. Same dynamic-enable
+            // reasoning as "Organize BIOS Files…" right above.
+            ToolbarAction(
+                id: "organizeComplementaryChips", title: "Organize Complementary Chips…", systemImage: "puzzlepiece.extension",
+                isEnabled: LibraryViewModel.modificationsEnabled && ComplementaryChipsFolderSettings.folderURL != nil
+                    && viewModel.auditReport != nil && !viewModel.isBusy && organizeComplementaryChipsAvailable,
+                help: !LibraryViewModel.modificationsEnabled
+                    ? "Disabled for now — enable file modifications in Settings → General first"
+                    : ComplementaryChipsFolderSettings.folderURL == nil
+                        ? "Disabled for now — enable a Complementary Chips folder in Settings → Systems → MAME first"
+                        : !organizeComplementaryChipsAvailable
+                            ? "Nothing to organize — no complementary chip files found outside the configured Complementary Chips folder in the current scan"
+                            : "Move every complementary chip file found across this system's own ROM folders into the configured Complementary Chips folder, removing redundant copies once confirmed safe elsewhere"
+            ) {
+                startOrganizeComplementaryChips()
+            },
         ].filter { Self.fixActionsEnabledForTesting.contains($0.id) }
+    }
+
+    /// The real File URL for each row in `selectedGameIDs` that actually has
+    /// one — same computation the Games table's own context menu already
+    /// does from its `selection` parameter (`actualFileURL(for:)`), factored
+    /// out here so the TOOLBAR's own "File Actions" dropdown (which has no
+    /// `.contextMenu` selection parameter to read — it operates on whatever
+    /// is CURRENTLY selected, not a scoped ROM folder like "Fix" does) can
+    /// share the exact same selection-to-Files mapping.
+    private var selectedFileURLs: [URL] {
+        selectedGameIDs.compactMap { selectedID in
+            cachedGameNodesByID[selectedID].flatMap(actualFileURL(for:))
+        }
+    }
+
+    /// The "File Actions" toolbar button's own dropdown menu — jensyleo's
+    /// own request (2026-09-11): "cosas de sistema operativo como eliminar
+    /// y copiar a otra carpeta... en un boton del menu que se llame File
+    /// action". Plain, OS-level operations on `selectedFileURLs`,
+    /// independent of the DAT — unlike "Fix"'s own sub-actions, these don't
+    /// need `viewModel.auditReport != nil` at all, only a real selection.
+    private var fileActionsSubActions: [ToolbarAction] {
+        [
+            ToolbarAction(
+                id: "moveToTrash", title: selectedFileURLs.count == 1 ? "Move File to Trash…" : "Move Files to Trash…", systemImage: "trash",
+                isEnabled: LibraryViewModel.modificationsEnabled && !selectedFileURLs.isEmpty && !viewModel.isBusy,
+                help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.isEmpty ? "Select one or more Files in the list first" : "Send the selected File(s) to the Trash — recoverable from there"
+            ) {
+                startMoveToTrash(selectedFileURLs)
+            },
+            ToolbarAction(
+                id: "deleteFilesPermanently", title: selectedFileURLs.count == 1 ? "Delete File Permanently…" : "Delete Files Permanently…", systemImage: "trash.fill",
+                isEnabled: LibraryViewModel.modificationsEnabled && !selectedFileURLs.isEmpty && !viewModel.isBusy,
+                help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.isEmpty ? "Select one or more Files in the list first" : "Permanently delete the selected File(s) — cannot be undone"
+            ) {
+                startDeleteFilesPermanently(selectedFileURLs)
+            },
+            ToolbarAction(
+                id: "copyFilesToFolder", title: selectedFileURLs.count == 1 ? "Copy File to Folder…" : "Copy Files to Folder…", systemImage: "doc.on.doc",
+                isEnabled: LibraryViewModel.modificationsEnabled && !selectedFileURLs.isEmpty && !viewModel.isBusy,
+                help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.isEmpty ? "Select one or more Files in the list first" : "Copy the selected File(s) into a folder you choose, leaving the originals untouched"
+            ) {
+                startCopyFilesToFolder(selectedFileURLs)
+            },
+            ToolbarAction(
+                id: "moveFilesToFolder", title: selectedFileURLs.count == 1 ? "Move File to Folder…" : "Move Files to Folder…", systemImage: "folder",
+                isEnabled: LibraryViewModel.modificationsEnabled && !selectedFileURLs.isEmpty && !viewModel.isBusy,
+                help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.isEmpty ? "Select one or more Files in the list first" : "Move the selected File(s) into a folder you choose, removing them from their current location"
+            ) {
+                startMoveFilesToFolder(selectedFileURLs)
+            },
+            // jensyleo's own follow-up request (2026-09-11): "Duplicate"/
+            // "Compress", same two remaining Finder-style actions on this
+            // list. Neither confirms first (see `startDuplicateFiles`'s own
+            // doc comment).
+            ToolbarAction(
+                id: "duplicateFiles", title: selectedFileURLs.count == 1 ? "Duplicate File" : "Duplicate Files", systemImage: "plus.square.on.square",
+                isEnabled: LibraryViewModel.modificationsEnabled && !selectedFileURLs.isEmpty && !viewModel.isBusy,
+                help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.isEmpty ? "Select one or more Files in the list first" : "Create a copy of each selected File right next to it, Finder-style"
+            ) {
+                startDuplicateFiles(selectedFileURLs)
+            },
+            ToolbarAction(
+                id: "compressFiles", title: selectedFileURLs.count == 1 ? "Compress File" : "Compress Files", systemImage: "archivebox",
+                isEnabled: LibraryViewModel.modificationsEnabled && !selectedFileURLs.isEmpty && !viewModel.isBusy,
+                help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.isEmpty ? "Select one or more Files in the list first" : "Pack the selected File(s) into a new .zip alongside them, Finder-style"
+            ) {
+                startCompressFiles(selectedFileURLs)
+            },
+        ]
+    }
+
+    /// The "Export" toolbar button's own dropdown menu — see
+    /// `detailToolbarActions`'s own "export" entry for why these three live
+    /// here instead of each getting a separate toolbar button. Each sub-
+    /// action's own `isEnabled`/gating logic is unchanged from when it was
+    /// a standalone button; only where it's declared moved.
+    private var exportSubActions: [ToolbarAction] {
+        var subs: [ToolbarAction] = []
+        if let onExportCollectionReport {
+            subs.append(
+                ToolbarAction(id: "exportReport", title: "Export Report…", systemImage: "doc.richtext", help: "Save a printable HTML report combining every configured system's last scan") {
+                    onExportCollectionReport()
+                }
+            )
+        }
+        subs.append(
+            ToolbarAction(
+                id: "exportFixDat", title: "Export Fix DAT…", systemImage: "square.and.arrow.up",
+                isEnabled: viewModel.auditReport != nil && !viewModel.isBusy,
+                help: "Save a DAT containing only this scan's missing/incorrect entries"
+            ) {
+                exportFixDat()
+            }
+        )
+        subs.append(
+            ToolbarAction(
+                id: "exportListCSV", title: "Export List to CSV…", systemImage: "tablecells",
+                isEnabled: !cachedGameNodes.isEmpty && !viewModel.isBusy,
+                help: "Save the currently displayed games list as a CSV file"
+            ) {
+                exportGameListCSV()
+            }
+        )
+        return subs
     }
 
     /// This view's own contribution to the shared toolbar's "detail"
@@ -1689,16 +3430,36 @@ struct LibraryDetailView: View {
     // that happened to stick: Scan File, Scan Folder, Scan All Folders,
     // Fix, Play, Export Report…, Export Fix DAT…, Export List to CSV…,
     // Column Presets…
-    private var detailToolbarActions: [ToolbarAction] {
-        var actions: [ToolbarAction] = [
+    /// The "Scan" toolbar button's own dropdown menu — jensyleo's own
+    /// request (2026-09-13): "Scan All Folders" never touched the
+    /// Maintenance folder (correct — see `isSelectedFolderMaintenanceSubfolder`'s
+    /// own doc comment on why it must never be folded into this system's
+    /// own audit), so he asked for a separate way to refresh ITS OWN
+    /// listing, and — rather than a 4th standalone toolbar icon —
+    /// consolidating "Scan File"/"Scan Folder"/"Scan All Folders" plus this
+    /// new one into a single "Scan" dropdown, same `subActions` pattern
+    /// "Fix"/"Export"/"File Actions" already use just below.
+    ///
+    /// "Scan Maintenance Folder…" is deliberately NOT another
+    /// `viewModel.startScan(...)` call — that path feeds this system's own
+    /// `MatchReport`/audit, which the Maintenance folder must never enter.
+    /// It only re-runs `loadMaintenanceFolderFiles()`, the same plain
+    /// Finder-style listing refresh `.onChange(of: selectedRomFolder)`
+    /// already triggers on selection — this just lets it be refreshed
+    /// on demand too (e.g. after dropping in new donor files without
+    /// re-selecting the folder).
+    private var scanSubActions: [ToolbarAction] {
+        [
             ToolbarAction(id: "scanFile", title: "Scan File", systemImage: "doc.text.magnifyingglass", isEnabled: canScanSelectedFile, help: scanFileButtonHelpText) {
                 scanSelectedFile()
             },
             ToolbarAction(
                 id: "scanFolder", title: "Scan Folder", systemImage: "folder",
-                isEnabled: !viewModel.isBusy && selectedRomFolder != nil,
-                help: selectedRomFolder.map { "Scan only \"\($0.lastPathComponent)\" — other folders keep their last known results" }
-                    ?? "Select a folder under \"Rom files\" to scan it"
+                isEnabled: !viewModel.isBusy && selectedRomFolder != nil && !isSelectedFolderMaintenanceSubfolder,
+                help: isSelectedFolderMaintenanceSubfolder
+                    ? "The Maintenance folder is a read-only donor area — it's never scanned into this system's own audit"
+                    : selectedRomFolder.map { "Scan only \"\($0.lastPathComponent)\" — other folders keep their last known results" }
+                        ?? "Select a folder under \"Rom files\" to scan it"
             ) {
                 viewModel.startScan(system: system, folders: selectedRomFolder.map { [$0] })
             },
@@ -1709,6 +3470,77 @@ struct LibraryDetailView: View {
             ) {
                 viewModel.startScan(system: system)
             },
+            ToolbarAction(
+                id: "scanMaintenanceFolder", title: "Scan Maintenance Folder", systemImage: "shippingbox",
+                isEnabled: !isLoadingMaintenanceFolderFiles && MaintenanceFolderSettings.subfolderURL(for: system) != nil,
+                help: MaintenanceFolderSettings.subfolderURL(for: system) != nil
+                    ? "Refresh this system's own Maintenance folder listing — never part of the audit, only a raw disk re-read"
+                    : "Set a Maintenance folder location in Settings → Systems → MAME first"
+            ) {
+                // jensyleo's own request (2026-09-22), extending the same
+                // rule already applied to the sidebar's own context-menu
+                // "Scan This Folder" — requesting a scan from a menu
+                // should never itself jump the whole panel over to
+                // Maintenance; only actually clicking that row does. See
+                // `startScanMaintenanceFolder`'s own doc comment.
+                startScanMaintenanceFolder(navigateToFolder: false)
+            },
+            // jensyleo's own request (2026-09-24): "olvidaste colocar la
+            // opción en el menú desplegable de Scan BIOS folder" — right
+            // after adding "Scan This Folder" to the sidebar row's own
+            // context menu; this is the same real scan
+            // (`viewModel.startScan`, never a special read-only pass —
+            // see this folder's own `LibraryViewModel.effectiveScanFolders`
+            // doc comment on why it's part of the real audit), just
+            // reachable from the toolbar's "Scan" dropdown too, mirroring
+            // "Scan Maintenance Folder" right above. Deliberately never
+            // navigates to the BIOS row on click, same reasoning as that
+            // action's own doc comment.
+            ToolbarAction(
+                id: "scanBIOSFolder", title: "Scan BIOS Folder", systemImage: "cpu",
+                isEnabled: !viewModel.isBusy && system.isMAMEStyle && BIOSFolderSettings.folderURL != nil,
+                help: (system.isMAMEStyle ? BIOSFolderSettings.folderURL : nil) != nil
+                    ? "Scan only the BIOS folder — other folders keep their last known results"
+                    : "Enable a BIOS folder in Settings → Systems → MAME first"
+            ) {
+                if let biosFolder = BIOSFolderSettings.folderURL {
+                    viewModel.startScan(system: system, folders: [biosFolder]) { warnIfSpecialFolderEmpty(biosFolder, kind: "BIOS") }
+                }
+            },
+            ToolbarAction(
+                id: "scanComplementaryChipsFolder", title: "Scan Complementary Chips Folder", systemImage: "puzzlepiece.extension",
+                isEnabled: !viewModel.isBusy && system.isMAMEStyle && ComplementaryChipsFolderSettings.folderURL != nil,
+                help: (system.isMAMEStyle ? ComplementaryChipsFolderSettings.folderURL : nil) != nil
+                    ? "Scan only the Complementary Chips folder — other folders keep their last known results"
+                    : "Enable a Complementary Chips folder in Settings → Systems → MAME first"
+            ) {
+                if let chipsFolder = ComplementaryChipsFolderSettings.folderURL {
+                    viewModel.startScan(system: system, folders: [chipsFolder]) { warnIfSpecialFolderEmpty(chipsFolder, kind: "Complementary Chips") }
+                }
+            },
+            ToolbarAction(
+                id: "scanSamplesFolder", title: "Scan Samples Folder", systemImage: "speaker.wave.2",
+                isEnabled: !viewModel.isBusy && system.isMAMEStyle && SamplesFolderSettings.folderURL != nil,
+                help: (system.isMAMEStyle ? SamplesFolderSettings.folderURL : nil) != nil
+                    ? "Scan only the Samples folder — other folders keep their last known results"
+                    : "Enable a Samples folder in Settings → Systems → MAME first"
+            ) {
+                if let samplesFolder = SamplesFolderSettings.folderURL {
+                    viewModel.startScan(system: system, folders: [samplesFolder]) { warnIfSpecialFolderEmpty(samplesFolder, kind: "Samples") }
+                }
+            },
+        ]
+    }
+
+    private var detailToolbarActions: [ToolbarAction] {
+        var actions: [ToolbarAction] = [
+            ToolbarAction(
+                id: "scan", title: "Scan", systemImage: "doc.text.magnifyingglass",
+                isEnabled: true,
+                help: "Scan File, Scan Folder, Scan All Folders, the BIOS, Complementary Chips, or Samples folder, or refresh the Maintenance folder listing",
+                action: {},
+                subActions: scanSubActions
+            ),
             // A single "Fix" dropdown button gathers every Fase 2 write
             // action under one icon — jensyleo's own request (2026-09-01):
             // "no crees un icono por cada fix, crea un submenu en el icono
@@ -1735,39 +3567,64 @@ struct LibraryDetailView: View {
             // comment) rather than a toolbar action button, so it no
             // longer belongs in this list at all.
         ]
-        if let onExportCollectionReport {
-            actions.append(
-                ToolbarAction(id: "exportReport", title: "Export Report…", systemImage: "doc.richtext", help: "Save a printable HTML report combining every configured system's last scan") {
-                    onExportCollectionReport()
-                }
+        // A single "Export" dropdown gathers every export action under one
+        // icon — jensyleo's own request (2026-09-11): "Los 3 iconos de
+        // export dejarlo en uno solo que se despliegan las opciones como en
+        // el de FIX", the same consolidation "Fix" itself already got
+        // (2026-09-01) for the same reason: three separate toolbar buttons
+        // for what's really one category of action. `subActions` makes
+        // this an `NSMenuToolbarItem` exactly like "Fix" (see
+        // `ToolbarAction.subActions`'s own doc comment) — clicking it shows
+        // this menu instead of running an action directly. The top-level
+        // button stays enabled whenever at least one export is actually
+        // possible; each sub-action still gates itself individually inside
+        // the menu, same as "Fix"'s own sub-actions do.
+        actions.append(
+            ToolbarAction(
+                id: "export", title: "Export", systemImage: "square.and.arrow.up",
+                isEnabled: !exportSubActions.isEmpty,
+                help: "Export this scan's results as a report, a Fix DAT, or a CSV list",
+                action: {},
+                subActions: exportSubActions
             )
-        }
-        actions.append(
-            ToolbarAction(
-                id: "exportFixDat", title: "Export Fix DAT…", systemImage: "square.and.arrow.up",
-                isEnabled: viewModel.auditReport != nil && !viewModel.isBusy,
-                help: "Save a DAT containing only this scan's missing/incorrect entries"
-            ) {
-                exportFixDat()
-            }
         )
+        // A "File Actions" dropdown for plain, OS-level file management
+        // (Move to Trash, Delete Permanently, Copy/Move to Folder…) —
+        // jensyleo's own request (2026-09-11): "eliminar y copiar a otra
+        // carpeta... en un boton del menu que se llame File action", same
+        // one-icon-many-actions dropdown shape as "Fix"/"Export" above.
+        // Operates on whatever is currently selected in the Games table
+        // (`selectedFileURLs`), unlike "Fix" (which scopes to a whole ROM
+        // folder) or "Export" (which needs no selection at all) — enabled
+        // only when at least one File is actually selected.
         actions.append(
             ToolbarAction(
-                id: "exportListCSV", title: "Export List to CSV…", systemImage: "tablecells",
-                isEnabled: !cachedGameNodes.isEmpty && !viewModel.isBusy,
-                help: "Save the currently displayed games list as a CSV file"
-            ) {
-                exportGameListCSV()
-            }
-        )
-        actions.append(
-            ToolbarAction(
-                id: "compareDATVersions", title: "Compare DAT Versions…", systemImage: "arrow.left.arrow.right",
-                isEnabled: viewModel.cachedDATFile != nil && !viewModel.isBusy,
-                help: "Compare the currently loaded DAT against an older/different version — added, removed, and possibly-renamed games"
-            ) {
-                isShowingDATCompareSheet = true
-            }
+                id: "fileActions", title: "File Actions", systemImage: "ellipsis.circle",
+                // jensyleo's own request (2026-09-17): gated on
+                // `viewModel.auditReport != nil` too now, matching "Fix"
+                // above — a File could be "selected" in the table before
+                // any scan ever ran (a never-scanned catalog view can
+                // still show rows), and acting on it then had nothing
+                // real (an up-to-date report) to fall back on if
+                // something needed re-checking afterward.
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !selectedFileURLs.isEmpty && !viewModel.isBusy,
+                // jensyleo's own hands-on QA pass (2026-09-11): this only
+                // ever explained the "nothing selected" reason, unlike
+                // every sibling dropdown ("Fix") — a real file could be
+                // selected while modifications are still disabled in
+                // Settings → General, and the tooltip silently never said
+                // so, same class of gap "Fix"'s own help text already
+                // avoids.
+                help: !LibraryViewModel.modificationsEnabled
+                    ? "Disabled for now — enable file modifications in Settings → General first"
+                    : viewModel.auditReport == nil
+                        ? "Scan this system first"
+                        : selectedFileURLs.isEmpty
+                            ? "Select one or more Files in the list first"
+                            : "Move to Trash, delete, copy, move, duplicate, or compress the selected File(s)",
+                action: {},
+                subActions: fileActionsSubActions
+            )
         )
         // "Column Presets…" moved to Settings → View Options → "Columns"
         // (jensyleo's own request, 2026-08-24) — it's a layout preference,
@@ -1782,7 +3639,19 @@ struct LibraryDetailView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        // jensyleo's own type-checker wall, hit again adding "File Actions"
+        // (2026-09-11) — same "unable to type-check this expression in
+        // reasonable time" this file's own confirmation-dialog modifiers
+        // already ran into once (see `fase2Confirmations`'s own doc
+        // comment): one continuous chained expression this long eventually
+        // exceeds the type-checker's budget regardless of how each
+        // individual modifier is itself already factored out. Splitting
+        // the chain into two separate statements (`let content = ...`,
+        // then `return content....`) — rather than adding yet another
+        // parameter to an existing modifier function — is what actually
+        // keeps it under budget, the same fix this exact comment predicted
+        // future additions would eventually need.
+        let content = VStack(alignment: .leading, spacing: 12) {
             header
             if !LibraryViewModel.modificationsEnabled {
                 Label("View-only mode — ROMForge won't rename, move or modify any ROM file.", systemImage: "eye")
@@ -1823,22 +3692,39 @@ struct LibraryDetailView: View {
             // whichever of its panels are still switched on, and the row
             // itself collapses to nothing (rather than an empty, still-
             // resizable sliver) if every one of its panels is off.
+            // Default fractions below (2026-09-23) — jensyleo's own explicit
+            // request: "revisa como deje los paneles y de ahora en adelante
+            // esos son los tamaños que vamos a dejar por defecto." Captured
+            // directly from his own live `UserDefaults` at the moment of
+            // that request (`defaults read com.jensyleo.romforge
+            // ROMForge.splitFractions.ROMForge.<name>`), same technique
+            // already used for `DatabaseFilterVisibilitySettings.defaultEnabled`.
+            // Only ever applies on a genuinely fresh install/first launch —
+            // any real drag the user makes persists over these from then on,
+            // exactly like `sidebarDetailSplit`'s own `defaultFractions`
+            // right above already works.
             AutosavingSplitView(axis: .stacked, autosaveName: "ROMForge.mainRowsSplit", panes: [
                 SplitPane(minLength: visibleTopPanes.isEmpty ? 0 : 160) {
                     Group {
                         if !visibleTopPanes.isEmpty {
-                            AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.databaseGamesRomsSplit", panes: visibleTopPanes)
+                            AutosavingSplitView(
+                                axis: .sideBySide, autosaveName: "ROMForge.databaseGamesRomsSplit", panes: visibleTopPanes,
+                                defaultFractions: [0.1391982182628062, 0.5244988864142539, 0.3348181143281366]
+                            )
                         }
                     }
                 },
                 SplitPane(minLength: visibleBottomPanes.isEmpty ? 0 : 90) {
                     Group {
                         if !visibleBottomPanes.isEmpty {
-                            AutosavingSplitView(axis: .sideBySide, autosaveName: "ROMForge.detailLogSplit", panes: visibleBottomPanes)
+                            AutosavingSplitView(
+                                axis: .sideBySide, autosaveName: "ROMForge.detailLogSplit", panes: visibleBottomPanes,
+                                defaultFractions: [0.5003711952487008, 0.4988864142538976]
+                            )
                         }
                     }
                 },
-            ])
+            ], defaultFractions: [0.7336065573770492, 0.2650273224043716])
         }
         .padding()
         .frame(minWidth: 760, minHeight: 480)
@@ -1925,6 +3811,36 @@ struct LibraryDetailView: View {
         } message: {
             Text(viewModel.rescanRequiredAlertMessage ?? "")
         }
+        // Same reasoning as "Rescan Required" right above — real report,
+        // live (2026-09-24): "si activo la opción sin configurar la
+        // carpeta me sale el error en el log pero la app no muestra
+        // mensaje." See `LibraryViewModel
+        // .configurationRequiredAlertMessage`'s own doc comment.
+        .alert(
+            "Configuration Required",
+            isPresented: Binding(
+                get: { viewModel.configurationRequiredAlertMessage != nil },
+                set: { if !$0 { viewModel.configurationRequiredAlertMessage = nil } }
+            )
+        ) {
+            Button("OK") { viewModel.configurationRequiredAlertMessage = nil }
+        } message: {
+            Text(viewModel.configurationRequiredAlertMessage ?? "")
+        }
+        // Same reasoning as "Configuration Required" right above — real
+        // request, jensyleo (2026-09-24): "si no encuentra nada avise
+        // desde la app, no solo desde el log."
+        .alert(
+            "Nothing Found",
+            isPresented: Binding(
+                get: { viewModel.scanFoundNothingAlertMessage != nil },
+                set: { if !$0 { viewModel.scanFoundNothingAlertMessage = nil } }
+            )
+        ) {
+            Button("OK") { viewModel.scanFoundNothingAlertMessage = nil }
+        } message: {
+            Text(viewModel.scanFoundNothingAlertMessage ?? "")
+        }
         .onChange(of: activeStatusFilters) {
             selectedGameID = nil; selectedRomID = nil
             triggerCachedGameDataRecompute()
@@ -1960,9 +3876,30 @@ struct LibraryDetailView: View {
             selectedGameFamilyRootMachineName = nil
             triggerCachedGameDataRecompute()
             persistLastSelection()
+            // The Maintenance subfolder's own plain listing
+            // (`maintenanceFolderFilesList`) is never part of the audited
+            // Games tree `triggerCachedGameDataRecompute()` refreshes above
+            // — it needs its own, separate load the FIRST time the
+            // selected folder becomes it (never on every re-selection —
+            // see `loadMaintenanceFolderFilesIfNeeded`'s own doc comment).
+            if isSelectedFolderMaintenanceSubfolder {
+                loadMaintenanceFolderFilesIfNeeded()
+            } else {
+                maintenanceFolderFiles = []
+            }
+            applyOrRestoreBIOSColumnsIfNeeded()
         }
         .onChange(of: viewModel.auditReport) {
+            // See `ZipCommentCache.invalidateAll()`'s own doc comment —
+            // a real scan can change (or remove) any archive's own ZIP
+            // comment, and this cache has no other way to notice.
+            zipCommentCache.invalidateAll()
             refreshCachedGameDataAfterAuditReportChangeAsync()
+            // See `organizeBIOSFilesAvailableCache`'s own doc comment —
+            // recomputed here, once per real scan result, never from a
+            // render path.
+            organizeBIOSFilesAvailableCache = viewModel.hasMatchReport && viewModel.planOrganizeBIOSFilesPreviewCount() > 0
+            organizeComplementaryChipsAvailableCache = viewModel.hasMatchReport && viewModel.planOrganizeComplementaryChipsPreviewCount() > 0
         }
         // jensyleo's own report (2026-08-12): "Purge Database View"
         // (Settings → View Options) cleared the on-disk scan data, but this
@@ -1976,22 +3913,53 @@ struct LibraryDetailView: View {
         }
         .onChange(of: viewModel.cachedDATFile) { handleCachedDATFileChange() }
         .onAppear {
+            installResultsArrowKeyMonitor()
+            installRomFolderReorderMonitor()
             viewModel.loadPersistedReport(system: system)
             refreshCachedGameDataAfterAuditReportChangeAsync()
+            organizeBIOSFilesAvailableCache = viewModel.hasMatchReport && viewModel.planOrganizeBIOSFilesPreviewCount() > 0
+            organizeComplementaryChipsAvailableCache = viewModel.hasMatchReport && viewModel.planOrganizeComplementaryChipsPreviewCount() > 0
             // Loads the DAT immediately, independent of scanning any
             // folder — previously the DAT only ever loaded as the first
             // phase of a real Scan, so simply adding/opening a system with
             // its DAT+folders already selected did nothing until the user
             // pressed "Scan Folder".
             viewModel.startPreloadDAT(system: system)
+            // jensyleo's own report (2026-09-16): deleting a system's
+            // Maintenance subfolder (Settings, or the sidebar's own
+            // "Remove System and Delete Maintenance Folder") looked like it
+            // "didn't work" because simply opening/re-opening this exact
+            // detail view immediately recreated it empty via this call —
+            // used to run unconditionally on every `.onAppear`. Removed:
+            // jensyleo's explicit choice is that a deleted subfolder should
+            // stay gone until it's genuinely needed again, not reappear
+            // just from viewing the system. The real, still-lazy creation
+            // now happens only where the subfolder is actually about to be
+            // read from (`LibraryViewModel`'s own Maintenance-folder-files
+            // loading) or explicitly, in Settings, right after the
+            // Maintenance root itself is (re)configured.
+            //
+            // Covers the case where `selectedRomFolder` is ALREADY the
+            // Maintenance subfolder the moment this view appears (restored
+            // from a previous session) — `.onChange(of: selectedRomFolder)`
+            // above only fires on a later change, never for that initial
+            // value.
+            if isSelectedFolderMaintenanceSubfolder {
+                loadMaintenanceFolderFilesIfNeeded()
+            }
+        }
+        .onDisappear {
+            removeResultsArrowKeyMonitor()
+            removeRomFolderReorderMonitor()
         }
         .onReceive(NotificationCenter.default.publisher(for: .romForgeResetColumnSizes)) { _ in
-            gameColumnCustomization = TableColumnCustomization<GameNode>()
-            romColumnCustomization = TableColumnCustomization<RomRow>()
             UserDefaults.standard.removeObject(forKey: Self.gameColumnCustomizationKey)
             UserDefaults.standard.removeObject(forKey: Self.romColumnCustomizationKey)
+            // One-shot push into each child's own local state — see
+            // `gameColumnCustomizationOverride`'s own doc comment.
+            gameColumnCustomizationOverride = TableColumnCustomization<GameNode>()
+            romColumnCustomizationOverride = TableColumnCustomization<RomRow>()
         }
-        .onChange(of: viewModel.auditReport) { onAuditReportChanged?() }
         // Column-preset management lives inline in Settings → View Options →
         // Panels now (jensyleo's own request, 2026-08-31 — see
         // `.romForgeApplyColumnPreset`'s own doc comment in `ROMForgeApp.swift`
@@ -2013,9 +3981,6 @@ struct LibraryDetailView: View {
             onRename: { renameColumnPreset(from: $0, to: $1) },
             onSetOrder: { columnPresetOrder = $0; persistColumnPresetOrder() }
         )
-        .sheet(isPresented: $isShowingDATCompareSheet) {
-            datVersionCompareSheetContent
-        }
         .fase2Confirmations(
             rebuildDestination: rebuildDestination,
             rebuildOperationCount: rebuildOperationCount,
@@ -2046,10 +4011,52 @@ struct LibraryDetailView: View {
             count: repairFromMaintenanceFolderCount,
             onConfirm: commitRepairFromMaintenanceFolder
         )
+        .removeRedundantFilesConfirmation(
+            isPresented: $showRemoveRedundantFilesConfirmation,
+            count: removeRedundantFilesCount,
+            onConfirm: commitRemoveRedundantFiles
+        )
+        .removeRedundantRomsConfirmation(
+            isPresented: $showRemoveRedundantRomsConfirmation,
+            count: removeRedundantRomsCount,
+            onConfirm: commitRemoveRedundantRoms
+        )
+        .organizeBIOSFilesConfirmation(
+            isPresented: $showOrganizeBIOSFilesConfirmation,
+            count: organizeBIOSFilesCount,
+            lines: organizeBIOSFilesLines,
+            onConfirm: commitOrganizeBIOSFiles
+        )
+        .organizeComplementaryChipsConfirmation(
+            isPresented: $showOrganizeComplementaryChipsConfirmation,
+            count: organizeComplementaryChipsCount,
+            lines: organizeComplementaryChipsLines,
+            onConfirm: commitOrganizeComplementaryChips
+        )
+        .createDummyRomsConfirmation(
+            isPresented: $showCreateDummyRomsConfirmation,
+            count: createDummyRomsCount,
+            onConfirm: commitCreateDummyRoms
+        )
+        .removeZipCommentsConfirmation(
+            isPresented: $showRemoveZipCommentsConfirmation,
+            count: removeZipCommentsCount,
+            onConfirm: commitRemoveZipComments
+        )
+        .collectSamplesConfirmation(
+            isPresented: $showCollectSamplesConfirmation,
+            count: collectSamplesCount,
+            onConfirm: commitCollectSamples
+        )
         .contextMenuRenameRomsInArchiveConfirmation(
             isPresented: $showContextMenuRenameRomsInArchiveConfirmation,
             count: contextMenuRenameRomsInArchiveCount,
             onConfirm: commitContextMenuRenameRomsInArchive
+        )
+        .removeZipCommentsConfirmation(
+            isPresented: $showContextMenuRemoveZipCommentsConfirmation,
+            count: contextMenuRemoveZipCommentsCount,
+            onConfirm: commitContextMenuRemoveZipComments
         )
         .fixMismatchedFilesConfirmation(
             isPresented: $showFixMismatchedFilesConfirmation,
@@ -2061,6 +4068,21 @@ struct LibraryDetailView: View {
             count: contextMenuFixMismatchedFilesCount,
             onConfirm: commitContextMenuFixMismatchedFile
         )
+        .contextMenuRemoveUselessFilesConfirmation(
+            isPresented: $showContextMenuRemoveUselessFilesConfirmation,
+            count: contextMenuRemoveUselessFilesCount,
+            onConfirm: commitContextMenuRemoveUselessFiles
+        )
+        .contextMenuRemoveRedundantFilesConfirmation(
+            isPresented: $showContextMenuRemoveRedundantFilesConfirmation,
+            count: contextMenuRemoveRedundantFilesCount,
+            onConfirm: commitContextMenuRemoveRedundantFiles
+        )
+        .contextMenuRemoveRedundantRomsConfirmation(
+            isPresented: $showContextMenuRemoveRedundantRomsConfirmation,
+            count: contextMenuRemoveRedundantRomsCount,
+            onConfirm: commitContextMenuRemoveRedundantRoms
+        )
         .handleCorruptedFilesConfirmation(
             isPresented: $showHandleCorruptedFilesConfirmation,
             count: handleCorruptedFilesCount,
@@ -2071,13 +4093,32 @@ struct LibraryDetailView: View {
             count: convertToMergedCount,
             onConfirm: commitConvertToMerged
         )
-    }
-
-    @ViewBuilder
-    private var datVersionCompareSheetContent: some View {
-        if let cachedDATFile = viewModel.cachedDATFile {
-            DATVersionCompareSheet(currentDAT: cachedDATFile, systemName: system.name)
-        }
+        return content
+        .fileActionsConfirmations(
+            urlCount: pendingFileActionURLs.count,
+            destination: pendingFileActionDestination,
+            showMoveToTrash: $showMoveToTrashConfirmation,
+            onMoveToTrash: commitMoveToTrash,
+            showDeletePermanently: $showDeletePermanentlyConfirmation,
+            onDeletePermanently: commitDeleteFilesPermanently,
+            showCopyToFolder: $showCopyToFolderConfirmation,
+            onCopyToFolder: commitCopyFilesToFolder,
+            showMoveToFolder: $showMoveToFolderConfirmation,
+            onMoveToFolder: commitMoveFilesToFolder
+        )
+        .romEntryActionsConfirmations(
+            showExtract: $showExtractRomEntriesConfirmation,
+            extractCount: pendingRomEntryTargets.count,
+            extractDestination: pendingRomEntryDestination,
+            onExtract: commitExtractRomEntries,
+            showTrash: $showMoveRomEntriesToTrashConfirmation,
+            trashCount: pendingRomEntryTargets.count,
+            onTrash: commitMoveRomEntriesToTrash,
+            showDelete: $showDeleteRomEntriesPermanentlyConfirmation,
+            deleteCount: pendingRomEntryTargets.count,
+            onDelete: commitDeleteRomEntriesPermanently
+        )
+        .fixResultAlert(alert: viewModel.fixResultAlert) { viewModel.fixResultAlert = nil }
     }
 
     /// Opens the destination-folder picker, then previews the operation
@@ -2109,16 +4150,129 @@ struct LibraryDetailView: View {
     /// Previews the delete count before showing the confirmation dialog —
     /// same dry-run-before-write caution as every other Fase 2 action.
     private func startRemoveUselessFiles() {
-        removeUselessFilesCount = viewModel.planRemoveUselessFilesPreviewCount()
+        guard let selectedRomFolder else {
+            viewModel.logWarning("Select a ROM folder first — \"Remove Useless Files…\" only ever acts on the folder currently selected.")
+            return
+        }
+        removeUselessFilesCount = viewModel.planRemoveUselessFilesPreviewCount(scopeFolders: [selectedRomFolder])
         guard removeUselessFilesCount > 0 else {
-            viewModel.logWarning("Nothing to remove — no unrecognized files in the current scan.")
+            viewModel.logWarning("Nothing to remove — no unrecognized files inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan.")
             return
         }
         showRemoveUselessFilesConfirmation = true
     }
 
     private func commitRemoveUselessFiles() {
-        Task { await viewModel.removeUselessFiles(system: system) }
+        let scopeFolders = selectedRomFolder.map { [$0] } ?? []
+        Task { await viewModel.removeUselessFiles(system: system, scopeFolders: scopeFolders) }
+    }
+
+    // MARK: - File Actions (generic, OS-level — jensyleo's own request, 2026-09-11)
+
+    /// jensyleo's own request (2026-09-11): "mover, copiar o modificar en
+    /// las carpetas de mantenimiento, no es posible y debe ponerse un
+    /// mensaje que informe de esto cuando alguien lo intente hacer" — the
+    /// Maintenance folder (root and every per-system subfolder) is
+    /// documented, deliberately read-only donor storage
+    /// (`MaintenanceFolderSettings.subfolderURL(for:)`'s own doc comment).
+    /// Checked BEFORE any confirmation dialog even opens — a bulk action
+    /// either fully proceeds or fully refuses, never partially. jensyleo's
+    /// own follow-up (2026-09-11): "no solo debe salir un log sino un
+    /// mensaje emergente" — a log line alone is easy to miss (the Log panel
+    /// can be scrolled past or collapsed); a real, modal `NSAlert` is what
+    /// actually gets in front of the person who just tried this, same
+    /// synchronous-modal pattern the destination-folder `NSOpenPanel`s
+    /// elsewhere in this file already use.
+    private func rejectIfUnderMaintenanceFolder(_ urls: [URL]) -> Bool {
+        guard urls.contains(where: MaintenanceFolderSettings.isUnderMaintenanceFolder) else { return true }
+        let message = "The Maintenance folder is a read-only donor area (Settings → Systems → MAME) — files inside it (or any of its per-system subfolders) can never be moved, copied, duplicated, deleted, or compressed by ROMForge. Move or copy them somewhere else first."
+        viewModel.logError(message)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Maintenance Folder Is Read-Only"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        return false
+    }
+
+    private func startMoveToTrash(_ urls: [URL]) {
+        guard !urls.isEmpty, rejectIfUnderMaintenanceFolder(urls) else { return }
+        pendingFileActionURLs = urls
+        showMoveToTrashConfirmation = true
+    }
+
+    private func commitMoveToTrash() {
+        let urls = pendingFileActionURLs
+        pendingFileActionURLs = []
+        Task { await viewModel.moveFilesToTrash(system: system, urls: urls) }
+    }
+
+    private func startDeleteFilesPermanently(_ urls: [URL]) {
+        guard !urls.isEmpty, rejectIfUnderMaintenanceFolder(urls) else { return }
+        pendingFileActionURLs = urls
+        showDeletePermanentlyConfirmation = true
+    }
+
+    private func commitDeleteFilesPermanently() {
+        let urls = pendingFileActionURLs
+        pendingFileActionURLs = []
+        Task { await viewModel.deleteFilesPermanently(system: system, urls: urls) }
+    }
+
+    private func startCopyFilesToFolder(_ urls: [URL]) {
+        guard !urls.isEmpty, rejectIfUnderMaintenanceFolder(urls) else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a destination folder to copy \(urls.count) file(s) to"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        pendingFileActionURLs = urls
+        pendingFileActionDestination = destination
+        showCopyToFolderConfirmation = true
+    }
+
+    private func commitCopyFilesToFolder() {
+        let urls = pendingFileActionURLs
+        guard let destination = pendingFileActionDestination else { return }
+        pendingFileActionURLs = []
+        pendingFileActionDestination = nil
+        Task { await viewModel.copyFiles(system: system, urls, to: destination) }
+    }
+
+    private func startMoveFilesToFolder(_ urls: [URL]) {
+        guard !urls.isEmpty, rejectIfUnderMaintenanceFolder(urls) else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a destination folder to move \(urls.count) file(s) to"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        pendingFileActionURLs = urls
+        pendingFileActionDestination = destination
+        showMoveToFolderConfirmation = true
+    }
+
+    private func commitMoveFilesToFolder() {
+        let urls = pendingFileActionURLs
+        guard let destination = pendingFileActionDestination else { return }
+        pendingFileActionURLs = []
+        pendingFileActionDestination = nil
+        Task { await viewModel.moveFiles(system: system, urls: urls, to: destination) }
+    }
+
+    /// No confirmation dialog — same as Finder's own "Duplicate"/"Compress",
+    /// which run immediately with no prompt (never destructive to the
+    /// source, unlike Move/Delete/Trash above, which all confirm first).
+    private func startDuplicateFiles(_ urls: [URL]) {
+        guard !urls.isEmpty, rejectIfUnderMaintenanceFolder(urls) else { return }
+        Task { await viewModel.duplicateFiles(system: system, urls: urls) }
+    }
+
+    private func startCompressFiles(_ urls: [URL]) {
+        guard !urls.isEmpty, rejectIfUnderMaintenanceFolder(urls) else { return }
+        Task { await viewModel.compressFiles(system: system, urls: urls) }
     }
 
     /// Previews the repair count before showing the confirmation dialog —
@@ -2134,6 +4288,76 @@ struct LibraryDetailView: View {
 
     private func commitRepairFromSiblingSets() {
         Task { await viewModel.repairFromSiblingSets(system: system) }
+    }
+
+    /// Previews the count before showing the confirmation dialog — same
+    /// dry-run-before-write caution as every other Fase 2 action.
+    private func startCreateDummyRoms() {
+        createDummyRomsCount = viewModel.planCreateDummyRomsPreviewCount()
+        guard createDummyRomsCount > 0 else {
+            viewModel.logWarning("Nothing to create — no missing nodump rom found in this scan.")
+            return
+        }
+        showCreateDummyRomsConfirmation = true
+    }
+
+    private func commitCreateDummyRoms() {
+        Task { await viewModel.createDummyRoms(system: system) }
+    }
+
+    private func startRemoveZipComments() {
+        removeZipCommentsCount = viewModel.planRemoveZipCommentsPreviewCount()
+        guard removeZipCommentsCount > 0 else {
+            viewModel.logWarning("Nothing to remove — no matched archive in this scan has a comment.")
+            return
+        }
+        showRemoveZipCommentsConfirmation = true
+    }
+
+    private func commitRemoveZipComments() {
+        Task {
+            await viewModel.removeZipComments(system: system)
+            zipCommentTableReloadToken += 1
+        }
+    }
+
+    private func startContextMenuRemoveZipComments(_ fileURLs: [URL]) {
+        guard !fileURLs.isEmpty else { return }
+        contextMenuRemoveZipCommentsCount = viewModel.planRemoveZipCommentsPreviewCount(scopeFolders: fileURLs)
+        guard contextMenuRemoveZipCommentsCount > 0 else {
+            viewModel.logWarning("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no matched archive here has a comment.")
+            return
+        }
+        contextMenuRemoveZipCommentsURLs = fileURLs
+        showContextMenuRemoveZipCommentsConfirmation = true
+    }
+
+    private func commitContextMenuRemoveZipComments() {
+        guard !contextMenuRemoveZipCommentsURLs.isEmpty else { return }
+        Task {
+            await viewModel.removeZipComments(system: system, scopeFolders: contextMenuRemoveZipCommentsURLs)
+            zipCommentTableReloadToken += 1
+        }
+    }
+
+    /// Preview itself needs a real (bounded) disk read — see
+    /// `LibraryViewModel.planCollectSamplesPreviewCount`'s own doc
+    /// comment — so this dispatches through a `Task`, unlike every other
+    /// `start*` function above.
+    private func startCollectSamples() {
+        Task {
+            let count = await viewModel.planCollectSamplesPreviewCount(system: system)
+            collectSamplesCount = count
+            guard count > 0 else {
+                viewModel.logWarning("Nothing to collect — no matching sample zip found in this system's own ROM folders.")
+                return
+            }
+            showCollectSamplesConfirmation = true
+        }
+    }
+
+    private func commitCollectSamples() {
+        Task { await viewModel.collectSamples(system: system) }
     }
 
     /// Previews the count before showing the confirmation dialog — same
@@ -2270,6 +4494,67 @@ struct LibraryDetailView: View {
         }
     }
 
+    /// Games table context menu → "Remove Useless Files" (this File, or
+    /// every File currently selected) — jensyleo's own report (2026-09-13):
+    /// a row reading "Extra file in archive" had no way to act on it at
+    /// all, since the toolbar's own "Remove Useless Files…" only ever
+    /// scopes to the selected ROM FOLDER. Same preview-then-confirm shape
+    /// as `fixMismatchedFile` above, always confirmed (never skipped) —
+    /// this one is genuinely destructive every time.
+    private func startContextMenuRemoveUselessFiles(_ fileURLs: [URL]) {
+        guard !fileURLs.isEmpty else { return }
+        contextMenuRemoveUselessFilesCount = viewModel.planRemoveUselessFilesPreviewCount(scopeFolders: fileURLs)
+        guard contextMenuRemoveUselessFilesCount > 0 else {
+            viewModel.logWarning("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no unrecognized files here.")
+            return
+        }
+        contextMenuRemoveUselessFilesURLs = fileURLs
+        showContextMenuRemoveUselessFilesConfirmation = true
+    }
+
+    private func commitContextMenuRemoveUselessFiles() {
+        guard !contextMenuRemoveUselessFilesURLs.isEmpty else { return }
+        Task { await viewModel.removeUselessFiles(system: system, scopeFolders: contextMenuRemoveUselessFilesURLs) }
+    }
+
+    /// The context-menu-scoped counterpart to the toolbar's own
+    /// folder-scoped "Remove Redundant Files…"/"Remove Redundant ROMs…" —
+    /// jensyleo's own request (2026-09-14), same reasoning
+    /// `startContextMenuRemoveUselessFiles` above already documents: a row
+    /// reading "Duplicated file, not needed here" had no matching
+    /// right-click action.
+    private func startContextMenuRemoveRedundantFiles(_ fileURLs: [URL]) {
+        guard !fileURLs.isEmpty else { return }
+        contextMenuRemoveRedundantFilesCount = viewModel.planRemoveRedundantFilesPreviewCount(scopeFolders: fileURLs)
+        guard contextMenuRemoveRedundantFilesCount > 0 else {
+            viewModel.logWarning("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no redundant files here.")
+            return
+        }
+        contextMenuRemoveRedundantFilesURLs = fileURLs
+        showContextMenuRemoveRedundantFilesConfirmation = true
+    }
+
+    private func commitContextMenuRemoveRedundantFiles() {
+        guard !contextMenuRemoveRedundantFilesURLs.isEmpty else { return }
+        Task { await viewModel.removeRedundantFiles(system: system, scopeFolders: contextMenuRemoveRedundantFilesURLs) }
+    }
+
+    private func startContextMenuRemoveRedundantRoms(_ fileURLs: [URL]) {
+        guard !fileURLs.isEmpty else { return }
+        contextMenuRemoveRedundantRomsCount = viewModel.planRemoveRedundantRomsPreviewCount(scopeFolders: fileURLs)
+        guard contextMenuRemoveRedundantRomsCount > 0 else {
+            viewModel.logWarning("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no redundant roms here.")
+            return
+        }
+        contextMenuRemoveRedundantRomsURLs = fileURLs
+        showContextMenuRemoveRedundantRomsConfirmation = true
+    }
+
+    private func commitContextMenuRemoveRedundantRoms() {
+        guard !contextMenuRemoveRedundantRomsURLs.isEmpty else { return }
+        Task { await viewModel.removeRedundantRoms(system: system, scopeFolders: contextMenuRemoveRedundantRomsURLs) }
+    }
+
     /// Previews the strip count before showing the confirmation dialog —
     /// same dry-run-before-write caution as every other Fase 2 action.
     private func startConvertToSplit() {
@@ -2290,16 +4575,238 @@ struct LibraryDetailView: View {
     /// Unlike every other "start" function here, the preview itself scans
     /// the Maintenance folder, so it has to run inside a `Task` rather
     /// than synchronously.
-    private func startRepairFromMaintenanceFolder() {
+    /// `skipConfirmation` — jensyleo's own request (2026-09-14): the
+    /// context-menu action already scopes to one specific, deliberately
+    /// right-clicked File (unlike the toolbar's own unscoped, whole-system
+    /// "Fix" dropdown entry, which keeps the confirmation dialog) and only
+    /// ever shows up in the menu at all once `hasMaintenanceDonor` already
+    /// confirmed a real donor is staged — the extra confirmation dialog on
+    /// top of that was redundant friction, not real safety.
+    private func startRepairFromMaintenanceFolder(scopeFolders: [URL] = [], skipConfirmation: Bool = false) {
+        repairFromMaintenanceFolderScope = scopeFolders
         Task {
-            repairFromMaintenanceFolderCount = await viewModel.planRepairFromMaintenanceFolderPreviewCount()
-            guard repairFromMaintenanceFolderCount > 0 else { return }
-            showRepairFromMaintenanceFolderConfirmation = true
+            repairFromMaintenanceFolderCount = await viewModel.planRepairFromMaintenanceFolderPreviewCount(system: system, scopeFolders: scopeFolders)
+            // Real bug found live by jensyleo (2026-09-22): the preview
+            // count above now correctly returns 0 (and pops its own
+            // "Rescan required" alert) when the last Scan didn't cover
+            // this scope — but without this check, the code right below
+            // ALSO fired its own, contradicting "Nothing to repair —
+            // every rom already matches" success alert on top of it,
+            // even though nothing was actually checked yet.
+            guard viewModel.rescanRequiredAlertMessage == nil else { return }
+            guard repairFromMaintenanceFolderCount > 0 else {
+                // jensyleo's own report (2026-09-14): clicking this with
+                // nothing actually actionable (e.g. only a `.badDump` rom
+                // living inside a `.zip` — informational-only for now, see
+                // `RebuildPlanner.romsReplaceableFromMaintenanceFolder`'s
+                // own doc comment) used to silently do nothing at all,
+                // with no explanation. The context menu's own version now
+                // hides itself for exactly this case (see
+                // `GameTreeTableView`'s own `hasMaintenanceDonor` gate),
+                // but the toolbar's unscoped entry has no such cheap
+                // pre-check, so it still needs this explicit log line.
+                viewModel.logWarning("Nothing to repair from the Maintenance folder\(LibraryViewModel.scopeSuffixForLog(scopeFolders)).")
+                // jensyleo's own report (2026-09-22): the donor-scan
+                // overlay gave no visible sign of when it finished, and
+                // this "nothing found" outcome previously lived ONLY in
+                // the Log panel — easy to miss after watching a long,
+                // wordless "Scanning folders…" overlay. Mirrors the same
+                // `FixResultAlert` popup every real repair/replace action
+                // already shows on completion, so this outcome is just as
+                // visible as a genuine success or failure.
+                if FixResultPopupSettings.isEnabled {
+                    viewModel.fixResultAlert = LibraryViewModel.FixResultAlert(
+                        title: "Repair from Maintenance Folder",
+                        isSuccess: true,
+                        message: "Nothing to repair\(LibraryViewModel.scopeSuffixForLog(scopeFolders)) — every rom already matches, or there's no known-good donor in the Maintenance folder for what's missing."
+                    )
+                }
+                return
+            }
+            if skipConfirmation {
+                commitRepairFromMaintenanceFolder()
+            } else {
+                showRepairFromMaintenanceFolderConfirmation = true
+            }
         }
     }
 
     private func commitRepairFromMaintenanceFolder() {
-        Task { await viewModel.repairFromMaintenanceFolder(system: system) }
+        let scopeFolders = repairFromMaintenanceFolderScope
+        Task { await viewModel.repairFromMaintenanceFolder(system: system, scopeFolders: scopeFolders) }
+    }
+
+    /// Scoped to the selected ROM folder only, same as "Remove Useless
+    /// Files…" — see `startRemoveUselessFiles`'s own comment for why.
+    private func startRemoveRedundantFiles() {
+        guard let selectedRomFolder else {
+            viewModel.logWarning("Select a ROM folder first — \"Remove Redundant Files…\" only ever acts on the folder currently selected.")
+            return
+        }
+        removeRedundantFilesCount = viewModel.planRemoveRedundantFilesPreviewCount(scopeFolders: [selectedRomFolder])
+        guard removeRedundantFilesCount > 0 else {
+            viewModel.logWarning("Nothing to remove — no redundant files inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan.")
+            return
+        }
+        showRemoveRedundantFilesConfirmation = true
+    }
+
+    private func commitRemoveRedundantFiles() {
+        let scopeFolders = selectedRomFolder.map { [$0] } ?? []
+        Task { await viewModel.removeRedundantFiles(system: system, scopeFolders: scopeFolders) }
+    }
+
+    /// Drives the toolbar action's own dynamic `isEnabled` — see that
+    /// ToolbarAction's own doc comment. Real bug hit live (2026-09-24,
+    /// jensyleo's own report: the "Scan Required" alert appeared and
+    /// wouldn't go away, reappearing the instant "OK" dismissed it) —
+    /// `planOrganizeBIOSFilesPreviewCount()` goes through
+    /// `requireMatchReport()`, whose job is to trigger that alert as a
+    /// SIDE EFFECT whenever there's no scan yet; since `isEnabled` here
+    /// gets recomputed on every render (including the very re-render the
+    /// alert's own dismissal causes), calling it directly turned one
+    /// missing scan into an infinite loop. `hasMatchReport` is the
+    /// existing side-effect-free peek built for exactly this situation
+    /// (see its own doc comment — the 2026-09-10 report of the same alert
+    /// firing from a plain right-click) — checked FIRST, short-circuiting
+    /// before ever calling the real preview function.
+    private var organizeBIOSFilesAvailable: Bool { organizeBIOSFilesAvailableCache }
+
+    /// Whole-system only — see the toolbar action's own doc comment for why
+    /// "Organize BIOS Files…" never scopes to just the selected folder.
+    /// Passed as `onComplete` to `viewModel.startScan(...)` for the BIOS/
+    /// Complementary Chips/Samples folder specifically — jensyleo's own
+    /// request (2026-09-24): "si no encuentra nada avise desde la app, no
+    /// solo desde el log." A plain, on-disk emptiness check (not an audit
+    /// lookup) so it works uniformly for all three, even Samples, whose
+    /// content is never part of the audit at all (see `SamplesFolderSettings
+    /// .isUnderSamplesFolder`'s own doc comment).
+    private func warnIfSpecialFolderEmpty(_ folder: URL, kind: String) {
+        let isEmpty = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil))?.isEmpty ?? true
+        guard isEmpty else { return }
+        viewModel.logScanFoundNothing("The \(kind) folder (\"\(folder.lastPathComponent)\") is empty — nothing was found there.")
+    }
+
+    private func startOrganizeBIOSFiles() {
+        // Real gap found live by jensyleo (2026-09-24), right after
+        // `logConfigurationRequired` was added: "no sale el mensaje" — that
+        // fix landed on `LibraryViewModel.organizeBIOSFiles`'s OWN guards,
+        // but a toolbar click never actually reaches those on this exact
+        // path. `startOrganizeBIOSFiles` here runs FIRST (from the toolbar
+        // action directly) and, when no BIOS folder is configured,
+        // `planOrganizeBIOSFilesPreviewCount()` just returns `0` like any
+        // other "nothing to do" case — so this fell into the generic,
+        // log-only "Nothing to organize" branch below instead, which never
+        // reaches the async function's own guard at all. Checked FIRST,
+        // and routed through the same visible alert, so "not configured"
+        // reads differently from "configured, but genuinely nothing
+        // found".
+        guard BIOSFolderSettings.folderURL != nil else {
+            viewModel.logConfigurationRequired("No BIOS folder configured — set one in Settings → Systems → MAME first.")
+            return
+        }
+        organizeBIOSFilesCount = viewModel.planOrganizeBIOSFilesPreviewCount()
+        guard organizeBIOSFilesCount > 0 else {
+            viewModel.logWarning("Nothing to organize — no BIOS files found outside the configured BIOS folder in the current scan.")
+            return
+        }
+        organizeBIOSFilesLines = viewModel.planOrganizeBIOSFilesPreviewLines()
+        showOrganizeBIOSFilesConfirmation = true
+    }
+
+    private func commitOrganizeBIOSFiles() {
+        Task { await viewModel.organizeBIOSFiles(system: system) }
+    }
+
+    private var organizeComplementaryChipsAvailable: Bool { organizeComplementaryChipsAvailableCache }
+
+    /// Whole-system only — same reasoning as `startOrganizeBIOSFiles`.
+    private func startOrganizeComplementaryChips() {
+        // Same real gap as `startOrganizeBIOSFiles`'s own doc comment.
+        guard ComplementaryChipsFolderSettings.folderURL != nil else {
+            viewModel.logConfigurationRequired("No Complementary Chips folder configured — set one in Settings → Systems → MAME first.")
+            return
+        }
+        organizeComplementaryChipsCount = viewModel.planOrganizeComplementaryChipsPreviewCount()
+        guard organizeComplementaryChipsCount > 0 else {
+            viewModel.logWarning("Nothing to organize — no complementary chip files found outside the configured Complementary Chips folder in the current scan.")
+            return
+        }
+        organizeComplementaryChipsLines = viewModel.planOrganizeComplementaryChipsPreviewLines()
+        showOrganizeComplementaryChipsConfirmation = true
+    }
+
+    private func commitOrganizeComplementaryChips() {
+        Task { await viewModel.organizeComplementaryChips(system: system) }
+    }
+
+    /// Scoped to the selected ROM folder only, same as "Remove Useless
+    /// Files…"/"Remove Redundant Files…" above.
+    private func startRemoveRedundantRoms() {
+        guard let selectedRomFolder else {
+            viewModel.logWarning("Select a ROM folder first — \"Remove Redundant ROMs…\" only ever acts on the folder currently selected.")
+            return
+        }
+        removeRedundantRomsCount = viewModel.planRemoveRedundantRomsPreviewCount(scopeFolders: [selectedRomFolder])
+        guard removeRedundantRomsCount > 0 else {
+            viewModel.logWarning("Nothing to remove — no redundant roms inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan.")
+            return
+        }
+        showRemoveRedundantRomsConfirmation = true
+    }
+
+    private func commitRemoveRedundantRoms() {
+        let scopeFolders = selectedRomFolder.map { [$0] } ?? []
+        Task { await viewModel.removeRedundantRoms(system: system, scopeFolders: scopeFolders) }
+    }
+
+    /// Every real ROM Actions target for the Roms panel's own selection —
+    /// same Maintenance-folder rejection every other write action here
+    /// already applies (`rejectIfUnderMaintenanceFolder`, checked against
+    /// each target's own container/file URL, never the entry name).
+    private func startExtractRomEntries(_ entries: [LibraryViewModel.RomEntryTarget]) {
+        guard !entries.isEmpty, rejectIfUnderMaintenanceFolder(entries.map(\.url)) else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a destination folder to extract \(entries.count) rom(s) to"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        pendingRomEntryTargets = entries
+        pendingRomEntryDestination = destination
+        showExtractRomEntriesConfirmation = true
+    }
+
+    private func commitExtractRomEntries() {
+        let entries = pendingRomEntryTargets
+        guard let destination = pendingRomEntryDestination else { return }
+        pendingRomEntryTargets = []
+        pendingRomEntryDestination = nil
+        Task { await viewModel.extractRomEntries(system: system, entries, to: destination) }
+    }
+
+    private func startMoveRomEntriesToTrash(_ entries: [LibraryViewModel.RomEntryTarget]) {
+        guard !entries.isEmpty, rejectIfUnderMaintenanceFolder(entries.map(\.url)) else { return }
+        pendingRomEntryTargets = entries
+        showMoveRomEntriesToTrashConfirmation = true
+    }
+
+    private func commitMoveRomEntriesToTrash() {
+        let entries = pendingRomEntryTargets
+        pendingRomEntryTargets = []
+        Task { await viewModel.moveRomEntriesToTrash(system: system, entries) }
+    }
+
+    private func startDeleteRomEntriesPermanently(_ entries: [LibraryViewModel.RomEntryTarget]) {
+        guard !entries.isEmpty, rejectIfUnderMaintenanceFolder(entries.map(\.url)) else { return }
+        pendingRomEntryTargets = entries
+        showDeleteRomEntriesPermanentlyConfirmation = true
+    }
+
+    private func commitDeleteRomEntriesPermanently() {
+        let entries = pendingRomEntryTargets
+        pendingRomEntryTargets = []
+        Task { await viewModel.deleteRomEntriesPermanently(system: system, entries) }
     }
 
     /// Previews the count before showing the confirmation dialog — same
@@ -2353,19 +4860,167 @@ struct LibraryDetailView: View {
         // current, when the whole games/database view below it is about
         // to change out from under it. A real, reported source of
         // confusion switching between two DATs for the same system.
-        Text(
-            viewModel.isLoadingDAT
-                ? "DAT: Loading…"
-                : "DAT: \(viewModel.datHeader.map { "\($0.name) \(Self.displayVersion($0.version))" } ?? system.name)"
-        )
-        .font(.headline)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(
+                viewModel.isLoadingDAT
+                    ? "DAT: Loading…"
+                    : "DAT: \(viewModel.datHeader.map { "\($0.name) \(Self.displayVersion($0.version))" } ?? system.name)"
+            )
+            .font(.headline)
+            lastScanDateLabel
+        }
+    }
+
+    /// jensyleo's own request (2026-09-14), after twice mistaking a `.badDump`/
+    /// `.missing` row loaded straight from `AuditReportDatabase` (via
+    /// `loadPersistedReport`, on simply opening an already-scanned system —
+    /// by design, so results show instantly) for a live, current problem,
+    /// when it was really an old scan's own snapshot the real file had long
+    /// since stopped matching: this label surfaces `viewModel.lastScanDate`
+    /// so a suspiciously-old timestamp is the FIRST thing that explains a
+    /// row that looks wrong — "rescan before trusting this" — rather than
+    /// silently letting stale data read as current.
+    @ViewBuilder
+    private var lastScanDateLabel: some View {
+        if let lastScanDate = viewModel.lastScanDate {
+            Text("Last scanned \(lastScanDate.formatted(.relative(presentation: .named)))")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .help("This system's results as shown were last confirmed by a real scan at \(lastScanDate.formatted(date: .abbreviated, time: .shortened)). If anything looks wrong, rescan first — a persisted report opens instantly but can't know about changes made since.")
+        }
     }
 
     // MARK: - Scan progress
 
+    /// The three NUMERIC scan phases `scanProgressOverlay` can show a
+    /// determinate bar for, once the folder walk itself (no known total,
+    /// `folderScanFilesFound`, kept as its own indeterminate section) has
+    /// finished. `.matchingIndeterminate` covers the brief window after
+    /// matching starts but before its first progress callback has fired —
+    /// still past both earlier phases, so still worth its own fixed floor
+    /// on the combined bar rather than reading as 0%.
+    private enum ScanOverallPhase {
+        case fixOperations(completed: Int, total: Int)
+        case listingArchives(read: Int, total: Int)
+        case hashing(completed: Int, total: Int)
+        case matching(completed: Int, total: Int)
+        case matchingIndeterminate
+        case saving(completed: Int, total: Int)
+    }
+
+    /// One shared, monotonically increasing fraction across the three
+    /// numeric scan phases above — jensyleo's own report (2026-09-17):
+    /// scanning "KONAMI" showed the progress bar "avanza y retrocede".
+    /// Root cause: each phase used to drive its OWN independent bar
+    /// (`ProgressView(value: phase.completed, total: phase.total)`), so
+    /// the bar visibly jumped back down to a low value every time one
+    /// phase finished near 100% and the next started fresh from 0% on a
+    /// completely different scale (e.g. archives read vs. files hashed vs.
+    /// games matched). Weights below are fixed, rough estimates of each
+    /// phase's typical relative share of total scan time (matching this
+    /// file's own earlier note that a cold hash pass can dwarf matching by
+    /// ~35× for a large collection, while archive listing is normally the
+    /// cheapest of the three) — not measured per-scan, so the exact
+    /// midpoints will be approximate, but the bar is guaranteed to never
+    /// move backward, which is the actual bug being fixed here.
+    /// Extended 2026-09-23, jensyleo's own report: running a "Fix" action
+    /// (its own operation loop, `fixActionProgress`) then rolling straight
+    /// into its automatic verification rescan and save (`isSavingReport`)
+    /// used to hand off between what were really TWO SEPARATE, unrelated
+    /// bars — `fixActionProgress`'s own 0–100% and this function's own
+    /// 0–100% for the scan pipeline — so the combined bar visibly jumped
+    /// back down to a low value the moment the Fix operations finished and
+    /// the rescan's own archive-listing/hashing/matching phases started
+    /// fresh, the exact "avanza y retrocede" class of bug this function
+    /// already exists to prevent for the three original scan phases below.
+    /// "Solución definitiva" (his own words): every phase this app can ever
+    /// show DURING one busy/`isBusy` stretch — fixing, listing, hashing,
+    /// matching, saving — now shares this SAME one monotonically
+    /// increasing fraction, not just the three that already did.
+    private func overallScanFraction(_ phase: ScanOverallPhase) -> Double {
+        let fixOperationsWeight = 0.10
+        let archiveListingWeight = 0.10
+        let hashingWeight = 0.40
+        let matchingWeight = 0.25
+        let savingWeight = 0.15
+        switch phase {
+        case .fixOperations(let completed, let total):
+            let local = total > 0 ? Double(completed) / Double(total) : 0
+            return fixOperationsWeight * local
+        case .listingArchives(let read, let total):
+            let local = total > 0 ? Double(read) / Double(total) : 0
+            return fixOperationsWeight + archiveListingWeight * local
+        case .hashing(let completed, let total):
+            let local = total > 0 ? Double(completed) / Double(total) : 0
+            return fixOperationsWeight + archiveListingWeight + hashingWeight * local
+        case .matching(let completed, let total):
+            let local = total > 0 ? Double(completed) / Double(total) : 0
+            return fixOperationsWeight + archiveListingWeight + hashingWeight + matchingWeight * local
+        case .matchingIndeterminate:
+            return fixOperationsWeight + archiveListingWeight + hashingWeight
+        case .saving(let completed, let total):
+            let local = total > 0 ? Double(completed) / Double(total) : 0
+            return fixOperationsWeight + archiveListingWeight + hashingWeight + matchingWeight + savingWeight * local
+        }
+    }
+
     private var scanProgressOverlay: some View {
         VStack(spacing: 8) {
-            if viewModel.isLoadingDAT {
+            if let fixAction = viewModel.fixActionProgress {
+                // jensyleo's own report (2026-09-19): running "Remove
+                // Redundant Files…" only ever showed this overlay's generic
+                // scan phases ("Scanning folders…", "Saving results…") —
+                // both real (its own automatic verification rescan), but
+                // nothing named the actual file removal itself while it was
+                // happening. Checked first, ahead of every other phase
+                // below, for the same reason `isSavingReport` is: whichever
+                // Fix/File Action's own real operations are running takes
+                // priority over the generic scan pipeline phases that
+                // follow it.
+                if fixAction.total > 0 {
+                    ProgressView(value: overallScanFraction(.fixOperations(completed: fixAction.completed, total: fixAction.total)))
+                        .frame(width: 240)
+                    Text("\(fixAction.label) \(fixAction.completed) of \(fixAction.total)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .frame(width: 240)
+                    Text(fixAction.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if viewModel.isSavingReport {
+                // jensyleo's own report (2026-09-17): after the matching
+                // bar reached 100%, the app kept the busy overlay up for a
+                // real, separately-timed stretch while `saveReport` wrote
+                // the whole report to disk — with no indication that was
+                // even what was happening (see `isSavingReport`'s own doc
+                // comment for the full story, including why it used to
+                // block the main actor entirely rather than just showing
+                // the wrong text). Checked first, ahead of every other
+                // phase below, since saving always happens last.
+                // jensyleo's own report (2026-09-19): this showed a bare,
+                // generic spinner with no numbers, unlike every other phase
+                // in this same overlay — `AuditReportDatabase.saveReport`
+                // now reports real (rows written, total rows to write)
+                // progress via `saveReportProgress`, so this is a real
+                // determinate bar just like the rest, not a special case.
+                if let save = viewModel.saveReportProgress, save.total > 0 {
+                    ProgressView(value: overallScanFraction(.saving(completed: save.completed, total: save.total)))
+                        .frame(width: 240)
+                    Text("Saving results… \(save.completed) of \(save.total) rows")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView(value: overallScanFraction(.matching(completed: 1, total: 1)))
+                        .frame(width: 240)
+                    Text("Saving results…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if viewModel.isLoadingDAT {
                 // A large MAME DAT is tens/hundreds of MB of XML — parsing
                 // it can itself take a noticeable while in an unoptimized
                 // build, before anything has touched a folder yet. Without
@@ -2402,12 +5057,16 @@ struct LibraryDetailView: View {
                             .frame(width: 240)
                     } else {
                         ProgressView()
+                            .progressViewStyle(.linear)
+                            .frame(width: 240)
                     }
                     Text("Counting machines…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
+                        .progressViewStyle(.linear)
+                        .frame(width: 240)
                     Text("Loading DAT…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -2426,21 +5085,53 @@ struct LibraryDetailView: View {
                 // two before any callback has fired yet still falls back to
                 // an indeterminate spinner, since there's nothing to show a
                 // fraction of before that.
-                if let match = viewModel.matchProgress, match.total > 0 {
-                    ProgressView(value: Double(match.completed), total: Double(match.total))
+                //
+                // `overallScanFraction(...)` below (not a bare
+                // `match.completed`/`match.total` fraction) — jensyleo's
+                // own report (2026-09-17): each of these three numeric
+                // phases (archive listing, hashing, matching) used to
+                // drive its OWN independent 0–100% bar, so the bar visibly
+                // "avanza y retrocede" (jumps back down) every time one
+                // phase finished near 100% and the next one started fresh
+                // from 0% on a totally different scale. One shared,
+                // monotonically increasing fraction across all three fixes
+                // that, while each phase still shows its own accurate
+                // item-count text below the bar.
+                if let phase = viewModel.scanPostMatchPhase {
+                    // jensyleo's own report (2026-09-19): matching itself
+                    // finishing (this same bar at 100%) doesn't mean the
+                    // scan is done — several more real, synchronous passes
+                    // (disk auditing, duplicate-set detection, orphaned
+                    // BIOS, filename/CRC checks, Maintenance donor
+                    // detection) still run after it, and used to leave this
+                    // text frozen at "N of N games" for however long they
+                    // then took, looking indistinguishable from a hang.
+                    // None of them are internally progress-reportable (each
+                    // is one synchronous pass, not a throttleable per-item
+                    // loop), so the bar itself just holds at matching's own
+                    // 100% mark (real progress already made, none of it
+                    // lost) while the label names whichever one is
+                    // currently running.
+                    ProgressView(value: overallScanFraction(.matching(completed: 1, total: 1)))
+                        .frame(width: 240)
+                    Text(phase)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let match = viewModel.matchProgress, match.total > 0 {
+                    ProgressView(value: overallScanFraction(.matching(completed: match.completed, total: match.total)))
                         .frame(width: 240)
                     Text("Comparing against the database… \(match.completed) of \(match.total) games")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    ProgressView()
+                    ProgressView(value: overallScanFraction(.matchingIndeterminate))
                         .frame(width: 240)
                     Text("Comparing against the database…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } else if let progress = viewModel.scanProgress, progress.total > 0 {
-                ProgressView(value: Double(progress.completed), total: Double(progress.total))
+                ProgressView(value: overallScanFraction(.hashing(completed: progress.completed, total: progress.total)))
                     .frame(width: 240)
                 // "Calculating" rather than "Hashing" for every algorithm
                 // combination, not just CRC32-only — simpler and still
@@ -2453,18 +5144,26 @@ struct LibraryDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if let archives = viewModel.archiveListingProgress {
-                ProgressView(value: Double(archives.read), total: Double(archives.total))
+                ProgressView(value: overallScanFraction(.listingArchives(read: archives.read, total: archives.total)))
                     .frame(width: 240)
                 Text("Reading archive \(archives.read) of \(archives.total)…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if let filesFound = viewModel.folderScanFilesFound {
-                // No known total while walking the folder tree — an
-                // indeterminate bar still reads as "something is actively
-                // happening" instead of the live count being the only
-                // sign of life, which for a big collection can otherwise
-                // look identical to a hang for a long stretch.
+                // No known total while walking the folder tree, so this
+                // can never be a real determinate bar the way the other
+                // three numeric phases above are — but jensyleo's own
+                // report (2026-09-17), right after those three got a
+                // shared linear bar, was that this phase's plain circular
+                // spinner now stood out as "el ícono genérico de carga",
+                // inconsistent with everything else in this same overlay.
+                // `.linear`'s own indeterminate animation (a bar that
+                // slides back and forth, never a fixed value) reads as
+                // "actively working" exactly like the circular spinner
+                // did, just in the same visual language as the rest of
+                // this overlay instead of standing out as generic.
                 ProgressView()
+                    .progressViewStyle(.linear)
                     .frame(width: 240)
                 // jensyleo's own request (2026-08-12): "Scan All Folders"
                 // (and "Scan Folder", which — see `LibraryViewModel.scan`'s
@@ -2474,13 +5173,22 @@ struct LibraryDetailView: View {
                 // *which* folder it was even counting. Named directly now,
                 // via `currentlyScanningFolder`.
                 Text(
-                    viewModel.currentlyScanningFolder.map { "Scanning \($0.lastPathComponent)… \(filesFound) files found" }
-                        ?? "Scanning folders… \(filesFound) files found"
+                    viewModel.currentlyScanningFolder.map { "Scanning \($0.lastPathComponent)…" }
+                        ?? "Scanning folders…"
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                // The live file count made bigger/bolder than before
+                // (2026-09-17) — previously folded into the same small
+                // caption line as the folder name, easy to miss as the
+                // only real sign of progress during this phase.
+                Text("\(filesFound) files found")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
             } else {
                 ProgressView()
+                    .progressViewStyle(.linear)
+                    .frame(width: 240)
                 Text("Scanning folders…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -2702,7 +5410,7 @@ struct LibraryDetailView: View {
                 AutosavingSplitView(axis: .stacked, autosaveName: "ROMForge.databaseRomFolderSplit", panes: [
                     SplitPane(minLength: 80) { databaseSectionPane },
                     SplitPane(minLength: 60) { romFolderSectionPane },
-                ])
+                ], defaultFractions: [0.4713584288052373, 0.5270049099836334])
             } else if showDatabaseTree {
                 databaseSectionPane
             } else if showRomFolderTree {
@@ -2740,6 +5448,17 @@ struct LibraryDetailView: View {
             // does, and that pane never had this problem.
             .focusable()
             .focused($isDatabasePaneFocused)
+            // jensyleo's own report (2026-09-15), right after macOS
+            // updated to 27.0: this container's own native focus ring
+            // (needed only so `.onKeyPress` below actually receives arrow
+            // keys — see `isDatabasePaneFocused`'s own doc comment) used to
+            // render subtly/invisibly; macOS 27 now draws it as a large,
+            // visible blue rectangle around the whole pane, which reads as
+            // a rendering bug rather than "this list currently has
+            // keyboard focus". `.focusEffectDisabled()` only suppresses
+            // that VISUAL ring — the view stays genuinely focusable and
+            // `.onKeyPress` keeps working exactly as before.
+            .focusEffectDisabled()
         }
         // jensyleo's own report (2026-08-11): up/down/left/right did
         // nothing while standing on a "Database" row, and — once fixed by
@@ -2783,13 +5502,30 @@ struct LibraryDetailView: View {
             romFolderListContent
                 .onAppear { romFolderListScrollProxy = proxy }
         }
+        // See `isDatabasePaneFocused`'s own doc comment. jensyleo's own
+        // report (2026-09-15), right after the macOS 27.0 update: arrow
+        // keys stopped reaching these handlers entirely. Root-caused live
+        // (via a temporary debug build + `System Events key code`, the
+        // only synthetic-input method that reliably drives SwiftUI's
+        // `.onKeyPress` — `cliclick`'s own key-press synthesis, oddly,
+        // does NOT trigger it on this OS, though that turned out to be a
+        // red herring for testing, not the app's real bug): `.focusable()`/
+        // `.focused()` MUST come BEFORE `.onKeyPress` in the modifier
+        // chain (previously they came after) — macOS 27's SwiftUI runtime
+        // is stricter than before about which view identity actually
+        // becomes the focus target when these are combined, and the old
+        // ordering silently attached the key handlers to the wrong one.
+        .focusable()
+        .focused($isRomFolderPaneFocused)
         .onKeyPress(.upArrow) { moveDatabaseSelection(by: -1, scope: .romFolder); return .handled }
         .onKeyPress(.downArrow) { moveDatabaseSelection(by: 1, scope: .romFolder); return .handled }
         .onKeyPress(.rightArrow) { expandSelectedDatabaseRow(); return .handled }
         .onKeyPress(.leftArrow) { collapseSelectedDatabaseRow(); return .handled }
-        // See `isDatabasePaneFocused`'s own doc comment.
-        .focusable()
-        .focused($isRomFolderPaneFocused)
+        // Same macOS 27 focus-ring fix as `databaseSectionPane`'s own
+        // `.focusEffectDisabled()` — see that one's doc comment. This is
+        // the exact pane from jensyleo's own screenshot (2026-09-15): the
+        // whole "ROM folder" list boxed in a large blue rectangle.
+        .focusEffectDisabled()
     }
 
     /// Search bar for the "Database" tree — see `databaseSearchText`'s own
@@ -2890,6 +5626,7 @@ struct LibraryDetailView: View {
                                     selectedDatabaseFilter = filter
                                     selectedRomFolder = nil
                                     isDatabasePaneFocused = true
+                                    resultsPaneIsActive = false
                                 }
                             )
                             .foregroundStyle(isSelected && controlActiveState != .inactive ? Color.white : Color.primary)
@@ -2937,6 +5674,276 @@ struct LibraryDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    // Read-only Maintenance subfolder — jensyleo's own
+                    // request (2026-09-11): "Este folder se debe cargar en
+                    // la vista de romfolder con la característica que ese
+                    // folder no se le puede escribir." No "Remove Folder",
+                    // no reorder grip, never a Fix scope target, never
+                    // scanned by "Scan Folder" (see `isMaintenanceFolder`'s
+                    // own doc comment for how that's specifically blocked)
+                    // — every other row here is a real, user-managed ROM
+                    // folder that Scan/Fix can fully act on; this one stays
+                    // a donor-only area `MaintenanceFolderSettings`/
+                    // `RebuildPlanner.planRepairFromMaintenanceFolder`
+                    // already treat as read-only for WRITES. jensyleo's own
+                    // follow-up reports (2026-09-11): first, that tapping it
+                    // did nothing ("debería permitirme entrar y mostrarme
+                    // que en este momento está en blanco"); then, that the
+                    // right answer wasn't a separate popover but the SAME
+                    // Games panel every other folder already uses ("lo que
+                    // debe es permitir ver desde la app, en el panel games,
+                    // asi este vacio") — tapping now sets `selectedRomFolder`
+                    // exactly like any other row below, which naturally
+                    // shows 0 games (nothing here was ever scanned/matched
+                    // against the DAT) with `gamesList`'s own new empty-state
+                    // message explaining why, rather than a bare empty table.
+                    // jensyleo's own report (2026-09-16): this row used to
+                    // show whenever a Maintenance ROOT was configured at
+                    // all, regardless of whether THIS system's own
+                    // subfolder still existed on disk — so deleting it
+                    // (Settings, or "Remove System and Delete Maintenance
+                    // Folder") looked like it silently failed, since the
+                    // row never went away. Now gated on the subfolder
+                    // actually existing, matching what deleting it is
+                    // supposed to mean; it reappears on its own the next
+                    // time something legitimately recreates it (a real
+                    // "Repair from Maintenance Folder…" run, or explicitly
+                    // via Settings).
+                    // jensyleo's own follow-up (2026-09-16): "cuando la NAS
+                    // está desconectada, reporta todos los folder menos el
+                    // de mantenimiento... unifica eso" — this row now
+                    // follows the exact same rule every ordinary ROM folder
+                    // row already does: always shown (as long as a
+                    // Maintenance root is configured), never hidden just
+                    // because it couldn't be verified — only
+                    // `maintenanceSubfolderDeleted` (a genuinely deliberate
+                    // delete) hides it; `maintenanceSubfolderUnreachable`
+                    // only ever adds the same red/⚠️ styling.
+                    if !maintenanceSubfolderDeleted,
+                       let maintenanceSubfolder = MaintenanceFolderSettings.subfolderURL(for: system) {
+                        HStack(spacing: 4) {
+                            // jensyleo's own request (2026-09-24): "te
+                            // recomiendo ponerle un distintivo a estos
+                            // elementos, por ejemplo a la carpeta de
+                            // mantenimiento un icono de unas herramientas y
+                            // a las de BIOS algo parecido a un chip" —
+                            // was `"lock.fill"` (a generic "read-only" mark
+                            // shared with nothing else in this sidebar);
+                            // a tools icon reads at a glance as "the
+                            // donor/repair area", distinct from the BIOS
+                            // row's own "cpu.fill" right below.
+                            Label(maintenanceSubfolder.lastPathComponent, systemImage: "wrench.and.screwdriver.fill")
+                                .foregroundStyle(maintenanceSubfolderUnreachable ? Color.red : Color.secondary)
+                            if maintenanceSubfolderUnreachable {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.red)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            resetStuckRomFolderDragIfNeeded()
+                            selectedDatabaseFilter = nil
+                            selectedRomFolder = maintenanceSubfolder
+                            // jensyleo's own report (2026-09-22): with the
+                            // NAS deliberately turned off, plain navigation
+                            // between every OTHER ROM folder worked fine
+                            // (no disk touch at all — see
+                            // `LibraryViewModel.scan`'s own "only a real
+                            // Scan reads anything" philosophy), but merely
+                            // CLICKING this row alone (no scan requested)
+                            // still triggered a real `FileManager
+                            // .fileExists` reachability check via
+                            // `refreshMaintenanceSubfolderExistsCache()`
+                            // below — on an unreachable SMB/AFP-style
+                            // share, that call can itself take a real,
+                            // noticeable while to time out. Removed: this
+                            // row should show whatever was last actually
+                            // known (from the last real Scan/"Scan This
+                            // Folder"/"Scan Maintenance Folder"), exactly
+                            // like every other ROM folder row already
+                            // does, never re-verify itself on a plain
+                            // click. Still called from every explicit scan
+                            // action itself (`startScanMaintenanceFolder`),
+                            // so a genuine check still happens whenever the
+                            // user actually asks for one.
+                        }
+                        .listRowBackground(selectedRomFolder == maintenanceSubfolder ? Color.accentColor.opacity(0.85) : Color.clear)
+                        .help(
+                            maintenanceSubfolderUnreachable
+                                ? "Unreachable on the last check — check the connection (NAS/pendrive/external drive) — \(maintenanceSubfolder.path)"
+                                : "Maintenance folder (read-only) — click to view it in the Games panel — \(maintenanceSubfolder.path)"
+                        )
+                        .contextMenu {
+                            // jensyleo's own request (2026-09-14): "el
+                            // Maintenance folder también debe tener esas
+                            // mismas opciones de click de contexto" — same
+                            // "Scan This Folder" every real ROM folder row
+                            // now has, just routed through
+                            // `startScanMaintenanceFolder()` (never a real
+                            // `viewModel.startScan`, per this folder's own
+                            // read-only/never-audited philosophy — see that
+                            // function's own doc comment) — and the same
+                            // per-system delete already offered in Settings
+                            // → General, reachable here too instead of a
+                            // trip to Settings.
+                            //
+                            // `navigateToFolder: false` — jensyleo's own
+                            // request (2026-09-22): a context-menu rescan
+                            // shouldn't jump the whole panel over to
+                            // Maintenance if the user is looking at
+                            // something else; only the toolbar's own "Scan
+                            // Maintenance Folder" action still does that
+                            // (see `startScanMaintenanceFolder`'s own doc
+                            // comment).
+                            Button {
+                                startScanMaintenanceFolder(navigateToFolder: false)
+                            } label: {
+                                Label("Scan This Folder", systemImage: "arrow.clockwise")
+                            }
+                            .disabled(isLoadingMaintenanceFolderFiles)
+                            Divider()
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([maintenanceSubfolder])
+                            } label: {
+                                Label("Reveal in Finder", systemImage: "folder")
+                            }
+                            Divider()
+                            Button(role: .destructive) {
+                                pendingMaintenanceSubfolderDeletionFromSidebar = true
+                            } label: {
+                                Label("Delete Maintenance Subfolder…", systemImage: "trash")
+                            }
+                        }
+                    }
+                    // BIOS folder — jensyleo's own request (2026-09-24):
+                    // "la carpeta BIOS debe quedar cargada en la GUI de la
+                    // app", right after confirming its content is now
+                    // auto-scanned (`LibraryViewModel.effectiveScanFolders`)
+                    // without ever being added to `system.romFolderURLs`.
+                    // Unlike the Maintenance row above, this ISN'T a
+                    // special, always-empty, never-audited area — it's a
+                    // real part of this scan, so tapping it just sets
+                    // `selectedRomFolder` exactly like any ordinary ROM
+                    // folder row below, and the Games panel's own generic
+                    // path-based filtering (`scoped(_:databaseFilter:
+                    // romFolder:...)`) shows its real matched games with no
+                    // special-case code needed here at all. No reorder
+                    // grip, no "Remove Folder" (this folder's lifecycle is
+                    // owned by `BIOSFolderSettings` in Settings → Systems →
+                    // MAME, not by this per-system list).
+                    if system.isMAMEStyle, let biosFolder = BIOSFolderSettings.folderURL {
+                        HStack(spacing: 4) {
+                            Label(biosFolder.lastPathComponent, systemImage: "cpu.fill")
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            resetStuckRomFolderDragIfNeeded()
+                            selectedDatabaseFilter = nil
+                            selectedRomFolder = biosFolder
+                        }
+                        .listRowBackground(selectedRomFolder == biosFolder ? Color.accentColor.opacity(0.85) : Color.clear)
+                        .help("BIOS folder — every scan reads it automatically; \"Organize BIOS Files…\" (toolbar → Fix) moves BIOS files in here — \(biosFolder.path)")
+                        .contextMenu {
+                            // jensyleo's own request (2026-09-24): "la
+                            // carpeta BIOS también debe tener la opción de
+                            // escaneo como los rom folder" — same real scan
+                            // any ordinary ROM folder row's own "Scan This
+                            // Folder" performs (`viewModel.startScan`, not
+                            // a special read-only pass like Maintenance's
+                            // own "Scan Maintenance Folder" — this folder
+                            // IS part of the real audit, see
+                            // `LibraryViewModel.effectiveScanFolders`).
+                            Button {
+                                viewModel.startScan(system: system, folders: [biosFolder]) { warnIfSpecialFolderEmpty(biosFolder, kind: "BIOS") }
+                            } label: {
+                                Label("Scan This Folder", systemImage: "arrow.clockwise")
+                            }
+                            .disabled(viewModel.isBusy)
+                            Divider()
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([biosFolder])
+                            } label: {
+                                Label("Reveal in Finder", systemImage: "folder")
+                            }
+                        }
+                    }
+                    // Complementary Chips folder — same exact treatment as
+                    // the BIOS row right above, jensyleo's own request
+                    // (2026-09-24): "lo mismo que BIOS pero para los demás
+                    // chips."
+                    if system.isMAMEStyle, let chipsFolder = ComplementaryChipsFolderSettings.folderURL {
+                        HStack(spacing: 4) {
+                            Label(chipsFolder.lastPathComponent, systemImage: "puzzlepiece.extension.fill")
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            resetStuckRomFolderDragIfNeeded()
+                            selectedDatabaseFilter = nil
+                            selectedRomFolder = chipsFolder
+                        }
+                        .listRowBackground(selectedRomFolder == chipsFolder ? Color.accentColor.opacity(0.85) : Color.clear)
+                        .help("Complementary Chips folder — every scan reads it automatically; \"Organize Complementary Chips…\" (toolbar → Fix) moves shared device files in here — \(chipsFolder.path)")
+                        .contextMenu {
+                            Button {
+                                viewModel.startScan(system: system, folders: [chipsFolder]) { warnIfSpecialFolderEmpty(chipsFolder, kind: "Complementary Chips") }
+                            } label: {
+                                Label("Scan This Folder", systemImage: "arrow.clockwise")
+                            }
+                            .disabled(viewModel.isBusy)
+                            Divider()
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([chipsFolder])
+                            } label: {
+                                Label("Reveal in Finder", systemImage: "folder")
+                            }
+                        }
+                    }
+                    // Samples folder — jensyleo's own request (2026-09-24):
+                    // "implementalo" ("lo mismo que BIOS", right after
+                    // confirming the risk he wanted avoided: unlike BIOS/
+                    // Complementary Chips, a sample has no DAT hash to
+                    // match against — its content is filtered OUT of the
+                    // audit entirely (see `SamplesFolderSettings
+                    // .isUnderSamplesFolder`'s own doc comment), so
+                    // selecting this row correctly shows an empty Games
+                    // table rather than a table full of spurious "Surplus"
+                    // rows. It's still auto-scanned (`effectiveScanFolders`)
+                    // and browsable here exactly like BIOS/Complementary
+                    // Chips, just with nothing to audit against.
+                    if system.isMAMEStyle, let samplesFolder = SamplesFolderSettings.folderURL {
+                        HStack(spacing: 4) {
+                            Label(samplesFolder.lastPathComponent, systemImage: "speaker.wave.2.fill")
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            resetStuckRomFolderDragIfNeeded()
+                            selectedDatabaseFilter = nil
+                            selectedRomFolder = samplesFolder
+                        }
+                        .listRowBackground(selectedRomFolder == samplesFolder ? Color.accentColor.opacity(0.85) : Color.clear)
+                        .help("Samples folder — every scan reads it, but its content is never part of this system's own audit (samples have no DAT hash to match against) — \"Fix Samples\" (toolbar → Fix) is what copies matching zips in here — \(samplesFolder.path)")
+                        .contextMenu {
+                            Button {
+                                viewModel.startScan(system: system, folders: [samplesFolder]) { warnIfSpecialFolderEmpty(samplesFolder, kind: "Samples") }
+                            } label: {
+                                Label("Scan This Folder", systemImage: "arrow.clockwise")
+                            }
+                            .disabled(viewModel.isBusy)
+                            Divider()
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([samplesFolder])
+                            } label: {
+                                Label("Reveal in Finder", systemImage: "folder")
+                            }
+                        }
+                    }
                 }
             } header: {
                 // jensyleo's own wording call (2026-08-11): "Rom files" →
@@ -2951,8 +5958,60 @@ struct LibraryDetailView: View {
             }
         }
         .listStyle(.sidebar)
-        .onAppear { syncLocalRomFolderOrder() }
-        .onChange(of: system.romFolderURLs) { syncLocalRomFolderOrder() }
+        // jensyleo's own explicit instruction (2026-09-16): "la app solo
+        // debe iniciar, los escaneos se deben hacer por parte del
+        // usuario" — confirmed live: opening/reopening the app itself was
+        // enough to silently touch the NAS via the Maintenance-existence
+        // check, with that row's state visibly flipping depending on
+        // whether the NAS happened to be connected at that exact moment,
+        // with no scan ever explicitly asked for. That one check no
+        // longer runs from `.onAppear` — only a genuine user action does:
+        // tapping the Maintenance row itself (see its own `.onTapGesture`),
+        // or an explicit "Scan This Folder"/"Scan Folder"/"Scan All
+        // Folders"/"Scan Maintenance Folder".
+        //
+        // jensyleo's own explicit follow-up (2026-09-16): "mantén el 2,
+        // ese es más que necesario" — the volume-kind (local/removable/
+        // NAS) icon detection stays automatic on `.onAppear`, unlike the
+        // Maintenance check above. Still fully off-`@MainActor`
+        // (`Task.detached`, see `refreshRomFolderVolumeKindCache`'s own
+        // doc comment) so it can never freeze the app the way the
+        // Maintenance check briefly did before that fix.
+        .onAppear {
+            resetStuckRomFolderDragIfNeeded()
+            syncLocalRomFolderOrder()
+            refreshRomFolderVolumeKindCache()
+        }
+        .onChange(of: system.romFolderURLs) {
+            syncLocalRomFolderOrder()
+            refreshRomFolderVolumeKindCache()
+        }
+        // jensyleo's own report (2026-09-16): "creo la carpeta de
+        // mantenimiento y no la está mostrando" — Settings creates/deletes
+        // a Maintenance subfolder in a completely separate window; without
+        // this, an already-open system's detail view had no way to learn
+        // that happened, since the eager on-every-`.onAppear` recheck was
+        // deliberately removed earlier this same session. Only ever
+        // confirms/clears `maintenanceSubfolderUnreachable` — never touches
+        // `maintenanceSubfolderDeleted` (that's `subfolderDidDelete`'s own
+        // job, right below), so a plain backfill/create elsewhere can't
+        // accidentally "undelete" this row for a system it has nothing to
+        // do with.
+        .onReceive(NotificationCenter.default.publisher(for: MaintenanceFolderSettings.subfoldersDidChange)) { _ in
+            refreshMaintenanceSubfolderExistsCache()
+        }
+        // A DELIBERATE delete, from any of the three entry points
+        // (Settings' per-system button, this same sidebar's own delete
+        // below, or "Remove System and Delete Maintenance Folder") — the
+        // only thing that actually hides this row (see
+        // `maintenanceSubfolderDeleted`'s own doc comment). Filtered to
+        // THIS system, since the notification is a plain app-wide
+        // broadcast covering every system's own subfolder.
+        .onReceive(NotificationCenter.default.publisher(for: MaintenanceFolderSettings.subfolderDidDelete)) { notification in
+            guard notification.userInfo?["systemID"] as? RomSystem.ID == system.id else { return }
+            maintenanceSubfolderDeleted = true
+            maintenanceSubfolderUnreachable = false
+        }
         .onPreferenceChange(ReorderRowFramePreferenceKey.self) { romFolderRowFrames = $0 }
         .reorderGhostOverlay(
             draggingIndex: draggingRomFolderIndex,
@@ -2967,6 +6026,47 @@ struct LibraryDetailView: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
+        }
+        .confirmationDialog(
+            "Remove \"\(pendingRomFolderRemoval?.lastPathComponent ?? "")\" from This System?",
+            isPresented: Binding(
+                get: { pendingRomFolderRemoval != nil },
+                set: { if !$0 { pendingRomFolderRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                if let url = pendingRomFolderRemoval {
+                    removeRomFolder(url)
+                }
+                pendingRomFolderRemoval = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRomFolderRemoval = nil }
+        } message: {
+            Text("This only stops ROMForge from scanning this folder — nothing is deleted from disk. Its own entries are removed from this system's last scan results until you add it back and rescan.")
+        }
+        .confirmationDialog(
+            "Delete This System's Own Maintenance Subfolder?",
+            isPresented: $pendingMaintenanceSubfolderDeletionFromSidebar,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                try? MaintenanceFolderSettings.deleteSubfolder(for: system)
+                // A deliberate delete, unlike a NAS dropping out from under
+                // an existing folder — hides the row outright instead of
+                // showing red/unreachable (see `maintenanceSubfolderDeleted`'s
+                // own doc comment). Posts the same notification Settings'
+                // own delete button does, for consistency (harmless
+                // no-op here since this view already updates its own
+                // state directly).
+                maintenanceSubfolderDeleted = true
+                maintenanceSubfolderUnreachable = false
+                NotificationCenter.default.post(name: MaintenanceFolderSettings.subfolderDidDelete, object: nil, userInfo: ["systemID": system.id])
+                if isSelectedFolderMaintenanceSubfolder { loadMaintenanceFolderFiles() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Permanently deletes this system's own Maintenance subfolder and everything inside it — any donor ROMs dropped there for \"Repair from Maintenance Folder…\" are gone. Every OTHER system's own subfolder is untouched. This cannot be undone, and it stays deleted until something genuinely needs it again (running \"Repair from Maintenance Folder…\", or reconfiguring the Maintenance root in Settings) — simply viewing this system again will not bring it back.")
         }
     }
 
@@ -2990,6 +6090,17 @@ struct LibraryDetailView: View {
     @ViewBuilder
     private func romFolderRow(for url: URL) -> some View {
         let index = localRomFolderOrder.firstIndex(of: url)
+        // jensyleo's own follow-up (2026-09-16), after the "Scan Failed"
+        // pop-up landed: "los recursos que no encontró debería marcarlos
+        // en rojo, o colocarles algún distintivo particular" — a folder
+        // the LAST scan that actually covered it couldn't reach (NAS
+        // offline, pendrive unplugged, etc.) gets its own row tinted red
+        // with a warning glyph, on top of (not instead of) the one-time
+        // pop-up — a mark that's still visible long after that pop-up's
+        // been dismissed, for exactly as long as the folder stays
+        // unreachable (see `lastScanUnreachableFolders`'s own doc comment
+        // on when it clears).
+        let isUnreachable = viewModel.lastScanUnreachableFolders.contains(url)
         HStack(spacing: 4) {
             // jensyleo's own report (2026-08-13): "en rom folder el folder
             // se seleccione con dar click en la línea donde está... toca
@@ -3002,8 +6113,14 @@ struct LibraryDetailView: View {
             // intercepting their own clicks fine, since a tap landing
             // exactly on one of *those* is still claimed by that more
             // specific control first.
-            Label(url.lastPathComponent, systemImage: "externaldrive")
+            Label(url.lastPathComponent, systemImage: (romFolderVolumeKindCache[url] ?? .unknown).symbolName)
                 .fontWeight(selectedRomFolder == url ? .semibold : .regular)
+                .foregroundStyle(isUnreachable ? Color.red : Color.primary)
+            if isUnreachable {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .help("Unreachable on the last scan that covered it — check the connection (NAS/pendrive/external drive) and scan again.")
+            }
             Spacer(minLength: 0)
             // jensyleo's own report (2026-08-13): "el área de click sigue
             // siendo muy chica" — an SF Symbol at its natural rendered
@@ -3019,31 +6136,37 @@ struct LibraryDetailView: View {
             // there might be somewhere left for it to go; hiding it
             // outright says so more directly.
             // jensyleo's own request (2026-08-31): ⌘-drag this grip to
-            // reorder — see `ReorderGripHandle`'s own doc comment for why
-            // ⌘ specifically (this exact row's three prior plain-drag
-            // attempts, each losing to the row's own tap/selection gesture,
-            // are the case study that comment cites). Evolved from an
-            // earlier "Move Up"/"Move Down" menu on the same icon, itself
-            // evolved from the original chevron-up/chevron-down pair.
+            // reorder. Evolved from an earlier "Move Up"/"Move Down" menu
+            // on the same icon, itself evolved from the original
+            // chevron-up/chevron-down pair.
+            //
+            // jensyleo's own report (2026-09-17): a plain `ReorderGripHandle`
+            // (SwiftUI `DragGesture`) stopped working here specifically —
+            // this is the one reorderable list actually backed by a real
+            // `List`/`NSTableView`, and macOS 27 now claims the drag event
+            // stream at the AppKit level before `.highPriorityGesture` ever
+            // gets a chance (see `installRomFolderReorderMonitor`'s own doc
+            // comment for the full root-cause). This row is now just a
+            // plain icon — real tracking happens via that `NSEvent` local
+            // monitor instead, keyed off `romFolderRowFrames`'s own
+            // published frame for this exact row.
             if let index {
-                ReorderGripHandle(
-                    index: index,
-                    count: localRomFolderOrder.count,
-                    rowHeight: ReorderGripHandle.measuredRowPitch(at: index, rowFrames: romFolderRowFrames, fallback: 32),
-                    draggingIndex: $draggingRomFolderIndex,
-                    dragPreviewIndex: $dragPreviewRomFolderIndex,
-                    dragOffset: $dragRomFolderOffset,
-                    onCommit: { from, to in moveRomFolder(from: from, to: to) }
-                )
+                Image(systemName: "line.3.horizontal")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+                    .help("⌘ + clic y arrastra para reordenar")
+                    .id(index)
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            selectedDatabaseFilter = nil
-            selectedRomFolder = url
-            isRomFolderPaneFocused = true
-        }
-        .help(url.path)
+        .onTapGesture { selectRomFolder(url) }
+        .help({
+            var text = url.path
+            text += (romFolderVolumeKindCache[url] ?? .unknown).helpSuffix
+            if isUnreachable { text += " — unreachable on the last scan" }
+            return text
+        }())
         // A real selection background, not just bold text — see
         // `controlActiveState`'s own doc comment for why this is blue
         // while this window is key and gray otherwise, matching native
@@ -3070,8 +6193,23 @@ struct LibraryDetailView: View {
         .reportReorderFrame(index ?? -1)
         .foregroundStyle(selectedRomFolder == url && controlActiveState != .inactive ? Color.white : Color.primary)
         .contextMenu {
-            Button("Remove Folder", role: .destructive) {
-                removeRomFolder(url)
+            // jensyleo's own request (2026-09-14): a ROM folder's own
+            // context menu had no way to scan just that one folder without
+            // first selecting it and reaching for the toolbar's own "Scan"
+            // dropdown — same action `scanSubActions`'s own "Scan Folder"
+            // entry already performs, just reachable directly from the
+            // sidebar row itself.
+            Button {
+                viewModel.startScan(system: system, folders: [url])
+            } label: {
+                Label("Scan This Folder", systemImage: "arrow.clockwise")
+            }
+            .disabled(viewModel.isBusy)
+            Divider()
+            Button(role: .destructive) {
+                pendingRomFolderRemoval = url
+            } label: {
+                Label("Remove Folder…", systemImage: "trash")
             }
         }
         // jensyleo's own report (2026-08-13): arrowing down/up through
@@ -3127,6 +6265,91 @@ struct LibraryDetailView: View {
     private func syncLocalRomFolderOrder() {
         guard localRomFolderOrder != system.romFolderURLs else { return }
         localRomFolderOrder = system.romFolderURLs
+    }
+
+    /// The only place `FileManager.default.fileExists` runs for the
+    /// Maintenance-subfolder sidebar row — see `maintenanceSubfolderUnreachable`'s
+    /// own doc comment. Called only when the answer can actually have
+    /// changed (this view appearing, the system changing, or a real
+    /// create/backfill of the subfolder — a DELETE is handled separately,
+    /// directly, via `subfolderDidDelete`), never on every re-render.
+    /// jensyleo's own report (2026-09-16): "la app se está tratando de
+    /// congelar al iniciar, se pone lento la carga" — this used to be a
+    /// plain, synchronous `FileManager.fileExists` call, run directly on
+    /// `@MainActor` from `.onAppear` for the auto-restored last-selected
+    /// system, before the window is even interactive. The Maintenance
+    /// root is an arbitrary user-chosen folder — nothing stops it from
+    /// living on the same slow/unreachable NAS share as a ROM folder — so
+    /// a stalled SMB mount hung the ENTIRE app at launch on this one
+    /// check, exactly the class of bug this session already fixed for
+    /// `RomFolderVolumeKind.detect` (see its own `Task.detached` doc
+    /// comment). Same fix here: the real disk touch moves off the main
+    /// actor, generation-guarded so a slow, now-stale check can never
+    /// clobber a newer one that's already finished.
+    @State private var maintenanceSubfolderExistsRefreshGeneration = 0
+
+    private func refreshMaintenanceSubfolderExistsCache() {
+        guard let subfolder = MaintenanceFolderSettings.subfolderURL(for: system) else {
+            return
+        }
+        maintenanceSubfolderExistsRefreshGeneration += 1
+        let generation = maintenanceSubfolderExistsRefreshGeneration
+        Task.detached(priority: .utility) {
+            let exists = FileManager.default.fileExists(atPath: subfolder.path)
+            await MainActor.run {
+                guard generation == maintenanceSubfolderExistsRefreshGeneration else { return }
+                // A confirmed-existing subfolder can never itself be
+                // "deleted" — if this system's folder was deleted in
+                // Settings and then genuinely recreated, this same check
+                // is exactly what clears that stale flag back.
+                if exists {
+                    maintenanceSubfolderDeleted = false
+                    maintenanceSubfolderUnreachable = false
+                } else {
+                    maintenanceSubfolderUnreachable = true
+                }
+            }
+        }
+    }
+
+    /// Off-`@MainActor` by design — `URLResourceValues(forKeys:)` for
+    /// `.volumeIsLocalKey`/etc. is a real filesystem call that, over
+    /// SMB/AFP, can genuinely block on the network. Called once per
+    /// `romFolderListContent`'s own `.onAppear`/`.onChange(of:
+    /// system.romFolderURLs)`, never from inside a row's own body.
+    /// Generation-guarded exactly like `loadMaintenanceFolderFiles`'s own
+    /// stale-result guard, so a slow NAS lookup from a folder set that's
+    /// since changed can never clobber a newer, already-finished one.
+    private func refreshRomFolderVolumeKindCache() {
+        let folders = system.romFolderURLs
+        romFolderVolumeKindRefreshGeneration += 1
+        let generation = romFolderVolumeKindRefreshGeneration
+        Task.detached(priority: .utility) {
+            var results: [URL: RomFolderVolumeKind] = [:]
+            for folder in folders {
+                results[folder] = RomFolderVolumeKind.detect(for: folder)
+            }
+            await MainActor.run {
+                guard generation == romFolderVolumeKindRefreshGeneration else { return }
+                // jensyleo's own report (2026-09-17): "⌘-arrastrar para
+                // reordenar ya no funciona, y la app 'bugea' la imagen" —
+                // reassigning this whole dictionary invalidates this
+                // view's ENTIRE `body`, rebuilding every `romFolderRow`
+                // (including whichever one is mid-⌘-drag right now) and
+                // re-publishing its frame via `ReorderRowFramePreferenceKey`
+                // — corrupting `ReorderGripHandle`'s own frame-based drag
+                // math and visibly glitching the drag ghost. Two guards:
+                // never touch it while a drag is active (the icon can
+                // simply wait for the next natural trigger), and skip the
+                // reassignment entirely when nothing actually changed
+                // (the common case — this fires on every ROM-folder-row
+                // tap, not just once), so this table full of icons isn't
+                // rebuilt just because something ELSE was clicked.
+                guard draggingRomFolderIndex == nil else { return }
+                guard romFolderVolumeKindCache != results else { return }
+                romFolderVolumeKindCache = results
+            }
+        }
     }
 
     /// One flat, top-to-bottom row a keyboard arrow press can land on —
@@ -3445,7 +6668,55 @@ struct LibraryDetailView: View {
             Text(gamesListTitle)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            gameTreeTable
+            // jensyleo's own request (2026-09-13): the Maintenance
+            // subfolder must look EXACTLY like every other ROM folder —
+            // same Games table, same Roms panel — never a separate,
+            // custom-built view. `displayedGameNodes` (see its own doc
+            // comment) already returns `maintenanceGameNodes` while this
+            // folder is selected, so this branch needs no special case at
+            // all: an empty Maintenance folder correctly shows
+            // `gamesEmptyStateMessage`'s own maintenance-specific wording,
+            // and a non-empty one renders through the exact same
+            // `gameTreeTable` every other folder uses.
+            // jensyleo's own report (2026-09-14): "al escanear el folder de
+            // mantenimiento, no se ve barra de progreso" — reusing
+            // `gameTreeTable` for Maintenance (see this whole block's own
+            // doc comment above) meant the loading state a plain refresh
+            // used to show (`isLoadingMaintenanceFolderFiles`, driving its
+            // own `ProgressView` in the now-removed dedicated view) never
+            // appeared, so a real, sometimes multi-second hash+match pass
+            // against a large Maintenance folder just silently did
+            // nothing until it finished — reading as a stalled/broken
+            // transition rather than a real background operation.
+            if isSelectedFolderMaintenanceSubfolder, isLoadingMaintenanceFolderFiles, !viewModel.isBusy {
+                VStack {
+                    Spacer(minLength: 24)
+                    // jensyleo's own report (2026-09-19): a first attempt at
+                    // fixing this drew its OWN copy of `scanProgressOverlay`
+                    // right here, which stacked a SECOND real progress bar
+                    // on top of the single global one (this view's own
+                    // `.overlay { if viewModel.isBusy { scanProgressOverlay } }`)
+                    // — same numbers, shown twice. Removing the duplicate
+                    // bar left a quieter but still confusing pairing: this
+                    // static "Reading the Maintenance folder…" label
+                    // sitting behind the global overlay's own "Comparing
+                    // against the database…" text, two different messages
+                    // on screen for the one thing happening. This branch
+                    // now only ever renders while `loadMaintenanceFolderFiles()`
+                    // DOESN'T own `isBusy` (see `ownsProgressReporting`'s
+                    // own doc comment there) — a cache hit, a genuinely
+                    // empty folder, or another action already holding
+                    // `isBusy` — so the global overlay and this local label
+                    // are never both on screen at once.
+                    ProgressView("Reading the Maintenance folder…")
+                    Spacer(minLength: 24)
+                }
+                .frame(maxWidth: .infinity)
+            } else if displayedGameNodes.isEmpty {
+                gamesEmptyStateMessage
+            } else {
+                gameTreeTable
+            }
             // Same "Show N more" idea as the sidebar tree's own truncation
             // row (`maxTreeChildrenPerCategory`/`treeLoadMoreIncrement`) —
             // see `gamesTableVisibleCap`'s own doc comment for why this
@@ -3473,7 +6744,19 @@ struct LibraryDetailView: View {
 
     private var gamesListTitle: String {
         let base: String
-        if let selectedRomFolder {
+        // jensyleo's own report (2026-09-14): the Maintenance subfolder's
+        // own directory is literally named after the system itself (e.g.
+        // "Maintenance/MAME" for a system called "MAME") — this title used
+        // to read `selectedRomFolder.lastPathComponent` unconditionally,
+        // so browsing it showed the exact same "MAME — Games (N)" title a
+        // real system-wide view would, and a donor copy's own genuinely
+        // correct status (e.g. a complete `gng.zip` staged as a donor) got
+        // mistaken for the REAL collection's own copy of the same game
+        // (which can easily still be broken) — a real, confusing bug this
+        // makes impossible now.
+        if isSelectedFolderMaintenanceSubfolder {
+            base = "Maintenance — Games (\(displayedGameNodes.count))"
+        } else if let selectedRomFolder {
             base = "\(selectedRomFolder.lastPathComponent) — Games (\(displayedGameNodes.count))"
         } else {
             base = "Games (\(displayedGameNodes.count))"
@@ -3487,6 +6770,44 @@ struct LibraryDetailView: View {
         // just nothing to hide here" distinguishable from "it's not
         // working".
         return base + " · 1G1R hides \(cachedHiddenOneGameOneROMCount)"
+    }
+
+    /// Shown instead of a bare empty table whenever `displayedGameNodes` has
+    /// nothing to show — jensyleo's own request (2026-09-11): "si cualquier
+    /// carpeta esta vacia, debe mostrara un mensaje en la ventana de game."
+    /// Started as a special case just for the read-only Maintenance
+    /// subfolder (never scanned, so always empty there) but generalizes to
+    /// every genuinely empty scope — a real ROM folder with nothing matched
+    /// yet, an empty "Database" filter, or no scan having run at all — each
+    /// with its own specific wording rather than one generic message that
+    /// wouldn't explain WHY nothing's showing.
+    private var gamesEmptyStateMessage: some View {
+        let text: String
+        if isSelectedFolderMaintenanceSubfolder {
+            if let maintenanceFolderReadErrorMessage {
+                text = "Couldn't read the Maintenance folder: \(maintenanceFolderReadErrorMessage) — check the connection (NAS/pendrive/external drive) and try again."
+            } else {
+                text = "This is the read-only Maintenance folder — it's currently empty, and never scanned into this system's own audit (donor files only count when \"Repair from Maintenance Folder…\" reads them)."
+            }
+        } else if let selectedRomFolder {
+            text = "\"\(selectedRomFolder.lastPathComponent)\" is empty — no ROMs found here yet."
+        } else if viewModel.auditReport == nil {
+            text = "Not scanned yet — use \"Scan Folder\" or \"Scan All Folders\" to get started."
+        } else if selectedDatabaseFilter != nil {
+            text = "No games match this filter."
+        } else {
+            text = "No games to display."
+        }
+        return VStack {
+            Spacer(minLength: 24)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            Spacer(minLength: 24)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     /// The one audit-driven tree — same columns, same status colors, same
@@ -3527,8 +6848,68 @@ struct LibraryDetailView: View {
     /// real inputs (the selected family or the category/folder's own game
     /// list) actually change.
     private var displayedGameNodes: [GameNode] {
+        // jensyleo's own request (2026-09-13): the Maintenance folder must
+        // "verse igual que los otros ROM folder... exactamente igual" —
+        // same Games table, same Roms detail panel, same columns — while
+        // staying true to its own philosophy (never scanned into the real
+        // audit, no Fix/write actions, never part of duplicate detection).
+        // Reusing the exact same `gameTreeTable`/`selectedRomRows` pipeline
+        // with synthetic `GameNode`s (`maintenanceGameNodes`, below) gets
+        // the identical look for free, with no separate table/view to keep
+        // in sync — `aggregateStatus: nil` on each one reproduces exactly
+        // the "Not scanned yet" / dashed-circle look an unscanned catalog
+        // row already has, which is the literally correct thing to say
+        // here.
+        if isSelectedFolderMaintenanceSubfolder { return maintenanceGameNodes }
         guard selectedGameFamilyRootMachineName != nil else { return cachedGameNodes }
         return cachedFamilyGameNodes
+    }
+
+    /// Real, colored `GameNode`s for the Maintenance subfolder's own
+    /// contents — built by `loadMaintenanceFolderFiles()`'s own independent
+    /// `ROMMatcher.match` + `GameNodeBuilder` pass against whichever DAT is
+    /// currently loaded (empty until a DAT is loaded, or before the first
+    /// load completes). See that function's own doc comment for why this
+    /// can never affect the real, official audit.
+    @State private var maintenanceGameNodes: [GameNode] = []
+
+    /// jensyleo's own report (2026-09-14): "lo único que se hace es dar
+    /// clic en la carpeta de mantenimiento... debe hacer todas las tareas
+    /// de visualización [instantáneas] de las otras [carpetas]" — a plain
+    /// ROM folder's own row click never re-scans anything; it just shows
+    /// `cachedGameNodes`, already computed once. Merely SELECTING the
+    /// Maintenance folder (as opposed to genuinely asking to (re)scan it —
+    /// "Scan This Folder"/"Scan Maintenance Folder", or a real content
+    /// change like deleting its subfolder) shouldn't behave any
+    /// differently — this flags "already computed at least once this
+    /// session" so the plain-selection call sites below can skip calling
+    /// `loadMaintenanceFolderFiles()` again and just show what's already
+    /// there, exactly like every other folder already does.
+    @State private var hasLoadedMaintenanceFolderFilesOnce = false
+    /// jensyleo's own report (2026-09-16), NAS disconnected: the Games
+    /// panel said "it's currently empty" for the Maintenance folder when
+    /// it genuinely couldn't be READ at all — a real, human-readable
+    /// reason a plain "0 files" never conveys. Set alongside
+    /// `hasLoadedMaintenanceFolderFilesOnce` in `loadMaintenanceFolderFiles()`'s
+    /// own completion; `nil` means the last read succeeded (or none has
+    /// run yet).
+    @State private var maintenanceFolderReadErrorMessage: String?
+
+    /// Same out-of-order guard `databaseTreeRecomputeGeneration`/
+    /// `triggerCachedGameDataRecompute()`'s own generation counters already
+    /// use, applied here too — real bug found by code audit (2026-09-14):
+    /// two overlapping `loadMaintenanceFolderFiles()` runs (e.g. a fast
+    /// double-click on "Scan Maintenance Folder", or switching away from
+    /// and back to the Maintenance folder before the first load finished)
+    /// had no way to tell an OLDER run's result apart from a newer one —
+    /// whichever `Task.detached` happened to finish last always won,
+    /// possibly overwriting a newer, more correct result with a stale one.
+    @State private var maintenanceFolderFilesLoadGeneration = 0
+
+    /// `maintenanceGameNodes` indexed by `id` — `selectedGameNode`'s own
+    /// Maintenance-mode counterpart to `cachedGameNodesByID`.
+    private var maintenanceGameNodesByID: [String: GameNode] {
+        Self.indexByID(maintenanceGameNodes)
     }
 
     /// See `displayedGameNodes`'s own doc comment for why this exists.
@@ -3559,216 +6940,149 @@ struct LibraryDetailView: View {
         gamesTableVisibleCap = Self.maxTreeChildrenPerCategory
     }
 
+    /// Thin wrapper handing every piece of state/behavior `GameTreeTableView`
+    /// needs down as params/bindings/closures -- see that struct's own doc
+    /// comment (`GameTreeTableView.swift`) for why this is its own `View`
+    /// now instead of a plain computed property directly on this struct.
     private var gameTreeTableContent: some View {
-        Table(visibleGameNodes, selection: $selectedGameIDs, columnCustomization: $gameColumnCustomization) {
-            TableColumn("") { node in
-                if let status = node.aggregateStatus {
-                    Image(systemName: symbolName(for: status)).foregroundStyle(status.tint)
-                } else {
-                    // Not scanned yet — a real, DAT-backed game, just with
-                    // nothing yet to compare it against.
-                    Image(systemName: "circle.dashed")
-                        .foregroundStyle(.secondary)
+        GameTreeTableView(
+            visibleGameNodes: visibleGameNodes,
+            cachedGameNodes: cachedGameNodes,
+            cachedGameNodesByID: cachedGameNodesByID,
+            cachedOneGameOneROMSummary: cachedOneGameOneROMSummary,
+            viewModel: viewModel,
+            system: system,
+            selection: $selectedGameIDs,
+            columnCustomizationOverride: $gameColumnCustomizationOverride,
+            persistColumnCustomization: { Self.persist($0, key: Self.gameColumnCustomizationKey) },
+            handleTypeAheadKeyPress: handleTypeAheadKeyPress,
+            // jensyleo's own suggestion (2026-09-15), after the shared
+            // event-monitor fix still wasn't enough on its own: clear the
+            // Roms panel's own selection outright on EVERY click here, not
+            // only when `selectedGameID`'s own VALUE happens to change
+            // (the existing `.onChange(of: selectedGameID) { selectedRomID
+            // = nil }` a few hundred lines up misses a same-game reclick).
+            // With nothing left selected in Roms, there's no ambiguity for
+            // the user to notice even in whatever edge case still slips
+            // past `activeResultsPane` itself.
+            onFocusRequested: {
+                activeResultsPane = .games
+                resultsPaneIsActive = true
+                selectedRomIDs = []
+                // See `lastGamesClickID`'s own doc comment — only a
+                // same-game reclick needs the extra bump; a genuine game
+                // change already gets a fresh Roms `.id()` for free.
+                if selectedGameID == lastGamesClickID {
+                    romsResetGeneration += 1
                 }
-            }
-            .width(20)
-            .customizationID("status")
-            .disabledCustomizationBehavior(.all)
-            TableColumn("Game name") { node in Text(node.gameName) }
-            .customizationID("gameName")
-            TableColumn("File name") { node in Text(node.actualFileName ?? node.name) }
-                .customizationID("fileName")
-            TableColumn("Info") { node in Text(node.infoText) }
-                .customizationID("info")
-            TableColumn("Expected file name") { node in Text(node.expectedFileName ?? "") }
-                .customizationID("expectedFileName")
-            TableColumn("Size") { node in Text(totalSizeText(for: node)) }
-                .customizationID("size")
-                .defaultVisibility(.hidden)
-            TableColumn("Clone of") { node in Text(node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf)) }
-                .customizationID("cloneOf")
-            TableColumn("CHD") { node in Text(node.chdNames) }
-                .customizationID("chd")
-                .defaultVisibility(.hidden)
-            TableColumn("Samples") { node in Text(node.samplesText) }
-                .customizationID("samples")
-                .defaultVisibility(.hidden)
-            // `Table`'s column builder tops out at 10 columns per block —
-            // grouped here to fit the rest (BIOS/year/manufacturer/required
-            // BIOS/device refs) into one additional slot.
-            Group {
-                TableColumn("BIOS") { (node: GameNode) in Text(node.biosText) }
-                    .customizationID("bios")
-                    .defaultVisibility(.hidden)
-                TableColumn("Year") { (node: GameNode) in Text(node.year) }
-                    .customizationID("year")
-                    .defaultVisibility(.hidden)
-                TableColumn("Manufacturer") { (node: GameNode) in Text(node.manufacturer) }
-                    .customizationID("manufacturer")
-                    .defaultVisibility(.hidden)
-                TableColumn("Required BIOS") { (node: GameNode) in Text(node.requiredBiosNames) }
-                    .customizationID("requiredBios")
-                    .defaultVisibility(.hidden)
-                TableColumn("Device refs") { (node: GameNode) in Text(node.deviceRefNames) }
-                    .customizationID("deviceRefs")
-                    .defaultVisibility(.hidden)
-                // jensyleo's own request (2026-08-17): "Clone of" now shows
-                // the parent's readable description, not its raw internal
-                // machine name — this hidden-by-default column keeps the
-                // raw name available for anyone who wants it, same
-                // convention as every other column here.
-                TableColumn("Clone of (internal name)") { (node: GameNode) in Text(node.cloneOf) }
-                    .customizationID("cloneOfInternalName")
-                    .defaultVisibility(.hidden)
-                TableColumn("Family") { (node: GameNode) in familyIndicator(for: node) }
-                    .customizationID("family")
-                // Purely informational, like "Family" above — reads
-                // `GameNode.dependencyBadges` (ROMForgeCore), itself built
-                // only from fields already computed by the scan/DAT load,
-                // so this never triggers a re-scan or any extra I/O.
-                TableColumn("Dependencies") { (node: GameNode) in dependenciesIndicator(for: node) }
-                    .customizationID("dependencies")
-                    .defaultVisibility(.hidden)
-                // Separate column from "Dependencies" above (jensyleo's own
-                // decision, 2026-08-28) — descriptive machine metadata
-                // (MAME's own emulation-quality claim, display orientation,
-                // player/coin count), never something the game needs in
-                // order to run. Reads `GameNode.detailBadges` (ROMForgeCore),
-                // same "already computed by the scan/DAT load" cost-free
-                // shape as "Dependencies".
-                TableColumn("Details") { (node: GameNode) in detailsIndicator(for: node) }
-                    .customizationID("details")
-                    .defaultVisibility(.hidden)
-                // Independent of `show1G1ROnly` — jensyleo's own spec
-                // (2026-08-19, moved to its own column 2026-08-25): the
-                // star is always visible so a family's preferred variant
-                // reads at a glance even with the toggle off, only the
-                // actual hiding is gated by it.
-                TableColumn("1G1R") { (node: GameNode) in
-                    if cachedOneGameOneROMSummary.preferredGameNames.contains(node.name) {
-                        Image(systemName: "star.fill")
-                            .foregroundStyle(.yellow)
-                            .help("The preferred 1G1R variant for this family, per Settings → View Options → \"1G1R region priority\"")
-                    }
-                }
-                .customizationID("oneGameOneROM")
-                .defaultVisibility(.hidden)
-            }
+                lastGamesClickID = selectedGameID
+            },
+            gameStatusIcon: { AnyView(gameStatusIcon(for: $0)) },
+            infoText: { infoText(for: $0) },
+            zipCommentHelpText: { zipCommentHelpText(for: $0) },
+            totalSizeText: { totalSizeText(for: $0) },
+            gameDescription: { gameDescription(forMachineName: $0) },
+            familyIndicator: { AnyView(familyIndicator(for: $0)) },
+            dependenciesIndicator: { AnyView(dependenciesIndicator(for: $0)) },
+            detailsIndicator: { AnyView(detailsIndicator(for: $0)) },
+            scanFile: scanFile,
+            canScanFile: canScanFile,
+            launchInMAME: launchInMAME,
+            canLaunchMAME: canLaunchMAME,
+            revealInFinder: revealInFinder,
+            actualFileURL: { actualFileURL(for: $0) },
+            startMoveToTrash: startMoveToTrash,
+            startDeleteFilesPermanently: startDeleteFilesPermanently,
+            startCopyFilesToFolder: startCopyFilesToFolder,
+            startMoveFilesToFolder: startMoveFilesToFolder,
+            startDuplicateFiles: startDuplicateFiles,
+            startCompressFiles: startCompressFiles,
+            fixMismatchedFile: fixMismatchedFile,
+            startContextMenuRenameRomsInArchive: { startContextMenuRenameRomsInArchive($0) },
+            startContextMenuRemoveUselessFiles: startContextMenuRemoveUselessFiles,
+            startContextMenuRemoveZipComments: startContextMenuRemoveZipComments,
+            startContextMenuRemoveRedundantFiles: startContextMenuRemoveRedundantFiles,
+            startContextMenuRemoveRedundantRoms: startContextMenuRemoveRedundantRoms,
+            startRepairFromMaintenanceFolder: { startRepairFromMaintenanceFolder(scopeFolders: $0, skipConfirmation: true) }
+        )
+        // Real bug found live by jensyleo (2026-09-23): "Remove Zip
+        // Comment(s)…" (unlike every other Fix/File Action) never visibly
+        // refreshed the Games table afterward — the comment genuinely IS
+        // gone on disk (confirmed by a fresh manual rescan reporting no
+        // comment), `zipCommentCache` genuinely IS invalidated
+        // (`.onChange(of: viewModel.auditReport)` above), and
+        // `cachedGameNodes` genuinely IS reassigned to a fresh array — none
+        // of that is enough here specifically because a zip comment is the
+        // ONLY thing this whole app displays that lives entirely OUTSIDE
+        // `AuditEntry`/`GameNode`'s own data (a lazy, on-demand disk read
+        // purely for display, see `ZipCommentCache`'s own doc comment) —
+        // every OTHER action that visibly refreshes changes some REAL field
+        // on the row's own `GameNode` (status, name, whatever), which is
+        // what actually gives `Table` a reason to redraw that row's cell.
+        // `GameNode` isn't `Equatable` and Table's own AppKit-backed
+        // diffing has no way to know THIS row's content changed when
+        // nothing about its own data did — reassigning `cachedGameNodes`
+        // isn't sufficient by itself. `.id(...)` forces this whole Table to
+        // be genuinely torn down and rebuilt (selection is preserved, it's
+        // a `Binding` owned by the parent, not local state — only the
+        // Table's own internal state, like scroll position, resets), which
+        // is the one thing guaranteed to make every cell actually
+        // re-evaluate `infoText`/`zipCommentHelpText` fresh. Deliberately
+        // NOT bumped on every ordinary scan (that would throw away scroll
+        // position on every single Fix action) — only these two zip-comment
+        // actions ever touch `zipCommentTableReloadToken`, since they're
+        // the only ones with this exact "the data Table can see didn't
+        // change, but what's on screen must" problem.
+        .id(zipCommentTableReloadToken)
+    }
+
+    /// See `gameTreeTableContent`'s own `.id(...)` doc comment just above.
+    @State private var zipCommentTableReloadToken = 0
+
+    /// Moves the Games table's own selection to the previous/next visible
+    /// row — jensyleo's own report (2026-09-15), right after the macOS
+    /// 27.0 update: `Table`'s own NATIVE up/down arrow-key row navigation
+    /// (the thing `handleTypeAheadKeyPress`'s own doc comment always
+    /// assumed would just keep working) stopped working entirely — a
+    /// press didn't merely do nothing, it cleared the selection outright.
+    /// Root cause: simply having ANY `.onKeyPress` modifier attached
+    /// anywhere on a `Table` view now appears to disable that Table's own
+    /// built-in arrow-key handling on macOS 27, even when that handler
+    /// itself returns `.ignored` for arrow keys (confirmed live, via a
+    /// debug build + `System Events key code` — see
+    /// `romFolderSectionPane`'s own `.focusable()` doc comment for why
+    /// that's the one synthetic-input method that reliably drives
+    /// `.onKeyPress` for testing). Rather than depend on a platform
+    /// behavior that's now unreliable, this reimplements the navigation
+    /// directly — same "flatten the visible rows, find the current index,
+    /// move within bounds" shape `moveDatabaseSelection(by:scope:)` already
+    /// uses for the sidebar.
+    private func moveGameSelection(by offset: Int) {
+        let rows = visibleGameNodes
+        guard !rows.isEmpty else { return }
+        let currentIndex = selectedGameID.flatMap { id in rows.firstIndex { $0.id == id } }
+        let newIndex: Int
+        if let currentIndex {
+            newIndex = max(0, min(rows.count - 1, currentIndex + offset))
+        } else {
+            // Nothing selected yet — land on an edge row, matching
+            // `moveDatabaseSelection(by:scope:)`'s own convention.
+            newIndex = offset < 0 ? rows.count - 1 : 0
         }
-        .onChange(of: gameColumnCustomization) { Self.persist(gameColumnCustomization, key: Self.gameColumnCustomizationKey) }
-        .onKeyPress(phases: .down) { keyPress in
-            handleTypeAheadKeyPress(keyPress)
-        }
-        // MAME-only, and only once a real `mame` executable is configured
-        // — see `MAMELauncher`/`canLaunchMAME(_:)`. Selecting a row via
-        // right-click already updates `selectedGameID` (SwiftUI's own
-        // `Table` behavior), so `node` below is always the row actually
-        // right-clicked, not whatever was selected before.
-        .contextMenu(forSelectionType: GameNode.ID.self) { selection in
-            if let id = selection.first, let node = cachedGameNodes.first(where: { $0.id == id }) {
-                Button {
-                    scanFile(node)
-                } label: {
-                    Label("Rescan This File", systemImage: "arrow.clockwise")
-                }
-                .disabled(!canScanFile(node))
-                Button {
-                    launchInMAME(node)
-                } label: {
-                    Label("Play in MAME", systemImage: "play.fill")
-                }
-                .disabled(!canLaunchMAME(node))
-                Button {
-                    revealInFinder(actualFileURL(for: node))
-                } label: {
-                    Label("Reveal in Finder", systemImage: "folder")
-                }
-                .disabled(actualFileURL(for: node) == nil)
-                Button {
-                    Task { await viewModel.verifyZipIntegrity(system: system) }
-                } label: {
-                    Label("Verify ZIP Integrity", systemImage: "checkmark.shield")
-                }
-                .disabled(viewModel.isBusy || viewModel.auditReport == nil)
-                // jensyleo's own request (2026-09-10): the toolbar's own
-                // "Fix" actions only ever scope to a whole selected ROM
-                // folder — "para eso agrega en el menú contextual las
-                // opciones de fix del menú asociadas al archivo." Same two
-                // actions, same underlying `fix()`/`renameRomsInArchive()`.
-                // jensyleo's own follow-up (2026-09-10): "la app no
-                // permite selección múltiple" — `selection` here is
-                // ALREADY the full multi-selection `Set<GameNode.ID>`
-                // (SwiftUI's own `.contextMenu(forSelectionType:)` always
-                // provides one; only the Table's own `selection` binding
-                // above being a `Set` now is what lets more than one row
-                // actually GET selected in the first place). `fileURLs`
-                // below is every SELECTED node's own real File, one entry
-                // per File — no ViewModel/Core change needed beyond
-                // accepting an array, since `urlIsInScope` already treats
-                // each as its own exact-path scope, same mechanism "Rescan
-                // This File" above already relies on for `scan(folders:)`.
-                let fileURLs = selection.compactMap { selectedID in
-                    cachedGameNodes.first(where: { $0.id == selectedID }).flatMap(actualFileURL(for:))
-                }
-                // Same visibility rule as the Roms panel's own context menu
-                // below, and for the same reason (jensyleo's own report,
-                // 2026-09-10): show each action only when its own real
-                // preview count is actually greater than zero, rather than
-                // always showing both merely disabled by the write-access
-                // gate — offering a "Fix" that's guaranteed to do nothing
-                // reads as broken, not as "nothing to fix here".
-                //
-                // `viewModel.hasMatchReport` is checked FIRST and neither
-                // preview function is called at all when it's `false` —
-                // jensyleo's own bug report (2026-09-10), screenshot of
-                // "Scan Required" popping up from a plain right-click:
-                // `planFixPreviewCount`/`planRenameRomsInArchivePreviewCount`
-                // both go through `requireMatchReport()`, which triggers
-                // that very alert as a SIDE EFFECT whenever there's no live
-                // `matchReport` yet (a persisted `auditReport` from a past
-                // session already shows real rows on screen without one) —
-                // and SwiftUI evaluates this closure just from opening the
-                // menu, so merely right-clicking a row was enough to fire
-                // it. See `hasMatchReport`'s own doc comment.
-                if !fileURLs.isEmpty, viewModel.hasMatchReport {
-                    let fixMismatchedFileCount = viewModel.planFixPreviewCount(scopeFolders: fileURLs)
-                    let renameRomsCount = viewModel.planRenameRomsInArchivePreviewCount(scopeFolders: fileURLs)
-                    if fixMismatchedFileCount > 0 || renameRomsCount > 0 {
-                        Divider()
-                    }
-                    if fixMismatchedFileCount > 0 {
-                        Button {
-                            fixMismatchedFile(fileURLs)
-                        } label: {
-                            Label(
-                                fileURLs.count == 1 ? "Fix Mismatched File" : "Fix \(fileURLs.count) Mismatched Files",
-                                systemImage: "wrench.and.screwdriver"
-                            )
-                        }
-                        .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
-                    }
-                    if renameRomsCount > 0 {
-                        Button {
-                            startContextMenuRenameRomsInArchive(fileURLs)
-                        } label: {
-                            Label(
-                                fileURLs.count == 1 ? "Fix Misnamed ROMs Inside This Archive…" : "Fix Misnamed ROMs Inside These \(fileURLs.count) Archives…",
-                                systemImage: "wrench.and.screwdriver"
-                            )
-                        }
-                        .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
-                    }
-                }
-            }
-        }
+        let newID = rows[newIndex].id
+        selectedGameID = newID
+        gameTableScrollProxy?.scrollTo(newID, anchor: .center)
     }
 
     /// Matches `keyPress` against the classic type-ahead pattern (see
     /// `typeAheadBuffer`'s own doc comment): only a single, printable,
-    /// non-modified character is handled here — everything else (arrows,
-    /// return, delete, ⌘-anything) is left `.ignored` so `Table`'s own
-    /// keyboard navigation and every other shortcut in this view keeps
-    /// working exactly as before.
+    /// non-modified character is handled here — everything else (return,
+    /// delete, ⌘-anything) is left `.ignored`. Arrow keys are no longer
+    /// among those "left to Table's own handling" — see
+    /// `moveGameSelection(by:)`'s own doc comment for why that assumption
+    /// broke on macOS 27; they're now handled by dedicated
+    /// `.onKeyPress(.upArrow)`/`.onKeyPress(.downArrow)` modifiers instead
+    /// (`GameTreeTableView.swift`), never reaching this function at all.
     private func handleTypeAheadKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
         guard keyPress.modifiers.isEmpty || keyPress.modifiers == .shift,
               let character = keyPress.characters.first, keyPress.characters.count == 1,
@@ -3816,7 +7130,84 @@ struct LibraryDetailView: View {
     /// genuinely rehashed rather than served from `ScanCache`, which is
     /// exactly what "rescan *this* file" should mean.
     private func actualFileURL(for node: GameNode) -> URL? {
-        node.entries.first(where: { $0.path != nil })?.path
+        // Real bug found live by jensyleo (2026-09-22): for a game
+        // genuinely duplicated across two ROM folders (e.g. `kod.zip` in
+        // both "OTHER" and "CPS1"), `node.firstOwnedFileURL` always
+        // resolves to whichever COPY currently wins the primary/duplicate
+        // tie-break (see `ROMMatcher.primaryArchiveIndices`'s own doc
+        // comment) — system-wide, regardless of which folder's row the
+        // user is actually looking at. Right-clicking "kod.zip" while
+        // browsing the LOSING folder ("OTHER", showing "Duplicated
+        // archive…") then resolved to the WINNING folder's physical file
+        // instead ("CPS1") — "File Actions" either silently acted on the
+        // wrong file or (since that entry doesn't even show under this
+        // folder's own scope) appeared to offer nothing at all. When a
+        // specific ROM folder is selected, prefer whichever of this
+        // node's own genuinely-owned entries (same `.foundElsewhere`/
+        // `requiredByGameDescription` exclusion `firstOwnedFileURL` itself
+        // applies) is physically inside THAT folder — the file the user
+        // is actually looking at — before falling back to the system-wide
+        // pick for the unscoped ("Database") view, where there's no
+        // single folder to prefer.
+        if let selectedRomFolder {
+            // Only `foundElsewhereArchiveName` means a genuinely BORROWED
+            // path (some OTHER archive's own location) — a
+            // `requiredByGameDescription`-flagged surplus entry's `path`
+            // is always its own real, physical location (the exact file
+            // `ROMMatcher` found unclaimed), never borrowed, even when
+            // it's folded into another game's row or the game it names
+            // has no real copy anywhere — see `SurplusFile`'s own
+            // construction: `file.file.url` is always where the actual
+            // bytes sit. Safe to include here, unlike `firstOwnedFileURL`'s
+            // own stricter exclusion (which exists for a different reason
+            // — never presenting a "not needed here" rom as this node's
+            // canonical archive when a REAL, unambiguous owned one exists
+            // too, not because the path itself is untrustworthy).
+            let folderPath = selectedRomFolder.path
+            if let scoped = node.entries.first(where: { entry in
+                guard let path = entry.path, entry.foundElsewhereArchiveName == nil else { return false }
+                return path.path.hasPrefix(folderPath)
+            })?.path {
+                return scoped
+            }
+        }
+        return node.firstOwnedFileURL
+    }
+
+    /// `node.infoText` with the game's own archive comment appended, same
+    /// wording/behavior as `infoText(for entry: AuditEntry)`'s own zip
+    /// comment suffix below — jensyleo's own follow-up (2026-09-11), after
+    /// deciding a dedicated "has a zip comment" column wasn't worth it for
+    /// a single boolean: reuses the SAME `ZipCommentCache`/`ZipCommentReader`
+    /// already built for the Roms panel (2026-07-30) instead of adding any
+    /// new detection. Looked up via `node.actualFileName` (the
+    /// majority-vote-verified archive name — see its own doc comment for
+    /// why this is safer than just taking any entry's `path`) rather than
+    /// `actualFileURL(for:)` above, which can point at a stray borrowed
+    /// path for a game with no rom of its own actually present.
+    private func infoText(for node: GameNode) -> String {
+        let base = node.infoText
+        // jensyleo's own request (2026-09-14), applied everywhere this
+        // exact "append the archive's own ZIP comment" pattern is used —
+        // see `infoText(for entry:)`'s own doc comment for why the raw
+        // text moved to a tooltip instead of appearing inline here.
+        guard let name = node.actualFileName,
+              let url = node.entries.first(where: { $0.path?.lastPathComponent == name })?.path,
+              url.pathExtension.lowercased() == "zip",
+              let comment = zipCommentCache.comment(forZipAt: url), !comment.isEmpty
+        else { return base }
+        return "\(base) — Has ZIP comment"
+    }
+
+    /// The `GameNode` counterpart to `zipCommentHelpText(for entry:)` —
+    /// same reasoning, same tooltip-on-hover fallback for the real text.
+    private func zipCommentHelpText(for node: GameNode) -> String {
+        guard let name = node.actualFileName,
+              let url = node.entries.first(where: { $0.path?.lastPathComponent == name })?.path,
+              url.pathExtension.lowercased() == "zip",
+              let comment = zipCommentCache.comment(forZipAt: url), !comment.isEmpty
+        else { return "" }
+        return comment
     }
 
     private func canScanFile(_ node: GameNode) -> Bool {
@@ -4123,159 +7514,92 @@ struct LibraryDetailView: View {
 
     // MARK: - Right pane: ROM files of the selected game (RomCenter's file panel)
 
+    /// Thin wrapper handing every piece of state/behavior `RomsTableView`
+    /// needs down as params/bindings/closures -- see that struct's own doc
+    /// comment (`RomsTableView.swift`) for why this is its own `View` now
+    /// instead of a plain computed property directly on this struct.
     private var romsList: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(selectedGameNode.map { "\($0.name) (\($0.entries.count) files)" } ?? "Select a game")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Table(selectedRomRows, selection: $selectedRomIDs, columnCustomization: $romColumnCustomization) {
-                TableColumn("") { row in
-                    romCell(Image(systemName: symbolName(for: row.entry.status)).foregroundStyle(row.entry.status.tint), status: row.entry.status)
+        RomsTableView(
+            selectedGameNode: selectedGameNode,
+            selectedRomRows: selectedRomRows,
+            viewModel: viewModel,
+            selection: $selectedRomIDs,
+            columnCustomizationOverride: $romColumnCustomizationOverride,
+            persistColumnCustomization: { Self.persist($0, key: Self.romColumnCustomizationKey) },
+            romCell: { content, entry in AnyView(romCell(content, entry: entry)) },
+            romStatusIcon: { AnyView(romStatusIcon(for: $0)) },
+            romNameText: { romNameText(for: $0) },
+            infoText: { infoText(for: $0) },
+            zipCommentHelpText: { zipCommentHelpText(for: $0) },
+            sizeText: { sizeText(for: $0) },
+            dumpStatusText: { dumpStatusText(for: $0) },
+            entryKindText: { entryKindText(for: $0) },
+            startContextMenuRenameRomsInArchive: { startContextMenuRenameRomsInArchive($0, entryKeys: $1) },
+            startContextMenuRemoveRedundantRoms: startContextMenuRemoveRedundantRoms,
+            startRepairFromMaintenanceFolder: { startRepairFromMaintenanceFolder(scopeFolders: $0, skipConfirmation: true) },
+            romEntryActionsMenuItems: { AnyView(romEntryActionsMenuItems(for: $0)) },
+            onFocusRequested: { activeResultsPane = .roms; resultsPaneIsActive = true }
+        )
+        // jensyleo's own report (2026-09-16): setting `selectedRomIDs = []`
+        // programmatically (both the pre-existing `.onChange(of:
+        // selectedGameID)` and the new explicit clear in `GameTreeTableView`'s
+        // own `onFocusRequested`) never visibly cleared this Table's own
+        // row highlight on macOS 27 — the same category of bug already
+        // found this session where `Table` doesn't reliably react to
+        // programmatic state changes the way it does to a direct user
+        // click. `.id(selectedGameNode?.id)` forces SwiftUI to tear down
+        // and rebuild this ENTIRE Table (not just update its `selection`
+        // binding) every time the selected game changes, which resets its
+        // internal selection unconditionally — a heavier hammer, but one
+        // that doesn't depend on the Table's own binding-driven refresh
+        // working correctly.
+        .id("\(selectedGameNode?.id ?? "none")#\(romsResetGeneration)")
+    }
+
+    /// Factored out of the Roms panel's own `.contextMenu` closure just
+    /// above — jensyleo's own request (2026-09-13): "ahí debería permitir
+    /// estén o no estén bien, todas las opciones del file actions...
+    /// obviamente ahí hay que tener en cuenta que el archivo está
+    /// comprimido, por ende también debe tener acciones de descompresión
+    /// como Extract file" — unlike "Fix This Misnamed ROM…" above, these
+    /// three never depend on a rom's own DAT status
+    /// (Correct/Bad/Unknown/Missing), only on there being a real file to
+    /// act on at all (`row.entry.path` is nil for a genuinely `.missing`
+    /// rom — nothing on disk to extract/trash/delete). `isArchived` mirrors
+    /// Core's own `isZipEntry` check (`file.url.lastPathComponent !=
+    /// file.name`): a `.zip` entry's own `path` is its CONTAINING archive,
+    /// never the entry itself. A separate `@ViewBuilder` function, not
+    /// inlined into the `.contextMenu` closure — the combined type-checker
+    /// load of everything already in that closure plus this pushed a
+    /// `SwiftCompile` past Xcode's own reasonable-time limit.
+    @ViewBuilder
+    private func romEntryActionsMenuItems(for selectedRows: [RomRow]) -> some View {
+        let romEntryTargets: [LibraryViewModel.RomEntryTarget] = selectedRows.compactMap { row in
+            guard let path = row.entry.path, let entryName = row.entry.actualEntryName else { return nil }
+            return LibraryViewModel.RomEntryTarget(url: path, entryName: entryName, isArchived: path.lastPathComponent != entryName)
+        }
+        if !romEntryTargets.isEmpty {
+            Divider()
+            if romEntryTargets.contains(where: \.isArchived) {
+                Button {
+                    startExtractRomEntries(romEntryTargets)
+                } label: {
+                    Label(romEntryTargets.count == 1 ? "Extract to Folder…" : "Extract \(romEntryTargets.count) Roms to Folder…", systemImage: "arrow.up.doc")
                 }
-                .width(20)
-                .customizationID("status")
-                .disabledCustomizationBehavior(.all)
-                TableColumn("File name") { row in
-                    // jensyleo's own report (2026-09-10): "revisa el ZIP tú
-                    // mismo y verás" — `path?.lastPathComponent` is the
-                    // CONTAINER's own filename ("awbios.zip") for a
-                    // zip-entry rom, the SAME string for every rom inside
-                    // it, never the entry's own actual name. This column
-                    // is what a user reads to see "what's really in
-                    // there" — `actualEntryName` (`AuditEntry`'s own doc
-                    // comment) IS that, for both a loose file (where it
-                    // equals `path?.lastPathComponent` anyway) and a zip
-                    // entry (where it's genuinely different). Falls back
-                    // to `path?.lastPathComponent` only for an entry that
-                    // predates this field (an on-disk cache/database row
-                    // saved before it existed — nil until the next scan).
-                    // `nil` overall whenever nothing was actually found on
-                    // disk for this rom (status `.missing`) — genuinely
-                    // blank, not a rendering glitch, but a bare empty cell
-                    // reads as broken, so it gets an explicit placeholder
-                    // instead. The expected name still lives in "Rom name".
-                    if let fileName = row.entry.actualEntryName ?? row.entry.path?.lastPathComponent {
-                        romCell(Text(fileName), status: row.entry.status)
-                    } else {
-                        romCell(Text("— not found —").foregroundStyle(.secondary), status: row.entry.status)
-                    }
-                }
-                .customizationID("fileName")
-                TableColumn("Rom name") { row in
-                    romCell(Text(row.entry.name), status: row.entry.status)
-                }
-                .customizationID("romName")
-                TableColumn("Info") { row in
-                    romCell(Text(infoText(for: row.entry)), status: row.entry.status)
-                }
-                .customizationID("info")
-                TableColumn("Size") { row in
-                    romCell(Text(sizeText(for: row.entry)), status: row.entry.status)
-                }
-                .customizationID("size")
-                // Used to be one combined "Crc/SHA-1" column that only ever
-                // displayed the CRC value — real bug found by jensyleo
-                // (2026-07-28): labeled as showing both, but SHA-1 was
-                // never actually reachable at all, reading as if SHA-1
-                // hashing wasn't really happening even when enabled in
-                // Settings. Split into two real columns, matching the
-                // existing MD5 column's own pattern exactly.
-                TableColumn("CRC") { row in
-                    romCell(Text(row.entry.actualCRC ?? row.entry.expectedCRC ?? ""), status: row.entry.status)
-                }
-                .customizationID("crc")
-                TableColumn("SHA-1") { row in
-                    romCell(Text(row.entry.actualSHA1 ?? row.entry.expectedSHA1 ?? ""), status: row.entry.status)
-                }
-                .customizationID("sha1")
-                // `Table`'s column builder tops out at 10 columns per
-                // block (same limit `gameTreeTable` already hit) — adding
-                // the new "SHA-1" column above pushed this table over it,
-                // so the trailing, already-hidden-by-default columns move
-                // into their own group to fit.
-                Group {
-                    TableColumn("Folder") { (row: RomRow) in
-                        romCell(Text(row.entry.path?.deletingLastPathComponent().lastPathComponent ?? ""), status: row.entry.status)
-                    }
-                    .customizationID("folder")
-                    .defaultVisibility(.hidden)
-                    TableColumn("MD5") { (row: RomRow) in
-                        romCell(Text(row.entry.actualMD5 ?? row.entry.expectedMD5 ?? ""), status: row.entry.status)
-                    }
-                    .customizationID("md5")
-                    .defaultVisibility(.hidden)
-                    TableColumn("Dump status") { (row: RomRow) in
-                        romCell(Text(dumpStatusText(for: row.entry)), status: row.entry.status)
-                    }
-                    .customizationID("dumpStatus")
-                    .defaultVisibility(.hidden)
-                    TableColumn("Type") { (row: RomRow) in
-                        romCell(Text(entryKindText(for: row.entry)), status: row.entry.status)
-                    }
-                    .customizationID("entryKind")
-                    .defaultVisibility(.hidden)
-                }
+                .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
             }
-            .onChange(of: romColumnCustomization) { Self.persist(romColumnCustomization, key: Self.romColumnCustomizationKey) }
-            // jensyleo's own request (2026-09-10): "todo esto que estamos
-            // haciendo debe aplicar también al panel de más allá a la
-            // derecha. Renombrar roms de auna o varias, también se debe
-            // poder" — the ROM-level Fix action the Games table's own
-            // context menu already has, mirrored here, entry-level and
-            // restricted to ONLY the specific rows selected (`entryKeys`,
-            // below), not every fixable entry sharing their same container
-            // — jensyleo's own follow-up report (2026-09-10): "selecciono 2
-            // roms y me renombra las 4". See `LibraryViewModel
-            // .renameRomsInArchive`'s own `entryKeys` doc comment.
-            //
-            // Deliberately NO "Fix Mismatched File" here — jensyleo's own
-            // explicit instruction (2026-09-10), after seeing it appear for
-            // a selection of already-"Ok" rows sharing a container that
-            // genuinely did have an unrelated File-level issue elsewhere in
-            // it: "no debe aparecer nunca en el menú de más a la derecha,
-            // porque esta situación ahí no existe y puede prestarse para
-            // fallas en la app". This panel shows ROM ENTRIES, not Files —
-            // a File-level rename acts on the whole container regardless of
-            // which entries happen to be selected, which reads as
-            // confusing/risky from a per-ROM list. The Games table (one row
-            // per File) is the only place that action is offered.
-            .contextMenu(forSelectionType: String.self) { selection in
-                let selectedRows = selection.compactMap { selectedID in selectedRomRows.first(where: { $0.id == selectedID }) }
-                let containerURLs = Array(Set(selectedRows.compactMap(\.entry.path)))
-                let entryKeys = Set(selectedRows.compactMap { row -> String? in
-                    guard let containerURL = row.entry.path, let currentName = row.entry.actualEntryName else { return nil }
-                    return LibraryViewModel.entryScopeKey(containerURL: containerURL, currentEntryName: currentName)
-                })
-                // Hidden entirely — not just disabled — unless its own real
-                // preview count is actually greater than zero, using the
-                // exact same `planRenameRomsInArchivePreviewCount` the
-                // confirmation dialog itself relies on, so "would this
-                // button do anything" and "what actually happens on click"
-                // can never disagree. Deliberately NOT based on the
-                // selected rows' own displayed status ("Ok" vs "Bad name")
-                // — the count can still be > 0 purely from a case policy
-                // re-style even when every row already reads "Ok".
-                //
-                // `viewModel.hasMatchReport` checked FIRST, same reason as
-                // the Games table's own context menu above — jensyleo's own
-                // bug report (2026-09-10) of "Scan Required" popping up from
-                // a plain right-click, before Fix was ever asked for. See
-                // `hasMatchReport`'s own doc comment.
-                let renameRomsCount = viewModel.hasMatchReport
-                    ? viewModel.planRenameRomsInArchivePreviewCount(scopeFolders: containerURLs, entryKeys: entryKeys)
-                    : 0
-                if !containerURLs.isEmpty, renameRomsCount > 0 {
-                    Button {
-                        startContextMenuRenameRomsInArchive(containerURLs, entryKeys: entryKeys)
-                    } label: {
-                        Label(
-                            selectedRows.count == 1 ? "Fix This Misnamed ROM…" : "Fix These \(selectedRows.count) Misnamed ROMs…",
-                            systemImage: "wrench.and.screwdriver"
-                        )
-                    }
-                    .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
-                }
+            Button {
+                startMoveRomEntriesToTrash(romEntryTargets)
+            } label: {
+                Label(romEntryTargets.count == 1 ? "Move to Trash…" : "Move \(romEntryTargets.count) Roms to Trash…", systemImage: "trash")
             }
+            .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
+            Button {
+                startDeleteRomEntriesPermanently(romEntryTargets)
+            } label: {
+                Label(romEntryTargets.count == 1 ? "Delete Permanently…" : "Delete \(romEntryTargets.count) Roms Permanently…", systemImage: "trash.fill")
+            }
+            .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
         }
     }
 
@@ -4289,12 +7613,57 @@ struct LibraryDetailView: View {
 
     /// Wraps a cell in the row's status tint (a lighter background than the
     /// status icon color), RomCenter-style — green/yellow/red/gray rows at a
-    /// glance instead of only the leading icon.
-    private func romCell(_ content: some View, status: AuditStatus) -> some View {
-        content
+    /// glance instead of only the leading icon. Uses `entry.status.tint`
+    /// EXCEPT for a `.missing` rom with `hasMaintenanceDonor` set, which
+    /// gets `.incorrect`'s own yellow instead — jensyleo's own follow-up
+    /// report (2026-09-14), after confirming live that `romStatusIcon(for:)`
+    /// already showed the right yellow ICON: the row's own background tint
+    /// was still computed straight from `entry.status` (still `.missing`,
+    /// still red), so the row still read as plain red at a glance despite
+    /// the icon itself already being right.
+    private func romCell(_ content: some View, entry: AuditEntry) -> some View {
+        let tint = ((entry.status == .missing || entry.status == .badDump) && entry.hasMaintenanceDonor) ? AuditStatus.incorrect.tint : entry.status.tint
+        return content
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
-            .background(status.tint.opacity(0.18))
+            .background(tint.opacity(0.18))
+    }
+
+    /// "Rom name" text — jensyleo's own report (2026-09-13): a surplus/
+    /// unrecognized entry (no owning DAT game at all — `entry.game ==
+    /// nil`) showed its own real on-disk entry name here (`entry.name`
+    /// doubles as "the DAT's declared name" for a matched rom, but the
+    /// AuditReporter has nothing else to put there for a file the DAT
+    /// declares nothing about), which read as if the DAT actually knew
+    /// this file by that name. "Unknown" is accurate; the real on-disk
+    /// name still shows in "File name" right next to it.
+    ///
+    /// Real bug found live by jensyleo (2026-09-22): this used `entry.game
+    /// == nil` alone, which is ALSO true for a genuinely RECOGNIZED
+    /// surplus rom — one whose content the DAT identifies as belonging to
+    /// some OTHER game (`requiredByGameDescription` set, "Recognized
+    /// content, but X doesn't have it either") — `k573_dio 2.zip` inside
+    /// the Maintenance folder, correctly identified as content "Dance
+    /// Dance Revolution 3rd Mix" declares, still showed "Unknown" here.
+    /// `AuditReporter` sets `entry.name` to the real, actual entry name
+    /// (`hashedFile.file.name`) for EVERY surplus row regardless of
+    /// whether it's recognized — only a row that's genuinely unrecognized
+    /// (no `requiredByGameDescription` either) has nothing meaningful to
+    /// show here at all.
+    /// Real bug found live by jensyleo (2026-09-23): a genuinely
+    /// unrecognized entry (e.g. a stray "__MACOSX/._foo.bin" AppleDouble
+    /// sidecar file macOS itself writes into a zip made from a folder that
+    /// once lived on a non-Mac filesystem) showed the literal word
+    /// "Unknown" here — "the file DOES have a name" (his own words). The
+    /// earlier design (below, now reversed) deliberately hid it to avoid
+    /// implying the DAT recognized this entry by that name, but the
+    /// "Info" column already says "Unrecognized (inside a known archive)"
+    /// — that's the right place for "the DAT doesn't know this", not this
+    /// column, which should always just say what the entry is actually
+    /// called on disk (`AuditReporter` already sets `entry.name` to the
+    /// real entry name for every surplus row, recognized or not).
+    private func romNameText(for entry: AuditEntry) -> String {
+        entry.name
     }
 
     private func infoText(for entry: AuditEntry) -> String {
@@ -4339,23 +7708,90 @@ struct LibraryDetailView: View {
         // - Neither: a genuine naming mismatch, "Bad name".
         case .incorrect:
             if let requiredBy = entry.requiredByGameDescription {
-                base = "Not needed here (required by \(requiredBy))"
+                // jensyleo's own request (2026-09-17): once this same file
+                // can actually be repaired from Maintenance (via
+                // `hasMaintenanceDonor`, extended the same day to cover
+                // this exact case — see `MaintenanceDonorDetector`'s own
+                // doc comment), the message should say so FIRST — a fix
+                // is available — rather than leading with "not needed
+                // here", which reads as a dead end even though
+                // right-clicking this same row now offers "Repair from
+                // Maintenance Folder…".
+                // jensyleo's own real incident (2026-09-19): "Not needed
+                // here" reads as "a confirmed, safe spare copy" — true only
+                // when `requiredByGameConfirmedRedundant` actually confirms
+                // `requiredBy` has this content satisfied somewhere real
+                // (see that field's own doc comment on `SurplusFile`). A
+                // stray `naomi.zip` got deleted as "safe" this way while
+                // NAOMI BIOS's own real archive had ALSO just been removed
+                // — nothing here was actually confirming that. Checked
+                // AFTER `hasMaintenanceDonor` above, which is its own,
+                // separately-verified positive signal (a real donor
+                // genuinely exists in Maintenance) and stays exactly as
+                // worded.
+                // Second round of the same incident, same day:
+                // `requiredByGameConfirmedRedundant` ALSO goes true for
+                // "duplicate among unclaimed surplus files" even when
+                // `requiredBy` has NO real copy anywhere — safe only for a
+                // whole, directly-usable unit, never a loose fragment.
+                // `requiredByGameOwnerSatisfiedElsewhere` is the strict
+                // subset that means `requiredBy` genuinely already has real
+                // content — see its own doc comment on `SurplusFile`.
+                if entry.hasMaintenanceDonor {
+                    base = "Available in Maintenance folder (required by \(requiredBy))"
+                } else if entry.requiredByGameOwnerSatisfiedElsewhere {
+                    base = "Not needed here (required by \(requiredBy))"
+                } else if entry.requiredByGameConfirmedRedundant {
+                    base = "Extra copy — an identical file exists elsewhere, but \(requiredBy) still has no real copy"
+                } else {
+                    base = "Recognized content, but \(requiredBy) doesn't have it either"
+                }
+            } else if entry.foundElsewhereArchiveName != nil {
+                // Same "say a real fix is available FIRST" rule as the
+                // `requiredByGameDescription` branch above — real bug found
+                // live by jensyleo (2026-09-21): a `.foundElsewhere` rom
+                // this game's own archive genuinely lacks (e.g. NAOMI
+                // BIOS's `315-6146.bin`, also declared by an unrelated
+                // `mvsc2`) kept showing "Available in another game
+                // (mvsc2.zip)" even after `MaintenanceDonorDetector`/
+                // `RebuildPlanner` were extended to also repair these —
+                // the informational "it's borrowed from elsewhere" text
+                // was checked BEFORE the "a real donor exists in
+                // Maintenance" one, so a genuinely fixable row still read
+                // as a dead end and never hinted that right-clicking now
+                // offers "Repair from Maintenance Folder…".
+                base = entry.hasMaintenanceDonor
+                    ? "Available in Maintenance folder"
+                    : "Available in another game (\(entry.foundElsewhereArchiveName!))"
             } else {
-                base = entry.foundElsewhereArchiveName.map { "Available in another game (\($0))" } ?? "Bad name"
+                base = "Bad name"
             }
         // jensyleo's own definition (2026-08-04): a file genuinely sits in
         // this rom's own expected slot, but its CRC32/MD5/SHA doesn't
         // match — distinct from `.isBadDump` below (the DAT's own
         // baddump/nodump claim about the *reference* dump itself); this is
         // ROMForge's own finding about the *local* file.
-        case .badDump: base = "Bad (hash mismatch)"
+        case .badDump:
+            base = entry.hasMaintenanceDonor ? "Bad (verified-correct copy available in Maintenance folder)" : "Bad (hash mismatch)"
         // The DAT itself declares this rom/disk `optional="yes"` — MAME can
         // run the machine without it, real case found live by jensyleo
         // (2026-08-05) researched from MAME's own DTD (`cubeqst`/`cubeqsta`/
         // `atronic`'s laserdisc). Distinct wording from plain "Missing" so
         // it doesn't read as urgent/blocking the way a truly required
         // absence does.
-        case .missing: base = entry.isOptional ? "Missing (optional)" : "Missing"
+        // jensyleo's own follow-up (2026-09-14), after confirming the
+        // Roms panel's own yellow icon (`romStatusIcon(for:)`) already
+        // worked: the "Info" column's own TEXT still just said plain
+        // "Missing", giving no hint of WHY the icon was different —
+        // mirrors `.incorrect`'s own `foundElsewhereArchiveName` wording
+        // just above, since the underlying idea is the same ("the real
+        // content is genuinely available, just not here yet").
+        case .missing:
+            if entry.hasMaintenanceDonor {
+                base = "Missing (available in Maintenance folder)"
+            } else {
+                base = entry.isOptional ? "Missing (optional)" : "Missing"
+            }
         case .surplus, .unknownFile: base = "Unrecognized"
         // jensyleo's own gray-file split (2026-08-06): this specific
         // entry's own archive IS a real, recognized DAT machine name — a
@@ -4409,11 +7845,28 @@ struct LibraryDetailView: View {
         // `CollectionHasher`, every entry in the same zip shares that one
         // URL) and only when there's actually a comment to show — nothing
         // is appended for loose files or a zip with no comment set.
+        // jensyleo's own request (2026-09-14): showing the RAW comment
+        // text here could dump an arbitrary, sometimes long/messy string
+        // straight into the Info column — a plain "has a comment" flag is
+        // enough to tell the user one exists; the actual text is still one
+        // hover away via `zipCommentHelpText(for:)`'s own tooltip.
         guard let path = entry.path, path.pathExtension.lowercased() == "zip",
-              let comment = zipCommentCache.comment(forZipAt: path) else {
+              let comment = zipCommentCache.comment(forZipAt: path), !comment.isEmpty else {
             return base
         }
-        return "\(base) — \(comment)"
+        return "\(base) — Has ZIP comment"
+    }
+
+    /// The real comment text `infoText(for entry:)`/`infoText(for node:)`
+    /// deliberately no longer inline — shown instead as a `.help()` tooltip
+    /// on whichever cell renders that Info text, so the comment itself is
+    /// still fully visible on hover without cluttering the table cell.
+    private func zipCommentHelpText(for entry: AuditEntry) -> String {
+        guard let path = entry.path, path.pathExtension.lowercased() == "zip",
+              let comment = zipCommentCache.comment(forZipAt: path), !comment.isEmpty else {
+            return ""
+        }
+        return comment
     }
 
     private func sizeText(for entry: AuditEntry) -> String {
@@ -4841,6 +8294,28 @@ struct LibraryDetailView: View {
             let nodesByID = Self.indexByID(nodes)
             let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
+            // Real gap found live by jensyleo (2026-09-24), right after the
+            // 2026-09-23 scroll-hang fix: that fix only preloaded zip
+            // comments inside `refreshCachedGameDataAfterAuditReportChangeAsync()`
+            // (a real scan finishing) — this SEPARATE recompute path, run
+            // every time the SELECTED ROM FOLDER changes, never got the
+            // same treatment, so clicking into a folder whose zips hadn't
+            // been shown yet this session could still trigger the exact
+            // same synchronous, main-thread `ZipCommentReader` disk/NAS
+            // reads the earlier fix was supposed to eliminate — read as a
+            // random hang precisely because it only happened for a
+            // genuinely NOT-yet-cached folder. See `ZipCommentCache
+            // .preload(_:)`'s own doc comment.
+            let zipURLsToPreload = Set(nodes.flatMap { node in
+                node.entries.compactMap { entry -> URL? in
+                    guard let path = entry.path, path.pathExtension.lowercased() == "zip" else { return nil }
+                    return path
+                }
+            })
+            var preloadedZipComments: [URL: String?] = [:]
+            for url in zipURLsToPreload {
+                preloadedZipComments[url] = ZipCommentReader.comment(ofZipAt: url)
+            }
             await MainActor.run {
                 // Guards against out-of-order completion, not just
                 // cancellation: once genuinely concurrent, a slower
@@ -4856,6 +8331,7 @@ struct LibraryDetailView: View {
                 guard generation == folderRecomputeGeneration else { return }
                 cachedGamesInFolder = gamesInFolder
                 cachedGameNodes = nodes
+                zipCommentCache.preload(preloadedZipComments)
                 cachedHiddenOneGameOneROMCount = hiddenCount
                 refreshCachedFamilyGameNodes()
                 cachedGameNodesByID = nodesByID
@@ -4903,25 +8379,58 @@ struct LibraryDetailView: View {
         let show1G1R = show1G1ROnly
         let regionOrder = RegionOrderSettings.order(from: regionOrderRaw)
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
+            // TEMP PERF INSTRUMENTATION (2026-09-17) — remove once the
+            // slow-launch bottleneck is identified.
+            let t0 = Date()
             let aggStatus = Self.computeGameAggregateStatusByName(entries: entries, preloadedGames: preloadedGames)
+            let t1 = Date()
             let parentCloneSummary = ParentCloneSummary.compute(games: preloadedGames, statusByName: aggStatus)
+            let t2 = Date()
             let oneGameOneROMSummary = OneGameOneROMSelector.compute(games: preloadedGames, regionOrder: regionOrder)
+            let t3 = Date()
             let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
+            let t4 = Date()
             let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
+            let t5 = Date()
             let baseNodes = Self.computeBaseGameNodes(
                 hasAuditReport: hasAuditReport, auditEntries: entries,
                 selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
                 gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine,
                 precomputedScoped: scoped
             )
+            let t6 = Date()
             let nodes = Self.computeGameNodes(
                 baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
                 activeStatusFilters: statusFilters, hiddenOneGameOneROMNames: show1G1R ? oneGameOneROMSummary.hiddenWhenFilteredNames : []
             )
+            let t7 = Date()
             let hiddenCount = baseNodes.filter { oneGameOneROMSummary.hiddenWhenFilteredNames.contains($0.name) }.count
             let nodesByID = Self.indexByID(nodes)
+            // See `ZipCommentCache.preload(_:)`'s own doc comment — reads
+            // every zip comment this newly-scoped node list could ever
+            // show, off the main thread, before any of it renders.
+            let zipURLsToPreload = Set(nodes.flatMap { node in
+                node.entries.compactMap { entry -> URL? in
+                    guard let path = entry.path, path.pathExtension.lowercased() == "zip" else { return nil }
+                    return path
+                }
+            })
+            var preloadedZipComments: [URL: String?] = [:]
+            for url in zipURLsToPreload {
+                preloadedZipComments[url] = ZipCommentReader.comment(ofZipAt: url)
+            }
+            let t8 = Date()
             let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
+            let t9 = Date()
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
+            let t10 = Date()
+            PerfDebugLog.write("""
+            refreshCachedGameData: entries=\(entries.count) preloadedGames=\(preloadedGames.count) \
+            aggStatus=\(t1.timeIntervalSince(t0))s parentClone=\(t2.timeIntervalSince(t1))s 1G1R=\(t3.timeIntervalSince(t2))s \
+            gamesInFolder=\(t4.timeIntervalSince(t3))s scoped=\(t5.timeIntervalSince(t4))s baseNodes=\(t6.timeIntervalSince(t5))s \
+            gameNodes=\(t7.timeIntervalSince(t6))s indexByID=\(t8.timeIntervalSince(t7))s scopedCounts=\(t9.timeIntervalSince(t8))s \
+            unknownCount=\(t10.timeIntervalSince(t9))s TOTAL=\(t10.timeIntervalSince(t0))s
+            """)
             await MainActor.run {
                 // Same out-of-order guard as `triggerCachedGameDataRecompute()`
                 // — see its own doc comment.
@@ -4932,6 +8441,7 @@ struct LibraryDetailView: View {
                 cachedHiddenOneGameOneROMCount = hiddenCount
                 cachedGamesInFolder = gamesInFolder
                 cachedGameNodes = nodes
+                zipCommentCache.preload(preloadedZipComments)
                 refreshCachedFamilyGameNodes()
                 cachedGameNodesByID = nodesByID
                 cachedScopedStatusCounts = counts
@@ -5336,6 +8846,7 @@ struct LibraryDetailView: View {
                 databaseCategoryVisibleCap[loadMoreFilter] = current + Self.treeLoadMoreIncrement
                 refreshExpandedDatabaseCategoryCachesAsync(debounced: false, only: loadMoreFilter)
                 isDatabasePaneFocused = true
+                resultsPaneIsActive = false
             } label: {
                 Text(node.label)
                     .font(.caption)
@@ -5415,6 +8926,7 @@ struct LibraryDetailView: View {
                     selectedRomFolder = nil
                     selectedGameID = node.id
                     isDatabasePaneFocused = true
+                    resultsPaneIsActive = false
                     // jensyleo's own report (2026-08-13): landing on a parent
                     // game (one with its own clone family nested under it), OR
                     // on one of its own clones, should scope "Games" to that
@@ -5686,6 +9198,7 @@ struct LibraryDetailView: View {
 
     private var selectedGameNode: GameNode? {
         guard let selectedGameID else { return nil }
+        if isSelectedFolderMaintenanceSubfolder { return maintenanceGameNodesByID[selectedGameID] }
         return cachedGameNodesByID[selectedGameID]
     }
 
@@ -5710,8 +9223,18 @@ struct LibraryDetailView: View {
     ///
     /// A synthetic "Unknown game"/"Surplus files" row has no real DAT
     /// machine behind it — nothing for MAME to actually launch.
+    /// Real gap found live by jensyleo (2026-09-23): "las opciones de Play
+    /// in MAME, Reveal in Finder siempre deben pedir rescan... toda
+    /// interacción con lo que muestra la app debe tener un escaneo previo"
+    /// — these two never checked for one at all, unlike every write action
+    /// in this app (which already refuse via `scopeCoveredByLastScan`).
+    /// `viewModel.auditReport != nil` is the same bar every Fix toolbar
+    /// button already uses for "there's a real result to act on" — it's
+    /// `true` once EITHER a live scan ran this session OR a past session's
+    /// persisted result was restored on open, `false` only for a system
+    /// that's genuinely never been scanned at all.
     private func canLaunchMAME(_ node: GameNode) -> Bool {
-        !node.isSurplusBucket && MAMELaunchSettings.executablePath != nil
+        !node.isSurplusBucket && MAMELaunchSettings.executablePath != nil && viewModel.auditReport != nil
     }
 
     private var canLaunchSelectedGameInMAME: Bool {
@@ -5720,6 +9243,7 @@ struct LibraryDetailView: View {
 
     private var playButtonHelpText: String {
         guard MAMELaunchSettings.executablePath != nil else { return "Locate a MAME executable in Settings → Systems first" }
+        guard viewModel.auditReport != nil else { return "Scan this system at least once first" }
         guard let node = selectedGameNode, !node.isSurplusBucket else { return "Select a game to play it in MAME" }
         return "Launch \(node.gameName) in MAME to test it"
     }
@@ -5797,7 +9321,7 @@ struct LibraryDetailView: View {
                 node.aggregateStatus.map(String.init(describing:)) ?? "",
                 node.gameName,
                 node.actualFileName ?? node.name,
-                node.infoText,
+                infoText(for: node),
                 node.expectedFileName ?? "",
                 node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf),
                 node.year,
@@ -5840,6 +9364,22 @@ struct LibraryDetailView: View {
     private var selectedEntry: AuditEntry? {
         guard let selectedRomID else { return nil }
         return selectedRomRows.first { $0.id == selectedRomID }?.entry
+    }
+
+    /// The Roms panel's own counterpart to `moveGameSelection(by:)` — same
+    /// macOS 27 native-`Table`-arrow-navigation regression, same fix. See
+    /// that function's own doc comment for the full story.
+    private func moveRomSelection(by offset: Int) {
+        let rows = selectedRomRows
+        guard !rows.isEmpty else { return }
+        let currentIndex = selectedRomID.flatMap { id in rows.firstIndex { $0.id == id } }
+        let newIndex: Int
+        if let currentIndex {
+            newIndex = max(0, min(rows.count - 1, currentIndex + offset))
+        } else {
+            newIndex = offset < 0 ? rows.count - 1 : 0
+        }
+        selectedRomID = rows[newIndex].id
     }
 
     // MARK: - Detail pane
@@ -5917,7 +9457,7 @@ struct LibraryDetailView: View {
             if showDetailOneGameOneROM { oneGameOneROMDetailRow(node) }
         case .info:
             if showDetailInfo {
-                coloredInfoRow("Info", node.infoText, tint: node.aggregateStatus?.tint ?? .secondary)
+                coloredInfoRow("Info", infoText(for: node), tint: node.aggregateStatus?.tint ?? .secondary)
             }
         case .cloneOf:
             if showDetailGameCloneOf {
@@ -5998,7 +9538,7 @@ struct LibraryDetailView: View {
     /// Games table's own "Game name" column isn't optional either.
     private func romDetailSection(_ entry: AuditEntry) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(entry.name).font(.headline)
+            Text(romNameText(for: entry)).font(.headline)
             if showDetailRomFileName {
                 // Same fix as the Roms table's own "File name" column
                 // (`romsList`) — `actualEntryName` is the entry's own REAL
@@ -6101,6 +9641,59 @@ struct LibraryDetailView: View {
     /// game's content problem — orange, distinct from this gray), so this
     /// same function is shared by both individual rom rows and a game's
     /// own aggregate row icon without needing a separate variant.
+    private func maintenanceDonorHelpText(for entry: AuditEntry) -> String {
+        entry.status == .missing
+            ? "Missing, but a matching donor is staged in the Maintenance folder — run Fix → Repair from Maintenance Folder to pull it in"
+            : "Bad (hash mismatch), but a verified-correct copy is staged in the Maintenance folder — run Fix → Repair from Maintenance Folder to replace it"
+    }
+
+    /// The Roms panel's own status icon for one entry — same
+    /// `symbolName(for:)`/`.tint` every other status icon uses, EXCEPT for a
+    /// `.missing` rom with `hasMaintenanceDonor` set (see that field's own
+    /// doc comment): jensyleo's own request (2026-09-14), after confirming
+    /// "Find ROMs…" already correctly plans this repair, that a donor
+    /// already staged in Maintenance must read differently from a rom with
+    /// no fix in sight at all. Reuses `.incorrect`'s own icon/tint (a
+    /// yellow triangle) rather than inventing a fourth visual language —
+    /// "known, fixable, just needs Find ROMs run" is exactly what
+    /// `.incorrect` already means everywhere else in this app.
+    private func romStatusIcon(for entry: AuditEntry) -> some View {
+        if (entry.status == .missing || entry.status == .badDump), entry.hasMaintenanceDonor {
+            return Image(systemName: symbolName(for: .incorrect))
+                .foregroundStyle(AuditStatus.incorrect.tint)
+                .help(maintenanceDonorHelpText(for: entry))
+        }
+        return Image(systemName: symbolName(for: entry.status))
+            .foregroundStyle(entry.status.tint)
+            .help("" as String)
+    }
+
+    /// The Games table's own status icon for one game row — jensyleo's own
+    /// follow-up (2026-09-14), right after confirming `romStatusIcon(for:)`
+    /// already worked for the individual ROM row: the GAME's own row (this
+    /// table, one row per file) still showed a flat red X for a game with
+    /// ANY missing rom, even when every one of those missing roms already
+    /// has a donor staged in Maintenance — "el archivo se reporta en color
+    /// rojo y debe aparecer en amarillo, en la vista de Rom está OK". Same
+    /// override as `romStatusIcon(for:)`: reuses `.incorrect`'s own
+    /// icon/tint rather than a new visual language.
+    @ViewBuilder
+    private func gameStatusIcon(for node: GameNode) -> some View {
+        if let status = node.aggregateStatus {
+            if status == .missing || status == .incorrect || status == .badDump, node.entries.contains(where: { $0.hasMaintenanceDonor }) {
+                Image(systemName: symbolName(for: .incorrect))
+                    .foregroundStyle(AuditStatus.incorrect.tint)
+                    .help("At least one missing or hash-mismatched rom has a matching donor staged in the Maintenance folder — run Fix → Repair from Maintenance Folder to pull it in")
+            } else {
+                Image(systemName: symbolName(for: status)).foregroundStyle(status.tint)
+            }
+        } else {
+            // Not scanned yet — a real, DAT-backed game, just with nothing
+            // yet to compare it against.
+            Image(systemName: "circle.dashed").foregroundStyle(.secondary)
+        }
+    }
+
     private func symbolName(for status: AuditStatus) -> String {
         switch status {
         case .correct: return "checkmark.circle.fill"
