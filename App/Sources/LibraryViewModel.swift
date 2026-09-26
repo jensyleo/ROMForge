@@ -17,9 +17,25 @@ import UniformTypeIdentifiers
 /// every earlier attempt at this invisible to `log show` even with the
 /// exact right predicate — the same reason this file-based approach was
 /// already the proven fallback earlier in this session (the ⌘-drag
-/// investigation). Remove this whole enum once the bottleneck is found.
+/// investigation).
+///
+/// jensyleo's own instruction (2026-09-26), after this same instrumentation
+/// helped find and confirm two real fixes that same day (the sequential
+/// zip-comment reads, `indexByID`'s own contention): "desactívalos, pero
+/// déjalos listos para activar por si se vuelve a poner lento" — kept in
+/// place at every call site rather than ripped out, gated behind this one
+/// `isEnabled` switch so re-enabling later never needs re-instrumenting
+/// each site by hand again.
 enum PerfDebugLog {
+    // A plain debug on/off switch, read/written from many different
+    // isolation contexts (this whole file's background tasks) — never
+    // load-bearing for correctness, only for whether a line gets appended
+    // to a debug file, so `nonisolated(unsafe)` here is a deliberate,
+    // low-stakes choice, not a shortcut around a real data race.
+    nonisolated(unsafe) static var isEnabled = false
+
     static func write(_ message: String) {
+        guard isEnabled else { return }
         let line = "[\(Date())] \(message)\n"
         guard let data = line.data(using: .utf8) else { return }
         let path = "/tmp/romforge_perf_debug.log"
@@ -597,6 +613,25 @@ final class LibraryViewModel {
     /// change.
     private static var sharedDATCache: [UUID: (key: DATCacheKey, file: DATFile)] = [:]
 
+    /// Same idea, same reason, as `sharedDATCache` just above — jensyleo's
+    /// own report (2026-09-26), during a full-session slowness audit: every
+    /// switch back to an already-visited system re-read that system's ENTIRE
+    /// persisted report from SQLite (`loadPersistedReport` below) and re-ran
+    /// `computeGameAggregateStatusByName`'s own full O(entries) pass over it
+    /// — not just "the first time the app opens", but literally every
+    /// single switch, all session, since `LibraryDetailView`'s `.id(system.id)`
+    /// tears down and recreates the owning `LibraryViewModel` (and every
+    /// one of its instance-level caches) on every switch. `sharedDATCache`
+    /// already solved this exact problem for the DAT half back on
+    /// 2026-08-03; this solves the other half — the actual scan RESULT.
+    /// Kept updated at every real, authoritative write to `auditReport`
+    /// (a fresh persisted-report load, a real scan finishing, a folder
+    /// removal, `verifyZipIntegrity`) — see each call site's own comment.
+    /// `ContentView`'s own app-launch preload additionally warms this for
+    /// every OTHER configured system in the background, not just whichever
+    /// one is initially shown, so a first visit to those feels instant too.
+    private static var sharedAuditReportCache: [UUID: AuditReport] = [:]
+
     /// A DAT file's identity for the purpose of deciding whether a cached
     /// *raw parse* (`ParsedDAT`, mode-independent) still applies — its own
     /// (size, mtime), deliberately WITHOUT `mergeMode`/`biosMergeMode` at
@@ -777,6 +812,13 @@ final class LibraryViewModel {
     /// re-fire usefully if this same session ever calls it again.
     func clearScanResults() {
         auditReport = nil
+        // No `system` param here (called from a notification meaning "the
+        // WHOLE app's saved state was just purged", not just this one) —
+        // clears every system's entry rather than trying to guess which
+        // one this instance was for. Rare, explicit, user-triggered action
+        // ("Purge Database View"), so the blunt full clear costs nothing
+        // that matters.
+        Self.sharedAuditReportCache.removeAll()
         lastScanDate = nil
         datHeader = nil
         matchReport = nil
@@ -821,8 +863,47 @@ final class LibraryViewModel {
     /// the actual case that call exists for in the first place.
     var isLoadingPersistedReport = false
 
+    /// App-launch background warm-up for a system NOT currently being
+    /// shown — `ContentView`'s own `.onAppear` calls this once per every
+    /// OTHER configured system, at low priority, right after the initially
+    /// selected one loads normally. A static, self-contained read (no
+    /// `LibraryViewModel` instance needed, no `@Observable` property gets
+    /// touched — nothing is on screen for this system yet) that fills
+    /// `sharedAuditReportCache` directly, so the FIRST real visit to that
+    /// system this session — whenever it happens — hits the same warm,
+    /// instant path a re-visit already gets. A no-op if this system has no
+    /// persisted report yet, or if something (a real visit already
+    /// starting) beat this to populating the cache first.
+    nonisolated static func preloadPersistedReportInBackground(system: RomSystem) async {
+        let alreadyCached = await MainActor.run { sharedAuditReportCache[system.id] != nil }
+        guard !alreadyCached else { return }
+        let systemID = system.id.uuidString
+        // The actual SQLite read happens here, OFF the main actor — this
+        // whole function is `nonisolated` specifically so `db.loadReport`
+        // (a real, possibly multi-second read for a large collection)
+        // never touches the main thread, unlike an ordinary `@MainActor`
+        // method on this class would force it to.
+        guard let report = await Task.detached(priority: .background, operation: { () -> AuditReport? in
+            guard let db = try? AuditDatabaseLocation.open() else { return nil }
+            return try? db.loadReport(systemID: systemID)
+        }).value else { return }
+        await MainActor.run {
+            guard sharedAuditReportCache[system.id] == nil else { return }
+            sharedAuditReportCache[system.id] = report
+        }
+    }
+
     func loadPersistedReport(system: RomSystem) {
         guard auditReport == nil else { return }
+        // See `sharedAuditReportCache`'s own doc comment — a re-visit to a
+        // system already loaded THIS SESSION (by this same call, a real
+        // scan, or the app-launch background preload in `ContentView`)
+        // serves instantly from RAM, no SQLite read or `Task` hop needed at
+        // all.
+        if let cached = Self.sharedAuditReportCache[system.id] {
+            auditReport = cached
+            return
+        }
         isLoadingPersistedReport = true
         let systemID = system.id.uuidString
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -847,6 +928,7 @@ final class LibraryViewModel {
                     defer { self.isLoadingPersistedReport = false }
                     guard self.auditReport == nil else { return }
                     self.auditReport = report
+                    Self.sharedAuditReportCache[system.id] = report
                     if let meta, let name = meta.datName {
                         self.datHeader = DATHeader(name: name, description: "", version: meta.datVersion ?? "", author: "")
                     }
@@ -957,6 +1039,7 @@ final class LibraryViewModel {
             }
         }
         auditReport = AuditReport(entries: prunedEntries, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
+        Self.sharedAuditReportCache[system.id] = auditReport
 
         let systemID = system.id.uuidString
         Task.detached(priority: .utility) { [weak self] in
@@ -1153,7 +1236,7 @@ final class LibraryViewModel {
     /// automatic check (`scan`'s own "Checking the Maintenance folder for
     /// donors…" phase) only ever flags a MISSING rom as "a donor is
     /// available", it never actually satisfies the match — the file still
-    /// needs a real "Repair from Maintenance Folder…" copy to count as
+    /// needs a real "Find ROMs…" copy to count as
     /// present. The BIOS folder is different in kind: "Organize BIOS
     /// Files…" physically MOVES a BIOS's own real container out of its
     /// ROM folder — the exact same real file, just at a new path — so
@@ -1192,7 +1275,24 @@ final class LibraryViewModel {
         return folders
     }
 
+    /// Exactly the `folders` this specific `scan(system:folders:)` call was
+    /// given — `nil` for a whole-system scan — never the cumulative
+    /// `lastScanScope` (which only ever widens and answers a different
+    /// question, "is X covered by everything scanned so far this session").
+    /// jensyleo's own report (2026-09-26): after "Remove Zip Comments…"
+    /// scoped to one folder, the Info column took "more than a minute" to
+    /// stop showing the stale "Has ZIP comment" for files whose comment
+    /// had already been stripped — `LibraryDetailView`'s own
+    /// `.onChange(of: auditReport)` called `zipCommentCache.invalidateAll()`
+    /// unconditionally on ANY scan completing, forcing a fresh re-read of
+    /// EVERY zip's comment across the WHOLE collection (up to tens of
+    /// thousands of archives) just because 9 files in one folder actually
+    /// changed. Read there to invalidate only what this scan could
+    /// plausibly have touched.
+    private(set) var lastScanFolders: [URL]?
+
     func scan(system: RomSystem, folders: [URL]? = nil) async {
+        lastScanFolders = folders
         isBusy = true
         // A cache hit skips the whole "Loading DAT" phase outright — there's
         // nothing to show progress for, and no point pretending otherwise.
@@ -1639,20 +1739,70 @@ final class LibraryViewModel {
                 // the ZIP-internal-CRC check below.
                 postMatchPhaseHandler("Checking filename/CRC consistency…")
                 auditReport = AuditReporter.markingFilenameCRCMismatches(in: auditReport)
-                // Flags a `.missing` rom whose exact declared content is
-                // already sitting in this system's own Maintenance folder —
-                // jensyleo's own request (2026-09-14), after confirming
-                // live that "Find ROMs…" already correctly plans this exact
-                // repair: the remaining gap was purely visual, a donor
-                // already staged for a missing rom looked identical to one
-                // with no fix in sight at all. Cheap enough to run on every
-                // scan (the Maintenance folder is typically a small staging
-                // area, not a full collection) — a no-op when no root is
-                // configured (`subfolderURL` returns `nil`) or the folder
-                // is simply empty.
+                // Flags a `.missing`/`.badDump`/`.foundElsewhere` rom whose
+                // exact declared content is already sitting in this
+                // system's own Maintenance folder — jensyleo's own request
+                // (2026-09-14), after confirming live that "Find ROMs…"
+                // already correctly plans this exact repair: the remaining
+                // gap was purely visual, a donor already staged for a
+                // missing rom looked identical to one with no fix in sight
+                // at all. Cheap enough to run on every scan (the
+                // Maintenance folder is typically a small staging area, not
+                // a full collection).
+                //
+                // jensyleo's own follow-up report (2026-09-26), a real
+                // screenshot: a game whose missing roms all showed
+                // "Available in another game (sf2acc.zip)" etc. — i.e.
+                // genuinely `.foundElsewhere`, already-hashed content sitting
+                // in this SAME system's own ROM folder — still had no "Find
+                // ROMs…" entry in its context menu. Root cause: this
+                // detector's own `donorFiles` used to come ONLY from a
+                // separate Maintenance-folder hash pass, even though "Find
+                // ROMs…" itself (once its Settings → Fix scope picker was
+                // removed the same day) always additionally searches every
+                // one of the system's own configured ROM folders when
+                // unscoped. Re-hashing every configured ROM folder again
+                // here purely for this visual hint would reintroduce
+                // exactly the kind of NAS-heavy, whole-collection cost this
+                // session already fought hard to eliminate elsewhere — so
+                // instead, `inScanHashedFiles` below reuses hashes THIS SAME
+                // scan already computed for every OTHER game's own
+                // `.correct`/`.misnamed` rom (zero extra disk I/O): that's
+                // precisely the content a `.foundElsewhere` rom is already
+                // known to be borrowing from. Maintenance donors (if any)
+                // are still layered on top, so a rom repairable from EITHER
+                // source gets flagged.
+                // Real perf regression found live by jensyleo (2026-09-26),
+                // reported as general app-wide slowness that "improved a
+                // bit but persisted" after other fixes that same session:
+                // this whole block (including the flatMap just below) used
+                // to run unconditionally on EVERY scan, even a trivial
+                // "Rescan This File" on a collection with nothing wrong at
+                // all — a full pass over every game's every rom in the
+                // ENTIRE system (`matchReport.games`, up to the whole real
+                // collection), just to look for a donor NOTHING actually
+                // needs. `.missing`/`.badDump`/an `.incorrect` entry with
+                // `foundElsewhereArchiveName` set are the only three things
+                // this detector could ever mark — `auditReport.incorrect == 0`
+                // doesn't perfectly rule out that last case on its own, but
+                // `foundElsewhereArchiveName` is only ever set on an
+                // `.incorrect` entry, so `auditReport.incorrect == 0` still
+                // proves none exist. Skips the entire pass (including the
+                // Maintenance-folder hash read below) whenever all three
+                // are zero — the common case for an already-healthy scan.
+                if auditReport.missing > 0 || auditReport.badDump > 0 || auditReport.incorrect > 0 {
+                let inScanHashedFiles: [HashedFile] = matchReport.games.flatMap { gameResult in
+                    gameResult.matches.compactMap { romMatch -> HashedFile? in
+                        switch romMatch.status {
+                        case .correct(let file, _), .misnamed(let file, _): return file
+                        default: return nil
+                        }
+                    }
+                }
+                var donorFiles = inScanHashedFiles
                 if let maintenanceFolder = MaintenanceFolderSettings.subfolderURL(for: system) {
                     postMatchPhaseHandler("Checking the Maintenance folder for donors…")
-                    let donorFiles: [HashedFile]
+                    let maintenanceDonorFiles: [HashedFile]
                     if let cachedMaintenanceDonor, cachedMaintenanceDonor.folderPath == maintenanceFolder.path {
                         // Reuse this session's cached hashes instead of
                         // re-reading/re-hashing the whole Maintenance folder —
@@ -1662,20 +1812,22 @@ final class LibraryViewModel {
                         // ("Scan Maintenance Folder"/"Scan All Folders") calls
                         // `invalidateMaintenanceDonorCache()`, so this branch is
                         // safe to trust until one of those explicitly refreshes it.
-                        donorFiles = cachedMaintenanceDonor.files
+                        maintenanceDonorFiles = cachedMaintenanceDonor.files
                     } else if let maintenanceFiles = try? FolderScanner.scan(paths: [maintenanceFolder]), !maintenanceFiles.isEmpty {
                         let freshDonorFiles = (try? await CollectionHasher.hash(scannedFiles: maintenanceFiles, algorithms: HashAlgorithmSettings.current)) ?? []
-                        donorFiles = freshDonorFiles
+                        maintenanceDonorFiles = freshDonorFiles
                         let folderPath = maintenanceFolder.path
                         Task { @MainActor [weak self] in
                             self?.cachedMaintenanceDonorFiles = (folderPath, freshDonorFiles)
                         }
                     } else {
-                        donorFiles = []
+                        maintenanceDonorFiles = []
                     }
-                    if !donorFiles.isEmpty {
-                        auditReport = MaintenanceDonorDetector.markingDonorsAvailable(in: auditReport, matchReport: matchReport, donorFiles: donorFiles)
-                    }
+                    donorFiles += maintenanceDonorFiles
+                }
+                if !donorFiles.isEmpty {
+                    auditReport = MaintenanceDonorDetector.markingDonorsAvailable(in: auditReport, matchReport: matchReport, donorFiles: donorFiles)
+                }
                 }
                 // jensyleo's own report (2026-09-10): "Rescan This File"
                 // right after a case-only rename (e.g. "Fix Mismatched
@@ -1809,6 +1961,7 @@ final class LibraryViewModel {
             // coverage that's still genuinely valid.
             lastScanScope = Self.mergedScanScope(lastScanScope, withNewScan: folders)
             auditReport = displayedAudit
+            Self.sharedAuditReportCache[system.id] = auditReport
             scanProgress = nil
             folderScanFilesFound = nil
             currentlyScanningFolder = nil
@@ -1944,6 +2097,7 @@ final class LibraryViewModel {
         }
         let verified = await detached.value
         auditReport = verified
+        Self.sharedAuditReportCache[system.id] = auditReport
         let mismatchCount = verified.entries.filter(\.hasInternalZipCRCMismatch).count
         log(
             mismatchCount == 0
@@ -3672,7 +3826,7 @@ final class LibraryViewModel {
     /// Scans the optional, read-only Maintenance folder configured in
     /// Settings → General (`MaintenanceFolderSettings`) and plans every
     /// rom it can donate to a `.missing` OR `.badDump` rom in the current
-    /// scan — "Repair from Maintenance Folder…". Nothing here ever writes
+    /// scan — "Find ROMs…". Nothing here ever writes
     /// to, moves, or deletes anything in that folder; it's only ever
     /// read, exactly like `planRepairFromSiblingSetsPreviewCount`'s own
     /// sibling donors. Returns the TOTAL rom count (fills + replacements)
@@ -3700,39 +3854,37 @@ final class LibraryViewModel {
             logWarning("No Maintenance folder configured — set one in Settings → Systems → MAME first.")
             return 0
         }
-        // jensyleo's own request (2026-09-11): Settings → Fix → "Search
-        // missing ROMs in" lets this also look across every one of the
-        // system's own currently-configured ROM folders, not just
-        // Maintenance — a rom that's merely misplaced in a sibling folder
-        // (a different drive, a region subfolder, an old backup location)
-        // can then donate too, not only one deliberately staged in
-        // Maintenance. Still strictly read-only, same guarantee as the
-        // Maintenance-only case — nothing here ever writes to a ROM folder,
-        // only reads from it as a donor source.
+        // Always looks across every one of the system's own
+        // currently-configured ROM folders, not just Maintenance — a rom
+        // that's merely misplaced in a sibling folder (a different drive,
+        // a region subfolder, an old backup location) can donate too, not
+        // only one deliberately staged in Maintenance. Still strictly
+        // read-only — nothing here ever writes to a ROM folder, only reads
+        // from it as a donor source.
         //
-        // jensyleo's own last-minute follow-up (2026-09-16), same session
-        // as the verification-rescan scoping fix just above: when this
-        // repair is scoped to one specific folder (e.g. right-clicking
-        // "SEGA"), the donor search should ALSO look inside that SAME
-        // folder — a sibling game's own already-correct copy is a
-        // perfectly good donor too — without going all the way to "every
-        // declared folder" (that's still exactly what the global "Search
-        // missing ROMs in" setting is for, and stays untouched for the
-        // unscoped, toolbar-wide version of this action). "Solo esas 2, la
-        // de Mantenimiento y la actual" — deliberately narrower than
-        // `.allDeclaredFolders`, and applies regardless of that setting's
-        // own value once a real scope is given.
-        let searchFolders: [URL]
-        if !scopeFolders.isEmpty {
-            searchFolders = [folderURL] + scopeFolders
-        } else {
-            switch FixPreferencesSettings.currentMissingRomsSearchScope() {
-            case .maintenanceFolderOnly:
-                searchFolders = [folderURL]
-            case .allDeclaredFolders:
-                searchFolders = [folderURL] + system.romFolderURLs
-            }
-        }
+        // jensyleo's own follow-up (2026-09-26): this used to be gated by
+        // a Settings → Fix toggle ("Maintenance Folder Only" vs "+ All ROM
+        // Folders") for the unscoped case below — removed outright once
+        // he pointed out it never actually changed anything observable,
+        // since a SCOPED call (right-clicking one folder/file) already
+        // always searched that folder too regardless of the toggle's own
+        // value (see the 2026-09-16 note this replaces).
+        //
+        // jensyleo's own real, live-reproduced report (2026-09-26), same
+        // day: right-clicking one specific FILE (sf2cet.zip) whose own
+        // missing roms were genuinely available in SIBLING files in the
+        // SAME folder (sf2acc.zip/sf2bhh.zip/etc — not Maintenance at all)
+        // still failed with "Nothing to repair from the Maintenance
+        // folder" — because a scoped call's own `searchFolders` used to be
+        // ONLY `[folderURL] + scopeFolders` (Maintenance plus the exact
+        // clicked FILE's own path, never its sibling files). "Coloca que
+        // busque en todo lugar donde pueda ver" — the donor search is now
+        // ALWAYS Maintenance plus every one of the system's own configured
+        // ROM folders, scoped or not; `scopeFolders` only ever narrows
+        // WHICH games get repaired/verified afterward (see this function's
+        // own `restrictToScope`/verification-rescan below), never where a
+        // donor can be found.
+        let searchFolders: [URL] = [folderURL] + system.romFolderURLs
         isBusy = true
         defer { isBusy = false }
         // Real gap found live by jensyleo (2026-09-22): this donor scan
@@ -3816,17 +3968,13 @@ final class LibraryViewModel {
     /// independently, same reasoning as `repairFromSiblingSets` above.
     ///
     /// Two DIFFERENT "scopes" are in play here, deliberately never
-    /// conflated — jensyleo's own clarification (2026-09-16): "mientras se
-    /// use carpeta de Mantenimiento el Fix solo aplica desde ahí" (a
-    /// future, separate feature idea — searching a donor across every
-    /// declared ROM folder, not just Maintenance — is intentionally NOT
-    /// this one; that's already `FixPreferencesSettings
-    /// .currentMissingRomsSearchScope()`'s own `.allDeclaredFolders`
-    /// option, unrelated to what's described below):
+    /// conflated:
     /// 1. **Where a donor is searched for** — always the current system's
-    ///    own Maintenance subfolder (plus, if Settings → Fix → "Search
-    ///    missing ROMs in" is set to "every declared folder", every
-    ///    configured ROM folder too) — never affected by `scopeFolders`.
+    ///    own Maintenance subfolder AND every one of its configured ROM
+    ///    folders (see `planRepairFromMaintenanceFolderPreviewCount`'s own
+    ///    doc comment — removed the old Settings toggle for this
+    ///    2026-09-26, jensyleo: it never changed anything observable) —
+    ///    never affected by `scopeFolders`.
     /// 2. **Which folder(s) get VERIFIED afterward** — `scopeFolders`,
     ///    exactly like `fix()`'s own verification rescan. Real bug found
     ///    live by jensyleo: scoping a repair to one folder ("SEGA") still
@@ -3926,7 +4074,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Repaired \(succeeded) rom(s) from the Maintenance folder.")
         }
-        postFixResultPopup(action: "Repair from Maintenance Folder", succeeded: succeeded, failed: failed, failureLines: failureLines)
+        postFixResultPopup(action: "Find ROMs", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
     /// How many roms "Make Self-Contained…" would actually copy in, without

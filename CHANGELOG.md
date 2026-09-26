@@ -2,6 +2,66 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [0.3.1] - 2026-09-26
+
+### Fixed — general slowness and freezes, especially on the first visit to a system or ROM folder
+
+A full-session investigation of reported slowness and freezes, backed by real measurements against a
+50,000+ game collection:
+
+- Switching between systems in the sidebar tore down the entire view (and its cached DAT/report state)
+  every time, even switching back to one already visited this session — `LibraryDetailView`'s own
+  `.id(system.id)` recreates its `LibraryViewModel` on every switch. The DAT itself already survived
+  this (a `sharedDATCache` from 2026-08-03), but the persisted audit report never did. New
+  `LibraryViewModel.sharedAuditReportCache`, kept in sync at every real, authoritative report write, and
+  a shared `ZipCommentCache.shared` (previously recreated empty on every switch too).
+- App launch now warms every OTHER configured system's DAT and persisted report in the background, at
+  low priority, so the first switch to any of them — whenever it happens — already finds a warm cache.
+- "Cancelling" a superseded background recompute (switching ROM folders quickly, typing in a search
+  field) only ever discarded the stale result — Swift never actually stops a `Task`'s own already-running
+  CPU work just because `.cancel()` was called. Real cancellation checks added at the costliest points
+  in all three recompute pipelines (ROM folder selection, Database category, post-scan refresh), so a
+  superseded run now genuinely stops instead of continuing to burn CPU against the newer one.
+- Reading a ROM folder's own archive comments (for the "Info" column) read every zip's comment
+  sequentially, one at a time — for a NAS-backed folder with ~100 archives, at real per-file network
+  latency, this alone accounted for several seconds of a single folder click. Parallelized with
+  `DispatchQueue.concurrentPerform` (same technique already used for the audit database's own large
+  reads), cutting a real, measured case from up to 7s down to about 1.3s.
+- A separate, unconditional full-collection pass (added the same day while fixing an unrelated "Find
+  ROMs…" gap) ran on every single scan regardless of whether anything was actually missing or broken —
+  now skipped entirely when a scan finds nothing that could need it.
+- General system memory pressure (other running applications) was found to meaningfully compound all of
+  the above — not a ROMForge-specific fix, but worth knowing: closing other memory-heavy applications
+  measurably improved responsiveness on its own.
+
+### Fixed — "Find ROMs…" (formerly "Repair from Maintenance Folder…")
+
+- Its own donor search now always covers this system's own Maintenance folder AND every one of its
+  configured ROM folders, whether the action is scoped to one file/folder or not — previously, a scoped
+  call (right-clicking a specific file) only ever searched Maintenance plus that exact file, never a
+  sibling archive in the same folder that actually held the needed content.
+- The Settings → Fix picker that used to choose between "Maintenance Folder Only" and "+ All ROM
+  Folders" for the unscoped case was removed outright — it never changed anything observable once the
+  above was fixed, since the broader search now always runs.
+- The context-menu entry now correctly appears for a rom already shown as "Available in another game" —
+  previously it only ever checked for a donor staged in the Maintenance folder specifically, never
+  content already known-correct elsewhere in the very same scan.
+- Renamed throughout the UI (toolbar, context menus, Settings, Help) to "Find ROMs…", better reflecting
+  what it actually searches.
+
+### Changed
+
+- Settings → Fix → "Duplicate CHDs": the default is now "Prefer Subfolder" (was "Prefer ROM Folder
+  Root").
+- "Database" view: selecting a standalone game (no parent, no clones at all) now shows just its name in
+  the Games panel instead of a redundant single-row table repeating the sidebar's own selection — the
+  panel itself is never hidden.
+- Starting a search in "Database" with no category tree expanded at all now opens "All games"
+  automatically, so there's always somewhere for a match to appear.
+- Context-menu icons (Games table, Roms table, and every sidebar row's own menu) now render correctly —
+  a known macOS/SwiftUI platform quirk where `.contextMenu` silently drops a `Label`'s icon, forced back
+  with `.labelStyle(.titleAndIcon)`.
+
 ## [0.3.0] - 2026-09-24
 
 ### Added — selecting the Maintenance folder for the first time in a session scans it automatically

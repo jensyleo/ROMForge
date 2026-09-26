@@ -37,7 +37,7 @@ import Foundation
 /// own point of view, the exact same situation as a `.missing` rom with one:
 /// something in the Maintenance folder can fix this row right now. Both
 /// therefore share this one detector and this one `hasMaintenanceDonor`
-/// flag — the App layer's "Repair from Maintenance Folder…" action (both
+/// flag — the App layer's "Find ROMs…" action (both
 /// its toolbar entry and its context-menu counterpart) now plans and
 /// executes both kinds of fix together, rather than needing a second,
 /// separate "Replace Corrupted ROMs…" action for what is, to the user, the

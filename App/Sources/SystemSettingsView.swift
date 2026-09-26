@@ -488,7 +488,7 @@ private struct MAMEMergeSettingsForm: View {
                     }
                     Button("Choose Location…") { pickMaintenanceRootLocation() }
                 }
-                Text("A read-only donor area — one subfolder per configured system (\"Maintenance/\(store.systems.first?.name ?? "MAME")\", \"Maintenance/NES\", etc.), created automatically, covering every configured system regardless of kind. Drop new or extra ROM dumps into a system's OWN subfolder and \"Repair from Maintenance Folder…\" (the Fix menu) can use them to complete that same system's missing roms — never a different system's, even if two share a rom by coincidence. ROMForge never renames, moves, or deletes anything inside it. Entirely optional — leave unset if you'd rather keep your own donor folder(s) outside ROMForge.")
+                Text("A read-only donor area — one subfolder per configured system (\"Maintenance/\(store.systems.first?.name ?? "MAME")\", \"Maintenance/NES\", etc.), created automatically, covering every configured system regardless of kind. Drop new or extra ROM dumps into a system's OWN subfolder and \"Find ROMs…\" (the Fix menu) can use them to complete that same system's missing roms — never a different system's, even if two share a rom by coincidence. ROMForge never renames, moves, or deletes anything inside it. Entirely optional — leave unset if you'd rather keep your own donor folder(s) outside ROMForge.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !maintenanceFolderPath.isEmpty {
@@ -952,7 +952,7 @@ private struct MAMEMergeSettingsForm: View {
             }
             Button("Cancel", role: .cancel) { pendingMaintenanceSubfolderDeletion = nil }
         } message: {
-            Text("Permanently deletes this system's own Maintenance subfolder and everything inside it — any donor ROMs dropped there for \"Repair from Maintenance Folder…\" are gone. Every OTHER system's own subfolder is untouched. This cannot be undone, and it stays deleted until something genuinely needs it again (running \"Repair from Maintenance Folder…\", or reconfiguring the Maintenance root here) — simply viewing this system again will not bring it back.")
+            Text("Permanently deletes this system's own Maintenance subfolder and everything inside it — any donor ROMs dropped there for \"Find ROMs…\" are gone. Every OTHER system's own subfolder is untouched. This cannot be undone, and it stays deleted until something genuinely needs it again (running \"Find ROMs…\", or reconfiguring the Maintenance root here) — simply viewing this system again will not bring it back.")
         }
     }
 

@@ -147,6 +147,7 @@ struct ContentView: View {
         .transaction { $0.disablesAnimations = true }
         .onAppear {
             missingDependencies = HomebrewLibraryDependency.all.filter { !HomebrewDylibLoader.isAvailable($0) }
+            preloadOtherSystemsInBackground()
         }
         .alert(
             "Missing dependency",
@@ -277,6 +278,43 @@ struct ContentView: View {
         let ordered = categories.filter { !$0.isEmpty }.sorted() + (categories.contains("") ? [""] : [])
         return ordered.map { category in
             (category: category, systems: store.systems.filter { $0.category == category })
+        }
+    }
+
+    /// jensyleo's own request (2026-09-26), after a full-session slowness
+    /// audit: "para el tema de primera vez que inicia la app... has que la
+    /// app haga un trabajo en background para ir precargando estos
+    /// elementos." Only the initially-selected system gets its DAT/report
+    /// loaded normally (`LibraryDetailView`'s own `.onAppear`) — every OTHER
+    /// configured system stayed genuinely cold until first visited, which
+    /// then paid the SAME "first time" cost the user was noticing at
+    /// launch, just deferred to whenever they actually switched to it. This
+    /// warms `LibraryViewModel.sharedDATCache`/`sharedAuditReportCache` for
+    /// every one of THOSE systems, one low-priority background `Task`
+    /// each, right after launch — so switching to any of them later, no
+    /// matter how much later, already finds a warm cache instead of a cold
+    /// SQLite read.
+    ///
+    /// A throwaway `LibraryViewModel()` per system is used only for
+    /// `preloadDAT` (an ordinary `async` instance method whose own
+    /// `Task { await self.preloadDAT(...) }` — see `startPreloadDAT` —
+    /// already keeps that instance alive for exactly as long as the load
+    /// takes, via its own strong closure capture; no separate lifetime
+    /// management needed here). The persisted-report half instead uses the
+    /// dedicated `static preloadPersistedReportInBackground`, which needs no
+    /// instance at all. `.utility`/`.background` priority throughout — this
+    /// should never compete with whichever system the user is ACTUALLY
+    /// looking at right now for CPU or I/O bandwidth.
+    private func preloadOtherSystemsInBackground() {
+        let otherSystems = store.systems.filter { $0.id != store.selectedSystemID }
+        for system in otherSystems {
+            Task.detached(priority: .background) {
+                let warmer = await LibraryViewModel()
+                await warmer.preloadDAT(system: system)
+            }
+            Task.detached(priority: .background) {
+                await LibraryViewModel.preloadPersistedReportInBackground(system: system)
+            }
         }
     }
 

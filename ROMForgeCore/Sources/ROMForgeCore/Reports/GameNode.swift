@@ -107,7 +107,7 @@ public struct GameNode: Identifiable, Sendable {
     /// The same majority-vote-verified archive `actualFileName` names,
     /// as a full `URL` rather than just its last path component — needed
     /// anywhere a caller must actually READ/WRITE that file (a scoped
-    /// rescan, "Repair from Maintenance Folder…", a context-menu action),
+    /// rescan, "Find ROMs…", a context-menu action),
     /// not just display its name.
     ///
     /// Real bug found live by jensyleo (2026-09-21): a hand-rolled
@@ -137,7 +137,7 @@ public struct GameNode: Identifiable, Sendable {
 
     /// A genuinely-owned archive path for this game, WITHOUT `actualFileURL`'s
     /// own majority-of-`entries.count` requirement — needed for scoping
-    /// purposes (a scoped rescan, "Repair from Maintenance Folder…") where
+    /// purposes (a scoped rescan, "Find ROMs…") where
     /// ANY single real, non-borrowed file this game legitimately owns is
     /// enough to act on, even for a game whose collection is mostly
     /// `.missing` (so `actualFileURL`'s stricter majority check, tuned for

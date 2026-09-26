@@ -255,7 +255,21 @@ private struct DatabaseTreeNode: Identifiable {
 /// state mid-render. Every rom row belonging to the same zip shares one
 /// entry, so a table with hundreds of rows from a handful of archives only
 /// ever reads each archive's End of Central Directory record once.
+@MainActor
 private final class ZipCommentCache {
+    /// Shared across every system, not just one `LibraryDetailView` —
+    /// jensyleo's own report (2026-09-26), same full-session slowness audit
+    /// that added `LibraryViewModel.sharedAuditReportCache`: this used to be
+    /// a plain `private let zipCommentCache = ZipCommentCache()` stored
+    /// property, so it started completely empty again every time
+    /// `LibraryDetailView`'s `.id(system.id)` (`ContentView.swift`) tore
+    /// down and recreated the view for a system switch — even switching
+    /// BACK to a system already fully warmed moments earlier. Every access
+    /// here happens on the main actor already (render-path reads, or a
+    /// `MainActor.run` block inside a background recompute), so one shared
+    /// instance needs no additional synchronization of its own.
+    static let shared = ZipCommentCache()
+
     private var storage: [URL: String?] = [:]
 
     func comment(forZipAt url: URL) -> String? {
@@ -273,12 +287,25 @@ private final class ZipCommentCache {
     /// to forget a URL it once read, so every lookup after the first one
     /// silently returned the stale, pre-removal comment forever, no
     /// matter how many times the archive was rescanned or how successful
-    /// the removal actually was. Cleared entirely whenever the audit
-    /// report itself changes (any real scan completing) — cheap (just a
-    /// dictionary, lazily refilled from actual reads afterward) and
-    /// correct regardless of which specific archive(s) a scan touched.
-    func invalidateAll() {
-        storage.removeAll()
+    /// the removal actually was. Originally cleared entirely (`invalidateAll()`)
+    /// whenever the audit report changed; `invalidate(underAnyOf:)` below
+    /// replaced every call site once this cache became shared across
+    /// systems (2026-09-26) — a true full wipe would have thrown away every
+    /// OTHER system's already-warmed comments too.
+    ///
+    /// Only forgets URLs that actually live under one of `folders`, so a
+    /// scoped scan (e.g. "Remove Zip Comments…" on one folder) doesn't force
+    /// a fresh re-read of every
+    /// OTHER folder's already-correct, already-cached comments too. See
+    /// `LibraryViewModel.lastScanFolders`'s own doc comment for the report
+    /// this fixes.
+    func invalidate(underAnyOf folders: [URL]) {
+        guard !folders.isEmpty else { return }
+        let standardizedFolders = folders.map { $0.standardizedFileURL.path }
+        storage = storage.filter { url, _ in
+            let path = url.standardizedFileURL.path
+            return !standardizedFolders.contains { path == $0 || path.hasPrefix($0 + "/") }
+        }
     }
 
     /// Warms the cache with already-computed reads — jensyleo's own report
@@ -304,6 +331,30 @@ private final class ZipCommentCache {
         for (url, comment) in values {
             storage[url] = comment
         }
+    }
+
+    /// Read-only snapshot of the whole cache — captured on `@MainActor`
+    /// right before `triggerCachedGameDataRecompute()`'s own `Task.detached`
+    /// starts, so that background task can skip re-reading (real, possibly
+    /// NAS-backed, disk I/O) any zip it already has a comment for. Real bug
+    /// found live by jensyleo (2026-09-26): "se tiende a colgar cuando se da
+    /// clic en los rom folder" — the preload loop below had no such check
+    /// at all, so EVERY folder click re-read EVERY zip's comment again,
+    /// even the tenth time selecting a folder already fully cached.
+    ///
+    /// Deliberately returns the `Dictionary` itself, NOT `Set(storage.keys)`
+    /// — jensyleo's own follow-up report (2026-09-26), general app-wide
+    /// slowness right after this fix landed, toggles included: `Dictionary`/
+    /// `Set` are copy-on-write value types, so handing back `storage`
+    /// directly is an O(1) retain, never actually copied since the caller
+    /// only ever reads it — but `Set(storage.keys)` allocates and rehashes
+    /// a brand-new `Set` from every key, a real O(n) synchronous pass on
+    /// the main thread, on every single trigger (folder click, toggle
+    /// flip) once the real collection's cache holds tens of thousands of
+    /// entries. Callers check membership with `snapshot[url] != nil`
+    /// instead of `.contains(url)`.
+    var snapshot: [URL: String?] {
+        storage
     }
 }
 
@@ -533,7 +584,7 @@ private extension View {
         }
     }
 
-    /// "Repair from Maintenance Folder…"'s own confirmation dialog, its
+    /// "Find ROMs…"'s own confirmation dialog, its
     /// own separate modifier for the same reason `fase2Step4SplitConfirmation`
     /// above is. jensyleo's own request (2026-09-14): "fusionalo con
     /// repair from maintenance folder" — this one action now covers BOTH
@@ -553,7 +604,7 @@ private extension View {
             Button("Repair", action: onConfirm)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Each missing rom is filled in, and each hash-mismatched rom's bad content is replaced, using a verified-correct copy found in the read-only Maintenance folder configured in Settings → Systems → MAME (or the system's own ROM folders, per Settings → Fix → \"Search missing ROMs in\"). Nothing there is ever renamed, moved, or deleted.")
+            Text("Each missing rom is filled in, and each hash-mismatched rom's bad content is replaced, using a verified-correct copy found in the read-only Maintenance folder configured in Settings → Systems → MAME, or in any of the system's own configured ROM folders. Nothing there is ever renamed, moved, or deleted.")
         }
     }
 
@@ -1339,7 +1390,7 @@ struct LibraryDetailView: View {
     /// of its rom rows. A plain reference-type cache (not `@State`) so
     /// filling it while `infoText(for:)` runs during view-body evaluation
     /// never mutates SwiftUI state mid-render.
-    private let zipCommentCache = ZipCommentCache()
+    private let zipCommentCache = ZipCommentCache.shared
     /// See `GamesByNameCache`'s own doc comment — this is what keeps the
     /// "Clone of" column from rebuilding the whole DAT index once per row,
     /// per layout pass.
@@ -1780,6 +1831,30 @@ struct LibraryDetailView: View {
     @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
     @AppStorage(DetailPanelRomFieldSettings.showDumpStatusKey) private var showDetailRomDumpStatus = true
     @AppStorage(DetailPanelRomFieldSettings.showTypeKey) private var showDetailRomType = true
+    /// jensyleo's own request (2026-09-26): "en la vista de la base de
+    /// datos configura que si el juego no tiene clones la vista de games
+    /// no muestre nada, solo la de roms" — browsing "Database" and landing
+    /// on a standalone game (no parent, no clones at all) makes the Games
+    /// panel a redundant single-row table repeating what the sidebar
+    /// selection already says. `selectedGameFamilyRootMachineName` is
+    /// already exactly "does this selected game belong to any clone family
+    /// at all" — `familyRootMachineName(for:)` only ever returns non-`nil`
+    /// for a parent (has children) or a clone (has a `cloneOf`), so reusing
+    /// it here needs no new state. Scoped to an actual Database game
+    /// selection (`selectedDatabaseFilter`/`selectedGameID` both set) —
+    /// never fires while browsing "Rom folder", where a folder's Games
+    /// table is never just one family.
+    ///
+    /// jensyleo's own immediate follow-up, same request: "no es necesario
+    /// que dejes de mostrar el panel Games, te sugiero que muestres el
+    /// nombre del juego en este panel para que no lo tengas que ocultar" —
+    /// so this no longer hides the whole pane (see `visibleTopPanes`, which
+    /// went back to its original, unconditional `showGamesPanel` check);
+    /// `gamesList` itself now reads this to swap its `Table` for a plain
+    /// name label instead.
+    private var shouldShowGameNameInsteadOfTableForDatabaseSelection: Bool {
+        selectedDatabaseFilter != nil && selectedGameID != nil && selectedGameFamilyRootMachineName == nil
+    }
     private var visibleTopPanes: [SplitPane] {
         var panes: [SplitPane] = []
         if showDatabaseTree || showRomFolderTree { panes.append(SplitPane(minLength: 150) { databaseList }) }
@@ -2592,7 +2667,7 @@ struct LibraryDetailView: View {
     @State private var showContextMenuRemoveRedundantRomsConfirmation = false
     @State private var contextMenuRemoveRedundantRomsURLs: [URL] = []
 
-    /// "Repair from Maintenance Folder…" state — same preview-then-confirm
+    /// "Find ROMs…" state — same preview-then-confirm
     /// shape as "Repair from Sibling Sets…", except the preview itself
     /// scans an external folder and so needs an `await`, unlike every
     /// other Fase 2 preview here (all instant, matchReport-only lookups).
@@ -3126,7 +3201,7 @@ struct LibraryDetailView: View {
             // anything irrecoverably, matching the context-menu version's
             // own no-confirmation behavior.
             ToolbarAction(
-                id: "repairFromMaintenanceFolder", title: "Repair from Maintenance Folder…",
+                id: "repairFromMaintenanceFolder", title: "Find ROMs…",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
                 help: LibraryViewModel.modificationsEnabled
                     ? "Fill in a missing rom, or replace a hash-mismatched rom's bad content, by copying a verified-correct copy from the optional, read-only Maintenance folder configured in Settings → Systems → MAME"
@@ -3228,7 +3303,7 @@ struct LibraryDetailView: View {
                 id: "removeZipComments", title: "Remove Zip Comments…",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
                 help: LibraryViewModel.modificationsEnabled
-                    ? "Strip the trailing comment field from every matched archive, in place"
+                    ? "Strip the trailing comment field from every matched archive inside the selected folder, in place"
                     : "Disabled for now — enable file modifications in Settings → General first"
             ) {
                 startRemoveZipComments()
@@ -3890,10 +3965,24 @@ struct LibraryDetailView: View {
             applyOrRestoreBIOSColumnsIfNeeded()
         }
         .onChange(of: viewModel.auditReport) {
-            // See `ZipCommentCache.invalidateAll()`'s own doc comment —
-            // a real scan can change (or remove) any archive's own ZIP
-            // comment, and this cache has no other way to notice.
-            zipCommentCache.invalidateAll()
+            // See `ZipCommentCache.invalidate(underAnyOf:)`'s own doc
+            // comment — a real scan can change (or remove) any archive's
+            // own ZIP comment, and this cache has no other way to notice.
+            //
+            // Scoped to `viewModel.lastScanFolders` when this scan was
+            // itself scoped (see that property's own doc comment for the
+            // "more than a minute to refresh" report this fixes) — a
+            // whole-system scan (`nil`) means every one of THIS system's
+            // own folders was covered, so those are what gets invalidated.
+            //
+            // Never a true `invalidateAll()` anymore — jensyleo's own
+            // report (2026-09-26): now that this cache is shared across
+            // every system (`ZipCommentCache.shared`, so re-visiting an
+            // already-warmed system doesn't start cold again), a true
+            // whole-cache wipe here would also throw away every OTHER
+            // system's already-warmed comments just because THIS one
+            // finished a scan.
+            zipCommentCache.invalidate(underAnyOf: viewModel.lastScanFolders ?? system.romFolderURLs)
             refreshCachedGameDataAfterAuditReportChangeAsync()
             // See `organizeBIOSFilesAvailableCache`'s own doc comment —
             // recomputed here, once per real scan result, never from a
@@ -4305,18 +4394,33 @@ struct LibraryDetailView: View {
         Task { await viewModel.createDummyRoms(system: system) }
     }
 
+    /// jensyleo's own report (2026-09-26): "Remove Zip Comments" from the
+    /// toolbar's own Fix menu reported "Nothing to remove" against his real
+    /// collection, even though the currently-selected folder visibly had
+    /// matched archives with real comments — the same file worked fine
+    /// from the Games table's own context menu. Root cause: this was the
+    /// ONE Fix action that never scoped itself to `selectedRomFolder` at
+    /// all (every sibling action — `startRemoveUselessFiles`,
+    /// `startRemoveRedundantFiles`, etc. — does), so it always walked
+    /// EVERY folder across the whole system instead of just the one being
+    /// looked at. Now matches that same established pattern.
     private func startRemoveZipComments() {
-        removeZipCommentsCount = viewModel.planRemoveZipCommentsPreviewCount()
+        guard let selectedRomFolder else {
+            viewModel.logWarning("Select a ROM folder first — \"Remove Zip Comments…\" only ever acts on the folder currently selected.")
+            return
+        }
+        removeZipCommentsCount = viewModel.planRemoveZipCommentsPreviewCount(scopeFolders: [selectedRomFolder])
         guard removeZipCommentsCount > 0 else {
-            viewModel.logWarning("Nothing to remove — no matched archive in this scan has a comment.")
+            viewModel.logWarning("Nothing to remove — no matched archive inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan has a comment.")
             return
         }
         showRemoveZipCommentsConfirmation = true
     }
 
     private func commitRemoveZipComments() {
+        let scopeFolders = selectedRomFolder.map { [$0] } ?? []
         Task {
-            await viewModel.removeZipComments(system: system)
+            await viewModel.removeZipComments(system: system, scopeFolders: scopeFolders)
             zipCommentTableReloadToken += 1
         }
     }
@@ -4616,7 +4720,7 @@ struct LibraryDetailView: View {
                 // visible as a genuine success or failure.
                 if FixResultPopupSettings.isEnabled {
                     viewModel.fixResultAlert = LibraryViewModel.FixResultAlert(
-                        title: "Repair from Maintenance Folder",
+                        title: "Find ROMs",
                         isSuccess: true,
                         message: "Nothing to repair\(LibraryViewModel.scopeSuffixForLog(scopeFolders)) — every rom already matches, or there's no known-good donor in the Maintenance folder for what's missing."
                     )
@@ -5564,8 +5668,22 @@ struct LibraryDetailView: View {
             // moment a real search starts means there's always somewhere
             // for a match to show up, without requiring an extra manual
             // click first.
-            if !databaseSearchText.isEmpty, let filter = selectedDatabaseFilter, !expandedDatabaseCategories.contains(filter) {
-                expandedDatabaseCategories.insert(filter)
+            if !databaseSearchText.isEmpty {
+                if expandedDatabaseCategories.isEmpty {
+                    // jensyleo's own follow-up request (2026-09-26): the
+                    // fix just above only ever expanded the currently
+                    // *selected* category, which could be some OTHER,
+                    // narrower category than "All games" (or nothing at
+                    // all, e.g. standing on "Rom folder" instead of
+                    // "Database") — with literally no tree open yet,
+                    // always open "All games" specifically: the one
+                    // category that can always answer any search (every
+                    // other one is a narrower subset of it), same as the
+                    // empty-selection default elsewhere in this file.
+                    expandedDatabaseCategories.insert(.allGames)
+                } else if let filter = selectedDatabaseFilter, !expandedDatabaseCategories.contains(filter) {
+                    expandedDatabaseCategories.insert(filter)
+                }
             }
             refreshExpandedDatabaseCategoryCachesAsync(debounced: true)
         }
@@ -5707,7 +5825,7 @@ struct LibraryDetailView: View {
                     // actually existing, matching what deleting it is
                     // supposed to mean; it reappears on its own the next
                     // time something legitimately recreates it (a real
-                    // "Repair from Maintenance Folder…" run, or explicitly
+                    // "Find ROMs…" run, or explicitly
                     // via Settings).
                     // jensyleo's own follow-up (2026-09-16): "cuando la NAS
                     // está desconectada, reporta todos los folder menos el
@@ -5775,6 +5893,13 @@ struct LibraryDetailView: View {
                                 : "Maintenance folder (read-only) — click to view it in the Games panel — \(maintenanceSubfolder.path)"
                         )
                         .contextMenu {
+                          // `.labelStyle(.titleAndIcon)` forced via `Group`
+                          // below — macOS/SwiftUI's `.contextMenu` otherwise
+                          // silently drops each `Button`'s `Label` icon
+                          // (title-only), unlike menu-bar `.commands`.
+                          // Confirmed via a real screenshot (jensyleo,
+                          // 2026-09-26).
+                          Group {
                             // jensyleo's own request (2026-09-14): "el
                             // Maintenance folder también debe tener esas
                             // mismas opciones de click de contexto" — same
@@ -5814,6 +5939,8 @@ struct LibraryDetailView: View {
                             } label: {
                                 Label("Delete Maintenance Subfolder…", systemImage: "trash")
                             }
+                          }
+                          .labelStyle(.titleAndIcon)
                         }
                     }
                     // BIOS folder — jensyleo's own request (2026-09-24):
@@ -5847,6 +5974,7 @@ struct LibraryDetailView: View {
                         .listRowBackground(selectedRomFolder == biosFolder ? Color.accentColor.opacity(0.85) : Color.clear)
                         .help("BIOS folder — every scan reads it automatically; \"Organize BIOS Files…\" (toolbar → Fix) moves BIOS files in here — \(biosFolder.path)")
                         .contextMenu {
+                          Group {
                             // jensyleo's own request (2026-09-24): "la
                             // carpeta BIOS también debe tener la opción de
                             // escaneo como los rom folder" — same real scan
@@ -5868,6 +5996,8 @@ struct LibraryDetailView: View {
                             } label: {
                                 Label("Reveal in Finder", systemImage: "folder")
                             }
+                          }
+                          .labelStyle(.titleAndIcon)
                         }
                     }
                     // Complementary Chips folder — same exact treatment as
@@ -5889,6 +6019,7 @@ struct LibraryDetailView: View {
                         .listRowBackground(selectedRomFolder == chipsFolder ? Color.accentColor.opacity(0.85) : Color.clear)
                         .help("Complementary Chips folder — every scan reads it automatically; \"Organize Complementary Chips…\" (toolbar → Fix) moves shared device files in here — \(chipsFolder.path)")
                         .contextMenu {
+                          Group {
                             Button {
                                 viewModel.startScan(system: system, folders: [chipsFolder]) { warnIfSpecialFolderEmpty(chipsFolder, kind: "Complementary Chips") }
                             } label: {
@@ -5901,6 +6032,8 @@ struct LibraryDetailView: View {
                             } label: {
                                 Label("Reveal in Finder", systemImage: "folder")
                             }
+                          }
+                          .labelStyle(.titleAndIcon)
                         }
                     }
                     // Samples folder — jensyleo's own request (2026-09-24):
@@ -5930,6 +6063,7 @@ struct LibraryDetailView: View {
                         .listRowBackground(selectedRomFolder == samplesFolder ? Color.accentColor.opacity(0.85) : Color.clear)
                         .help("Samples folder — every scan reads it, but its content is never part of this system's own audit (samples have no DAT hash to match against) — \"Fix Samples\" (toolbar → Fix) is what copies matching zips in here — \(samplesFolder.path)")
                         .contextMenu {
+                          Group {
                             Button {
                                 viewModel.startScan(system: system, folders: [samplesFolder]) { warnIfSpecialFolderEmpty(samplesFolder, kind: "Samples") }
                             } label: {
@@ -5942,6 +6076,8 @@ struct LibraryDetailView: View {
                             } label: {
                                 Label("Reveal in Finder", systemImage: "folder")
                             }
+                          }
+                          .labelStyle(.titleAndIcon)
                         }
                     }
                 }
@@ -6066,7 +6202,7 @@ struct LibraryDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Permanently deletes this system's own Maintenance subfolder and everything inside it — any donor ROMs dropped there for \"Repair from Maintenance Folder…\" are gone. Every OTHER system's own subfolder is untouched. This cannot be undone, and it stays deleted until something genuinely needs it again (running \"Repair from Maintenance Folder…\", or reconfiguring the Maintenance root in Settings) — simply viewing this system again will not bring it back.")
+            Text("Permanently deletes this system's own Maintenance subfolder and everything inside it — any donor ROMs dropped there for \"Find ROMs…\" are gone. Every OTHER system's own subfolder is untouched. This cannot be undone, and it stays deleted until something genuinely needs it again (running \"Find ROMs…\", or reconfiguring the Maintenance root in Settings) — simply viewing this system again will not bring it back.")
         }
     }
 
@@ -6193,6 +6329,7 @@ struct LibraryDetailView: View {
         .reportReorderFrame(index ?? -1)
         .foregroundStyle(selectedRomFolder == url && controlActiveState != .inactive ? Color.white : Color.primary)
         .contextMenu {
+          Group {
             // jensyleo's own request (2026-09-14): a ROM folder's own
             // context menu had no way to scan just that one folder without
             // first selecting it and reaching for the toolbar's own "Scan"
@@ -6211,6 +6348,8 @@ struct LibraryDetailView: View {
             } label: {
                 Label("Remove Folder…", systemImage: "trash")
             }
+          }
+          .labelStyle(.titleAndIcon)
         }
         // jensyleo's own report (2026-08-13): arrowing down/up through
         // "ROM folder" never scrolled the list — `moveDatabaseSelection(by:)`
@@ -6712,6 +6851,21 @@ struct LibraryDetailView: View {
                     Spacer(minLength: 24)
                 }
                 .frame(maxWidth: .infinity)
+            } else if shouldShowGameNameInsteadOfTableForDatabaseSelection, let selectedGameID {
+                // jensyleo's own request (2026-09-26): a standalone Database
+                // game (no clone family at all) keeps this whole panel
+                // visible — just its own name instead of a one-row `Table`
+                // repeating the exact same thing the sidebar selection
+                // already says.
+                VStack {
+                    Spacer(minLength: 24)
+                    Text(gameDescription(forMachineName: selectedGameID))
+                        .font(.title3)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                    Spacer(minLength: 24)
+                }
+                .frame(maxWidth: .infinity)
             } else if displayedGameNodes.isEmpty {
                 gamesEmptyStateMessage
             } else {
@@ -6787,7 +6941,7 @@ struct LibraryDetailView: View {
             if let maintenanceFolderReadErrorMessage {
                 text = "Couldn't read the Maintenance folder: \(maintenanceFolderReadErrorMessage) — check the connection (NAS/pendrive/external drive) and try again."
             } else {
-                text = "This is the read-only Maintenance folder — it's currently empty, and never scanned into this system's own audit (donor files only count when \"Repair from Maintenance Folder…\" reads them)."
+                text = "This is the read-only Maintenance folder — it's currently empty, and never scanned into this system's own audit (donor files only count when \"Find ROMs…\" reads them)."
             }
         } else if let selectedRomFolder {
             text = "\"\(selectedRomFolder.lastPathComponent)\" is empty — no ROMs found here yet."
@@ -7759,7 +7913,7 @@ struct LibraryDetailView: View {
                 // was checked BEFORE the "a real donor exists in
                 // Maintenance" one, so a genuinely fixable row still read
                 // as a dead end and never hinted that right-clicking now
-                // offers "Repair from Maintenance Folder…".
+                // offers "Find ROMs…".
                 base = entry.hasMaintenanceDonor
                     ? "Available in Maintenance folder"
                     : "Available in another game (\(entry.foundElsewhereArchiveName!))"
@@ -8141,6 +8295,15 @@ struct LibraryDetailView: View {
             }
             var refreshed = existingCache
             for filter in filtersToRecompute {
+                // jensyleo's own report (2026-09-26): see
+                // `triggerCachedGameDataRecompute()`'s own doc comment —
+                // `.cancel()` alone never stops already-running CPU work,
+                // so a superseded run of this loop (e.g. the search text
+                // changing again before the previous keystroke's recompute
+                // finished) used to keep processing every remaining
+                // expanded category anyway, purely wasted work genuinely
+                // contending with whatever DOES still matter.
+                guard !Task.isCancelled else { return }
                 refreshed[filter] = Self.computeTreeChildren(
                     forCategory: filter,
                     hasAuditReport: hasAuditReport, auditEntries: entries, selectedRomFolder: folder, preloadedGames: preloadedGames,
@@ -8273,27 +8436,56 @@ struct LibraryDetailView: View {
         let showUnknown = showUnknownArchives
         let statusFilters = activeStatusFilters
         let hidden1G1RNames = show1G1ROnly ? cachedOneGameOneROMSummary.hiddenWhenFilteredNames : []
+        let alreadyCachedZipComments = zipCommentCache.snapshot
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
             if isBurst {
                 try? await Task.sleep(for: Self.keyboardNavigationDebounceDelay)
                 guard !Task.isCancelled else { return }
             }
+            // TEMP PERF INSTRUMENTATION (2026-09-26, jensyleo's own report
+            // of a single, isolated KONAMI→CPS1 click taking up to 7s) —
+            // remove once the bottleneck is confirmed/fixed.
+            let pt0 = Date()
             let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
+            let pt1 = Date()
             let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
+            let pt2 = Date()
             let baseNodes = Self.computeBaseGameNodes(
                 hasAuditReport: hasAuditReport, auditEntries: entries,
                 selectedRomFolder: folder, preloadedGames: preloadedGames, selectedDatabaseFilter: databaseFilter,
                 gamesInFolder: gamesInFolder, gameAggregateStatusByName: aggStatus, combineRomAndCHD: combine,
                 precomputedScoped: scoped
             )
+            let pt3 = Date()
+            // jensyleo's own report (2026-09-26): "cancellation" via
+            // `pendingFolderRecompute?.cancel()` above is purely
+            // cooperative — Swift never actually interrupts a detached
+            // task's own synchronous CPU work just because `.cancel()` was
+            // called on it. A superseded task (e.g. rapidly switching ROM
+            // folders) used to keep running this ENTIRE pipeline to
+            // completion regardless, genuinely contending for CPU with the
+            // NEWER task that's the one that actually matters — self-
+            // inflicted contention entirely within ROMForge's own process
+            // (matches jensyleo's own observation that ROMForge alone gets
+            // slow while every other app stays fluid). Checked here, right
+            // before the two most expensive remaining steps
+            // (`computeGameNodes`/`indexByID`, the ones the perf log showed
+            // taking anywhere from ~1µs to 11+ real seconds under
+            // contention), so a stale run bails out immediately instead of
+            // still paying that full cost for a result nobody will ever see.
+            guard !Task.isCancelled else { return }
             let nodes = Self.computeGameNodes(
                 baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
                 activeStatusFilters: statusFilters, hiddenOneGameOneROMNames: hidden1G1RNames
             )
+            let pt4 = Date()
             let hiddenCount = baseNodes.filter { hidden1G1RNames.contains($0.name) }.count
             let nodesByID = Self.indexByID(nodes)
+            let pt5 = Date()
+            guard !Task.isCancelled else { return }
             let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
             let unknownCount = Self.computeUnknownArchivesCount(baseNodes: baseNodes)
+            let pt6 = Date()
             // Real gap found live by jensyleo (2026-09-24), right after the
             // 2026-09-23 scroll-hang fix: that fix only preloaded zip
             // comments inside `refreshCachedGameDataAfterAuditReportChangeAsync()`
@@ -8306,16 +8498,49 @@ struct LibraryDetailView: View {
             // random hang precisely because it only happened for a
             // genuinely NOT-yet-cached folder. See `ZipCommentCache
             // .preload(_:)`'s own doc comment.
+            //
+            // jensyleo's own follow-up report (2026-09-26): even after the
+            // "skip already-cached" fix above, the app still genuinely
+            // froze on ANY click, "Database" categories included (capping
+            // `nodes` itself to a small prefix was tried first and reverted
+            // — `nodes` here is the FULL scoped list regardless, the Games
+            // `Table` just slices it for display via `gamesTableVisibleCap`,
+            // and "Load more" never triggers a fresh recompute — so bounding
+            // the preload the same way would have just brought back the
+            // 2026-09-23 per-row scroll-hang bug for every row past the
+            // first page). Real root cause instead: `Task.detached` still
+            // runs on Swift concurrency's own small, COOPERATIVE thread
+            // pool (sized to the CPU's core count) — a blocking, synchronous
+            // read loop over possibly thousands of NAS-backed files run
+            // there doesn't yield that thread back, and each rapid
+            // click/toggle starts ANOTHER overlapping `Task.detached` doing
+            // the same before the last one finishes (cancellation is
+            // cooperative — it doesn't interrupt a blocking call already in
+            // flight). Enough of these piling up exhausts that pool
+            // entirely, and once it's exhausted, EVERY `await` anywhere in
+            // the app — including totally unrelated ones on the main
+            // actor — has nowhere left to resume, which reads as the whole
+            // app being frozen solid. Moving the actual blocking read loop
+            // onto a plain, effectively unbounded `DispatchQueue` (real OS
+            // threads, not the constrained cooperative pool) via a checked
+            // continuation keeps this same complete, correct preload
+            // coverage while never starving the pool other `await`s depend
+            // on to make progress at all.
             let zipURLsToPreload = Set(nodes.flatMap { node in
                 node.entries.compactMap { entry -> URL? in
                     guard let path = entry.path, path.pathExtension.lowercased() == "zip" else { return nil }
                     return path
                 }
-            })
-            var preloadedZipComments: [URL: String?] = [:]
-            for url in zipURLsToPreload {
-                preloadedZipComments[url] = ZipCommentReader.comment(ofZipAt: url)
-            }
+            }).subtracting(alreadyCachedZipComments.keys)
+            let pt7 = Date()
+            let preloadedZipComments = await Self.readZipComments(zipURLsToPreload)
+            let pt8 = Date()
+            PerfDebugLog.write("""
+            triggerCachedGameDataRecompute: entries=\(entries.count) zipURLsToPreload=\(zipURLsToPreload.count) \
+            gamesInFolder=\(pt1.timeIntervalSince(pt0))s scoped=\(pt2.timeIntervalSince(pt1))s baseNodes=\(pt3.timeIntervalSince(pt2))s \
+            gameNodes=\(pt4.timeIntervalSince(pt3))s indexByID=\(pt5.timeIntervalSince(pt4))s scopedCounts=\(pt6.timeIntervalSince(pt5))s \
+            zipURLsSet=\(pt7.timeIntervalSince(pt6))s zipReads=\(pt8.timeIntervalSince(pt7))s TOTAL=\(pt8.timeIntervalSince(pt0))s
+            """)
             await MainActor.run {
                 // Guards against out-of-order completion, not just
                 // cancellation: once genuinely concurrent, a slower
@@ -8378,6 +8603,7 @@ struct LibraryDetailView: View {
         let statusFilters = activeStatusFilters
         let show1G1R = show1G1ROnly
         let regionOrder = RegionOrderSettings.order(from: regionOrderRaw)
+        let alreadyCachedZipComments = zipCommentCache.snapshot
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
             // TEMP PERF INSTRUMENTATION (2026-09-17) — remove once the
             // slow-launch bottleneck is identified.
@@ -8388,6 +8614,16 @@ struct LibraryDetailView: View {
             let t2 = Date()
             let oneGameOneROMSummary = OneGameOneROMSelector.compute(games: preloadedGames, regionOrder: regionOrder)
             let t3 = Date()
+            // jensyleo's own report (2026-09-26): see `triggerCachedGameDataRecompute()`'s
+            // own doc comment on why this checks cancellation explicitly —
+            // `.cancel()` alone never stops a detached task's own
+            // already-running CPU work, so a superseded run (this
+            // function's OWN prior call, from the previous scan/report
+            // change) used to keep burning real CPU competing with the
+            // newer one that's the only result anyone will ever see. This
+            // is the pipeline that runs after EVERY real scan, so it's the
+            // most consequential place to check.
+            guard !Task.isCancelled else { return }
             let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
             let t4 = Date()
             let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
@@ -8399,6 +8635,7 @@ struct LibraryDetailView: View {
                 precomputedScoped: scoped
             )
             let t6 = Date()
+            guard !Task.isCancelled else { return }
             let nodes = Self.computeGameNodes(
                 baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
                 activeStatusFilters: statusFilters, hiddenOneGameOneROMNames: show1G1R ? oneGameOneROMSummary.hiddenWhenFilteredNames : []
@@ -8414,11 +8651,11 @@ struct LibraryDetailView: View {
                     guard let path = entry.path, path.pathExtension.lowercased() == "zip" else { return nil }
                     return path
                 }
-            })
-            var preloadedZipComments: [URL: String?] = [:]
-            for url in zipURLsToPreload {
-                preloadedZipComments[url] = ZipCommentReader.comment(ofZipAt: url)
-            }
+            }).subtracting(alreadyCachedZipComments.keys)
+            // See `triggerCachedGameDataRecompute()`'s own doc comment on
+            // `readZipComments` for why this runs off Swift concurrency's
+            // own cooperative thread pool instead of inline here.
+            let preloadedZipComments = await Self.readZipComments(zipURLsToPreload)
             let t8 = Date()
             let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
             let t9 = Date()
@@ -9208,6 +9445,72 @@ struct LibraryDetailView: View {
         Dictionary(nodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
+    /// Reads every zip's own archive comment in `urls`, off Swift
+    /// concurrency's own cooperative thread pool entirely — see
+    /// `triggerCachedGameDataRecompute()`'s own doc comment (jensyleo's
+    /// report, 2026-09-26: the app froze solid on literally any click,
+    /// "Database" categories included) for the full root-cause. A plain
+    /// `DispatchQueue` gets real OS threads on demand, unlike
+    /// `Task.detached`, which still shares the small, fixed-size pool
+    /// EVERY `await` in the app depends on to make progress — a blocking,
+    /// synchronous loop of possibly thousands of NAS reads has no business
+    /// running there. `.userInitiated` here is the GCD QoS class (a
+    /// scheduling hint for these plain OS threads), unrelated to — and
+    /// safe to use alongside — the `Task.detached(priority: .userInitiated)`
+    /// callers already run under.
+    /// jensyleo's own report (2026-09-26): a single, isolated click from
+    /// KONAMI to CPS1 (no burst, nothing else competing) still took up to
+    /// 7 real seconds to update. Root cause: this used to read every URL
+    /// SEQUENTIALLY, one at a time, in a single dispatched block — moving
+    /// the work off Swift concurrency's cooperative pool (the earlier fix,
+    /// same day) never made the reads themselves run concurrently. For a
+    /// NAS-backed folder, each `ZipCommentReader.comment(ofZipAt:)` is a
+    /// real network round trip (open + seek-to-end + read); at even
+    /// 50-70ms apiece, ~100 archives in a folder like CPS1 adds up to
+    /// exactly this kind of multi-second wait, one file at a time.
+    /// `DispatchQueue.concurrentPerform` (same pattern already proven in
+    /// `AuditReportDatabase.loadEntries`'s own parallel rowid-partitioned
+    /// read, ROMForgeCore) lets the NAS/filesystem serve many of these
+    /// small reads at once instead — each worker writes only to its own
+    /// disjoint slot in a pre-sized array (no lock needed, no data race),
+    /// then the results are zipped back into the URL-keyed dictionary the
+    /// caller expects.
+    /// `@unchecked Sendable` wrapper for the raw buffer `readZipComments`
+    /// below writes into from `DispatchQueue.concurrentPerform` — genuinely
+    /// safe (every worker writes only to its own disjoint `index`, never
+    /// touching another's slot, same guarantee `AuditReportDatabase
+    /// .loadEntries`'s own identical pattern, ROMForgeCore, already
+    /// documents), but `UnsafeMutableBufferPointer` itself isn't Sendable,
+    /// so the compiler can't verify that on its own — this box is the
+    /// explicit, audited assertion that it's fine here, rather than a
+    /// plain `var` array silently tripping the same checker with no
+    /// documented reasoning at all (real audit finding, 2026-09-26).
+    private struct DisjointWriteBuffer: @unchecked Sendable {
+        let pointer: UnsafeMutableBufferPointer<String?>
+    }
+
+    private static func readZipComments(_ urls: Set<URL>) async -> [URL: String?] {
+        guard !urls.isEmpty else { return [:] }
+        let orderedURLs = Array(urls)
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let rawBuffer = UnsafeMutableBufferPointer<String?>.allocate(capacity: orderedURLs.count)
+                rawBuffer.initialize(repeating: nil)
+                defer { rawBuffer.deinitialize(); rawBuffer.deallocate() }
+                let buffer = DisjointWriteBuffer(pointer: rawBuffer)
+                DispatchQueue.concurrentPerform(iterations: orderedURLs.count) { index in
+                    buffer.pointer[index] = ZipCommentReader.comment(ofZipAt: orderedURLs[index])
+                }
+                var results: [URL: String?] = [:]
+                results.reserveCapacity(orderedURLs.count)
+                for (index, url) in orderedURLs.enumerated() {
+                    results[url] = rawBuffer[index]
+                }
+                continuation.resume(returning: results)
+            }
+        }
+    }
+
     // MARK: - "Play in MAME"
 
     /// Deliberately *not* gated on the currently-loaded DAT's own header
@@ -9643,8 +9946,8 @@ struct LibraryDetailView: View {
     /// own aggregate row icon without needing a separate variant.
     private func maintenanceDonorHelpText(for entry: AuditEntry) -> String {
         entry.status == .missing
-            ? "Missing, but a matching donor is staged in the Maintenance folder — run Fix → Repair from Maintenance Folder to pull it in"
-            : "Bad (hash mismatch), but a verified-correct copy is staged in the Maintenance folder — run Fix → Repair from Maintenance Folder to replace it"
+            ? "Missing, but a matching donor is staged in the Maintenance folder — run Fix → Find ROMs to pull it in"
+            : "Bad (hash mismatch), but a verified-correct copy is staged in the Maintenance folder — run Fix → Find ROMs to replace it"
     }
 
     /// The Roms panel's own status icon for one entry — same
@@ -9683,7 +9986,7 @@ struct LibraryDetailView: View {
             if status == .missing || status == .incorrect || status == .badDump, node.entries.contains(where: { $0.hasMaintenanceDonor }) {
                 Image(systemName: symbolName(for: .incorrect))
                     .foregroundStyle(AuditStatus.incorrect.tint)
-                    .help("At least one missing or hash-mismatched rom has a matching donor staged in the Maintenance folder — run Fix → Repair from Maintenance Folder to pull it in")
+                    .help("At least one missing or hash-mismatched rom has a matching donor staged in the Maintenance folder — run Fix → Find ROMs to pull it in")
             } else {
                 Image(systemName: symbolName(for: status)).foregroundStyle(status.tint)
             }

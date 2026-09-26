@@ -191,7 +191,7 @@ public enum DiskAuditor {
         // machine name (e.g. `"naomi"`) rather than its human-readable
         // description — same reasoning as `SurplusFile.requiredByGameMachineName`'s
         // own doc comment: `MaintenanceDonorDetector`/`RebuildPlanner` need
-        // an actual lookup key for a "Repair from Maintenance Folder" donor
+        // an actual lookup key for a "Find ROMs" donor
         // search, not display text.
         var diskSHA1ToGameMachineName: [String: String] = [:]
         for game in dat.games {

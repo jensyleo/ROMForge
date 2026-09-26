@@ -92,33 +92,3 @@ public enum CHDDuplicatePreference: String, CaseIterable, Identifiable, Sendable
     }
 }
 
-/// Where "Repair from Maintenance Folder…" looks for a donor file for a
-/// `.missing` rom — jensyleo's own request (2026-09-11). Lives in
-/// `ROMForgeCore` for the same reason as `CorruptedFilesPolicy`/
-/// `FileCasePolicy` above: `LibraryViewModel.planRepairFromMaintenanceFolder
-/// PreviewCount` plans directly from a value of this type.
-public enum MissingRomsSearchScope: String, CaseIterable, Identifiable, Sendable {
-    /// The system's own Maintenance subfolder only
-    /// (`MaintenanceFolderSettings.subfolderURL(for:)`) — the original,
-    /// narrower behavior this type replaces as the sole option. Nothing
-    /// outside that one folder is ever read.
-    case maintenanceFolderOnly
-    /// The Maintenance subfolder AND every one of the system's own
-    /// currently-configured ROM folders (`RomSystem.romFolderURLs`) — lets a
-    /// rom that's merely misplaced in a sibling folder (a different drive, a
-    /// region subfolder, an old backup location) donate to a `.missing` rom
-    /// elsewhere in the same system, not just a rom deliberately staged in
-    /// Maintenance. Still strictly read-only, same as the Maintenance-only
-    /// case — nothing here ever writes to a ROM folder, only reads from it
-    /// as a donor source.
-    case allDeclaredFolders
-
-    public var id: String { rawValue }
-
-    public var title: String {
-        switch self {
-        case .maintenanceFolderOnly: return "Maintenance Folder Only"
-        case .allDeclaredFolders: return "Maintenance Folder + All ROM Folders"
-        }
-    }
-}

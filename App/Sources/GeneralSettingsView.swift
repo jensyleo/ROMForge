@@ -69,7 +69,7 @@ struct GeneralSettingsView: View {
             // tab ("Colocar la opcion de Number of threads y colocar que
             // maximo 100"), moved here right after — "deja esa opcion de
             // performance en general" — since it governs every scan/hash
-            // pass in the app (Scan Folder, Repair from Maintenance Folder,
+            // pass in the app (Scan Folder, Find ROMs,
             // Repair from Sibling Sets, etc.), not something specific to
             // "Fix".
             Section("Performance") {
@@ -306,7 +306,7 @@ enum MaintenanceAutoScanOnSelectSettings {
 /// Optional, global "Maintenance folder" — jensyleo's own design
 /// (2026-09-02): a read-only donor folder ROMForge never renames, moves,
 /// or deletes anything in or from. The user drops new or extra dumps
-/// into it over time; Fase 2's "Repair from Maintenance Folder…" action
+/// into it over time; Fase 2's "Find ROMs…" action
 /// (see `LibraryViewModel.repairFromMaintenanceFolder`) scans it purely
 /// to find content that completes a `.missing` rom elsewhere in the
 /// currently scanned collection. Entirely optional — `nil` by default —
@@ -417,7 +417,7 @@ enum MaintenanceFolderSettings {
     /// no-op (not an error) when the subfolder simply doesn't exist yet —
     /// same "already the desired end state" reasoning `ensureSubfolderExists`
     /// already uses for the create direction. Stays deleted until something
-    /// genuinely needs it again (a "Repair from Maintenance Folder…" read,
+    /// genuinely needs it again (a "Find ROMs…" read,
     /// or explicitly re-running the Settings root setup) — jensyleo's own
     /// report (2026-09-16): it used to be silently re-created empty the
     /// next time this system's own detail view merely opened, which made a

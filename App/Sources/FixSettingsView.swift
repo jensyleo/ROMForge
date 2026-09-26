@@ -26,7 +26,6 @@ struct FixSettingsView: View {
     @AppStorage(FixPreferencesSettings.removeUselessRomsKey) private var removeUselessRoms = FixPreferencesSettings.removeUselessRomsDefault
     @AppStorage(FixPreferencesSettings.setsCasePolicyKey) private var setsCasePolicy = FixPreferencesSettings.setsCasePolicyDefault
     @AppStorage(FixPreferencesSettings.romsCasePolicyKey) private var romsCasePolicy = FixPreferencesSettings.romsCasePolicyDefault
-    @AppStorage(FixPreferencesSettings.missingRomsSearchScopeKey) private var missingRomsSearchScope = FixPreferencesSettings.missingRomsSearchScopeDefault
     @AppStorage(FixPreferencesSettings.chdDuplicatePreferenceKey) private var chdDuplicatePreference = FixPreferencesSettings.chdDuplicatePreferenceDefault
 
     var body: some View {
@@ -172,51 +171,21 @@ struct FixSettingsView: View {
                 }
             }
 
-            // jensyleo's own request (2026-09-11): "Colocar la opcion de:
-            // Solo buscar ROMS faltantes en la carpeta de mantenimiento o en
-            // cualquiera de las declaradas" — governs "Repair from
-            // Maintenance Folder…"'s own donor search (`LibraryViewModel
-            // .planRepairFromMaintenanceFolderPreviewCount`). Distinct from
-            // "Find missing roms in scavenging folders" below (a separate,
-            // still-unbuilt feature for arbitrary user-added folders outside
-            // any system's own configuration) — this one only ever searches
-            // folders the system ALREADY declares (its Maintenance
-            // subfolder, and optionally its own configured ROM folders).
-            // jensyleo's own request (2026-09-11): "esta opcion... debe
-            // estar ligada a la opcion de la pestaña general Maintenance
-            // folder, si esta no esta configurado (el folder) no debe
-            // aparecer como configurable en la pestaña fix" — this whole
-            // scope choice is meaningless without a Maintenance root
-            // configured at all: even "+ All ROM Folders" mode still
-            // requires the Maintenance subfolder to exist as PART of the
-            // search set (`LibraryViewModel
-            // .planRepairFromMaintenanceFolderPreviewCount`'s own
-            // `searchFolders` always starts from it), so "Repair from
-            // Maintenance Folder…" already refuses outright with no
-            // Maintenance root set, regardless of this setting's value.
-            Section("Find ROMS") {
-                if MaintenanceFolderSettings.folderURL != nil {
-                    Picker("Search missing ROMs in", selection: $missingRomsSearchScope) {
-                        ForEach(MissingRomsSearchScope.allCases) { scope in
-                            Text(scope.title).tag(scope)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    Text("\"Maintenance Folder Only\" looks solely at this system's own Maintenance subfolder — donors deliberately staged there. \"+ All ROM Folders\" also searches every one of this system's own currently-configured ROM folders, so a rom that's merely misplaced in a sibling folder (a different drive, a region subfolder, an old backup location) can donate too. Both are strictly read-only — nothing here ever writes to a ROM folder, only reads from it as a possible donor.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Button("Reset to Defaults") { missingRomsSearchScope = FixPreferencesSettings.missingRomsSearchScopeDefault }
-                        Spacer()
-                    }
-                } else {
-                    Text("No Maintenance folder configured yet")
-                        .foregroundStyle(.secondary)
-                    Text("This scope choice only applies to \"Repair from Maintenance Folder…\", which needs a Maintenance folder to search in the first place. Set one in Settings → General → \"Maintenance folder\" first, then this becomes configurable here.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            // jensyleo's own follow-up (2026-09-26), right after confirming
+            // that "Find ROMs…" (formerly "Repair from Maintenance
+            // Folder…") already crosses ROM folders unconditionally
+            // whenever it isn't scoped to one specific folder/file (its own
+            // donor search always includes the Maintenance subfolder AND
+            // every configured ROM folder in that case): "esta pierde
+            // sentido, quítalo" — the "Maintenance Folder Only" vs "+ All
+            // ROM Folders" choice this section used to offer here never
+            // actually changed anything observable, since the broader
+            // search already always ran whenever this action wasn't scoped
+            // to one specific folder. Removed outright rather than kept as
+            // a dead toggle — see `LibraryViewModel
+            // .planRepairFromMaintenanceFolderPreviewCount`'s own doc
+            // comment, which now always searches every configured ROM
+            // folder plus Maintenance in that unscoped case.
 
             // jensyleo's own request (2026-09-19), after a real kinst2.chd
             // sitting byte-identical BOTH directly in Nintendo's own ROM
@@ -270,11 +239,9 @@ struct FixSettingsView: View {
             // las ROMs para reparación de la carpeta de reparación o de
             // las ya agregadas a Rom Folder") — an arbitrary "scavenging"
             // folder unrelated to a system is explicitly out of scope by
-            // design, and "Repair from Maintenance Folder…" + its own
-            // Settings → Fix → "Find ROMS" → "Search missing ROMs in"
-            // scope picker already covers exactly the two sources this
-            // should ever search (the Maintenance subfolder, optionally
-            // plus the system's own already-configured ROM folders) — see
+            // design, and "Find ROMs…" already covers exactly the two
+            // sources this should ever search (the Maintenance subfolder
+            // and the system's own already-configured ROM folders) — see
             // ROADMAP.md's own note for the full reasoning.
             // "Fix samples" implemented 2026-09-11 (jensyleo: "implementalo,
             // es clave para MAME") as "Fix Samples…" in the toolbar's own

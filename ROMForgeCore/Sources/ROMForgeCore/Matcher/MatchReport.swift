@@ -99,7 +99,7 @@ public struct SurplusFile: Equatable, Sendable {
     /// description ("Naomi Bios"), not usable as a lookup key. jensyleo's
     /// own report (2026-09-17): a stray file recognized as belonging to
     /// another game (`requiredByGameDescription` set, `AuditEntry.game`
-    /// left `nil`) could never get a "Repair from Maintenance Folder"
+    /// left `nil`) could never get a "Find ROMs"
     /// donor search at all — `MaintenanceDonorDetector`/`RebuildPlanner`
     /// key their lookups by the DAT's own machine name, which this file's
     /// own entry never carried anywhere before this field existed. `nil`
@@ -173,7 +173,7 @@ public struct SurplusFile: Equatable, Sendable {
     /// `planRemoveRedundantRoms`/`fullyRedundantArchiveContainers` now check
     /// before ever offering to delete such a file — `requiredByGameDescription`
     /// itself stays exactly as informative as before (still shown in the UI,
-    /// still keys "Repair from Maintenance Folder" donor lookups), only the
+    /// still keys "Find ROMs" donor lookups), only the
     /// DELETE path gets the extra safety check.
     public let requiredByGameConfirmedRedundant: Bool
 

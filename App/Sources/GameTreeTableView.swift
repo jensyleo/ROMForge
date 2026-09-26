@@ -282,6 +282,22 @@ struct GameTreeTableView: View {
         // right-clicked, not whatever was selected before.
         .contextMenu(forSelectionType: GameNode.ID.self) { selection in
             if let id = selection.first, let node = cachedGameNodesByID[id] {
+                // jensyleo's own report (2026-09-26, with screenshot): every
+                // item in this context menu showed no icon at all, despite
+                // each one's own `Label(_:systemImage:)` — a real, known
+                // macOS/SwiftUI gap: a plain `Label`'s icon inside
+                // `.contextMenu`/`.contextMenu(forSelectionType:)` can
+                // silently fall back to `.titleOnly` depending on the
+                // exact macOS version, unlike the menu-bar `.commands`
+                // menu, which always shows them. Forcing `.titleAndIcon`
+                // explicitly (rather than relying on the default) is the
+                // cheap, well-known fix — applied ONCE here, to the whole
+                // menu's content via `Group`, rather than repeated on every
+                // individual `Button` below (including inside the nested
+                // "File Actions"/"Fix" submenus) — `.labelStyle` is an
+                // environment value, so setting it once here cascades to
+                // all of them.
+                Group {
                 Button {
                     scanFile(node)
                 } label: {
@@ -506,11 +522,13 @@ struct GameTreeTableView: View {
                         Button {
                             startRepairFromMaintenanceFolder(fileURLs)
                         } label: {
-                            Label("Repair from Maintenance Folder…", systemImage: "wrench.and.screwdriver")
+                            Label("Find ROMs…", systemImage: "wrench.and.screwdriver")
                         }
                         .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
                     }
                 }
+                }
+                .labelStyle(.titleAndIcon)
             }
         }
     }

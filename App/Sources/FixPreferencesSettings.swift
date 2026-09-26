@@ -75,17 +75,14 @@ public enum FixPreferencesSettings {
     public static let removeUselessRomsKey = "fixPreferences.removeUselessRoms"
     public static let removeUselessRomsDefault = false
 
-    /// Where "Repair from Maintenance Folder…" looks for a donor file —
-    /// **wired** (2026-09-11, jensyleo's own request): the Maintenance
-    /// subfolder only (the original, narrower behavior), or that subfolder
-    /// plus every one of the system's own currently-configured ROM folders.
-    /// See `MissingRomsSearchScope`'s own doc comment.
-    public static let missingRomsSearchScopeKey = "fixPreferences.missingRomsSearchScope"
-    public static let missingRomsSearchScopeDefault = MissingRomsSearchScope.maintenanceFolderOnly
-
-    public static func currentMissingRomsSearchScope() -> MissingRomsSearchScope {
-        MissingRomsSearchScope(rawValue: UserDefaults.standard.string(forKey: missingRomsSearchScopeKey) ?? "") ?? missingRomsSearchScopeDefault
-    }
+    /// Removed (2026-09-26, jensyleo's own request): "Find ROMs…" (formerly
+    /// "Repair from Maintenance Folder…") always crosses ROM folders
+    /// unconditionally whenever it isn't scoped to one specific
+    /// folder/file — the "Maintenance Folder Only" vs "+ All ROM Folders"
+    /// choice that used to live here never actually changed anything
+    /// observable, so it was deleted outright rather than kept as a dead
+    /// toggle. See `LibraryViewModel.planRepairFromMaintenanceFolderPreviewCount`'s own doc
+    /// comment for the current, single behavior this replaces.
 
     /// Which physical copy counts as "correct" when the exact same CHD
     /// (same header sha1) exists more than once — jensyleo's own real case
@@ -97,10 +94,13 @@ public enum FixPreferencesSettings {
     // jensyleo's own correction (2026-09-19): dropped the original
     // "No Preference" case entirely rather than just defaulting away from
     // it — an unpredictable, order-of-discovery pick is exactly the
-    // ambiguity this setting exists to remove. "Prefer ROM Folder Root" is
-    // the more common real-world layout (a flat ROM folder, CHDs sitting
-    // right next to their `.zip`), so it's the least surprising default.
-    public static let chdDuplicatePreferenceDefault = CHDDuplicatePreference.preferRootFolder
+    // ambiguity this setting exists to remove.
+    //
+    // jensyleo's own follow-up (2026-09-26): "Prefer Subfolder" is now the
+    // default instead — his own real collection's actual layout (a CHD
+    // inside a subfolder named after the game, not loose in the ROM
+    // folder's root) is what this should assume out of the box.
+    public static let chdDuplicatePreferenceDefault = CHDDuplicatePreference.preferSubfolder
 
     public static func currentCHDDuplicatePreference() -> CHDDuplicatePreference {
         CHDDuplicatePreference(rawValue: UserDefaults.standard.string(forKey: chdDuplicatePreferenceKey) ?? "") ?? chdDuplicatePreferenceDefault

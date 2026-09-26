@@ -71,7 +71,7 @@ struct RomsTableView: View {
     // ever offered "Fix This Misnamed ROM…" plus the plain file actions
     // (`romEntryActionsMenuItems`) — every OTHER per-rom Fix action the
     // Games table's own context menu already has ("Remove Redundant
-    // ROM(s)…", "Repair from Maintenance Folder…") was simply never wired
+    // ROM(s)…", "Find ROMs…") was simply never wired
     // here, a real gap rather than a deliberate exclusion. Unlike "Fix
     // Mismatched File" (deliberately excluded — see this file's own
     // `.contextMenu` doc comment below), both of these genuinely operate on
@@ -221,7 +221,14 @@ struct RomsTableView: View {
             // which entries happen to be selected, which reads as
             // confusing/risky from a per-ROM list. The Games table (one row
             // per File) is the only place that action is offered.
+            // `.labelStyle(.titleAndIcon)` forced via `Group` — macOS/SwiftUI's
+            // `.contextMenu` otherwise silently drops each `Button`'s `Label`
+            // icon (title-only), unlike menu-bar `.commands`. Confirmed via a
+            // real screenshot (jensyleo, 2026-09-26) that icons were genuinely
+            // missing here despite every `Label(_:systemImage:)` already
+            // being correct in code.
             .contextMenu(forSelectionType: String.self) { selection in
+              Group {
                 let selectedRows = selection.compactMap { selectedID in selectedRomRows.first(where: { $0.id == selectedID }) }
                 let containerURLs = Array(Set(selectedRows.compactMap(\.entry.path)))
                 let entryKeys = Set(selectedRows.compactMap { row -> String? in
@@ -283,11 +290,13 @@ struct RomsTableView: View {
                     Button {
                         startRepairFromMaintenanceFolder(containerURLs)
                     } label: {
-                        Label("Repair from Maintenance Folder…", systemImage: "wrench.and.screwdriver")
+                        Label("Find ROMs…", systemImage: "wrench.and.screwdriver")
                     }
                     .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
                 }
                 romEntryActionsMenuItems(selectedRows)
+              }
+              .labelStyle(.titleAndIcon)
             }
             .onChange(of: selection) { onFocusRequested() }
             // See `GameTreeTableView`'s own matching `.simultaneousGesture`
