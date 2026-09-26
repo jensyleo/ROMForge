@@ -2,6 +2,16 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.0.0] - 2026-09-26
+
+First stable release. Every 0.x release up to and including 0.3.1 (see below) shipped the full pipeline
+this milestone represents: DAT parsing (Logiqx/ClrMamePro XML and MAME `-listxml`), multi-folder scanning
+and hashing, full audit reporting, real write actions (rename, rebuild, repair from Maintenance/sibling
+sets/donor folders, remove useless/redundant content, samples, BIOS/Complementary Chips organization),
+a persisted SQLite-backed report, and a native multi-system SwiftUI interface for both MAME-style arcade
+sets and non-MAME (Logiqx-style) consoles/computers. No functional changes from 0.3.1 — this tag marks
+the app as stable and ready for general use.
+
 ## [0.3.1] - 2026-09-26
 
 ### Fixed — general slowness and freezes, especially on the first visit to a system or ROM folder
