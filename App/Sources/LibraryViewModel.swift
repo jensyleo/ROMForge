@@ -1816,9 +1816,16 @@ final class LibraryViewModel {
                     } else if let maintenanceFiles = try? FolderScanner.scan(paths: [maintenanceFolder]), !maintenanceFiles.isEmpty {
                         let freshDonorFiles = (try? await CollectionHasher.hash(scannedFiles: maintenanceFiles, algorithms: HashAlgorithmSettings.current)) ?? []
                         maintenanceDonorFiles = freshDonorFiles
+                        // jensyleo's own audit request (2026-09-28): no
+                        // `[weak self]` here — the enclosing scope already
+                        // captures `self` strongly (this whole block runs
+                        // inside `scan()`'s own outer detached task, which
+                        // needs `self` alive regardless), so a weak
+                        // capture here bought no real safety, just an
+                        // inconsistent-capture-style warning.
                         let folderPath = maintenanceFolder.path
-                        Task { @MainActor [weak self] in
-                            self?.cachedMaintenanceDonorFiles = (folderPath, freshDonorFiles)
+                        Task { @MainActor in
+                            self.cachedMaintenanceDonorFiles = (folderPath, freshDonorFiles)
                         }
                     } else {
                         maintenanceDonorFiles = []

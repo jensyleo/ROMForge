@@ -85,6 +85,34 @@ struct GameTreeTableView: View {
     {"perColumnState":[{"base":{"explicit":{"_0":"family"}}},{"visibility":{"hidden":{}},"currentWidth":123},{"base":{"explicit":{"_0":"fileName"}}},{"visibility":{"hidden":{}},"currentWidth":158.5},{"base":{"explicit":{"_0":"cloneOf"}}},{"visibility":{"automatic":{}},"currentWidth":148.5},{"base":{"explicit":{"_0":"expectedFileName"}}},{"visibility":{"hidden":{}}},{"base":{"explicit":{"_0":"info"}}},{"currentWidth":124,"visibility":{"automatic":{}}},{"base":{"explicit":{"_0":"gameName"}}},{"visibility":{"automatic":{}},"currentWidth":148.5},{"base":{"explicit":{"_0":"bios"}}},{"visibility":{"visible":{}},"currentWidth":79.5},{"base":{"explicit":{"_0":"requiredBios"}}},{"visibility":{"visible":{}}}],"columnOrder":[{"base":{"explicit":{"_0":"status"}}},{"base":{"explicit":{"_0":"gameName"}}},{"base":{"explicit":{"_0":"fileName"}}},{"base":{"explicit":{"_0":"info"}}},{"base":{"explicit":{"_0":"expectedFileName"}}},{"base":{"explicit":{"_0":"size"}}},{"base":{"explicit":{"_0":"cloneOf"}}},{"base":{"explicit":{"_0":"chd"}}},{"base":{"explicit":{"_0":"samples"}}},{"base":{"explicit":{"_0":"requiredBios"}}},{"base":{"explicit":{"_0":"bios"}}},{"base":{"explicit":{"_0":"year"}}},{"base":{"explicit":{"_0":"manufacturer"}}},{"base":{"explicit":{"_0":"deviceRefs"}}},{"base":{"explicit":{"_0":"cloneOfInternalName"}}},{"base":{"explicit":{"_0":"family"}}},{"base":{"explicit":{"_0":"dependencies"}}},{"base":{"explicit":{"_0":"details"}}},{"base":{"explicit":{"_0":"oneGameOneROM"}}}]}
     """
 
+    /// jensyleo's own request (2026-09-26): "cambia la forma de ver la
+    /// columna 'required BIOS' así: Nombre de la BIOS/Nombre del archivo" —
+    /// `GameNode.requiredBiosNames` stays the bare internal machine name
+    /// (e.g. "neogeo", possibly several comma-separated) since
+    /// `OrphanedBIOSDetector` (ROMForgeCore) reads that exact raw form back
+    /// to decide which BIOS machines are actually in use; this is purely a
+    /// display transform, applied here and nowhere in the data model
+    /// itself. Built once per render (not per row) from `viewModel
+    /// .preloadedGames` — cheap relative to the render pass this already
+    /// belongs to, and never touched per-row.
+    private var biosGamesByName: [String: DATGame] {
+        var result: [String: DATGame] = [:]
+        for game in viewModel.preloadedGames where result[game.name.lowercased()] == nil {
+            result[game.name.lowercased()] = game
+        }
+        return result
+    }
+
+    private func displayRequiredBiosNames(_ rawNames: String) -> String {
+        guard !rawNames.isEmpty else { return rawNames }
+        let gamesByName = biosGamesByName
+        return rawNames.split(separator: ",").map { rawName -> String in
+            let trimmed = rawName.trimmingCharacters(in: .whitespaces)
+            guard let biosGame = gamesByName[trimmed.lowercased()] else { return trimmed }
+            return "\(biosGame.description) / \(biosGame.name).zip"
+        }.joined(separator: ", ")
+    }
+
     private static func loadStoredColumnCustomization() -> TableColumnCustomization<GameNode> {
         if let data = UserDefaults.standard.data(forKey: "ROMForge.gameTableColumnCustomization"),
            let decoded = try? JSONDecoder().decode(TableColumnCustomization<GameNode>.self, from: data) {
@@ -192,7 +220,7 @@ struct GameTreeTableView: View {
                 TableColumn("Manufacturer") { (node: GameNode) in Text(node.manufacturer) }
                     .customizationID("manufacturer")
                     .defaultVisibility(.hidden)
-                TableColumn("Required BIOS") { (node: GameNode) in Text(node.requiredBiosNames) }
+                TableColumn("Required BIOS") { (node: GameNode) in Text(displayRequiredBiosNames(node.requiredBiosNames)) }
                     .customizationID("requiredBios")
                     .defaultVisibility(.hidden)
                 TableColumn("Device refs") { (node: GameNode) in Text(node.deviceRefNames) }

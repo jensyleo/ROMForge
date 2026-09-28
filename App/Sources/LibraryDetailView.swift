@@ -9281,6 +9281,22 @@ struct LibraryDetailView: View {
         return result
     }
 
+    /// Same display-only transform as `GameTreeTableView`'s own copy (that
+    /// file can't reach this one's `private` `gamesByName` above, hence the
+    /// duplication — same reasoning as `gameColumnCustomizationKey`'s own
+    /// doc comment on why that's duplicated too) — see that copy's own doc
+    /// comment for why `GameNode.requiredBiosNames` itself stays a bare
+    /// internal machine name and this formatting never touches it.
+    private func displayRequiredBiosNames(_ rawNames: String) -> String {
+        guard !rawNames.isEmpty else { return rawNames }
+        let gamesByName = Self.gamesByName(viewModel.preloadedGames)
+        return rawNames.split(separator: ",").map { rawName -> String in
+            let trimmed = rawName.trimmingCharacters(in: .whitespaces)
+            guard let biosGame = gamesByName[trimmed.lowercased()] else { return trimmed }
+            return "\(biosGame.description) / \(biosGame.name).zip"
+        }.joined(separator: ", ")
+    }
+
     /// Resolves a raw internal machine name (e.g. the DAT's own `cloneof`
     /// attribute, "dlair") to that game's own human-readable `description`
     /// ("Dragon's Lair (US Rev. F2)") — jensyleo's own report (2026-08-17):
@@ -9767,7 +9783,7 @@ struct LibraryDetailView: View {
                 infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
             }
         case .requiredBios:
-            if showDetailRequiredBios { infoRow("Required BIOS", node.requiredBiosNames) }
+            if showDetailRequiredBios { infoRow("Required BIOS", displayRequiredBiosNames(node.requiredBiosNames)) }
         case .chd:
             if showDetailCHD { infoRow("CHD", node.chdNames) }
         case .samples:

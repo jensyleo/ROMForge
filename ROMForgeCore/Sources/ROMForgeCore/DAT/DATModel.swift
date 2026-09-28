@@ -269,6 +269,17 @@ extension DATGame {
     /// `gamesByName` must key every `DATGame` in the same DAT by its own
     /// `name` — the same lookup `GameNodeBuilder` already builds to group
     /// entries by game.
+    ///
+    /// Deliberately still the BIOS machine's bare internal name (e.g.
+    /// "neogeo"), never a display-formatted string — `OrphanedBIOSDetector`
+    /// reads this value back (`AuditEntry.requiredBiosNames`) and compares
+    /// it directly against another entry's own bare `game` name to decide
+    /// "is this BIOS actually in use", so it must stay in that same raw
+    /// form. jensyleo's own request (2026-09-26), "cambia la forma de ver
+    /// la columna 'required BIOS'" — the friendlier "<description> /
+    /// <name>.zip" display only happens at render time, in the App layer's
+    /// own `displayRequiredBiosNames(_:)` (duplicated in `GameTreeTableView`
+    /// and `LibraryDetailView`, each with its own DAT lookup), never here.
     public func resolvedBiosMachineName(gamesByName: [String: DATGame]) -> String? {
         guard !isBios else { return nil }
         var current = self

@@ -2,6 +2,22 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.0.1] - 2026-09-28
+
+### Changed — "Required BIOS" column and detail row
+
+Now shows "\<BIOS description\> / \<file name\>.zip" (e.g. "Neo Geo BIOS / neogeo.zip") instead of the
+BIOS machine's bare internal name (e.g. "neogeo"), in both the Games table column and the detail panel
+row. Display-only — the underlying data `OrphanedBIOSDetector` depends on to find BIOS machines no
+longer in use is untouched.
+
+### Fixed — two real compiler warnings from Swift's strict concurrency checker
+
+`ROMForgeUninstaller.confirmAndRun()` (an `NSAlert`, always called from a SwiftUI menu button already on
+the main thread) is now explicitly `@MainActor`. A background-task's own cache write-back inside
+`scan()` no longer uses an inconsistent `[weak self]` capture when the enclosing scope already holds
+`self` strongly. No behavior change in either case — both were compiler warnings, not runtime bugs.
+
 ## [1.0.0] - 2026-09-26
 
 First stable release. Every 0.x release up to and including 0.3.1 (see below) shipped the full pipeline

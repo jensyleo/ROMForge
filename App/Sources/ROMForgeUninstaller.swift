@@ -25,6 +25,13 @@ enum ROMForgeUninstaller {
     /// SwiftUI view of its own to host a `.confirmationDialog` on, unlike
     /// every other destructive action in this app) and only proceeds if
     /// the user explicitly agrees.
+    // jensyleo's own audit request (2026-09-28): this only ever runs from a
+    // SwiftUI `Button` action (`ROMForgeApp.swift`'s own "Uninstall
+    // ROMForge…" menu command), always on the main thread already — Swift's
+    // strict concurrency checker just had no way to know that without this
+    // explicit annotation, hence the pre-existing `NSAlert`/main-actor
+    // warnings this silences. No behavior change.
+    @MainActor
     static func confirmAndRun() {
         let alert = NSAlert()
         alert.messageText = "Uninstall ROMForge?"
