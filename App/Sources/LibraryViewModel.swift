@@ -1675,9 +1675,18 @@ final class LibraryViewModel {
                 // actually asked to (re)read" (empty for a full "Scan All
                 // Folders", where there's no meaningful "last folder" to
                 // favor either way).
+                // `!system.isMAMEStyle` — jensyleo's own scoping decision
+                // (2026-09-28): this global toggle only ever applies to a
+                // console/computer system's own scan, never an arcade/MAME
+                // one, regardless of the setting's own value. See
+                // `MatchingPreferencesSettings`'s own doc comment
+                // (`GeneralSettingsView.swift`) and `ROMMatcher.match`'s own
+                // `nameOnlyMatching` parameter doc comment for the full
+                // reasoning.
                 let matchReport = try ROMMatcher.match(
                     dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler, cancellationFlag: cancellationFlag,
-                    recentlyScannedPaths: forcedRescanPaths
+                    recentlyScannedPaths: forcedRescanPaths,
+                    nameOnlyMatching: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyMatchingEnabled
                 )
                 postMatchPhaseHandler("Generating the report…")
                 var auditReport = try AuditReporter.generate(from: matchReport)

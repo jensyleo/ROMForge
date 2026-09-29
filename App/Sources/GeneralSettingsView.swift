@@ -16,6 +16,7 @@ struct GeneralSettingsView: View {
     @AppStorage(HashAlgorithmSettings.crc32Key) private var computeCRC32 = true
     @AppStorage(HashAlgorithmSettings.md5Key) private var computeMD5 = true
     @AppStorage(HashAlgorithmSettings.sha1Key) private var computeSHA1 = true
+    @AppStorage(MatchingPreferencesSettings.nameOnlyMatchingKey) private var nameOnlyMatchingForConsoles = MatchingPreferencesSettings.nameOnlyMatchingDefault
     @AppStorage("ROMForge.scan.autoScanOnAdd") private var autoScanOnAdd = false
     @AppStorage(MaxSubfolderDepthSettings.storageKey) private var maxSubfolderDepth = MaxSubfolderDepthSettings.defaultValue
     @AppStorage(ModificationsEnabledSettings.storageKey) private var modificationsEnabled = false
@@ -65,13 +66,69 @@ struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Hash algorithms") {
+                // Every DAT format ROMForge reads declares at least CRC32
+                // (the cheapest of the three, and the one every real DAT
+                // tool falls back to) — MD5/SHA1 add real CPU cost on top
+                // of it, especially across a large collection, without
+                // improving verification for a rom the DAT only ever
+                // declares a CRC for. Disabling one never causes a false
+                // "missing": `ROMMatcher` only compares a hash both the DAT
+                // declares *and* was actually computed, falling back to
+                // whichever hash(es) remain enabled.
+                Toggle("CRC32", isOn: $computeCRC32)
+                    .disabled(computeCRC32 && !computeMD5 && !computeSHA1)
+                Toggle("MD5", isOn: $computeMD5)
+                    .disabled(computeMD5 && !computeCRC32 && !computeSHA1)
+                Toggle("SHA1", isOn: $computeSHA1)
+                    .disabled(computeSHA1 && !computeCRC32 && !computeMD5)
+            }
+            Text("At least one algorithm must stay enabled. Fewer algorithms means faster scans, at the cost of only being able to confirm a rom against whichever hash(es) the DAT and this list have in common.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            // jensyleo's own request (2026-09-28): "para consolas se
+            // coloque la opción de que no valide ni el CRC ni el hash, que
+            // solo revise los nombres" — discussed as a global toggle
+            // rather than per-system ("me suena más a dejarlo general").
+            // Deliberately scoped in `LibraryViewModel.scan` to non-MAME
+            // systems only (`!system.isMAMEStyle`) regardless of this
+            // toggle's own value — an arcade set's own roms are far more
+            // likely to share a name across genuinely different content
+            // (region/revision variants with identical filenames but
+            // different PCBs) than a console No-Intro/TOSEC-style set,
+            // where name-only trust is a well-established convention.
+            //
+            // jensyleo's own follow-up (2026-09-28), after questioning
+            // whether excluding Arcade/MAME made sense for a "General"
+            // (global) toggle at all: agreed to keep the exclusion, but
+            // insisted it be "claramente visible" — in the app, the docs,
+            // AND Help — never just a caption easy to skim past. The two
+            // `Label`s below (not a plain `Text`) are deliberately more
+            // visually prominent than this section's usual caption style,
+            // each standing alone as its own short, unambiguous sentence.
+            // See "Settings — General & View Options" in the in-app Help
+            // for the same two facts spelled out in full.
+            Section("Matching") {
+                Toggle("Trust file names for console/computer systems (skip CRC/hash verification)", isOn: $nameOnlyMatchingForConsoles)
+                Label("Never applies to Arcade/MAME systems — those always verify CRC/hash, regardless of this toggle.", systemImage: "checkmark.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Label("For a console/computer system where this is ON: a file with the right name is Correct even if its hash doesn't match — a hash mismatch alone is never treated as invalid.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             // jensyleo's own request (2026-09-11): originally on the Fix
             // tab ("Colocar la opcion de Number of threads y colocar que
             // maximo 100"), moved here right after — "deja esa opcion de
             // performance en general" — since it governs every scan/hash
             // pass in the app (Scan Folder, Find ROMs,
             // Repair from Sibling Sets, etc.), not something specific to
-            // "Fix".
+            // "Fix". Reordered again (2026-09-28, jensyleo's own review:
+            // "me suena que hay que colocarle orden") to sit LAST — every
+            // section above it (Scanning → Hash algorithms → Matching)
+            // decides what counts as correct; this one is pure speed
+            // tuning, unrelated to correctness, so it reads better as the
+            // final stop rather than interrupting that logical run.
             Section("Performance") {
                 // jensyleo's own report (2026-09-11): a plain `in: 0...100`
                 // range Stepper clamps at each end — climbing from 0 to 100
@@ -119,26 +176,6 @@ struct GeneralSettingsView: View {
                     Spacer()
                 }
             }
-            Section("Hash algorithms") {
-                // Every DAT format ROMForge reads declares at least CRC32
-                // (the cheapest of the three, and the one every real DAT
-                // tool falls back to) — MD5/SHA1 add real CPU cost on top
-                // of it, especially across a large collection, without
-                // improving verification for a rom the DAT only ever
-                // declares a CRC for. Disabling one never causes a false
-                // "missing": `ROMMatcher` only compares a hash both the DAT
-                // declares *and* was actually computed, falling back to
-                // whichever hash(es) remain enabled.
-                Toggle("CRC32", isOn: $computeCRC32)
-                    .disabled(computeCRC32 && !computeMD5 && !computeSHA1)
-                Toggle("MD5", isOn: $computeMD5)
-                    .disabled(computeMD5 && !computeCRC32 && !computeSHA1)
-                Toggle("SHA1", isOn: $computeSHA1)
-                    .disabled(computeSHA1 && !computeCRC32 && !computeMD5)
-            }
-            Text("At least one algorithm must stay enabled. Fewer algorithms means faster scans, at the cost of only being able to confirm a rom against whichever hash(es) the DAT and this list have in common.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
         .padding()
@@ -218,6 +255,20 @@ enum HashAlgorithmSettings {
         if defaults.object(forKey: md5Key) == nil || defaults.bool(forKey: md5Key) { result.insert(.md5) }
         if defaults.object(forKey: sha1Key) == nil || defaults.bool(forKey: sha1Key) { result.insert(.sha1) }
         return result.isEmpty ? .all : result
+    }
+}
+
+/// A plain (non-View) reader for the same key above — used from
+/// `LibraryViewModel`, same reasoning as `HashAlgorithmSettings` right
+/// above it.
+enum MatchingPreferencesSettings {
+    static let nameOnlyMatchingKey = "ROMForge.matching.nameOnlyForConsoles"
+    static let nameOnlyMatchingDefault = false
+
+    static var nameOnlyMatchingEnabled: Bool {
+        UserDefaults.standard.object(forKey: nameOnlyMatchingKey) == nil
+            ? nameOnlyMatchingDefault
+            : UserDefaults.standard.bool(forKey: nameOnlyMatchingKey)
     }
 }
 

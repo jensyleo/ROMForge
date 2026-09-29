@@ -1143,4 +1143,55 @@ struct ROMMatcherTests {
         #expect(surplusEntries.filter(\.requiredByGameConfirmedRedundant).count == 1, "exactly one of the two physically-identical copies keeps the other one 'confirmed' as its genuine duplicate")
         #expect(surplusEntries.contains { !$0.requiredByGameConfirmedRedundant }, "the FIRST copy is the keeper, never itself flagged as its own duplicate")
     }
+
+    // MARK: - nameOnlyMatching (jensyleo's own request, 2026-09-28)
+
+    @Test("nameOnlyMatching: a file in its own expected slot is Correct even with a totally wrong CRC/size — the exact opposite of the default, hash-verified behavior")
+    func nameOnlyMatchingAcceptsWrongContentAsCorrect() throws {
+        let game = DATGame(
+            name: "console_game", description: "Console Game", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "rom.bin", size: 999, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        // Right name, right archive, but size AND crc are both wrong —
+        // `matchesRaw` would reject this outright under the default,
+        // hash-verified path (proven by the second test below).
+        let wrongContent = zipEntryHashedFile(archiveName: "console_game", entryName: "rom.bin", size: 1, crc: "00000000", sha1: "0000000000000000000000000000000000000a")
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [wrongContent], nameOnlyMatching: true)
+
+        let result = report.games.first { $0.game.name == "console_game" }!
+        #expect(result.matches[0].status == .correct(wrongContent))
+    }
+
+    @Test("nameOnlyMatching: no file at all in the expected slot is still Missing, not silently Correct")
+    func nameOnlyMatchingStillReportsMissingWhenNothingIsThere() throws {
+        let game = DATGame(
+            name: "console_game", description: "Console Game", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "rom.bin", size: 999, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [], nameOnlyMatching: true)
+
+        let result = report.games.first { $0.game.name == "console_game" }!
+        #expect(result.matches[0].status == .missing)
+    }
+
+    @Test("nameOnlyMatching defaults to false — every existing, hash-verified scan (this whole suite) is provably unaffected by its mere existence as a parameter")
+    func nameOnlyMatchingDefaultsToFalseAndDoesNotChangeExistingBehavior() throws {
+        let game = DATGame(
+            name: "console_game", description: "Console Game", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "rom.bin", size: 999, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        let wrongContent = zipEntryHashedFile(archiveName: "console_game", entryName: "rom.bin", size: 1, crc: "00000000", sha1: "0000000000000000000000000000000000000a")
+
+        // No `nameOnlyMatching:` argument at all — same call every other
+        // test in this file already makes.
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [wrongContent])
+
+        let result = report.games.first { $0.game.name == "console_game" }!
+        #expect(result.matches[0].status == .hashMismatch(wrongContent))
+    }
 }

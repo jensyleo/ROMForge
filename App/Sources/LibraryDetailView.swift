@@ -6617,7 +6617,7 @@ struct LibraryDetailView: View {
             // `Table` to scroll to it, so it just kept showing whatever
             // part of a ~45,000-row list happened to be in view already,
             // unrelated to the row that just got selected off-screen.
-            gameTableScrollProxy?.scrollTo(id, anchor: .center)
+            gameTableScrollProxy?.scrollTo(id, anchor: nil)
         case .romFolder(let url):
             selectedDatabaseFilter = nil
             selectedRomFolder = url
@@ -7225,7 +7225,13 @@ struct LibraryDetailView: View {
         }
         let newID = rows[newIndex].id
         selectedGameID = newID
-        gameTableScrollProxy?.scrollTo(newID, anchor: .center)
+        // `anchor: nil` (not `.center`) — jensyleo's own report (2026-09-29):
+        // a `Table` scrolls both axes, so re-centering on every arrow key
+        // press was also re-centering the *horizontal* scroll position,
+        // dragging the view toward the right on each key press. `nil`
+        // scrolls the minimum needed to bring the row into view instead of
+        // jumping to a fixed point, so the horizontal offset is left alone.
+        gameTableScrollProxy?.scrollTo(newID, anchor: nil)
     }
 
     /// Matches `keyPress` against the classic type-ahead pattern (see
@@ -7265,7 +7271,7 @@ struct LibraryDetailView: View {
         // No `withAnimation` — jensyleo's own request (2026-08-13):
         // animated transitions aren't wanted anywhere in this app, this
         // type-ahead scroll included.
-        gameTableScrollProxy?.scrollTo(match.id, anchor: .center)
+        gameTableScrollProxy?.scrollTo(match.id, anchor: nil)
         return .handled
     }
 
@@ -9175,7 +9181,7 @@ struct LibraryDetailView: View {
                     // table to reveal the row it just selected — see
                     // `moveDatabaseSelection(by:)`'s own doc comment for the
                     // same fix on the arrow-key path.
-                    gameTableScrollProxy?.scrollTo(node.id, anchor: .center)
+                    gameTableScrollProxy?.scrollTo(node.id, anchor: nil)
                 }
             )
             // A real selection background, not just bold text — same

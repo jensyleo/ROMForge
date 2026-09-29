@@ -24,7 +24,10 @@ archives, 7z archives (via a bundled copy of the official 7-Zip engine,
 falling back to a system install if the bundled one is ever missing) and
 CHD v5 headers;
 CRC32/MD5/SHA1 hashing; matching by size and hash — never by filename
-alone; reporting correct/incorrect/missing/surplus plus duplicate-by-hash
+alone, except for an explicit, opt-in "trust file names" mode for
+console/computer systems only (Settings → General → "Matching" — never
+available for an Arcade/MAME system, whose parent/clone/BIOS structure
+depends on genuinely verified content); reporting correct/incorrect/missing/surplus plus duplicate-by-hash
 groups; repairing (rename/move/copy) and rebuilding sets (loose, ZIP,
 split/non-merged/merged); resolving MAME BIOS/parent-clone dependency
 chains; verifying CHD content against a MAME DAT's `<disk sha1="...">`

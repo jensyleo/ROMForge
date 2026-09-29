@@ -61,9 +61,21 @@ public enum ROMMatcher {
     ///   preserving the original array-order behavior for any caller that
     ///   doesn't pass this (every existing test, and any scan with no
     ///   real notion of "what did the user just scan").
+    /// `nameOnlyMatching` — jensyleo's own request (2026-09-28), for
+    /// non-MAME (console/computer) collections: "no valide ni el CRC ni el
+    /// hash, que solo revise los nombres." When `true`, a rom counts as
+    /// `.correct` the moment SOME file already sits in its own game's
+    /// archive under its exact expected name (`nameMatchIndex`, already
+    /// computed by `computePerGameCandidates` below for the EXISTING
+    /// `.hashMismatch` check — this mode just trusts that name-slot outright
+    /// instead of then verifying its content) — otherwise `.missing`. This
+    /// branch runs BEFORE any of the hash-indexed candidate resolution
+    /// further down and never touches it, so the default (`false`, every
+    /// existing scan — MAME and console alike) is provably byte-for-byte
+    /// unchanged.
     public static func match(
         dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil, cancellationFlag: CancellationFlag? = nil,
-        recentlyScannedPaths: [URL] = []
+        recentlyScannedPaths: [URL] = [], nameOnlyMatching: Bool = false
     ) throws -> MatchReport {
         try Task.checkCancellation()
         let recentlyScannedPrefixes = recentlyScannedPaths.map(\.path)
@@ -262,6 +274,21 @@ public enum ROMMatcher {
 
             for (index, candidate) in orderedRomCandidates.enumerated() {
                 let rom = candidate.rom
+                // See `nameOnlyMatching`'s own doc comment on `match(...)`
+                // above — this whole branch stands in for every hash-based
+                // step below it, never falls through into them, and is a
+                // total no-op (`nameOnlyMatching` defaults to `false`) for
+                // every scan that doesn't explicitly opt in.
+                if nameOnlyMatching {
+                    if let nameMatchIndex = candidate.nameMatchIndex, !consumed[nameMatchIndex] {
+                        consumed[nameMatchIndex] = true
+                        resolvedStatuses[index] = .correct(hashedFiles[nameMatchIndex], viaHeaderStrip: false)
+                        claimedAnyFile = true
+                    } else {
+                        resolvedStatuses[index] = .missing
+                    }
+                    continue
+                }
                 // Real bug found live by jensyleo (2026-09-13, "chasehq"/
                 // "thndzone" PAL sets): several roms in one game can
                 // legitimately declare the exact same content under

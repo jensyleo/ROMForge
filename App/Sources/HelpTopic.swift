@@ -227,6 +227,10 @@ enum HelpLibrary {
             HelpSection(heading: "General", paragraphs: [
                 "Choose which hash algorithms (CRC32/MD5/SHA1) a scan computes and whether write actions are enabled. The Maintenance folder moved to \"Settings — Systems\" (2026-09-24) — see \"The Maintenance folder\".",
             ]),
+            HelpSection(heading: "Matching — \"Trust file names for console/computer systems\"", paragraphs: [
+                "Never applies to an Arcade/MAME system, no matter how this is set — MAME's own parent/clone/BIOS structure depends on genuinely verified content (a wrong board revision or a bad dump can share the exact right file name), so an arcade scan always verifies CRC/MD5/SHA1 regardless of this toggle.",
+                "For a console/computer system, turning this on makes a scan skip content verification entirely: a file already sitting under its exact expected name, in its own game's archive, is marked Correct — even if its hash doesn't match what the DAT declares at all. A genuinely corrupted or wrongly-substituted file with the right name is NOT flagged \"Bad\" in this mode; it reads as a plain, false Correct. Every file is still hashed (the CRC/MD5/SHA1 columns keep working for reference), only the Correct/Bad decision itself stops depending on that hash.",
+            ]),
             HelpSection(heading: "View Options", paragraphs: [
                 "Toggle any of the six main panels (Database, ROM folder, Games, Roms, Detail, Log) off to declutter the window — \"Reset to Defaults\" brings them all back.",
                 "The Log panel's toolbar has \"Copy Log\" (copies the whole log as plain text) and \"Clear Log\" (wipes it) — the log itself supports native text selection, so a specific range can be copied on its own instead of the whole thing. It also caps itself at 2000 lines, silently dropping the oldest entries past that point so a very long session can't grow the log without bound.",
