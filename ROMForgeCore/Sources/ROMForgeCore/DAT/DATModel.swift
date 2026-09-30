@@ -45,6 +45,22 @@ public struct DATRom: Equatable, Sendable, Codable {
     /// already in the parent archive under that name". Nil for Logiqx DATs
     /// (no such concept) and for a machine's own non-inherited roms.
     public let mergeName: String?
+    /// The `serial="..."` attribute (No-Intro DAT-o-MATIC schema v4) — a
+    /// cartridge/disc serial code, when the DAT declares one. `nil` for
+    /// every other DAT format and for most No-Intro entries themselves
+    /// (only some declare it).
+    public let serial: String?
+    /// The `sha256="..."` attribute (No-Intro DAT-o-MATIC schema v4) — a
+    /// fourth hash alongside crc/md5/sha1, never used for matching (the
+    /// existing three are already enough to identify a file), kept purely
+    /// so the Detail panel can show it when the DAT declares one.
+    public let sha256: String?
+    /// The `header="..."` attribute (No-Intro DAT-o-MATIC schema v4) — the
+    /// raw emulator header bytes (e.g. an iNES header for NES) this rom's
+    /// reference dump was built from, as a space-separated hex string
+    /// exactly as the DAT declares it. Shown as-is in the Detail panel,
+    /// never decoded/interpreted. `nil` for every other DAT format.
+    public let header: String?
     /// The `optional="yes"` attribute (MAME `-listxml`'s own DTD, embedded
     /// in every real `-listxml` dump): MAME itself can run this machine
     /// without this specific rom present — distinct from `nodump` (which
@@ -58,7 +74,10 @@ public struct DATRom: Equatable, Sendable, Codable {
     /// concept.
     public let optional: Bool
 
-    public init(name: String, size: Int64, crc: String?, md5: String?, sha1: String?, status: RomDumpStatus = .good, mergeName: String? = nil, optional: Bool = false) {
+    public init(
+        name: String, size: Int64, crc: String?, md5: String?, sha1: String?, status: RomDumpStatus = .good,
+        mergeName: String? = nil, optional: Bool = false, serial: String? = nil, sha256: String? = nil, header: String? = nil
+    ) {
         self.name = name
         self.size = size
         self.crc = crc?.lowercased()
@@ -67,6 +86,9 @@ public struct DATRom: Equatable, Sendable, Codable {
         self.status = status
         self.mergeName = mergeName
         self.optional = optional
+        self.serial = serial
+        self.sha256 = sha256?.lowercased()
+        self.header = header
     }
 }
 
@@ -150,6 +172,13 @@ public struct DATGame: Equatable, Sendable, Codable {
     /// `-listxml`'s `<manufacturer>`) — `nil` for formats/entries that
     /// don't.
     public let manufacturer: String?
+    /// The DAT's own `<category>` for this game (No-Intro DAT-o-MATIC
+    /// schema v4 — e.g. "Games", "Applications", "Demos", "Educational",
+    /// "Add-Ons", "Preproduction") — a genre/classification tag distinct
+    /// from `manufacturer`/`year`, which No-Intro DATs don't declare at
+    /// all. `nil` for every other DAT format and for a No-Intro entry that
+    /// declares none (plain games often don't).
+    public let category: String?
     /// Named BIOS ROM variants this machine itself declares (MAME
     /// `-listxml`'s `<biosset>` children) — e.g. several selectable
     /// region/revision BIOSes on one PCB. Empty for formats with no such
@@ -217,6 +246,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         sampleOf: String? = nil,
         year: String? = nil,
         manufacturer: String? = nil,
+        category: String? = nil,
         mergedFamilyMachineNames: [String] = [],
         biosSetNames: [String] = [],
         deviceRefs: [String] = [],
@@ -239,6 +269,7 @@ public struct DATGame: Equatable, Sendable, Codable {
         self.sampleOf = sampleOf
         self.year = year
         self.manufacturer = manufacturer
+        self.category = category
         self.biosSetNames = biosSetNames
         self.deviceRefs = deviceRefs
         self.chips = chips

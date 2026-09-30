@@ -192,7 +192,7 @@ struct ContentView: View {
     private var sidebarList: some View {
         List(selection: $store.selectedSystemID) {
             ForEach(groupedSystems, id: \.category) { group in
-                Section(group.category.isEmpty ? "SYSTEM" : group.category) {
+                Section(group.category.isEmpty ? "SYSTEM" : Self.sidebarSectionTitle(forCategory: group.category)) {
                     ForEach(group.systems) { system in
                         // jensyleo's own request (2026-09-16): "quita ese
                         // punto rojo al lado de MAME" — the per-system
@@ -278,6 +278,26 @@ struct ContentView: View {
         let ordered = categories.filter { !$0.isEmpty }.sorted() + (categories.contains("") ? [""] : [])
         return ordered.map { category in
             (category: category, systems: store.systems.filter { $0.category == category })
+        }
+    }
+
+    /// A sidebar section groups every system sharing one `AddSystemSheet`
+    /// category together, so its header reads more naturally as a plural
+    /// ("Consoles", not "Console") — jensyleo's own request (2026-09-29),
+    /// right after the first "Console" group appeared with just NES in it.
+    /// Purely a display label: `RomSystem.category` itself stays exactly
+    /// the singular value `AddSystemSheet` stores (`SystemCategoryKind`'s
+    /// own raw values), so nothing about matching/grouping/persistence
+    /// changes — a category the user typed by hand (free text, from before
+    /// `SystemCategoryKind` existed) is shown as-is, unpluralized.
+    private static func sidebarSectionTitle(forCategory category: String) -> String {
+        switch SystemCategoryKind(rawValue: category) {
+        case .arcade: return "Arcade"
+        case .console: return "Consoles"
+        case .handheld: return "Handhelds"
+        case .computer: return "PC"
+        case .other: return "Other"
+        case nil: return category
         }
     }
 

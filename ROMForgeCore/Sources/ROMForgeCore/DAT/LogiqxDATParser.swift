@@ -39,7 +39,33 @@ public enum LogiqxDATParser {
         guard let header = delegate.header else {
             throw DATParsingError.missingHeader
         }
-        return DATFile(header: header, games: delegate.games, hasClones: delegate.games.contains { $0.cloneOf != nil })
+        // No-Intro's own DAT-o-MATIC schema (confirmed 2026-09-29 against a
+        // real, freshly-generated NES DAT — `xsi:schemaLocation
+        // =".../schema_nointro_datfile_v4.xsd"`) declares parent/clone via a
+        // numeric `cloneofid="<id>"` referencing another `<game>`'s own
+        // numeric `id="<id>"`, not the classic Logiqx/MAME `cloneof="<name>"`
+        // by name. Both attributes can't be resolved from a single element
+        // in isolation — a clone can (and does, in the real file) appear
+        // before its own parent — so this is a second pass over the fully
+        // parsed `games`, run only for entries the by-name attribute left
+        // unresolved. Every other DAT flavor (classic Logiqx, MAME
+        // `-listxml`) has no `cloneofid`/numeric `id` at all, so this is a
+        // no-op for them.
+        var games = delegate.games
+        for (index, cloneOfId) in delegate.pendingCloneOfIdResolutions {
+            guard let parentName = delegate.idToName[cloneOfId], parentName != games[index].name else { continue }
+            let game = games[index]
+            games[index] = DATGame(
+                name: game.name,
+                description: game.description,
+                cloneOf: parentName,
+                romOf: game.romOf,
+                roms: game.roms,
+                hasSamples: game.hasSamples,
+                category: game.category
+            )
+        }
+        return DATFile(header: header, games: games, hasClones: games.contains { $0.cloneOf != nil })
     }
 
     public static func parse(contentsOf url: URL) throws -> DATFile {
@@ -77,9 +103,21 @@ private final class DATXMLParserDelegate: NSObject, XMLParserDelegate {
     private var currentGameDescription = ""
     private var currentGameCloneOf: String?
     private var currentGameRomOf: String?
+    private var currentGameId: String?
+    private var currentGameCloneOfId: String?
     private var currentGameRoms: [DATRom] = []
     private var currentGameDisks: [DATDisk] = []
     private var currentGameHasSamples = false
+    private var currentGameCategory: String?
+
+    /// `id="<n>"` → that game's own `name`, built up as each `<game>`
+    /// closes — used to resolve a No-Intro-style `cloneofid` after the whole
+    /// document has been read (see the numeric-id doc comment on `parse(data:)`).
+    fileprivate var idToName: [String: String] = [:]
+    /// `(index into `games`, cloneofid)` for every game whose `cloneof`
+    /// (by-name) attribute was absent but a numeric `cloneofid` was present —
+    /// resolved against `idToName` once the full document is read.
+    fileprivate var pendingCloneOfIdResolutions: [(index: Int, cloneOfId: String)] = []
 
     func parser(
         _ parser: XMLParser,
@@ -108,9 +146,12 @@ private final class DATXMLParserDelegate: NSObject, XMLParserDelegate {
             currentGameDescription = ""
             currentGameCloneOf = attributeDict["cloneof"]
             currentGameRomOf = attributeDict["romof"]
+            currentGameId = attributeDict["id"]
+            currentGameCloneOfId = attributeDict["cloneofid"]
             currentGameRoms = []
             currentGameDisks = []
             currentGameHasSamples = false
+            currentGameCategory = nil
         case "rom":
             guard inGame, thrownError == nil else { break }
             guard let name = attributeDict["name"] else {
@@ -128,7 +169,10 @@ private final class DATXMLParserDelegate: NSObject, XMLParserDelegate {
                     crc: attributeDict["crc"],
                     md5: attributeDict["md5"],
                     sha1: attributeDict["sha1"],
-                    status: RomDumpStatus(rawValue: attributeDict["status"] ?? "good") ?? .good
+                    status: RomDumpStatus(rawValue: attributeDict["status"] ?? "good") ?? .good,
+                    serial: attributeDict["serial"],
+                    sha256: attributeDict["sha256"],
+                    header: attributeDict["header"]
                 )
             )
         case "disk":
@@ -173,6 +217,8 @@ private final class DATXMLParserDelegate: NSObject, XMLParserDelegate {
             )
         case "description" where inGame:
             currentGameDescription = text
+        case "category" where inGame:
+            currentGameCategory = text.isEmpty ? nil : text
         case "game", "machine":
             inGame = false
             games.append(
@@ -183,9 +229,16 @@ private final class DATXMLParserDelegate: NSObject, XMLParserDelegate {
                     romOf: currentGameRomOf,
                     roms: currentGameRoms,
                     disks: currentGameDisks,
-                    hasSamples: currentGameHasSamples
+                    hasSamples: currentGameHasSamples,
+                    category: currentGameCategory
                 )
             )
+            if let id = currentGameId {
+                idToName[id] = currentGameName
+            }
+            if currentGameCloneOf == nil, let cloneOfId = currentGameCloneOfId {
+                pendingCloneOfIdResolutions.append((index: games.count - 1, cloneOfId: cloneOfId))
+            }
         default:
             break
         }

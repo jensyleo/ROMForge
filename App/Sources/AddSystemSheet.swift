@@ -84,7 +84,7 @@ struct AddSystemSheet: View {
                 // to generate from otherwise. Disabled while a generation is
                 // already running, rather than letting a second click start
                 // a second overlapping `mame -listxml` process.
-                if category == .arcade, MAMELaunchSettings.executablePath != nil {
+                if category == .arcade, MAMELaunchSettings.isInstalled {
                     Button("Generate from Installed MAME…") { generateDATFromMAME() }
                         .disabled(isGeneratingDAT)
                 }
@@ -177,7 +177,12 @@ struct AddSystemSheet: View {
         panel.canChooseDirectories = false
         panel.message = "Select a DAT (.dat or .xml — Logiqx/ClrMamePro or MAME -listxml, auto-detected)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        datURL = url
+        // Copied into ROMForge's own storage right away — jensyleo's own
+        // report (2026-09-29): `datURL` used to just be this external path
+        // itself, so moving/renaming the original file afterward broke the
+        // system entirely ("Scan Failed... no such file"). See
+        // `DATStorageLocation`'s own doc comment.
+        datURL = DATStorageLocation.copy(from: url)
         if name.isEmpty {
             name = url.deletingPathExtension().lastPathComponent
         }

@@ -203,12 +203,25 @@ public struct SurplusFile: Equatable, Sendable {
     /// complete, directly-usable unit is genuinely safe either way.
     public let requiredByGameOwnerSatisfiedElsewhere: Bool
 
+    /// A name-similarity-only rename suggestion — set only when
+    /// `ROMMatcher.match`'s own `nameSimilarityThreshold` parameter is
+    /// non-nil AND this file's own name (no hash/content evidence
+    /// whatsoever, unlike `misnamedArchiveForGameName`) is at least that
+    /// similar to some real DAT game name. See `SimilarNameSuggester`'s own
+    /// doc comment for why this is a genuine guess, never auto-applied —
+    /// `RebuildPlanner.planRepair` only ever turns it into an actual rename
+    /// when the user explicitly runs "Fix Mismatched Files"/"Fix Misnamed
+    /// ROMs Inside Their Archives…", the same confirmation gate every
+    /// other rename in this struct already goes through.
+    public let similarNameSuggestion: SimilarNameSuggestion?
+
     public init(
         file: HashedFile, requiredByGameDescription: String? = nil, requiredByGameMachineName: String? = nil,
         requiredByGameConfirmedRedundant: Bool = false,
         requiredByGameOwnerSatisfiedElsewhere: Bool = false,
         matchesNodumpRomName: Bool = false,
-        isInKnownArchive: Bool = false, misnamedArchiveForGameName: String? = nil
+        isInKnownArchive: Bool = false, misnamedArchiveForGameName: String? = nil,
+        similarNameSuggestion: SimilarNameSuggestion? = nil
     ) {
         self.file = file
         self.requiredByGameDescription = requiredByGameDescription
@@ -218,6 +231,7 @@ public struct SurplusFile: Equatable, Sendable {
         self.matchesNodumpRomName = matchesNodumpRomName
         self.isInKnownArchive = isInKnownArchive
         self.misnamedArchiveForGameName = misnamedArchiveForGameName
+        self.similarNameSuggestion = similarNameSuggestion
     }
 }
 

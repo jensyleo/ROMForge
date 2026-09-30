@@ -16,45 +16,54 @@ EmulationStation). It targets arcade, consoles and other systems alike.
 
 ## Status
 
-`ROMForgeCore` implements the full v0.1–v1.0 roadmap as a library, covered by
-76 automated unit tests against synthetic fixtures: Logiqx/ClrMamePro DAT
-parsing (No-Intro, Redump, TOSEC, FBNeo) and MAME `-listxml` parsing (BIOS
-sets, `device_ref`, disks, parent/clone); scanning loose files, ZIP
-archives, 7z archives (via a bundled copy of the official 7-Zip engine,
-falling back to a system install if the bundled one is ever missing) and
-CHD v5 headers;
+`ROMForgeCore` implements the full v0.1–v1.0 roadmap plus ongoing
+console/computer-system work, covered by 560+ automated unit tests: Logiqx/
+ClrMamePro DAT parsing (No-Intro, Redump, TOSEC, FBNeo — including
+category/serial/SHA-256/iNES-header fields where the DAT declares them) and
+MAME `-listxml` parsing (BIOS sets, `device_ref`, disks, parent/clone);
+scanning loose files, ZIP archives, 7z archives (via a bundled copy of the
+official 7-Zip engine, falling back to a system install if the bundled one
+is ever missing) and CHD v5 headers;
 CRC32/MD5/SHA1 hashing; matching by size and hash — never by filename
 alone, except for an explicit, opt-in "trust file names" mode for
 console/computer systems only (Settings → General → "Matching" — never
 available for an Arcade/MAME system, whose parent/clone/BIOS structure
-depends on genuinely verified content); reporting correct/incorrect/missing/surplus plus duplicate-by-hash
+depends on genuinely verified content). That opt-in mode also unlocks two
+further, always-conservative name-based aids for a console/computer system:
+deterministic GoodTools-to-No-Intro region-tag translation, and an optional,
+per-system fuzzy "possible match" suggestion (configurable 50–90%
+confidence) for a file the DAT can't recognize by content at all — surfaced
+only as information, and only ever turned into an actual rename by Fix once
+it also clears a fixed, independent 90%-confidence floor and the
+candidate's own declared size, regardless of how low the display threshold
+is set; reporting correct/incorrect/missing/surplus plus duplicate-by-hash
 groups; repairing (rename/move/copy) and rebuilding sets (loose, ZIP,
 split/non-merged/merged); resolving MAME BIOS/parent-clone dependency
 chains; verifying CHD content against a MAME DAT's `<disk sha1="...">`
 without decompressing hunks; and locating/installing the official 7-Zip.
 
-**The SwiftUI app currently exercises a subset of that.** Today's working
-end-to-end flow is: a multi-system sidebar (name + one or more ROM folders +
-a DAT — Logiqx/ClrMamePro XML or MAME `-listxml`, auto-detected, `.dat`/`.xml`
-or any other extension all work since detection is by content) — persisted
-across launches — that scans loose files and `.zip` archives (each entry
+**The SwiftUI app implements real, opt-in write access on top of all of
+that.** A multi-system sidebar (Arcade/MAME and console/computer systems
+alike, each with its own name, one or more ROM folders, and a DAT —
+Logiqx/ClrMamePro XML or MAME `-listxml`, auto-detected, `.dat`/`.xml` or
+any other extension all work since detection is by content) — persisted
+across launches — scans loose files, `.zip` and `.7z` archives (each entry
 matched individually against the DAT, not the archive as a whole), matches,
 reports (with Region/Language columns read from the No-Intro/TOSEC naming
-convention and a detail pane showing expected-vs-actual hashes), and exports
-a CSV. **The app is currently view-only, at the user's request**: repairing
-(renaming a misnamed ROM) is implemented in `ROMForgeCore` and covered by
-tests, but disabled in the app behind a single switch
-(`LibraryViewModel.modificationsEnabled`) — it never touches a ROM file.
-7z scanning is wired into the app's scan pipeline. CHD scanning, duplicate
-detection, and standalone BIOS/parent-clone dependency resolution are
-implemented and tested in `ROMForgeCore` but **not yet wired into the app's
-scan pipeline** — see [ROADMAP.md](ROADMAP.md) for what connecting them
-looks like.
+convention and a detail pane showing expected-vs-actual hashes), and
+exports a CSV. Repairing (renaming/rebuilding/removing files, per the
+DAT-driven actions under the Fix menu) is real disk I/O, gated behind an
+explicit "Write access" toggle in Settings → General that the user must
+turn on deliberately after reading what it enables — off by default.
+Duplicate detection, CHD verification, and MAME BIOS/parent-clone
+dependency resolution are wired into the app's own scan pipeline, not just
+`ROMForgeCore`.
 
-None of this — Core or app — has been run against a real ROM/BIOS/CHD
-collection yet; every test uses synthetic fixtures. See
-[TESTING.md](TESTING.md) for the manual checklist (needs real dumps Claude
-can't source — run it yourself).
+Exercised against real collections, not only synthetic fixtures — both a
+full arcade MAME romset and a multi-folder NES collection (No-Intro,
+GoodTools-style, and a hand-picked subset) have been scanned, audited, and
+repaired through the running app. See [TESTING.md](TESTING.md) for the
+manual checklist.
 
 ## Using the app
 
@@ -96,6 +105,16 @@ same ground for anyone reading the repo instead.
   folder at once, genuinely re-reading only what's actually changed. Both
   report which folder they're currently walking, in the progress overlay
   and in the Log panel.
+- **"Fix All…"** (toolbar → Fix, once file modifications are enabled in
+  Settings → General) runs every fully-automatic Fix action in one pass,
+  ClrMamePro-style — names first, then the system's own configured set
+  layout (Split/Merged/Non-merged, MAME only), repairs, corrupted-file
+  handling, the genuinely destructive cleanup (Remove Redundant/Useless
+  Files/ROMs), and finally Zip Comments/Samples/BIOS/Complementary Chips
+  housekeeping. The one action deliberately excluded is "Rebuild to
+  Folder…", since it needs a destination only a person can pick. One
+  combined preview count and confirmation up front, same as every
+  individual Fix action.
 - **Settings → View Options.** Toggle any of the six main panels (Database,
   ROM folder, Games, Roms, Detail, Log) off to declutter the window.
   "Purge Saved Views" resets remembered window layout only (which

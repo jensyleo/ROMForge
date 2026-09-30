@@ -320,6 +320,23 @@ final class LibraryViewModel {
         }
     }
 
+    /// `SimilarNameSuggester`'s own live suggestion for the file at `url`,
+    /// straight from this session's own last scan — jensyleo's own request
+    /// (2026-09-29), right after the settings toggle for this alone didn't
+    /// seem to visibly do anything: this surfaces the SAME preview
+    /// "Fix Mismatched Files" would act on directly in the Detail panel's
+    /// own "Info" row for a gray/surplus entry, so it's visible immediately
+    /// after a scan rather than only discoverable by actually running the
+    /// Fix action. Deliberately reads the live, in-memory `matchReport`
+    /// only, not anything persisted (`AuditEntry`/SQLite) — a genuine
+    /// resemblance guess (see `SurplusFile.similarNameSuggestion`'s own doc
+    /// comment) isn't the kind of fact worth a schema migration to persist;
+    /// re-scanning after a settings change is what refreshes it, same as
+    /// every other `ROMMatcher.match` parameter.
+    func similarNameSuggestion(forFileAt url: URL) -> SimilarNameSuggestion? {
+        matchReport?.surplusFiles.first { $0.file.file.url == url }?.similarNameSuggestion
+    }
+
     /// Real perf bug found live by jensyleo (2026-09-22): right after
     /// "Remove Zip Comment…" was added to the Games table's own context
     /// menu, right-clicking ANY row (and, apparently, general scrolling —
@@ -1686,7 +1703,19 @@ final class LibraryViewModel {
                 let matchReport = try ROMMatcher.match(
                     dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler, cancellationFlag: cancellationFlag,
                     recentlyScannedPaths: forcedRescanPaths,
-                    nameOnlyMatching: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyMatchingEnabled
+                    nameOnlyMatching: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyMatchingEnabled,
+                    // Same MAME-never-eligible scoping as `nameOnlyMatching`
+                    // just above, and for the same reason — see
+                    // `RomSystem.similarNameFixEnabled`'s own doc comment.
+                    // ALSO requires "Trust file names" itself to be on —
+                    // jensyleo's own explicit call (2026-09-29): a rename
+                    // suggested purely by name resemblance only makes sense
+                    // alongside the same toggle that already means "trust
+                    // this collection's file names over strict hash
+                    // verification" — never independently of it.
+                    nameSimilarityThreshold: (
+                        !system.isMAMEStyle && system.similarNameFixEnabled && MatchingPreferencesSettings.nameOnlyMatchingEnabled
+                    ) ? system.similarNameFixThreshold : nil
                 )
                 postMatchPhaseHandler("Generating the report…")
                 var auditReport = try AuditReporter.generate(from: matchReport)
@@ -2561,6 +2590,152 @@ final class LibraryViewModel {
     /// `URL`, matching every other scoped Fix action's own signature, so
     /// `restrictToScope`/`scopeCoveredByLastScan` need no special case for
     /// this one action.
+    /// "Fix All" — jensyleo's own request (2026-09-29), the last Fase 2 item
+    /// left pending: a single action that runs every FULLY AUTOMATIC Fix in
+    /// one pass, ClrMamePro-style, instead of clicking through each one by
+    /// hand. Deliberately excludes "Rebuild to Folder…" — the one Fix action
+    /// that needs the user to pick a destination first, so it can never be
+    /// automatic — everything else here needs no input beyond what's
+    /// already configured in Settings.
+    ///
+    /// Order matters, and mirrors how a careful manual pass would go:
+    /// 1. Names get fixed first (`fix`/`renameRomsInArchive`) so every later
+    ///    step reads a correctly-named file/entry.
+    /// 2. The system's own configured set layout (Split/Merged/Non-merged —
+    ///    MAME only; a console DAT has no such concept, see
+    ///    `RomSystem.isMAMEStyle`'s own doc comment) is normalized BEFORE
+    ///    repairing missing content, so a repair lands in its final
+    ///    location instead of one a layout change immediately moves again.
+    /// 3. Missing/bad content gets repaired (sibling sets, then the
+    ///    optional Maintenance folder donor area, then the configured
+    ///    corrupted-files policy).
+    /// 4. Genuinely destructive cleanup (`nodump` placeholders aside,
+    ///    Remove Redundant ROMs/Files, then Remove Useless Files) runs only
+    ///    once everything above has had its chance to turn a "surplus" or
+    ///    "redundant" file into something actually needed instead.
+    /// 5. Zip comments, Samples, BIOS, and Complementary Chips are pure
+    ///    housekeeping — run last, and skipped outright (not just a no-op
+    ///    log line) when their own folder isn't even configured, so this
+    ///    never pops the "no folder configured" alert those raise when
+    ///    invoked directly.
+    ///
+    /// Every sub-step already re-scans the whole system on its own before
+    /// returning (see each one's own `scan(system:)` call and this file's
+    /// own "scan first, log after" convention) — the NEXT step in this list
+    /// always sees the freshly-updated result, so no separate rescan is
+    /// needed here between them. That same per-step rescan also means the
+    /// Log panel (which every scan clears — see `scan(system:folders:)`'s
+    /// own `logLines.removeAll()`) only ever shows the MOST RECENT step's
+    /// own lines while this runs; the final "Fix All: done" line below is
+    /// the one line guaranteed to still be visible once it's over.
+    /// A total count across every step `fixAll(system:enabledActionIDs:)`
+    /// will actually run for this exact system/configuration, for the
+    /// up-front confirmation dialog — same dry-run-before-write caution as
+    /// every other Fase 2 action, just summed across all of them instead of
+    /// one. Deliberately mirrors `fixAll`'s own step list and gating
+    /// exactly (same `enabledActionIDs`/`isMAMEStyle`/folder-configured
+    /// checks) so this number is never an over- or under-count of what
+    /// confirming will actually do. Read-only: none of these
+    /// `plan*PreviewCount` calls write anything.
+    ///
+    /// `enabledActionIDs` — `LibraryDetailView.fixActionsEnabledForTesting`,
+    /// passed in rather than duplicated here: that set is this app's own
+    /// staged-rollout knob (several Fase 2 actions stay deliberately hidden
+    /// from the toolbar until jensyleo has live-tested them individually —
+    /// see its own doc comment). "Fix All" must never run an action he
+    /// hasn't already tested and enabled on its own, so it's gated by the
+    /// exact same ids as the toolbar itself, not a separate list that could
+    /// drift out of sync.
+    func planFixAllPreviewCount(system: RomSystem, enabledActionIDs: Set<String>) async -> Int {
+        var total = 0
+        if enabledActionIDs.contains("fixMisnamed") { total += planFixPreviewCount() }
+        if enabledActionIDs.contains("renameRomsInArchive") { total += planRenameRomsInArchivePreviewCount() }
+        if system.isMAMEStyle {
+            switch MAMEMergeModeSettings.current {
+            case .split where enabledActionIDs.contains("convertToSplit"): total += planConvertToSplitPreviewCount()
+            case .merged where enabledActionIDs.contains("convertToMerged"): total += planConvertToMergedPreviewCount()
+            case .nonMerged where enabledActionIDs.contains("makeSelfContained"): total += planMakeSelfContainedPreviewCount()
+            default: break
+            }
+        }
+        if enabledActionIDs.contains("repairFromSiblingSets") { total += planRepairFromSiblingSetsPreviewCount() }
+        if enabledActionIDs.contains("repairFromMaintenanceFolder"), MaintenanceFolderSettings.folderURL != nil {
+            total += await planRepairFromMaintenanceFolderPreviewCount(system: system)
+        }
+        if enabledActionIDs.contains("handleCorruptedFiles") { total += planCorruptedFilesPolicyPreviewCount() }
+        if enabledActionIDs.contains("createDummyRoms") { total += planCreateDummyRomsPreviewCount() }
+        if enabledActionIDs.contains("removeRedundantRoms") { total += planRemoveRedundantRomsPreviewCount(scopeFolders: []) }
+        if enabledActionIDs.contains("removeRedundantFiles") { total += planRemoveRedundantFilesPreviewCount(scopeFolders: []) }
+        if enabledActionIDs.contains("removeUselessFiles") { total += planRemoveUselessFilesPreviewCount(scopeFolders: []) }
+        if enabledActionIDs.contains("removeZipComments") { total += planRemoveZipCommentsPreviewCount() }
+        if system.isMAMEStyle {
+            if enabledActionIDs.contains("collectSamples"), SamplesFolderSettings.folderURL != nil {
+                total += await planCollectSamplesPreviewCount(system: system)
+            }
+            if enabledActionIDs.contains("organizeBIOSFiles"), BIOSFolderSettings.folderURL != nil {
+                total += planOrganizeBIOSFilesPreviewCount()
+            }
+            if enabledActionIDs.contains("organizeComplementaryChips"), ComplementaryChipsFolderSettings.folderURL != nil {
+                total += planOrganizeComplementaryChipsPreviewCount()
+            }
+        }
+        return total
+    }
+
+    func fixAll(system: RomSystem, enabledActionIDs: Set<String>) async {
+        guard Self.modificationsEnabled else {
+            logError("Fix All is disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard requireMatchReport() != nil else { return }
+        guard scopeCoveredByLastScan([]) else {
+            logRescanRequiredForFix(scopeFolders: [])
+            return
+        }
+
+        if enabledActionIDs.contains("fixMisnamed") { await fix(system: system) }
+        if enabledActionIDs.contains("renameRomsInArchive") { await renameRomsInArchive(system: system) }
+
+        if system.isMAMEStyle {
+            switch MAMEMergeModeSettings.current {
+            case .split where enabledActionIDs.contains("convertToSplit"): await convertToSplit(system: system)
+            case .merged where enabledActionIDs.contains("convertToMerged"): await convertToMerged(system: system)
+            case .nonMerged where enabledActionIDs.contains("makeSelfContained"): await makeSelfContained(system: system)
+            default: break
+            }
+        }
+
+        if enabledActionIDs.contains("repairFromSiblingSets") { await repairFromSiblingSets(system: system) }
+
+        if enabledActionIDs.contains("repairFromMaintenanceFolder"), MaintenanceFolderSettings.folderURL != nil {
+            let maintenanceCount = await planRepairFromMaintenanceFolderPreviewCount(system: system, scopeFolders: [])
+            if maintenanceCount > 0 {
+                await repairFromMaintenanceFolder(system: system, scopeFolders: [])
+            }
+        }
+
+        if enabledActionIDs.contains("handleCorruptedFiles") { await applyCorruptedFilesPolicy(system: system) }
+        if enabledActionIDs.contains("createDummyRoms") { await createDummyRoms(system: system) }
+        if enabledActionIDs.contains("removeRedundantRoms") { await removeRedundantRoms(system: system, scopeFolders: []) }
+        if enabledActionIDs.contains("removeRedundantFiles") { await removeRedundantFiles(system: system, scopeFolders: []) }
+        if enabledActionIDs.contains("removeUselessFiles") { await removeUselessFiles(system: system, scopeFolders: []) }
+        if enabledActionIDs.contains("removeZipComments") { await removeZipComments(system: system, scopeFolders: []) }
+
+        if system.isMAMEStyle {
+            if enabledActionIDs.contains("collectSamples"), SamplesFolderSettings.folderURL != nil {
+                await collectSamples(system: system)
+            }
+            if enabledActionIDs.contains("organizeBIOSFiles"), BIOSFolderSettings.folderURL != nil {
+                await organizeBIOSFiles(system: system)
+            }
+            if enabledActionIDs.contains("organizeComplementaryChips"), ComplementaryChipsFolderSettings.folderURL != nil {
+                await organizeComplementaryChips(system: system)
+            }
+        }
+
+        logSuccess("Fix All: every automatic Fix action has run.")
+    }
+
     func removeUselessFiles(system: RomSystem, scopeFolders: [URL]) async {
         guard Self.modificationsEnabled else {
             logError("Removing files is disabled — enable file modifications in Settings → General first.")

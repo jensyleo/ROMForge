@@ -46,6 +46,22 @@ struct SystemSettingsView: View {
         store.systems.contains { !$0.isMAMEStyle }
     }
 
+    /// The generic "Consoles" label only earns its keep once it's actually
+    /// grouping more than one *distinct* non-MAME system name — jensyleo's
+    /// own report (2026-09-29), right after adding NES as the very first
+    /// non-MAME system: seeing "CONSOLES" instead of "NES" here reads as if
+    /// the app didn't notice which system was actually configured. With
+    /// exactly one non-MAME name configured, showing that name directly is
+    /// both accurate and clearer; this reverts to "Consoles" on its own,
+    /// with no further change needed, the moment a second, differently
+    /// named non-MAME system (SNES, say) is added — the tab still shows
+    /// (and settings still apply to) every non-MAME system either way, this
+    /// only changes its own label.
+    private var consoleTabLabel: String {
+        let distinctNonMAMENames = Set(store.systems.filter { !$0.isMAMEStyle }.map(\.name))
+        return distinctNonMAMENames.count == 1 ? distinctNonMAMENames.first! : "Consoles"
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             List(selection: Binding(
@@ -54,7 +70,7 @@ struct SystemSettingsView: View {
             )) {
                 Text("MAME").tag("MAME")
                 if hasConsoleSystem {
-                    Text("Consoles").tag("Consoles")
+                    Text(consoleTabLabel).tag("Consoles")
                 }
             }
             .listStyle(.sidebar)
@@ -210,6 +226,243 @@ struct AppSettingsView: View {
     }
 }
 
+/// The "Maintenance folder" section — its own self-contained view (not
+/// duplicated per system kind) so both `MAMEMergeSettingsForm` and
+/// `ConsoleSettingsForm` can show and manage the SAME global root. jensyleo's
+/// own report (2026-09-29), right after adding NES: the setting lived only
+/// under "MAME" (moved there 2026-09-24, for what was at the time the only
+/// system kind that existed), so a console-only user had no visible way to
+/// see or change it at all — the Maintenance row simply appeared in their
+/// own sidebar with nowhere to configure it. `MaintenanceFolderSettings`
+/// itself was always documented as covering "every configured system
+/// regardless of kind" — this just makes that true from BOTH settings tabs,
+/// not only one. Content and behavior are otherwise completely unchanged
+/// from before this extraction.
+private struct MaintenanceFolderSettingsSection: View {
+    var store: SystemLibraryStore
+    /// Which systems' own subfolders to actually LIST (with a per-row
+    /// "Delete…") in THIS tab — `store.systems.filter(\.isMAMEStyle)` from
+    /// `MAMEMergeSettingsForm`, the console-kind equivalent from
+    /// `ConsoleSettingsForm`. jensyleo's own report (2026-09-29): viewing
+    /// this section from the NES tab listed MAME's own subfolder right
+    /// alongside it — technically correct (it IS the same shared root) but
+    /// confusing to see from a tab that's otherwise entirely about console
+    /// systems. The root itself, and `ensureAllSystemSubfolders()`'s own
+    /// backfill, stay genuinely global (`store.systems`, unfiltered) —
+    /// only this display list is scoped per tab.
+    var relevantSystems: [RomSystem]
+    @AppStorage(MaintenanceFolderSettings.storageKey) private var maintenanceFolderPath = ""
+    @AppStorage(MaintenanceRescanNoticeSettings.storageKey) private var showMaintenanceRescanNotice = true
+    @AppStorage(MaintenanceAutoScanOnSelectSettings.storageKey) private var maintenanceAutoScanOnSelect = true
+    /// Holds a candidate root between the folder panel closing and the
+    /// user actually confirming its creation (`pickMaintenanceRootLocation()`)
+    /// — nothing on disk is touched until confirmed. Also doubles as the
+    /// `isPresented` driver for the confirmation dialog itself (non-nil ==
+    /// showing).
+    @State private var pendingMaintenanceRootCreation: URL?
+    /// Non-nil drives the per-system delete confirmation below — the
+    /// system whose own Maintenance subfolder is about to be permanently
+    /// deleted.
+    @State private var pendingMaintenanceSubfolderDeletion: RomSystem?
+
+    var body: some View {
+        Section("Maintenance folder") {
+            HStack {
+                Text(maintenanceFolderPath.isEmpty ? "Not set" : maintenanceFolderPath)
+                    .font(.callout)
+                    .foregroundStyle(maintenanceFolderPath.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                if !maintenanceFolderPath.isEmpty {
+                    Button("Clear") {
+                        maintenanceFolderPath = ""
+                        NotificationCenter.default.post(name: MaintenanceFolderSettings.subfoldersDidChange, object: nil)
+                    }
+                }
+                Button("Choose Location…") { pickMaintenanceRootLocation() }
+            }
+            Text("A read-only donor area — one subfolder per system that opts in below (\"Maintenance/\(store.systems.first?.name ?? "MAME")\", \"Maintenance/NES\", etc.). Drop new or extra ROM dumps into a system's OWN subfolder and \"Find ROMs…\" (the Fix menu) can use them to complete that same system's missing roms — never a different system's, even if two share a rom by coincidence. ROMForge never renames, moves, or deletes anything inside it. Entirely optional at both levels — leave the root unset, or leave a system's own toggle off, if you'd rather keep your own donor folder(s) outside ROMForge for it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !maintenanceFolderPath.isEmpty {
+                Text("Off by default for every system, including one you've used this with before — jensyleo's own request (2026-09-29): a newly added system (or one that never opted in) shouldn't get a Maintenance row it never asked for, just because the root above happens to be configured.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(relevantSystems) { system in
+                    HStack {
+                        Toggle(system.name, isOn: Binding(
+                            get: { system.maintenanceFolderEnabled },
+                            set: { newValue in
+                                var updated = system
+                                updated.maintenanceFolderEnabled = newValue
+                                store.update(updated)
+                                if newValue { MaintenanceFolderSettings.ensureSubfolderExists(for: updated) }
+                                NotificationCenter.default.post(name: MaintenanceFolderSettings.subfoldersDidChange, object: nil)
+                            }
+                        ))
+                        Spacer()
+                        if system.maintenanceFolderEnabled {
+                            Button("Delete…", role: .destructive) {
+                                pendingMaintenanceSubfolderDeletion = system
+                            }
+                        }
+                    }
+                }
+            }
+            Toggle("Notify after scanning the Maintenance folder", isOn: $showMaintenanceRescanNotice)
+            Text("Scanning the Maintenance folder only refreshes ITS OWN \"donor available\" coloring — a real ROM folder already scanned earlier this session keeps showing whatever it computed back then until it's rescanned itself. This reminds you to rescan when that might matter.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle("Read the Maintenance folder the first time it's selected", isOn: $maintenanceAutoScanOnSelect)
+            Text("On: clicking the Maintenance row for the first time each session reads its real contents right away, same as before. Off: Maintenance behaves exactly like every other ROM folder — a plain click never touches disk, only an explicit Scan does. Turn this off if the Maintenance root lives on a NAS/drive that isn't always connected.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .confirmationDialog(
+            "Create Maintenance Folder?",
+            isPresented: Binding(
+                get: { pendingMaintenanceRootCreation != nil },
+                set: { if !$0 { pendingMaintenanceRootCreation = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Create") {
+                if let root = pendingMaintenanceRootCreation {
+                    createMaintenanceRoot(at: root)
+                }
+                pendingMaintenanceRootCreation = nil
+            }
+            Button("Cancel", role: .cancel) { pendingMaintenanceRootCreation = nil }
+        } message: {
+            Text("This creates \"\(pendingMaintenanceRootCreation?.path ?? "")\", plus one subfolder inside it for each of your \(store.systems.count) configured system(s).")
+        }
+        .confirmationDialog(
+            "Delete \"\(pendingMaintenanceSubfolderDeletion?.name ?? "")\"'s Maintenance Subfolder?",
+            isPresented: Binding(
+                get: { pendingMaintenanceSubfolderDeletion != nil },
+                set: { if !$0 { pendingMaintenanceSubfolderDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let system = pendingMaintenanceSubfolderDeletion {
+                    try? MaintenanceFolderSettings.deleteSubfolder(for: system)
+                    NotificationCenter.default.post(name: MaintenanceFolderSettings.subfolderDidDelete, object: nil, userInfo: ["systemID": system.id])
+                }
+                pendingMaintenanceSubfolderDeletion = nil
+            }
+            Button("Cancel", role: .cancel) { pendingMaintenanceSubfolderDeletion = nil }
+        } message: {
+            Text("Permanently deletes this system's own Maintenance subfolder and everything inside it — any donor ROMs dropped there for \"Find ROMs…\" are gone. Every OTHER system's own subfolder is untouched. This cannot be undone, and it stays deleted until something genuinely needs it again (running \"Find ROMs…\", or reconfiguring the Maintenance root here) — simply viewing this system again will not bring it back.")
+        }
+    }
+
+    private func pickMaintenanceRootLocation() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose where ROMForge should create (or reuse) its \"Maintenance\" folder"
+        guard panel.runModal() == .OK, let parent = panel.urls.first else { return }
+        let candidateRoot = parent.appendingPathComponent("Maintenance", isDirectory: true)
+        if FileManager.default.fileExists(atPath: candidateRoot.path) {
+            maintenanceFolderPath = candidateRoot.path
+            ensureAllSystemSubfolders()
+        } else {
+            pendingMaintenanceRootCreation = candidateRoot
+        }
+    }
+
+    private func createMaintenanceRoot(at root: URL) {
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        maintenanceFolderPath = root.path
+        ensureAllSystemSubfolders()
+    }
+
+    /// Backfills a subfolder for every CURRENTLY configured system in one
+    /// pass — called right after the root itself is (re)established. A
+    /// system added later gets its own the same lazy way
+    /// `LibraryDetailView`'s own `.onAppear` already ensures for every
+    /// other per-system on-disk location (`ScanCache`, `DATCacheLocation`,
+    /// etc.) — no need to revisit this Settings screen for it.
+    private func ensureAllSystemSubfolders() {
+        for system in store.systems {
+            MaintenanceFolderSettings.ensureSubfolderExists(for: system)
+        }
+        NotificationCenter.default.post(name: MaintenanceFolderSettings.subfoldersDidChange, object: nil)
+    }
+}
+
+/// Per-system "Fix by name similarity" toggle + threshold slider —
+/// jensyleo's own request (2026-09-29), after a real GoodNES-style NES
+/// collection turned up many gray/unrecognized files whose actual content
+/// is correct but sits under a slightly different name than the DAT
+/// declares. Console-only (`ConsoleSettingsForm` is the only caller) —
+/// never offered for a MAME system, whose own internal machine names are
+/// short and cryptic enough that even a high similarity threshold risks a
+/// false match; see `RomSystem.similarNameFixEnabled`'s own doc comment.
+private struct SimilarNameFixSettingsSection: View {
+    var store: SystemLibraryStore
+    var relevantSystems: [RomSystem]
+    /// Read live, not cached — jensyleo's own explicit rule (2026-09-29):
+    /// this whole feature only ever makes sense alongside "Trust file
+    /// names" (`MatchingPreferencesSettings`, General settings), since
+    /// suggesting a rename purely from name resemblance is the same kind
+    /// of "trust the file name over strict hashing" call that toggle
+    /// already represents. `ROMMatcher`/`LibraryViewModel` enforce this
+    /// dependency for real (see `LibraryViewModel`'s own `ROMMatcher.match`
+    /// call site) — this is purely the UI's own reflection of that same
+    /// rule, so a system can't be misconfigured into looking "on" here
+    /// while never actually taking effect.
+    @AppStorage(MatchingPreferencesSettings.nameOnlyMatchingKey) private var nameOnlyMatchingEnabled = MatchingPreferencesSettings.nameOnlyMatchingDefault
+
+    var body: some View {
+        Section("Fix by name similarity") {
+            Text("When a File/ROM's own name isn't byte-for-byte what the DAT expects, but it's a close match (a typo, a truncation, a stray character), \"Fix Mismatched Files\"/\"Fix Misnamed ROMs Inside Their Archives…\" can offer to rename it. Off by default — unlike other automatic name-based fixes, this has NO content evidence behind it, purely a resemblance guess, so it stays opt-in per system.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !nameOnlyMatchingEnabled {
+                Text("Requires \"Trust file names for console/computer systems\" (General settings) to be on — a name-resemblance guess only makes sense alongside that same toggle. Every row below is disabled until it's on.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            ForEach(relevantSystems) { system in
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(system.name, isOn: Binding(
+                        get: { system.similarNameFixEnabled },
+                        set: { newValue in
+                            var updated = system
+                            updated.similarNameFixEnabled = newValue
+                            store.update(updated)
+                        }
+                    ))
+                    .disabled(!nameOnlyMatchingEnabled)
+                    if system.similarNameFixEnabled {
+                        HStack {
+                            Text("Minimum similarity: \(Int((system.similarNameFixThreshold * 100).rounded()))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Slider(
+                                value: Binding(
+                                    get: { system.similarNameFixThreshold },
+                                    set: { newValue in
+                                        var updated = system
+                                        updated.similarNameFixThreshold = newValue
+                                        store.update(updated)
+                                    }
+                                ),
+                                in: 0.50...0.90, step: 0.05
+                            )
+                        }
+                        .disabled(!nameOnlyMatchingEnabled)
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct MAMEMergeSettingsForm: View {
     var store: SystemLibraryStore
     @AppStorage(MAMEMergeModeSettings.mergeModeKey) private var mergeModeRaw = MAMEMergeModeSettings.defaultMergeMode.rawValue
@@ -232,21 +485,6 @@ private struct MAMEMergeSettingsForm: View {
     /// confirmation needed; a genuinely new one is only created after this
     /// dialog confirms.
     @State private var pendingBIOSFolderCreation: URL?
-    // jensyleo's own request (2026-09-24): "hay que mover la opción del
-    // folder de mantenimiento de general a las configuraciones propias de
-    // MAME y cada sistema que vayamos creando" — moved here, whole, from
-    // `GeneralSettingsView` (which no longer needs a `store` parameter at
-    // all as a result — that was its only use for one). Same reasoning as
-    // Samples/BIOS right above: a real donor-folder feature, not a "panel
-    // layout in general" concern. The underlying `MaintenanceFolderSettings`
-    // storage/subfolder logic is entirely unchanged, still lives in
-    // `GeneralSettingsView.swift`, and still covers EVERY configured
-    // system regardless of kind (`ensureAllSystemSubfolders()` loops over
-    // `store.systems`, not filtered by `isMAMEStyle`) — only this form's
-    // own UI location moved. When a real console system type ships, its
-    // own settings form should get an equivalent read-only mention/link
-    // back here, since the root itself stays shared across every system.
-    @AppStorage(MaintenanceFolderSettings.storageKey) private var maintenanceFolderPath = ""
     // jensyleo's own request (2026-09-24): "en Panels eso de Dependencias
     // debería estar solo en MAME ¿no crees?" — right after agreeing these
     // are MAME-exclusive concepts shown in a general, not-per-system
@@ -263,18 +501,6 @@ private struct MAMEMergeSettingsForm: View {
     @AppStorage(DetailColumnSettings.showDriverStatusKey) private var showDriverStatusBadge = true
     @AppStorage(DetailColumnSettings.showDisplayKey) private var showDisplayBadge = true
     @AppStorage(DetailColumnSettings.showPlayersKey) private var showPlayersBadge = true
-    @AppStorage(MaintenanceRescanNoticeSettings.storageKey) private var showMaintenanceRescanNotice = true
-    @AppStorage(MaintenanceAutoScanOnSelectSettings.storageKey) private var maintenanceAutoScanOnSelect = true
-    /// Holds a candidate root between the folder panel closing and the
-    /// user actually confirming its creation (`pickMaintenanceRootLocation()`)
-    /// — nothing on disk is touched until confirmed. Also doubles as the
-    /// `isPresented` driver for the confirmation dialog itself (non-nil ==
-    /// showing).
-    @State private var pendingMaintenanceRootCreation: URL?
-    /// Non-nil drives the per-system delete confirmation below — the
-    /// system whose own Maintenance subfolder is about to be permanently
-    /// deleted.
-    @State private var pendingMaintenanceSubfolderDeletion: RomSystem?
     /// jensyleo's own request (2026-08-13): "esas View Options llévalas a
     /// la sección MAME de System, tiene más sentido" — moved here from
     /// `ViewOptionsSettingsView` (itself moved there from `GeneralSettingsView`
@@ -394,7 +620,7 @@ private struct MAMEMergeSettingsForm: View {
                     // jensyleo's own request, renamed from "Database" to
                     // "Update Database") — was right after "MAME
                     // executable" before.
-                    if MAMELaunchSettings.executablePath != nil {
+                    if MAMELaunchSettings.isInstalled {
                         Button("Generate from Installed MAME…") { generateDATForUpdate() }
                             .disabled(mameSystems.isEmpty || isUpdatingDAT || isGeneratingDATForUpdate)
                     }
@@ -463,58 +689,15 @@ private struct MAMEMergeSettingsForm: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            // Moved here from Settings → General (2026-09-24) — see this
-            // form's own `maintenanceFolderPath` doc comment for why. The
-            // section content itself is unchanged from its previous home.
-            // Reordered (2026-09-24, jensyleo's own explicit order: "MAME
-            // executable, Maintenance folder, Enable BIOS folder, Samples,
-            // [merge modes]") right after "MAME executable" — also dropped
-            // "(optional)" from the title per that same request; it's
-            // still genuinely optional, just no longer spelled out in the
-            // heading itself.
-            Section("Maintenance folder") {
-                HStack {
-                    Text(maintenanceFolderPath.isEmpty ? "Not set" : maintenanceFolderPath)
-                        .font(.callout)
-                        .foregroundStyle(maintenanceFolderPath.isEmpty ? .secondary : .primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    if !maintenanceFolderPath.isEmpty {
-                        Button("Clear") {
-                            maintenanceFolderPath = ""
-                            NotificationCenter.default.post(name: MaintenanceFolderSettings.subfoldersDidChange, object: nil)
-                        }
-                    }
-                    Button("Choose Location…") { pickMaintenanceRootLocation() }
-                }
-                Text("A read-only donor area — one subfolder per configured system (\"Maintenance/\(store.systems.first?.name ?? "MAME")\", \"Maintenance/NES\", etc.), created automatically, covering every configured system regardless of kind. Drop new or extra ROM dumps into a system's OWN subfolder and \"Find ROMs…\" (the Fix menu) can use them to complete that same system's missing roms — never a different system's, even if two share a rom by coincidence. ROMForge never renames, moves, or deletes anything inside it. Entirely optional — leave unset if you'd rather keep your own donor folder(s) outside ROMForge.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if !maintenanceFolderPath.isEmpty {
-                    Text("\(store.systems.count) system subfolder\(store.systems.count == 1 ? "" : "s") kept in sync here — a newly added system gets its own the first time you open it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ForEach(store.systems) { system in
-                        HStack {
-                            Text(system.name)
-                                .font(.callout)
-                            Spacer()
-                            Button("Delete…", role: .destructive) {
-                                pendingMaintenanceSubfolderDeletion = system
-                            }
-                        }
-                    }
-                }
-                Toggle("Notify after scanning the Maintenance folder", isOn: $showMaintenanceRescanNotice)
-                Text("Scanning the Maintenance folder only refreshes ITS OWN \"donor available\" coloring — a real ROM folder already scanned earlier this session keeps showing whatever it computed back then until it's rescanned itself. This reminds you to rescan when that might matter.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("Read the Maintenance folder the first time it's selected", isOn: $maintenanceAutoScanOnSelect)
-                Text("On: clicking the Maintenance row for the first time each session reads its real contents right away, same as before. Off: Maintenance behaves exactly like every other ROM folder — a plain click never touches disk, only an explicit Scan does. Turn this off if the Maintenance root lives on a NAS/drive that isn't always connected.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            // jensyleo's own report (2026-09-29): moved into its own
+            // reusable `MaintenanceFolderSettingsSection` (this file, right
+            // above `MAMEMergeSettingsForm`) so `ConsoleSettingsForm` can
+            // show and manage this same global setting too — see that
+            // struct's own doc comment for why "MAME only" stopped being
+            // correct once a console system existed. Position/reasoning
+            // for living right after "MAME executable" in THIS form is
+            // otherwise unchanged from before the extraction.
+            MaintenanceFolderSettingsSection(store: store, relevantSystems: mameSystems)
             // jensyleo's own request (2026-09-23): "quiero que vayas
             // preparando la característica adicional de que se cree una
             // carpeta llamada BIOS donde la idea es que la app tome las
@@ -915,86 +1098,12 @@ private struct MAMEMergeSettingsForm: View {
         } message: {
             Text("This creates \"\(pendingComplementaryChipsFolderCreation?.path ?? "")\". Nothing is moved into it until you run \"Organize Complementary Chips…\" (toolbar → Fix) yourself.")
         }
-        // Moved here from Settings → General (2026-09-24) along with the
-        // "Maintenance folder" section above — unchanged otherwise.
-        .confirmationDialog(
-            "Create Maintenance Folder?",
-            isPresented: Binding(
-                get: { pendingMaintenanceRootCreation != nil },
-                set: { if !$0 { pendingMaintenanceRootCreation = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Create") {
-                if let root = pendingMaintenanceRootCreation {
-                    createMaintenanceRoot(at: root)
-                }
-                pendingMaintenanceRootCreation = nil
-            }
-            Button("Cancel", role: .cancel) { pendingMaintenanceRootCreation = nil }
-        } message: {
-            Text("This creates \"\(pendingMaintenanceRootCreation?.path ?? "")\", plus one subfolder inside it for each of your \(store.systems.count) configured system(s).")
-        }
-        .confirmationDialog(
-            "Delete \"\(pendingMaintenanceSubfolderDeletion?.name ?? "")\"'s Maintenance Subfolder?",
-            isPresented: Binding(
-                get: { pendingMaintenanceSubfolderDeletion != nil },
-                set: { if !$0 { pendingMaintenanceSubfolderDeletion = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let system = pendingMaintenanceSubfolderDeletion {
-                    try? MaintenanceFolderSettings.deleteSubfolder(for: system)
-                    NotificationCenter.default.post(name: MaintenanceFolderSettings.subfolderDidDelete, object: nil, userInfo: ["systemID": system.id])
-                }
-                pendingMaintenanceSubfolderDeletion = nil
-            }
-            Button("Cancel", role: .cancel) { pendingMaintenanceSubfolderDeletion = nil }
-        } message: {
-            Text("Permanently deletes this system's own Maintenance subfolder and everything inside it — any donor ROMs dropped there for \"Find ROMs…\" are gone. Every OTHER system's own subfolder is untouched. This cannot be undone, and it stays deleted until something genuinely needs it again (running \"Find ROMs…\", or reconfiguring the Maintenance root here) — simply viewing this system again will not bring it back.")
-        }
     }
 
     /// Picks the PARENT location the Maintenance root should live under —
     /// same two-step pattern as `chooseBIOSFolder()` below (and originally
     /// `GeneralSettingsView.pickMaintenanceRootLocation()`, before this
     /// whole feature moved here).
-    private func pickMaintenanceRootLocation() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose where ROMForge should create (or reuse) its \"Maintenance\" folder"
-        guard panel.runModal() == .OK, let parent = panel.urls.first else { return }
-        let candidateRoot = parent.appendingPathComponent("Maintenance", isDirectory: true)
-        if FileManager.default.fileExists(atPath: candidateRoot.path) {
-            maintenanceFolderPath = candidateRoot.path
-            ensureAllSystemSubfolders()
-        } else {
-            pendingMaintenanceRootCreation = candidateRoot
-        }
-    }
-
-    private func createMaintenanceRoot(at root: URL) {
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        maintenanceFolderPath = root.path
-        ensureAllSystemSubfolders()
-    }
-
-    /// Backfills a subfolder for every CURRENTLY configured system in one
-    /// pass — called right after the root itself is (re)established. A
-    /// system added later gets its own the same lazy way
-    /// `LibraryDetailView`'s own `.onAppear` already ensures for every
-    /// other per-system on-disk location (`ScanCache`, `DATCacheLocation`,
-    /// etc.) — no need to revisit this Settings screen for it.
-    private func ensureAllSystemSubfolders() {
-        for system in store.systems {
-            MaintenanceFolderSettings.ensureSubfolderExists(for: system)
-        }
-        NotificationCenter.default.post(name: MaintenanceFolderSettings.subfoldersDidChange, object: nil)
-    }
-
     private func chooseNewDAT() {
         let panel = NSOpenPanel()
         // Same "no content-type filter" reasoning as `AddSystemSheet
@@ -1004,7 +1113,11 @@ private struct MAMEMergeSettingsForm: View {
         panel.canChooseDirectories = false
         panel.message = "Select the new DAT (.dat or .xml — Logiqx/ClrMamePro or MAME -listxml, auto-detected)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        pendingDATUpdateURL = url
+        // Copied into ROMForge's own storage right away — see
+        // `DATStorageLocation`'s own doc comment for why (jensyleo's own
+        // report, 2026-09-29: moving/renaming the original external file
+        // afterward used to break every system pointed at it).
+        pendingDATUpdateURL = DATStorageLocation.copy(from: url)
     }
 
     /// Same mechanism as `AddSystemSheet.generateDATFromMAME()` — runs the
@@ -1038,10 +1151,19 @@ private struct MAMEMergeSettingsForm: View {
     private func applyDATUpdate(to newDATURL: URL) {
         isUpdatingDAT = true
         let systemsToUpdate = mameSystems
+        let oldDATURLs = Set(systemsToUpdate.map(\.datURL))
         for system in systemsToUpdate {
             var updated = system
             updated.datURL = newDATURL
             store.update(updated)
+        }
+        // Cleans up ROMForge's own now-unreferenced internal copy of
+        // whatever DAT these systems pointed at before — a no-op for an
+        // external path the user still owns, or one still shared by a
+        // system not part of this update. See `DATStorageLocation`'s own
+        // doc comment.
+        for oldURL in oldDATURLs {
+            DATStorageLocation.removeIfOrphaned(oldURL, keeping: store.systems)
         }
         Task {
             await SavedViewStatePurger.purgeScanResults(systems: systemsToUpdate)
@@ -1146,6 +1268,20 @@ private struct ConsoleSettingsForm: View {
     @State private var didUpdateDAT = false
     @State private var updatedSystemCount = 0
 
+    /// "Play in <emulator>" — jensyleo's own request (2026-09-29): unlike
+    /// MAME (one canonical emulator), a console system's emulator "no es
+    /// único," so this is a real, configurable choice rather than
+    /// hardcoded. See `ConsoleEmulatorLauncher.swift`'s own doc comment
+    /// for why Nestopia/FCEUX are the two listed (both genuinely
+    /// installable via Homebrew right now) and why OpenEmu — probably the
+    /// more widely-known option — isn't.
+    @AppStorage(ConsoleEmulatorSettings.selectedEmulatorKey) private var selectedEmulatorRaw = ConsoleEmulatorSettings.defaultEmulator.rawValue
+    @AppStorage(ConsoleEmulatorSettings.customExecutablePathKey) private var customEmulatorPath = ""
+
+    private var selectedEmulator: KnownConsoleEmulator {
+        KnownConsoleEmulator(rawValue: selectedEmulatorRaw) ?? ConsoleEmulatorSettings.defaultEmulator
+    }
+
     private var consoleFilters: [DatabaseFilter] {
         DatabaseFilter.allCases.filter { !$0.isMAMESpecific }
     }
@@ -1177,6 +1313,52 @@ private struct ConsoleSettingsForm: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section("Emulator") {
+                Picker("Play games with", selection: $selectedEmulatorRaw) {
+                    ForEach(KnownConsoleEmulator.allCases) { emulator in
+                        Text(emulator.displayName).tag(emulator.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                if selectedEmulator == .custom {
+                    HStack {
+                        Text(customEmulatorPath.isEmpty ? "Not configured" : customEmulatorPath)
+                            .font(.caption)
+                            .foregroundStyle(customEmulatorPath.isEmpty ? .secondary : .primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Locate…") { locateCustomEmulator() }
+                        if !customEmulatorPath.isEmpty {
+                            Button("Clear") { customEmulatorPath = "" }
+                        }
+                    }
+                    Text("Pick either a plain command-line emulator executable, or a GUI `.app` — either kind works, launched the same way \"Play\" launches Nestopia/FCEUX.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack {
+                        Image(systemName: ConsoleEmulatorSettings.isInstalled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(ConsoleEmulatorSettings.isInstalled ? .green : .orange)
+                        Text(ConsoleEmulatorSettings.isInstalled
+                            ? "\(selectedEmulator.displayName) is installed."
+                            : "\(selectedEmulator.displayName) isn't installed yet — run `\(selectedEmulator.installCommand ?? "")` in Terminal.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("Used by the toolbar's \"Play\" button and a game's own right-click menu, for every console-style system — same idea as MAME's own executable below, just picked from a short list since a console system has no single canonical emulator.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // jensyleo's own report (2026-09-29): the Maintenance row
+            // appeared in the NES sidebar with nowhere in THIS tab to see
+            // or change it — the setting lived only under "MAME" (see
+            // `MaintenanceFolderSettingsSection`'s own doc comment). It's
+            // the same global root/state either tab edits, not a separate
+            // one for consoles.
+            MaintenanceFolderSettingsSection(store: store, relevantSystems: consoleSystems)
+            SimilarNameFixSettingsSection(store: store, relevantSystems: consoleSystems)
             Section("Database tree branches") {
                 ForEach(consoleFilters) { filter in
                     Toggle(filter.rawValue, isOn: Binding(
@@ -1228,16 +1410,40 @@ private struct ConsoleSettingsForm: View {
         panel.canChooseDirectories = false
         panel.message = "Select the new DAT (.dat or .xml)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        pendingDATUpdateURL = url
+        // Copied into ROMForge's own storage right away — see
+        // `DATStorageLocation`'s own doc comment for why.
+        pendingDATUpdateURL = DATStorageLocation.copy(from: url)
+    }
+
+    /// "Custom…" emulator choice — same two-button "Locate…"/"Clear"
+    /// pattern as MAME's own executable field below, except this accepts
+    /// EITHER a plain CLI binary or a `.app` bundle (`canChooseDirectories
+    /// = false` still lets an `.app` package through, since macOS treats
+    /// it as a file, not a directory, from an `NSOpenPanel`'s own
+    /// perspective).
+    private func locateCustomEmulator() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select the emulator to use for console/computer systems — a command-line executable or a .app"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        customEmulatorPath = url.path
     }
 
     private func applyDATUpdate(to newDATURL: URL) {
         isUpdatingDAT = true
         let systemsToUpdate = consoleSystems
+        let oldDATURLs = Set(systemsToUpdate.map(\.datURL))
         for system in systemsToUpdate {
             var updated = system
             updated.datURL = newDATURL
             store.update(updated)
+        }
+        // See `MAMEMergeSettingsForm.applyDATUpdate(to:)`'s own identical
+        // cleanup comment.
+        for oldURL in oldDATURLs {
+            DATStorageLocation.removeIfOrphaned(oldURL, keeping: store.systems)
         }
         Task {
             await SavedViewStatePurger.purgeScanResults(systems: systemsToUpdate)

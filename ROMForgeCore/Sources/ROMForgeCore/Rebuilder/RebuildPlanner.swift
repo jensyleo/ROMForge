@@ -183,6 +183,56 @@ public enum RebuildPlanner {
     /// like one entry's own name — exactly wrong.
     public static func planRepair(matchReport: MatchReport, filesCasePolicy: FileCasePolicy = .datafileCase) -> [RebuildOperation] {
         var operations: [RebuildOperation] = []
+        // Every path this function must never plan a SECOND rename onto —
+        // every real file already on disk (whatever its match status),
+        // updated as each loop below plans a rename (freeing the source
+        // path, claiming the destination) so a LATER loop sees the true,
+        // up-to-date picture. Real bug found live by jensyleo (2026-09-30):
+        // a plain per-source dedup set (`plannedArchiveRenames` etc., still
+        // kept below for the unrelated "one archive, several entries"
+        // case) only ever prevented planning the SAME rename twice — it
+        // never stopped TWO DIFFERENT files from both being planned onto
+        // the SAME destination. That happened for real as
+        // "Bases Loaded 3 (U).zip" vs. the already-correct
+        // "Bases Loaded 3 (USA).zip" (a similarity guess colliding with an
+        // existing file), but the identical shape is also reachable
+        // between two SEPARATE surplus archives that both, independently,
+        // qualify as "misnamed" for the same missing game (each one alone
+        // passes `annotateMisnamedArchives`'s own "that game owns no real
+        // archive yet" guard, since neither has been renamed yet), or
+        // between two different similarity guesses that both happen to
+        // resemble the same DAT game most closely. Every rename loop below
+        // now shares this one set instead of reasoning about collisions
+        // independently.
+        // Keyed by NORMALIZED (case-folded) path, not the raw `URL` — real
+        // bug found live by jensyleo (2026-09-30) at a 50% similarity
+        // threshold: the DAT itself declares `"Mario is Missing! (Europe)"`
+        // (lowercase "is"), but the real file already on disk is
+        // `"Mario Is Missing! (Europe).zip"` (capital "Is" — an older
+        // No-Intro naming convention the user's copy predates). A plain
+        // `Set<URL>` treats those as two different paths and lets a
+        // similarity-suggested rename onto the lowercase spelling through
+        // — but default macOS volumes (APFS/HFS+) are case-INSENSITIVE, so
+        // that "different" destination is actually the SAME file on disk,
+        // and the rename would still collide for real at execution time.
+        // `pathKey` below is the single place every comparison in this
+        // function goes through, so this can't quietly regress case by
+        // case as new rename loops are added.
+        var occupiedPaths: Set<String> = []
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                switch romMatch.status {
+                case .correct(let file, _), .misnamed(let file, _), .foundElsewhere(let file),
+                     .hashMismatch(let file), .nodump(let file):
+                    occupiedPaths.insert(pathKey(file.file.url))
+                case .missing:
+                    break
+                }
+            }
+        }
+        for surplusFile in matchReport.surplusFiles {
+            occupiedPaths.insert(pathKey(surplusFile.file.file.url))
+        }
         for gameResult in matchReport.games {
             for romMatch in gameResult.matches {
                 guard case .misnamed(let hashedFile, _) = romMatch.status else { continue }
@@ -190,7 +240,13 @@ public enum RebuildPlanner {
                 let destination = hashedFile.file.url
                     .deletingLastPathComponent()
                     .appendingPathComponent(mismatchFixName(declaredName: romMatch.rom.name, policy: filesCasePolicy))
+                // A pure case-change (e.g. "AWBIOS.zip" → "awbios.zip") is
+                // never a real collision with itself — only a DIFFERENT
+                // occupied key blocks the rename.
+                guard pathKey(destination) == pathKey(hashedFile.file.url) || !occupiedPaths.contains(pathKey(destination)) else { continue }
                 operations.append(.rename(from: hashedFile.file.url, to: destination))
+                occupiedPaths.remove(pathKey(hashedFile.file.url))
+                occupiedPaths.insert(pathKey(destination))
             }
         }
         // `ROMMatcher.annotateMisnamedArchives` flags a misnamed archive by
@@ -213,7 +269,92 @@ public enum RebuildPlanner {
             let ext = currentURL.pathExtension
             let declaredName = ext.isEmpty ? gameName : "\(gameName).\(ext)"
             let destination = currentURL.deletingLastPathComponent().appendingPathComponent(mismatchFixName(declaredName: declaredName, policy: filesCasePolicy))
+            // Real bug found live by jensyleo (2026-09-30), same shape as
+            // the similarity-suggestion collision below: TWO separate,
+            // still-unclaimed surplus archives can each independently
+            // qualify as "misnamed for the same missing game" —
+            // `annotateMisnamedArchives`'s own guard only checks that the
+            // game owns no ALREADY-CORRECT archive, which is still true
+            // for both of them until one of them actually gets renamed.
+            // Without this check both would be planned onto the identical
+            // destination; the second would fail at execution with
+            // "Refusing to overwrite existing file" against the FIRST
+            // one's freshly-renamed result.
+            guard pathKey(destination) == pathKey(currentURL) || !occupiedPaths.contains(pathKey(destination)) else { continue }
             operations.append(.rename(from: currentURL, to: destination))
+            occupiedPaths.remove(pathKey(currentURL))
+            occupiedPaths.insert(pathKey(destination))
+        }
+        // `ROMMatcher.annotateSimilarNameSurplusFiles`'s own suggestions —
+        // jensyleo's own request (2026-09-29): a file the DAT recognizes
+        // nothing about by content, but whose own name closely resembles a
+        // real DAT game (only ever populated when the system this scan
+        // belongs to has `RomSystem.similarNameFixEnabled` on — see that
+        // field's own doc comment). Same per-container dedup as the
+        // hash-based misnamed-archive loop just above (sharing its own
+        // `plannedArchiveRenames` set, since both loops rename the exact
+        // same kind of thing — a File's own name — and could otherwise
+        // double-plan the same container if a surplus archive somehow
+        // qualified for both in a future change). Handles a LOOSE file too
+        // (`misnamedArchiveForGameName` above never does — a loose file's
+        // rom-level `.misnamed` case is already covered by this function's
+        // very first loop), since a plain unrecognized `.nes`/`.bin` with a
+        // close-but-wrong name has no archive concept to speak of at all.
+        for surplusFile in matchReport.surplusFiles {
+            guard let suggestion = surplusFile.similarNameSuggestion else { continue }
+            // jensyleo's own framing (2026-09-30): "no importa si está al
+            // 50% o más, lo importante es que la app sepa qué hacer en
+            // caso de conflictos de cualquier tipo" — the per-system
+            // threshold (as low as 50%) controls what's worth SHOWING as
+            // an informational "Possible match" hint (still true right up
+            // above, via `surplusFile.similarNameSuggestion`), but it must
+            // never by itself decide what Fix is allowed to ACT on. Real,
+            // live-found case: at 50%, "Asterix (E).zip" confidently
+            // suggested "Castelian (Europe)" and "Legend of the Ghost
+            // Lion (U).zip" suggested "Defender of the Crown (Europe)" —
+            // two pairs of completely unrelated games that also happen to
+            // share NES's extremely common 128KB/256KB (+16-byte header)
+            // ROM sizes, so even the size cross-check above can't tell
+            // them apart. `minimumConfidenceToAct` is a SEPARATE, fixed
+            // floor a rename must ALSO clear, independent of whatever the
+            // user configured for visibility — matching
+            // `SimilarNameSuggester.defaultThreshold`'s own "90% or more"
+            // bar (jensyleo's original number, picked specifically to be
+            // near-certain a typo/truncation, not a different game). A
+            // suggestion below this never becomes a `.rename` operation,
+            // no matter how low the system's own display threshold is set.
+            guard suggestion.confidence >= Self.minimumSimilarNameConfidenceToAct else { continue }
+            let currentURL = surplusFile.file.file.url
+            let ext = currentURL.pathExtension
+            let declaredName = ext.isEmpty ? suggestion.suggestedName : "\(suggestion.suggestedName).\(ext)"
+            let expectedName = mismatchFixName(declaredName: declaredName, policy: filesCasePolicy)
+            // Real bug found live by jensyleo (2026-09-29): unlike
+            // `annotateMisnamedArchives`'s own suggestions (structurally
+            // guaranteed never to already equal a real game name — see its
+            // own `!allGameNames.contains(base)` guard), a plain
+            // similarity guess has no such guarantee. When the same base
+            // name genuinely IS a real DAT game (e.g. a byte-different or
+            // simply duplicate "Contra (USA).zip" sitting in a second ROM
+            // folder, whose own content didn't hash-match anything but
+            // whose NAME is already exactly correct), the "closest" real
+            // name it resembles is trivially itself — planning a rename
+            // from "Contra (USA).zip" to "Contra (USA).zip", which
+            // `RebuildExecutor` then refuses as "overwriting" its own
+            // source. Skipping whenever the current name already equals
+            // the declared (or case-styled) target name avoids this
+            // entirely, the same way the own-archive wrong-case loop
+            // below already does for its own suggestions.
+            guard currentURL.lastPathComponent != declaredName, currentURL.lastPathComponent != expectedName else { continue }
+            let destination = currentURL.deletingLastPathComponent().appendingPathComponent(expectedName)
+            // The other half of the same real bug above: the target name
+            // can also belong to a DIFFERENT file that already exists on
+            // disk right now (or that an earlier loop just planned to move
+            // there), not just to `currentURL` itself.
+            guard pathKey(destination) == pathKey(currentURL) || !occupiedPaths.contains(pathKey(destination)) else { continue }
+            guard plannedArchiveRenames.insert(currentURL).inserted else { continue }
+            operations.append(.rename(from: currentURL, to: destination))
+            occupiedPaths.remove(pathKey(currentURL))
+            occupiedPaths.insert(pathKey(destination))
         }
         // An archive that genuinely IS this game's own — every entry that
         // matters is matched by HASH to this exact game, `.correct` or
@@ -271,11 +412,41 @@ public enum RebuildPlanner {
                 // as the NEOGEO fix above intended.
                 guard currentURL.lastPathComponent != declaredName, currentURL.lastPathComponent != expectedName else { continue }
                 let destination = currentURL.deletingLastPathComponent().appendingPathComponent(expectedName)
+                // Same shared-destination guard as every rename loop
+                // above — a wrong-case archive's case-styled target is
+                // derived straight from the DAT's own declared game name,
+                // so it's very unlikely to collide, but nothing about
+                // this loop structurally rules it out the way the
+                // rom-level loop above is ruled out by unique hash
+                // claiming.
+                guard pathKey(destination) == pathKey(currentURL) || !occupiedPaths.contains(pathKey(destination)) else { continue }
                 operations.append(.rename(from: currentURL, to: destination))
+                occupiedPaths.remove(pathKey(currentURL))
+                occupiedPaths.insert(pathKey(destination))
             }
         }
         return operations
     }
+
+    /// The single normalization every collision check in `planRepair` goes
+    /// through — see `occupiedPaths`'s own doc comment for the real,
+    /// live-found bug (a DAT-declared name differing from an existing
+    /// file's name only by case) this exists to never regress again.
+    /// Default macOS volumes (APFS/HFS+) are case-insensitive, so two
+    /// paths differing only by case are the SAME file at the OS level
+    /// regardless of what a plain `String`/`URL` equality check would say.
+    private static func pathKey(_ url: URL) -> String {
+        url.standardizedFileURL.path.lowercased()
+    }
+
+    /// The fixed floor a `similarNameSuggestion` must clear before
+    /// `planRepair` ever turns it into a real `.rename` — see that loop's
+    /// own call-site doc comment for why this is deliberately independent
+    /// of whatever display threshold the user configured for the system
+    /// (as low as 50%). Matches `SimilarNameSuggester.defaultThreshold`
+    /// exactly — the same "90% or more" bar jensyleo originally picked for
+    /// a suggestion to be near-certain rather than a guess.
+    private static let minimumSimilarNameConfidenceToAct = SimilarNameSuggester.defaultThreshold
 
     /// Renames a misnamed rom ENTRY inside an otherwise-correctly-named
     /// `.zip` — the entry-level half of "Rename files/roms" (Fase 2 Step 6)
@@ -1471,6 +1642,20 @@ public enum RebuildPlanner {
                 guard let hashedFile, isZipEntry(hashedFile.file) || (isLooseFile(hashedFile.file) && isZipPath(hashedFile.file.url)) else { continue }
                 archives.insert(hashedFile.file.url)
             }
+        }
+        // jensyleo's own request (2026-09-29): a zip's own comment is a
+        // property of the ARCHIVE FILE itself — it doesn't depend on the
+        // CRC/hash of anything inside it matching the DAT at all, so
+        // "Remove Zip Comment…" shouldn't either. A completely
+        // unrecognized/surplus zip (gray, `matchReport.surplusFiles`, never
+        // walked by the loop above at all) can carry a comment exactly the
+        // same way a matched one can. Universal for every system, MAME
+        // included — this function has no console/MAME distinction to
+        // begin with, and never needed one for this.
+        for surplusFile in matchReport.surplusFiles {
+            let file = surplusFile.file.file
+            guard isZipEntry(file) || (isLooseFile(file) && isZipPath(file.url)) else { continue }
+            archives.insert(file.url)
         }
         return archives
     }

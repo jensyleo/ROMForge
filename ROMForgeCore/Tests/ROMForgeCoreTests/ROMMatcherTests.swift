@@ -1178,6 +1178,53 @@ struct ROMMatcherTests {
         #expect(result.matches[0].status == .missing)
     }
 
+    @Test("nameOnlyMatching: a genuine duplicate (same name, same wrong hash, a DIFFERENT physical folder) of a name-trusted file is reported as a real surplus duplicate — 'required by' its own game — not plain unrecognized junk")
+    func nameOnlyMatchingRecognizesDuplicateOfNameTrustedFileAsSurplus() throws {
+        // jensyleo's own report (2026-09-29): copying "Batman - Return of
+        // the Joker (Europe)" and "Mike Tyson's Punch-Out!!" from NO_INTRO
+        // into a second "SELECTED" folder — genuinely identical files,
+        // byte-for-byte (confirmed via `md5` on the real files) — showed
+        // the SELECTED copy gray/unrecognized instead of green, even
+        // though the exact same content was already correctly recognized
+        // (by name) in NO_INTRO. Reproduced here with a wrong CRC/size on
+        // BOTH copies (the same reason the primary needed name-only
+        // matching in the first place — its real on-disk hash genuinely
+        // doesn't match what the DAT declares).
+        let game = DATGame(
+            name: "console_game", description: "Console Game", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "rom.bin", size: 999, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        let primaryCopy = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/NO_INTRO/console_game.zip"), name: "rom.bin", size: 1),
+            hash: FileHash(crc32: "00000000", md5: "00000000000000000000000000000000", sha1: "0000000000000000000000000000000000000a")
+        )
+        let duplicateCopy = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/SELECTED/console_game.zip"), name: "rom.bin", size: 1),
+            hash: FileHash(crc32: "00000000", md5: "00000000000000000000000000000000", sha1: "0000000000000000000000000000000000000a")
+        )
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [primaryCopy, duplicateCopy], nameOnlyMatching: true)
+
+        // One copy claims the game's own slot (order between them isn't
+        // the point of this test — `primaryArchiveIndices` decides which).
+        let result = report.games.first { $0.game.name == "console_game" }!
+        if case .correct = result.matches[0].status {} else {
+            Issue.record("Expected the primary copy to be claimed as .correct, got \(result.matches[0].status)")
+        }
+        // The OTHER copy must surface as a real, named surplus duplicate —
+        // never as a bare `nil` (indistinguishable from genuine junk).
+        #expect(report.surplusFiles.count == 1)
+        #expect(report.surplusFiles.first?.requiredByGameDescription == "Console Game")
+        // jensyleo's follow-up report, same day: the owner ("Console Game")
+        // genuinely already has this content (the primary copy, claimed as
+        // `.correct` above) — the duplicate must read as "Not needed here",
+        // never as "the owner doesn't have it either" (`requiredByGameOwnerSatisfiedElsewhere`
+        // is the field the UI branches on for that exact wording — see its
+        // own doc comment on `SurplusFile`).
+        #expect(report.surplusFiles.first?.requiredByGameOwnerSatisfiedElsewhere == true)
+    }
+
     @Test("nameOnlyMatching defaults to false — every existing, hash-verified scan (this whole suite) is provably unaffected by its mere existence as a parameter")
     func nameOnlyMatchingDefaultsToFalseAndDoesNotChangeExistingBehavior() throws {
         let game = DATGame(
@@ -1193,5 +1240,76 @@ struct ROMMatcherTests {
 
         let result = report.games.first { $0.game.name == "console_game" }!
         #expect(result.matches[0].status == .hashMismatch(wrongContent))
+    }
+
+    @Test("nameOnlyMatching also recognizes a GoodTools-tagged local name (region tag + trailing article) against its No-Intro DAT equivalent")
+    func nameOnlyMatchingRecognizesGoodToolsStyleName() throws {
+        // Mirrors jensyleo's own real NES collection (2026-09-29): a file
+        // named "Addams Family The (U).zip" containing "Addams Family The
+        // (U) .nes" (note GoodTools' own stray trailing space before the
+        // extension) — genuinely correct content, but under the old,
+        // BEFORE-`GoodToolsNameTranslator` `nameOnlyMatching` logic this
+        // read as plain gray "Unknown" forever, since neither the archive
+        // name nor the entry name is byte-identical to the DAT's own
+        // No-Intro name.
+        let game = DATGame(
+            name: "Addams Family, The (USA)", description: "Addams Family, The (USA)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "Addams Family, The (USA).nes", size: 1, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        let file = zipEntryHashedFile(
+            archiveName: "Addams Family The (U)", entryName: "Addams Family The (U) .nes",
+            size: 1, crc: "00000000", sha1: "0000000000000000000000000000000000000a"
+        )
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameOnlyMatching: true)
+
+        let result = report.games.first { $0.game.name == "Addams Family, The (USA)" }!
+        if case .correct = result.matches[0].status {} else {
+            Issue.record("Expected the GoodTools-tagged file to be recognized as .correct, got \(result.matches[0].status)")
+        }
+    }
+
+    @Test("nameSimilarityThreshold surfaces a similarNameSuggestion for a genuinely unrecognized surplus file whose name is a close match, and leaves it nil below threshold")
+    func nameSimilarityThresholdSurfacesSuggestion() throws {
+        let game = DATGame(
+            name: "Contra (USA)", description: "Contra (USA)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "Contra (USA).nes", size: 1, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        // "Contrs" — one substitution away from "Contra" — genuinely
+        // unrecognized (wrong hash, wrong name, no GoodTools tag involved
+        // at all), but 90%+ similar in plain text.
+        let file = zipEntryHashedFile(
+            archiveName: "Contrs (USA)", entryName: "Contrs (USA).nes",
+            size: 1, crc: "00000000", sha1: "0000000000000000000000000000000000000a"
+        )
+
+        let withThreshold = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameSimilarityThreshold: 0.80)
+        #expect(withThreshold.surplusFiles.first?.similarNameSuggestion?.suggestedName == "Contra (USA)")
+
+        // No threshold at all (the default) — same file, no suggestion,
+        // confirming this is entirely opt-in and never active by default.
+        let withoutThreshold = try ROMMatcher.match(dat: dat, hashedFiles: [file])
+        #expect(withoutThreshold.surplusFiles.first?.similarNameSuggestion == nil)
+    }
+
+    @Test("a similarNameSuggestion is discarded outright when the candidate's own DECLARED size doesn't match this file's real size — real bug found live (2026-09-30) against a genuine NES collection: \"Pictionary (U).zip\" (53%) and \"Base Wars (U).zip\" (56%) confidently suggested completely unrelated games whose own declared size was nothing like the real file's — a text-only match has no idea the content itself already contradicts it")
+    func nameSimilarityThresholdRejectsSizeMismatchedCandidate() throws {
+        let game = DATGame(
+            name: "Castelian (Europe)", description: "Castelian (Europe)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "Castelian (Europe).nes", size: 131_088, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        // Real file is barely half the candidate's declared size — a
+        // genuinely different game, not a header/padding difference.
+        let file = zipEntryHashedFile(
+            archiveName: "Asterix (E)", entryName: "Asterix (E).nes",
+            size: 65_552, crc: "00000000", sha1: "0000000000000000000000000000000000000a"
+        )
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameSimilarityThreshold: 0.50)
+
+        #expect(report.surplusFiles.first?.similarNameSuggestion == nil)
     }
 }

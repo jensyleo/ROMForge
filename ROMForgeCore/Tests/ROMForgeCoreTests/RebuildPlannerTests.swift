@@ -214,6 +214,156 @@ struct RebuildPlannerTests {
         #expect(plan == [.rename(from: misnamedArchiveURL, to: folder.appendingPathComponent(expectedName))])
     }
 
+    @Test("planRepair renames a surplus archive that only has a similarNameSuggestion (no content evidence at all)")
+    func planRepairRenamesArchiveWithSimilarNameSuggestionOnly() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let misnamedArchiveURL = folder.appendingPathComponent("Contrs (USA).zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: misnamedArchiveURL, name: "Contrs (USA).nes", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            similarNameSuggestion: SimilarNameSuggestion(suggestedName: "Contra (USA)", confidence: 0.92)
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusFile])
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan == [.rename(from: misnamedArchiveURL, to: folder.appendingPathComponent("Contra (USA).zip"))])
+    }
+
+    @Test("planRepair never plans a self-rename when a similarNameSuggestion's target already equals the file's own current name — real bug found live (2026-09-29): a duplicate copy of an already-correctly-named archive (e.g. a second \"Contra (USA).zip\" in another ROM folder) can resemble ITSELF as its own closest DAT match, and RebuildExecutor refuses that as \"overwriting\" its own source")
+    func planRepairSkipsSelfRenameFromSimilarNameSuggestion() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let alreadyCorrectlyNamedURL = folder.appendingPathComponent("Contra (USA).zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: alreadyCorrectlyNamedURL, name: "Contra (USA).nes", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            similarNameSuggestion: SimilarNameSuggestion(suggestedName: "Contra (USA)", confidence: 1.0)
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusFile])
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan.isEmpty)
+    }
+
+    @Test("planRepair renames a LOOSE surplus file with a similarNameSuggestion, not just an archive")
+    func planRepairRenamesLooseFileWithSimilarNameSuggestion() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let looseURL = folder.appendingPathComponent("Contrs (USA).nes")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: looseURL, name: "Contrs (USA).nes", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            similarNameSuggestion: SimilarNameSuggestion(suggestedName: "Contra (USA)", confidence: 0.92)
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusFile])
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan == [.rename(from: looseURL, to: folder.appendingPathComponent("Contra (USA).nes"))])
+    }
+
+    @Test("planRepair never turns a LOW-confidence similarNameSuggestion into a real rename, regardless of the system's own display threshold — real bug found live (2026-09-30) against a genuine NES collection at a 50% threshold: \"Asterix (E).zip\" confidently suggested \"Castelian (Europe)\" and \"Legend of the Ghost Lion (U).zip\" suggested \"Defender of the Crown (Europe)\" — completely unrelated games that also happened to share NES's own common 128KB/256KB ROM sizes, defeating even the size cross-check. jensyleo's own framing: no threshold value alone fixes this — Fix must never act below a fixed, independent confidence floor")
+    func planRepairNeverActsOnAConfidenceBelowTheFixedFloor() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let surplusURL = folder.appendingPathComponent("Asterix (E).zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: surplusURL, name: "Asterix (E).nes", size: 131_088), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            similarNameSuggestion: SimilarNameSuggestion(suggestedName: "Castelian (Europe)", confidence: 0.50)
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusFile])
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan.isEmpty)
+    }
+
+    @Test("planRepair never plans a similarNameSuggestion rename onto a name that's already a DIFFERENT real, on-disk file — real bug found live (2026-09-30) against a genuine NES collection: \"Bases Loaded 3 (U).zip\" (unrecognized by content) scored a similarity suggestion against \"Bases Loaded 3 (USA)\", whose own already-correct archive was sitting right there in the same folder — RebuildExecutor correctly refused the resulting rename (\"Refusing to overwrite existing file\"), but planRepair should never have planned it in the first place")
+    func planRepairSkipsSimilarNameRenameOntoAnotherExistingFile() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let correctArchiveURL = folder.appendingPathComponent("Bases Loaded 3 (USA).zip")
+        let rom = DATRom(name: "Bases Loaded 3 (USA).nes", size: 1, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let game = DATGame(name: "Bases Loaded 3 (USA)", description: "Bases Loaded 3 (USA)", cloneOf: nil, romOf: nil, roms: [rom])
+        let correctHashedFile = HashedFile(
+            file: ScannedFile(url: correctArchiveURL, name: "Bases Loaded 3 (USA).nes", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let gameResult = GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(correctHashedFile))])
+
+        let surplusURL = folder.appendingPathComponent("Bases Loaded 3 (U).zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: surplusURL, name: "Bases Loaded 3 (U).nes", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "1", sha1: "1")),
+            similarNameSuggestion: SimilarNameSuggestion(suggestedName: "Bases Loaded 3 (USA)", confidence: 0.9)
+        )
+        let matchReport = MatchReport(games: [gameResult], surplusFiles: [surplusFile])
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan.isEmpty)
+    }
+
+    @Test("planRepair never plans TWO misnamed-archive renames onto the SAME destination — real bug found live (2026-09-30): two separate, still-unclaimed surplus archives can each independently qualify as \"misnamed for the same missing game\" (annotateMisnamedArchives's own guard only checks the game owns no ALREADY-CORRECT archive, which is still true for both until one of them is actually renamed), so only the first should be planned")
+    func planRepairPlansOnlyOneRenameWhenTwoMisnamedArchivesTargetTheSameGame() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let firstDuplicateURL = folder.appendingPathComponent("Missing Game (Unl).zip")
+        let secondDuplicateURL = folder.appendingPathComponent("Missing Game (Alt).zip")
+        let surplusFiles = [firstDuplicateURL, secondDuplicateURL].map { url in
+            SurplusFile(
+                file: HashedFile(file: ScannedFile(url: url, name: "Missing Game.nes", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+                misnamedArchiveForGameName: "Missing Game (USA)"
+            )
+        }
+        let matchReport = MatchReport(games: [], surplusFiles: surplusFiles)
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan == [.rename(from: firstDuplicateURL, to: folder.appendingPathComponent("Missing Game (USA).zip"))])
+    }
+
+    @Test("planRepair never plans TWO similarNameSuggestion renames onto the SAME destination — the same collision, reached via the fuzzy-similarity path instead of the deterministic misnamed-archive one")
+    func planRepairPlansOnlyOneRenameWhenTwoSimilarNameSuggestionsTargetTheSameGame() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let firstDuplicateURL = folder.appendingPathComponent("Contrz (Unl).zip")
+        let secondDuplicateURL = folder.appendingPathComponent("Contrs (Alt).zip")
+        let surplusFiles = [firstDuplicateURL, secondDuplicateURL].map { url in
+            SurplusFile(
+                file: HashedFile(file: ScannedFile(url: url, name: "Contra.nes", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+                similarNameSuggestion: SimilarNameSuggestion(suggestedName: "Contra (USA)", confidence: 0.91)
+            )
+        }
+        let matchReport = MatchReport(games: [], surplusFiles: surplusFiles)
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan == [.rename(from: firstDuplicateURL, to: folder.appendingPathComponent("Contra (USA).zip"))])
+    }
+
+    @Test("planRepair never plans a similarNameSuggestion rename onto a name that already exists on disk under a DIFFERENT CASE — real bug found live (2026-09-30) against a genuine NES collection at a 50% threshold: the DAT itself declares \"Mario is Missing! (Europe)\" (lowercase \"is\"), but the real file already on disk is \"Mario Is Missing! (Europe).zip\" (capital \"Is\") — a plain string/URL comparison treats those as different paths, but default macOS volumes (APFS/HFS+) are case-insensitive, so the rename would collide for real")
+    func planRepairSkipsSimilarNameRenameOntoAnotherExistingFileDifferingOnlyByCase() {
+        let folder = URL(fileURLWithPath: "/roms")
+        // Deliberately matches the DAT's OWN declared case exactly, so the
+        // separate wrong-case loop (own-archive case-styling) has nothing
+        // to fix here — isolates the one thing this test means to check:
+        // the similarity loop's collision guard treating this and the
+        // DAT's differently-cased "Mario is Missing!" suggestion as the
+        // SAME file, as any default macOS volume would.
+        let existingURL = folder.appendingPathComponent("Mario Is Missing! (Europe).zip")
+        let rom = DATRom(name: "Mario Is Missing! (Europe).nes", size: 1, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let game = DATGame(name: "Mario Is Missing! (Europe)", description: "Mario Is Missing! (Europe)", cloneOf: nil, romOf: nil, roms: [rom])
+        let correctHashedFile = HashedFile(
+            file: ScannedFile(url: existingURL, name: "Mario Is Missing! (Europe).nes", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let gameResult = GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(correctHashedFile))])
+
+        let surplusURL = folder.appendingPathComponent("Mario Bros. Classic (Europe).zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: surplusURL, name: "Mario Bros. Classic (Europe).nes", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "1", sha1: "1")),
+            similarNameSuggestion: SimilarNameSuggestion(suggestedName: "Mario is Missing! (Europe)", confidence: 0.5)
+        )
+        let matchReport = MatchReport(games: [gameResult], surplusFiles: [surplusFile])
+
+        let plan = RebuildPlanner.planRepair(matchReport: matchReport)
+
+        #expect(plan.isEmpty)
+    }
+
     @Test("plans a copy into <destination>/<game>/<rom name> for matched roms, skipping missing ones")
     func plansRebuildCopyIntoGameFolder() {
         let folder = URL(fileURLWithPath: "/roms")
@@ -444,6 +594,17 @@ struct RebuildPlannerTests {
         )
 
         #expect(RebuildPlanner.matchedZipArchiveURLs(matchReport: matchReport).isEmpty)
+    }
+
+    @Test("matchedZipArchiveURLs ALSO includes a completely unrecognized/surplus zip — a comment is a property of the archive file itself, independent of whether the DAT recognizes anything inside it")
+    func matchedZipArchiveURLsIncludesUnrecognizedSurplusZip() {
+        let unknownZip = URL(fileURLWithPath: "/roms/totally_unknown.zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: unknownZip, name: "junk.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0"))
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusFile])
+
+        #expect(RebuildPlanner.matchedZipArchiveURLs(matchReport: matchReport) == [unknownZip])
     }
 
     @Test("planRemoveZipComments plans one .clearZipComment per archive it's given, and nothing for an archive that isn't in the set — jensyleo's own real incident (2026-09-22): the OLD version planned a removal for every matched zip unconditionally, offering \"Remove Zip Comment…\" for gryzor.zip, which never had one")

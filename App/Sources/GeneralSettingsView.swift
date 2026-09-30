@@ -421,13 +421,17 @@ enum MaintenanceFolderSettings {
     }
 
     /// This system's OWN subfolder under the Maintenance root — `nil`
-    /// whenever the root itself isn't configured yet. "Repair from
-    /// Maintenance Folder…" (`LibraryViewModel
+    /// whenever the root itself isn't configured yet, OR this specific
+    /// system hasn't opted in (`RomSystem.maintenanceFolderEnabled`'s own
+    /// doc comment: jensyleo's own request, 2026-09-29, after the NES
+    /// sidebar kept showing a Maintenance row it never asked for). "Repair
+    /// from Maintenance Folder…" (`LibraryViewModel
     /// .planRepairFromMaintenanceFolderPreviewCount(system:)`) scans ONLY
     /// this, never the whole root, so a donor dropped for one system can
     /// never accidentally satisfy a different system's missing rom.
     static func subfolderURL(for system: RomSystem) -> URL? {
-        folderURL?.appendingPathComponent(safeSubfolderName(system.name), isDirectory: true)
+        guard system.maintenanceFolderEnabled else { return nil }
+        return folderURL?.appendingPathComponent(safeSubfolderName(system.name), isDirectory: true)
     }
 
     /// Creates this exact system's own subfolder (and the root, if it

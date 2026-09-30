@@ -2,6 +2,39 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.1.0] - 2026-09-30
+
+### Added — DAT metadata enrichment
+
+Logiqx/No-Intro DAT parsing now also reads `category`, `serial`, `sha256`, and a rom's `header`
+(iNES header bytes, when declared) — surfaced in the detail panel for any DAT that provides them.
+A stale cached DAT parsed before these fields existed no longer silently keeps serving `nil` for
+them (`DATFileCache`'s format version was bumped to force a fresh reparse).
+
+### Added — name-similarity assisted matching for console/computer systems
+
+Two new, always opt-in aids for a console/computer system with "Trust file names" enabled
+(Settings → General → Matching — never available for an Arcade/MAME system):
+
+- **GoodTools-to-No-Intro region-tag translation** — a deterministic table (`(U)` → `(USA)`,
+  `(JU)` → `(Japan, USA)`, trailing-article reorder, apostrophe-insensitive comparison) folded
+  directly into matching, so a GoodTools-named collection matches a No-Intro DAT without renaming
+  anything first.
+- **Fuzzy "possible match" suggestions** — per-system toggle and confidence slider (50–90%),
+  surfaced as "Possible match: *name* (*confidence*%)" in the Info column for a file the DAT can't
+  recognize by content at all. Purely informational at low confidence: "Fix Mismatched Files"/"Fix
+  Misnamed ROMs Inside Their Archives…" only ever turns a suggestion into a real rename once it
+  *also* clears a fixed, independent 90%-confidence floor and the candidate's own declared file
+  size — regardless of how low the display threshold is configured. Several real conflicts (two
+  unclaimed files independently qualifying for the same rename target; a DAT-declared name
+  differing from an existing file only by case, which macOS's own case-insensitive filesystem
+  would collide on for real) are resolved deterministically rather than left to whichever
+  operation happened to run first.
+
+### Fixed — "Scan All Folders" reused a stale, pre-enrichment DAT cache
+
+See "DAT metadata enrichment" above — the same cache-versioning fix also resolved this.
+
 ## [1.0.1] - 2026-09-28
 
 ### Changed — "Required BIOS" column and detail row

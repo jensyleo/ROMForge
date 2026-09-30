@@ -24,6 +24,7 @@
 		4C2ABA327A33B4FBF12997CF /* LibraryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5EDDD10C30F710396CF2035 /* LibraryDetailView.swift */; };
 		4F6101B7DA47EF7F26869023 /* HelpTopic.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC21500DBE38875BC1663755 /* HelpTopic.swift */; };
 		4FE2FAA3E56181985E3577B5 /* CollectionReportExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E6DC5AAD37DF54B9ABB9EC /* CollectionReportExporter.swift */; };
+		508884A1CF9C9FBB16B74F3C /* ConsoleEmulatorLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916C089FFA86F5C94FB87EAA /* ConsoleEmulatorLauncher.swift */; };
 		597E983D99C09FE82C8EDBC1 /* ScanCacheLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED1FCD0569402C6A540E9B62 /* ScanCacheLocation.swift */; };
 		5C72144FAF5A8341EA6A924C /* Engine in Resources */ = {isa = PBXBuildFile; fileRef = 0D102156AFF72C050E4CEB36 /* Engine */; };
 		82557607A153CBC6620AD965 /* AddSystemSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED73B38CE35E0F7EBF9FC04 /* AddSystemSheet.swift */; };
@@ -36,6 +37,7 @@
 		BEE29CD13FE782DDF87D1646 /* ROMFolderPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91A1D34EB271B09EC4E51CBC /* ROMFolderPicker.swift */; };
 		BFBEE1C97682BAD476AFF5A4 /* ROMForgeToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E89007B9A4A2D6332585F7A /* ROMForgeToolbar.swift */; };
 		C1874E5C9735B7B05E7A2D4F /* AuditStatusTint.swift in Sources */ = {isa = PBXBuildFile; fileRef = A32B3BA6A55020245FB53967 /* AuditStatusTint.swift */; };
+		C8BF771CA1A0D17FD910F598 /* DATStorageLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F4A9FAE17EDFE30B82D13B /* DATStorageLocation.swift */; };
 		CCD0DDEA12EAF392C08AA14E /* ROMForgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6DE5954224E708C87143BC3 /* ROMForgeApp.swift */; };
 		EB573FDA070683252192E81F /* MAMELauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7490CFF027A1F83BA177B10A /* MAMELauncher.swift */; };
 		EE9A59BAA1300521B2FC6FE8 /* ROMForgeCore in Frameworks */ = {isa = PBXBuildFile; productRef = DDED3982451B4586143EA9CB /* ROMForgeCore */; };
@@ -53,6 +55,7 @@
 		187586C78239370B87A663DB /* MAMEDATGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MAMEDATGenerator.swift; sourceTree = "<group>"; };
 		2E3BFBAE577A2D4DB03DB6A7 /* ROMForgeCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ROMForgeCore; path = ROMForgeCore; sourceTree = SOURCE_ROOT; };
 		35B02C170603F4152FC5015B /* HelpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpView.swift; sourceTree = "<group>"; };
+		37F4A9FAE17EDFE30B82D13B /* DATStorageLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DATStorageLocation.swift; sourceTree = "<group>"; };
 		3B83D53C17A0DFDD37D54C31 /* RomSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RomSystem.swift; sourceTree = "<group>"; };
 		50A0994C67BF13852388B258 /* SystemLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemLibraryStore.swift; sourceTree = "<group>"; };
 		5AF5E59423C50255DF1D7EF5 /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
@@ -66,6 +69,7 @@
 		8AD02D4A92B88412BD803E18 /* RomsTableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RomsTableView.swift; sourceTree = "<group>"; };
 		8BD8E33D846EFB03FCC10431 /* ROMForgeUninstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ROMForgeUninstaller.swift; sourceTree = "<group>"; };
 		9039F226FCCD8C81E944D24E /* DATCacheLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DATCacheLocation.swift; sourceTree = "<group>"; };
+		916C089FFA86F5C94FB87EAA /* ConsoleEmulatorLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsoleEmulatorLauncher.swift; sourceTree = "<group>"; };
 		91A1D34EB271B09EC4E51CBC /* ROMFolderPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ROMFolderPicker.swift; sourceTree = "<group>"; };
 		9E0D026316904CF474A249A0 /* AppSettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsWindowController.swift; sourceTree = "<group>"; };
 		A32B3BA6A55020245FB53967 /* AuditStatusTint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditStatusTint.swift; sourceTree = "<group>"; };
@@ -148,8 +152,10 @@
 				A32B3BA6A55020245FB53967 /* AuditStatusTint.swift */,
 				F218483DF62578B9B0922725 /* AutosavingSplitView.swift */,
 				71E6DC5AAD37DF54B9ABB9EC /* CollectionReportExporter.swift */,
+				916C089FFA86F5C94FB87EAA /* ConsoleEmulatorLauncher.swift */,
 				1372BABD452501D71DD8AA0F /* ContentView.swift */,
 				9039F226FCCD8C81E944D24E /* DATCacheLocation.swift */,
+				37F4A9FAE17EDFE30B82D13B /* DATStorageLocation.swift */,
 				D593D1CFD6BE38A2EB56A71B /* FixPreferencesSettings.swift */,
 				11F867C07E24EFB731C5F7FB /* FixSettingsView.swift */,
 				683AF14D84BBC6D7A619632D /* GameTreeTableView.swift */,
@@ -260,8 +266,10 @@
 				C1874E5C9735B7B05E7A2D4F /* AuditStatusTint.swift in Sources */,
 				3C43105693E7103A9E92ACFB /* AutosavingSplitView.swift in Sources */,
 				4FE2FAA3E56181985E3577B5 /* CollectionReportExporter.swift in Sources */,
+				508884A1CF9C9FBB16B74F3C /* ConsoleEmulatorLauncher.swift in Sources */,
 				AA7AE7D56326898C8DFB4672 /* ContentView.swift in Sources */,
 				F11B7A85F70997D8B0450AEF /* DATCacheLocation.swift in Sources */,
+				C8BF771CA1A0D17FD910F598 /* DATStorageLocation.swift in Sources */,
 				9A5A41E64857B84A27B96803 /* FixPreferencesSettings.swift in Sources */,
 				002C45DAD57BC2AF0569D3AE /* FixSettingsView.swift in Sources */,
 				3EBD4BE8A560AA0DB78212CF /* GameTreeTableView.swift in Sources */,
@@ -381,7 +389,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -444,7 +452,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

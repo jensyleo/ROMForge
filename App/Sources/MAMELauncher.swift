@@ -49,6 +49,23 @@ enum MAMELaunchSettings {
         return FileManager.default.isExecutableFile(atPath: homebrewDefaultPath) ? homebrewDefaultPath : nil
     }
 
+    /// `true` only when a real, executable MAME binary genuinely sits at
+    /// `executablePath` RIGHT NOW — jensyleo's own request (2026-09-29):
+    /// "Play in MAME" and its siblings should only ever appear when MAME is
+    /// actually installed, not just when some path string happens to be
+    /// configured. `executablePath` itself already falls back to checking
+    /// disk when NOTHING is explicitly set, but an explicitly-configured
+    /// path (via "Locate…") was never re-verified afterward — if MAME were
+    /// ever uninstalled/moved after that, every feature gated on a plain
+    /// `executablePath != nil` check would keep offering itself with
+    /// nothing left to actually launch. This re-checks the file system on
+    /// every call rather than caching, matching `executablePath`'s own
+    /// "verified against the real file system, never assumed" reasoning.
+    static var isInstalled: Bool {
+        guard let path = executablePath else { return false }
+        return FileManager.default.isExecutableFile(atPath: path)
+    }
+
     /// Actually WRITES the auto-detected Homebrew path into `UserDefaults`
     /// (not just the read-time fallback `executablePath` above already
     /// does) whenever this key is empty and a real executable sits at

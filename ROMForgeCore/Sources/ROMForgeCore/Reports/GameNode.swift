@@ -354,6 +354,14 @@ public struct GameNode: Identifiable, Sendable {
     }
     public var year: String { firstNonEmpty(\.gameYear) ?? sourceGame?.year ?? "" }
     public var manufacturer: String { firstNonEmpty(\.gameManufacturer) ?? sourceGame?.manufacturer ?? "" }
+    /// The DAT's own `<category>` for this game — see `DATGame.category`'s
+    /// own doc comment. No per-entry `AuditEntry` counterpart the way
+    /// `year`/`manufacturer` have (`gameYear`/`gameManufacturer`, persisted
+    /// per scanned row) — this is read straight from `sourceGame` only,
+    /// since no format needing that per-row fallback also declares
+    /// `category` in the first place (only No-Intro does, and it's a
+    /// per-`DATGame` constant there, never derived per scanned file).
+    public var category: String { sourceGame?.category ?? "" }
     public var requiredBiosNames: String {
         firstNonEmpty(\.requiredBiosNames) ?? resolvedBiosMachineName ?? ""
     }

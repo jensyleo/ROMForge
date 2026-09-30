@@ -124,14 +124,26 @@ struct GameTreeTableView: View {
         return fallback
     }
 
-    // MARK: - Keyboard type-ahead
-    let handleTypeAheadKeyPress: (KeyPress) -> KeyPress.Result
+    // MARK: - Keyboard navigation
     // jensyleo's own report (2026-09-15), macOS 27.0: `Table`'s own
     // native arrow-key row navigation stopped working entirely. Actually
     // MOVING the selection on an up/down arrow now happens in
     // `LibraryDetailView`'s own shared event monitor (`activeResultsPane`'s
     // own doc comment there) — this is just how that monitor knows this
     // Table is the one the user last clicked into.
+    //
+    // Type-ahead (typing a letter to jump to a game) used to be a plain
+    // `.onKeyPress` modifier right on this `Table` — removed (2026-09-29)
+    // for the exact same reason arrow keys were: jensyleo's own report
+    // that typed letters kept landing in the "Search games…" field in the
+    // sidebar instead of jumping to a game here, no matter where he'd just
+    // clicked. Real AppKit key-window focus apparently never reliably
+    // transfers TO this `Table` on macOS 27 (the same underlying gap the
+    // arrow-key monitor already works around), so `.onKeyPress` — which
+    // only ever fires for a view that genuinely holds that focus — simply
+    // never ran; whatever real text field last had focus (the search
+    // field) kept eating every keystroke instead. Type-ahead now lives in
+    // that same shared, focus-independent event monitor.
     let onFocusRequested: () -> Void
 
     // MARK: - Cell content (all previously `private func`s on LibraryDetailView)
@@ -300,9 +312,6 @@ struct GameTreeTableView: View {
         // reliably for every click, genuine change or not — no need for
         // the second trigger.
         .simultaneousGesture(TapGesture().onEnded { onFocusRequested() })
-        .onKeyPress(phases: .down) { keyPress in
-            handleTypeAheadKeyPress(keyPress)
-        }
         // MAME-only, and only once a real `mame` executable is configured
         // — see `MAMELauncher`/`canLaunchMAME(_:)`. Selecting a row via
         // right-click already updates `selectedGameID` (SwiftUI's own
@@ -332,10 +341,17 @@ struct GameTreeTableView: View {
                     Label("Rescan This File", systemImage: "arrow.clockwise")
                 }
                 .disabled(!canScanFile(node))
+                // jensyleo's own request (2026-09-29): a console/computer
+                // system now gets its own "Play in Nestopia" here too (see
+                // `NestopiaLauncher`'s own doc comment for why Nestopia,
+                // not Mesen — not distributed via Homebrew at all).
+                // `canLaunchMAME(node)` already checks the RIGHT
+                // emulator's own installed state for this system's kind,
+                // so the row still hides itself correctly either way.
                 Button {
                     launchInMAME(node)
                 } label: {
-                    Label("Play in MAME", systemImage: "play.fill")
+                    Label(system.isMAMEStyle ? "Play in MAME" : "Play in \(ConsoleEmulatorSettings.selected.displayName)", systemImage: "play.fill")
                 }
                 .disabled(!canLaunchMAME(node))
                 Button {

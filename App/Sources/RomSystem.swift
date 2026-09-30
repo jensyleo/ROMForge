@@ -64,6 +64,42 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
     /// system as a plain console one on next launch).
     var isMAMEStyle: Bool
 
+    /// jensyleo's own request (2026-09-29), right after adding NES: the
+    /// Maintenance folder used to apply automatically to EVERY configured
+    /// system the moment a root was set (originally deliberate — "cubre
+    /// todo sistema sin importar el tipo") — confusing once a NEW system
+    /// (NES) got a Maintenance sidebar row it never asked for, just
+    /// because MAME's own root happened to already be configured. Now
+    /// opt-in per system, same shape as BIOS/Samples/Complementary Chips'
+    /// own "Enable X folder" toggles — `false` by default, including for
+    /// every system saved by a build before this field existed (MAME
+    /// itself included: re-enabling it there is a deliberate, one-time
+    /// action, not an automatic upgrade).
+    var maintenanceFolderEnabled: Bool
+    /// Whether "Fix Mismatched Files"/"Fix Misnamed ROMs Inside Their
+    /// Archives…" should ALSO offer a rename for a file the DAT recognizes
+    /// nothing about by hash, purely because its own name is a close
+    /// (but not exact) match for some real DAT game — jensyleo's own
+    /// request (2026-09-29): a real GoodNES-style NES collection had many
+    /// gray/unrecognized files whose actual, correct content just happens
+    /// to sit under a slightly different name (a typo, a truncation, a
+    /// stray character) than what the DAT declares. `false` by default —
+    /// unlike `GoodToolsNameTranslator` (a fixed, deterministic table of
+    /// known-safe rewrites folded silently into matching itself), this is
+    /// a genuine best-effort GUESS with no content evidence behind it, so
+    /// it stays opt-in, same shape as every other write-capable feature
+    /// here. MAME-style systems never offer this toggle at all (see
+    /// `SystemSettingsView`'s own Console-only gating) — MAME's own
+    /// internal machine names are short and cryptic enough that even a
+    /// high similarity threshold risks a false match (`"sf2"` vs `"sf3"`).
+    var similarNameFixEnabled: Bool
+    /// The minimum similarity (0.50...0.90) `similarNameFixEnabled` above
+    /// requires before suggesting a rename — jensyleo's own request, a
+    /// configurable range rather than a fixed number, after going back and
+    /// forth between 90% (safer, misses more real matches) and 80%
+    /// (catches more, slightly more false-match risk). Defaults to 0.80.
+    var similarNameFixThreshold: Double
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -71,7 +107,10 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         datURL: URL,
         romFolderURLs: [URL],
         hasClones: Bool? = nil,
-        isMAMEStyle: Bool = true
+        isMAMEStyle: Bool = true,
+        maintenanceFolderEnabled: Bool = false,
+        similarNameFixEnabled: Bool = false,
+        similarNameFixThreshold: Double = 0.80
     ) {
         self.id = id
         self.name = name
@@ -80,10 +119,14 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         self.romFolderURLs = romFolderURLs
         self.hasClones = hasClones
         self.isMAMEStyle = isMAMEStyle
+        self.maintenanceFolderEnabled = maintenanceFolderEnabled
+        self.similarNameFixEnabled = similarNameFixEnabled
+        self.similarNameFixThreshold = similarNameFixThreshold
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, category, datURL, romFolderURLs, hasClones, isMAMEStyle
+        case id, name, category, datURL, romFolderURLs, hasClones, isMAMEStyle, maintenanceFolderEnabled
+        case similarNameFixEnabled, similarNameFixThreshold
         // From earlier, since-abandoned per-system designs — kept only so
         // systems saved by those builds still decode instead of crashing;
         // the values themselves are never read anymore (merge mode is a
@@ -110,6 +153,12 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         }
         hasClones = try container.decodeIfPresent(Bool.self, forKey: .hasClones)
         isMAMEStyle = try container.decodeIfPresent(Bool.self, forKey: .isMAMEStyle) ?? true
+        // Absent in every system saved before this field existed — `false`
+        // by design (see this field's own doc comment), never inferred as
+        // "was already relying on the old global behavior."
+        maintenanceFolderEnabled = try container.decodeIfPresent(Bool.self, forKey: .maintenanceFolderEnabled) ?? false
+        similarNameFixEnabled = try container.decodeIfPresent(Bool.self, forKey: .similarNameFixEnabled) ?? false
+        similarNameFixThreshold = try container.decodeIfPresent(Double.self, forKey: .similarNameFixThreshold) ?? 0.80
     }
 
     func encode(to encoder: Encoder) throws {
@@ -121,5 +170,8 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         try container.encode(romFolderURLs, forKey: .romFolderURLs)
         try container.encodeIfPresent(hasClones, forKey: .hasClones)
         try container.encode(isMAMEStyle, forKey: .isMAMEStyle)
+        try container.encode(maintenanceFolderEnabled, forKey: .maintenanceFolderEnabled)
+        try container.encode(similarNameFixEnabled, forKey: .similarNameFixEnabled)
+        try container.encode(similarNameFixThreshold, forKey: .similarNameFixThreshold)
     }
 }

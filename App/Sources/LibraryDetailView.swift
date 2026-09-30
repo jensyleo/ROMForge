@@ -584,6 +584,30 @@ private extension View {
         }
     }
 
+    /// "Fix All"'s own confirmation dialog — jensyleo's own request
+    /// (2026-09-29), the last pending Fase 2 item: runs every fully-
+    /// automatic Fix action in one pass (see `LibraryViewModel.fixAll(system:)`'s
+    /// own doc comment for the exact order and what's excluded). Its own
+    /// separate modifier for the same type-checker reason
+    /// `fase2Step4SplitConfirmation` above is — a destructive-role button,
+    /// since this can include Remove Useless/Redundant Files/ROMs.
+    func fixAllConfirmation(
+        isPresented: Binding<Bool>,
+        count: Int,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Run Fix All — About \(count) Change\(count == 1 ? "" : "s")?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Fix All", role: .destructive, action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Runs every fully-automatic Fix action in one pass, in a safe order: fixes names, normalizes the configured set layout (MAME only), repairs missing/bad content from sibling sets and the Maintenance folder, then permanently removes useless and redundant files/roms, and finishes with zip comments, Samples, and BIOS/Complementary Chips housekeeping. Only \"Rebuild to Folder…\" is excluded, since it needs a destination you'd have to pick yourself.")
+        }
+    }
+
     /// "Find ROMs…"'s own confirmation dialog, its
     /// own separate modifier for the same reason `fase2Step4SplitConfirmation`
     /// above is. jensyleo's own request (2026-09-14): "fusionalo con
@@ -1600,7 +1624,19 @@ struct LibraryDetailView: View {
                         Task { @MainActor in viewModel?.matchProgress = (completed, total) }
                     }
                 }
-                if let matchReport = try? ROMMatcher.match(dat: dat, hashedFiles: hashed, onProgress: matchProgressHandler),
+                // jensyleo's own report (2026-09-29), right after adding
+                // NES: the main folder scan (`LibraryViewModel.scan`) already
+                // honors "Trust file names for console/computer systems",
+                // but this Maintenance-folder preview match had its own,
+                // separate `ROMMatcher.match(...)` call that never passed
+                // `nameOnlyMatching` at all — it always fell back to `false`
+                // (hash-verified) regardless of the toggle, so a donor file
+                // sitting in Maintenance would silently need a byte-perfect
+                // hash match to preview as usable, even with the toggle on.
+                if let matchReport = try? ROMMatcher.match(
+                    dat: dat, hashedFiles: hashed, onProgress: matchProgressHandler,
+                    nameOnlyMatching: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyMatchingEnabled
+                ),
                    let auditReport = try? AuditReporter.generate(from: matchReport)
                 {
                     let aggStatus = Self.computeGameAggregateStatusByName(entries: auditReport.entries, preloadedGames: preloadedGames)
@@ -1816,6 +1852,7 @@ struct LibraryDetailView: View {
     @AppStorage(DetailPanelGameFieldSettings.showBiosKey) private var showDetailBios = true
     @AppStorage(DetailPanelGameFieldSettings.showYearKey) private var showDetailYear = true
     @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
+    @AppStorage(DetailPanelGameFieldSettings.showCategoryKey) private var showDetailCategory = true
     @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
     @AppStorage(DetailPanelGameFieldSettings.showCloneOfInternalNameKey) private var showDetailCloneOfInternalName = true
     @AppStorage(DetailPanelGameFieldSettings.showFamilyKey) private var showDetailFamily = true
@@ -1831,30 +1868,9 @@ struct LibraryDetailView: View {
     @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
     @AppStorage(DetailPanelRomFieldSettings.showDumpStatusKey) private var showDetailRomDumpStatus = true
     @AppStorage(DetailPanelRomFieldSettings.showTypeKey) private var showDetailRomType = true
-    /// jensyleo's own request (2026-09-26): "en la vista de la base de
-    /// datos configura que si el juego no tiene clones la vista de games
-    /// no muestre nada, solo la de roms" — browsing "Database" and landing
-    /// on a standalone game (no parent, no clones at all) makes the Games
-    /// panel a redundant single-row table repeating what the sidebar
-    /// selection already says. `selectedGameFamilyRootMachineName` is
-    /// already exactly "does this selected game belong to any clone family
-    /// at all" — `familyRootMachineName(for:)` only ever returns non-`nil`
-    /// for a parent (has children) or a clone (has a `cloneOf`), so reusing
-    /// it here needs no new state. Scoped to an actual Database game
-    /// selection (`selectedDatabaseFilter`/`selectedGameID` both set) —
-    /// never fires while browsing "Rom folder", where a folder's Games
-    /// table is never just one family.
-    ///
-    /// jensyleo's own immediate follow-up, same request: "no es necesario
-    /// que dejes de mostrar el panel Games, te sugiero que muestres el
-    /// nombre del juego en este panel para que no lo tengas que ocultar" —
-    /// so this no longer hides the whole pane (see `visibleTopPanes`, which
-    /// went back to its original, unconditional `showGamesPanel` check);
-    /// `gamesList` itself now reads this to swap its `Table` for a plain
-    /// name label instead.
-    private var shouldShowGameNameInsteadOfTableForDatabaseSelection: Bool {
-        selectedDatabaseFilter != nil && selectedGameID != nil && selectedGameFamilyRootMachineName == nil
-    }
+    @AppStorage(DetailPanelRomFieldSettings.showSerialKey) private var showDetailRomSerial = true
+    @AppStorage(DetailPanelRomFieldSettings.showSHA256Key) private var showDetailRomSHA256 = true
+    @AppStorage(DetailPanelRomFieldSettings.showHeaderKey) private var showDetailRomHeader = true
     private var visibleTopPanes: [SplitPane] {
         var panes: [SplitPane] = []
         if showDatabaseTree || showRomFolderTree { panes.append(SplitPane(minLength: 150) { databaseList }) }
@@ -2056,9 +2072,14 @@ struct LibraryDetailView: View {
     /// `isRomFolderPaneFocused` is true — that pane's own `.onKeyPress`
     /// already handles its arrows correctly (it's a plain `List`, not a
     /// `Table`, and was never affected by this bug), so this monitor must
-    /// never steal from it. Only NSEvent key codes 125 (down) and 126 (up)
-    /// are ever intercepted; everything else passes through completely
-    /// unmodified, exactly as if this monitor didn't exist.
+    /// never steal from it. NSEvent key codes 125 (down), 126 (up), 121
+    /// (Page Down), and 116 (Page Up) are the only ones ever intercepted;
+    /// everything else passes through completely unmodified, exactly as if
+    /// this monitor didn't exist. Page Up/Down added (2026-09-29) —
+    /// jensyleo's own report, same large-ROM-folder case as
+    /// `moveGameSelection(by:)`'s own cap-expansion doc comment: neither
+    /// key did anything at all before, since the native `Table`'s own
+    /// handling is exactly what this whole monitor exists to route around.
     private func installResultsArrowKeyMonitor() {
         guard resultsArrowKeyMonitor == nil else { return }
         resultsArrowKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -2070,11 +2091,32 @@ struct LibraryDetailView: View {
             case 126:
                 if activeResultsPane == .games { moveGameSelection(by: -1) } else { moveRomSelection(by: -1) }
                 return nil
+            case 121:
+                if activeResultsPane == .games { moveGameSelection(by: Self.pageStepRowCount) } else { moveRomSelection(by: Self.pageStepRowCount) }
+                return nil
+            case 116:
+                if activeResultsPane == .games { moveGameSelection(by: -Self.pageStepRowCount) } else { moveRomSelection(by: -Self.pageStepRowCount) }
+                return nil
             default:
+                // Type-ahead (typing a letter to jump to a game) — Games
+                // only, same reasoning as `handleGamesTypeAheadKeyDown`'s
+                // own doc comment. Any other key (including every
+                // modified combination) falls through completely
+                // unmodified, so ⌘-anything, Return, Delete, etc. still
+                // reach their normal handling elsewhere.
+                if activeResultsPane == .games, handleGamesTypeAheadKeyDown(event) {
+                    return nil
+                }
                 return event
             }
         }
     }
+
+    /// How many rows Page Up/Down move at once — an approximation of a
+    /// screenful in this dense a `Table`, not tied to the window's actual
+    /// current height (which would need a live row-height/viewport
+    /// measurement this app doesn't track anywhere else).
+    private static let pageStepRowCount = 20
 
     private func removeResultsArrowKeyMonitor() {
         if let resultsArrowKeyMonitor {
@@ -2543,6 +2585,12 @@ struct LibraryDetailView: View {
     @State private var rebuildDestination: URL?
     @State private var rebuildOperationCount = 0
     @State private var showRebuildConfirmation = false
+    /// "Fix All" state — jensyleo's own request (2026-09-29). `fixAllCount`
+    /// is set by `startFixAll()`'s own async preview
+    /// (`LibraryViewModel.planFixAllPreviewCount(system:)`) right before
+    /// showing the confirmation dialog.
+    @State private var fixAllCount = 0
+    @State private var showFixAllConfirmation = false
     /// "File Actions" (Move to Trash, Delete Permanently, Copy/Move to
     /// Folder…) state — jensyleo's own request (2026-09-11). `pendingFile
     /// ActionURLs` is set by whichever `start*` function fires (toolbar
@@ -3056,10 +3104,35 @@ struct LibraryDetailView: View {
         // jensyleo's own request (2026-09-24): "habilítaselo" — right
         // after finishing "Organize Complementary Chips…", same as BIOS.
         "organizeComplementaryChips",
+        // jensyleo's own request (2026-09-29): "Fix All" itself — its own
+        // gating (`fixAll(system:enabledActionIDs:)`) already restricts
+        // what it actually RUNS to whichever of the ids above are also
+        // listed here, so exposing its own toolbar button doesn't bypass
+        // the staged rollout of any individual action still missing from
+        // this set.
+        "fixAll",
     ]
 
     private var fixSubActions: [ToolbarAction] {
         [
+            // The last pending Fase 2 item — jensyleo's own request
+            // (2026-09-29): a single action that runs every fully-automatic
+            // Fix in one pass, ClrMamePro-style. See `LibraryViewModel
+            // .fixAll(system:)`'s own doc comment for the exact order and
+            // what's deliberately excluded (only "Rebuild to Folder…", the
+            // one action needing a destination picked by hand). The tooltip
+            // spells this out up front — same "explain the scope before
+            // anyone has to click to find out" treatment as "Matching" in
+            // Settings → General.
+            ToolbarAction(
+                id: "fixAll", title: "Fix All…", systemImage: "wand.and.stars",
+                isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
+                help: LibraryViewModel.modificationsEnabled
+                    ? "Run every fully-automatic Fix action in one pass — names, set layout, repairs, cleanup, and housekeeping — in a safe order. Only \"Rebuild to Folder…\" is excluded, since it needs a destination you'd have to pick yourself."
+                    : "Disabled for now — enable file modifications in Settings → General first"
+            ) {
+                startFixAll()
+            },
             ToolbarAction(
                 id: "fixMisnamed", title: "Fix Mismatched Files",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy,
@@ -3633,8 +3706,8 @@ struct LibraryDetailView: View {
                 action: {},
                 subActions: fixSubActions
             ),
-            ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInMAME, help: playButtonHelpText) {
-                launchSelectedGameInMAME()
+            ToolbarAction(id: "play", title: "Play", systemImage: "play.fill", isEnabled: canLaunchSelectedGameInEmulator, help: playButtonHelpText) {
+                launchSelectedGameInEmulator()
             },
             // "Show Only 1G1R" moved to Settings → View Options → "1G1R"
             // (jensyleo's own request, 2026-08-24) — now a persisted
@@ -4095,6 +4168,11 @@ struct LibraryDetailView: View {
             count: convertToSplitCount,
             onConfirm: commitConvertToSplit
         )
+        .fixAllConfirmation(
+            isPresented: $showFixAllConfirmation,
+            count: fixAllCount,
+            onConfirm: commitFixAll
+        )
         .repairFromMaintenanceFolderConfirmation(
             isPresented: $showRepairFromMaintenanceFolderConfirmation,
             count: repairFromMaintenanceFolderCount,
@@ -4366,6 +4444,25 @@ struct LibraryDetailView: View {
 
     /// Previews the repair count before showing the confirmation dialog —
     /// same dry-run-before-write caution as every other Fase 2 action.
+    /// Toolbar → "Fix" → "Fix All" — jensyleo's own request (2026-09-29):
+    /// preview needs a real (async) count across several sub-actions —
+    /// same reasoning `startCollectSamples()` above dispatches through a
+    /// `Task`, unlike most other `start*` functions here.
+    private func startFixAll() {
+        Task {
+            fixAllCount = await viewModel.planFixAllPreviewCount(system: system, enabledActionIDs: Self.fixActionsEnabledForTesting)
+            guard fixAllCount > 0 else {
+                viewModel.logWarning("Nothing to fix — every automatic Fix action already has nothing to do.")
+                return
+            }
+            showFixAllConfirmation = true
+        }
+    }
+
+    private func commitFixAll() {
+        Task { await viewModel.fixAll(system: system, enabledActionIDs: Self.fixActionsEnabledForTesting) }
+    }
+
     private func startRepairFromSiblingSets() {
         repairFromSiblingSetsCount = viewModel.planRepairFromSiblingSetsPreviewCount()
         guard repairFromSiblingSetsCount > 0 else {
@@ -5640,6 +5737,16 @@ struct LibraryDetailView: View {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Search games… (* ? wildcards)", text: $databaseSearchText)
                 .textFieldStyle(.plain)
+                // jensyleo's own report (2026-09-29): right after fixing
+                // type-ahead to route through the shared event monitor
+                // (`handleGamesTypeAheadKeyDown`) instead of a SwiftUI
+                // `.onKeyPress`, clicking back into THIS field while
+                // `resultsPaneIsActive` was still `true` from an earlier
+                // Games click would have made that same monitor keep
+                // stealing every keystroke meant for this search box —
+                // same "tell the monitor which pane you actually clicked"
+                // pattern the sidebar's own tree rows already use.
+                .simultaneousGesture(TapGesture().onEnded { resultsPaneIsActive = false })
             if !databaseSearchText.isEmpty {
                 Button {
                     databaseSearchText = ""
@@ -5743,6 +5850,23 @@ struct LibraryDetailView: View {
                                 TapGesture().onEnded {
                                     selectedDatabaseFilter = filter
                                     selectedRomFolder = nil
+                                    // jensyleo's own report (2026-09-29): clicking a
+                                    // category header a SECOND time — after having
+                                    // selected an individual game inside it — looked
+                                    // like the click was being ignored entirely: the
+                                    // Games panel stayed frozen on that one game's own
+                                    // single-game view instead of returning to the
+                                    // category's full list, because `selectedGameID`/
+                                    // `selectedGameFamilyRootMachineName` were never
+                                    // cleared here — the SAME thing every OTHER
+                                    // category-selection path already does (see the
+                                    // arrow-key `.category` case just above, and
+                                    // `romFolderRow`'s own click handler). This wasn't
+                                    // a genuine lost click at all; the tap always
+                                    // registered, it just never told the Games panel
+                                    // to stop showing the previously-selected game.
+                                    selectedGameID = nil
+                                    selectedGameFamilyRootMachineName = nil
                                     isDatabasePaneFocused = true
                                     resultsPaneIsActive = false
                                 }
@@ -6617,7 +6741,9 @@ struct LibraryDetailView: View {
             // `Table` to scroll to it, so it just kept showing whatever
             // part of a ~45,000-row list happened to be in view already,
             // unrelated to the row that just got selected off-screen.
-            gameTableScrollProxy?.scrollTo(id, anchor: nil)
+            // `revealAndScrollGamesTable(to:)` — see its own doc comment —
+            // also expands the visible page first if `id` isn't in it yet.
+            revealAndScrollGamesTable(to: id)
         case .romFolder(let url):
             selectedDatabaseFilter = nil
             selectedRomFolder = url
@@ -6848,21 +6974,6 @@ struct LibraryDetailView: View {
                     // `isBusy` — so the global overlay and this local label
                     // are never both on screen at once.
                     ProgressView("Reading the Maintenance folder…")
-                    Spacer(minLength: 24)
-                }
-                .frame(maxWidth: .infinity)
-            } else if shouldShowGameNameInsteadOfTableForDatabaseSelection, let selectedGameID {
-                // jensyleo's own request (2026-09-26): a standalone Database
-                // game (no clone family at all) keeps this whole panel
-                // visible — just its own name instead of a one-row `Table`
-                // repeating the exact same thing the sidebar selection
-                // already says.
-                VStack {
-                    Spacer(minLength: 24)
-                    Text(gameDescription(forMachineName: selectedGameID))
-                        .font(.title3)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 420)
                     Spacer(minLength: 24)
                 }
                 .frame(maxWidth: .infinity)
@@ -7109,7 +7220,6 @@ struct LibraryDetailView: View {
             selection: $selectedGameIDs,
             columnCustomizationOverride: $gameColumnCustomizationOverride,
             persistColumnCustomization: { Self.persist($0, key: Self.gameColumnCustomizationKey) },
-            handleTypeAheadKeyPress: handleTypeAheadKeyPress,
             // jensyleo's own suggestion (2026-09-15), after the shared
             // event-monitor fix still wasn't enough on its own: clear the
             // Roms panel's own selection outright on EVERY click here, not
@@ -7141,8 +7251,8 @@ struct LibraryDetailView: View {
             detailsIndicator: { AnyView(detailsIndicator(for: $0)) },
             scanFile: scanFile,
             canScanFile: canScanFile,
-            launchInMAME: launchInMAME,
-            canLaunchMAME: canLaunchMAME,
+            launchInMAME: launchInEmulator,
+            canLaunchMAME: canLaunchInEmulator,
             revealInFinder: revealInFinder,
             actualFileURL: { actualFileURL(for: $0) },
             startMoveToTrash: startMoveToTrash,
@@ -7211,8 +7321,46 @@ struct LibraryDetailView: View {
     /// directly — same "flatten the visible rows, find the current index,
     /// move within bounds" shape `moveDatabaseSelection(by:scope:)` already
     /// uses for the sidebar.
+    /// Scrolls the Games `Table` to reveal `id`, expanding `gamesTableVisibleCap`
+    /// first (deferring the actual scroll one run-loop tick) whenever `id`
+    /// sits past the current "Show N more" page — jensyleo's own report
+    /// (2026-09-29): clicking a Database game with no clone family now
+    /// correctly selects it (see this session's removal of the old
+    /// name-only view), but if that game wasn't already within the
+    /// current page, nothing visibly scrolled to it — same
+    /// `ScrollViewReader.scrollTo` timing gap already fixed for arrow
+    /// keys/Page Up-Down/type-ahead in `moveGameSelection(by:)`'s own doc
+    /// comment, just centralized here for the two click-driven call sites
+    /// (`moveDatabaseSelection(by:scope:)`'s `.game` case, and the sidebar
+    /// tree leaf's own tap gesture) that select by id rather than by an
+    /// offset from the current selection.
+    private func revealAndScrollGamesTable(to id: String) {
+        let capNeedsExpansion: Bool
+        if let index = displayedGameNodes.firstIndex(where: { $0.id == id }), index >= gamesTableVisibleCap {
+            gamesTableVisibleCap = index + 1
+            capNeedsExpansion = true
+        } else {
+            capNeedsExpansion = false
+        }
+        if capNeedsExpansion {
+            DispatchQueue.main.async { [self] in gameTableScrollProxy?.scrollTo(id, anchor: nil) }
+        } else {
+            gameTableScrollProxy?.scrollTo(id, anchor: nil)
+        }
+    }
+
     private func moveGameSelection(by offset: Int) {
-        let rows = visibleGameNodes
+        // `displayedGameNodes`, not `visibleGameNodes` — jensyleo's own
+        // report (2026-09-29), a large ROM folder (NO_INTRO, 1,776 games):
+        // arrow keys (and Page Up/Down, and type-ahead below) all used to
+        // clamp to whatever "Show N more" page happened to be currently
+        // revealed, so reaching row 201 meant manually clicking "Show
+        // more" first — the keyboard alone could never get there. Moving
+        // against the FULL list and bumping `gamesTableVisibleCap` to
+        // cover the target row (below) fixes all three at once, since
+        // Page Up/Down and type-ahead both funnel through this same
+        // function/its own cap-expansion pattern.
+        let rows = displayedGameNodes
         guard !rows.isEmpty else { return }
         let currentIndex = selectedGameID.flatMap { id in rows.firstIndex { $0.id == id } }
         let newIndex: Int
@@ -7223,6 +7371,10 @@ struct LibraryDetailView: View {
             // `moveDatabaseSelection(by:scope:)`'s own convention.
             newIndex = offset < 0 ? rows.count - 1 : 0
         }
+        let capNeedsExpansion = newIndex >= gamesTableVisibleCap
+        if capNeedsExpansion {
+            gamesTableVisibleCap = newIndex + 1
+        }
         let newID = rows[newIndex].id
         selectedGameID = newID
         // `anchor: nil` (not `.center`) — jensyleo's own report (2026-09-29):
@@ -7231,23 +7383,54 @@ struct LibraryDetailView: View {
         // dragging the view toward the right on each key press. `nil`
         // scrolls the minimum needed to bring the row into view instead of
         // jumping to a fixed point, so the horizontal offset is left alone.
-        gameTableScrollProxy?.scrollTo(newID, anchor: nil)
+        //
+        // Deferred one run-loop tick ONLY when the cap juust changed —
+        // jensyleo's own report (2026-09-29), past row ~2,100 in a huge ROM
+        // folder: Page Down kept moving the real selection (every
+        // subsequent press correctly built on the new index), but the
+        // Table visibly stopped following it. Classic `ScrollViewReader
+        // .scrollTo` timing gap, same one already documented on
+        // `scrollDatabaseListToSelectedGameIfNewlyVisible()`'s own doc
+        // comment: calling `scrollTo` in the SAME synchronous pass that
+        // just bumped `gamesTableVisibleCap` targets a row the `Table`
+        // hasn't actually laid out yet (SwiftUI batches the view update),
+        // so it's silently a no-op — nothing wrong with the selection
+        // itself, just nothing for `scrollTo` to find yet. No gap exists
+        // (and no need to defer) when the target row was already within
+        // the current page.
+        if capNeedsExpansion {
+            DispatchQueue.main.async {
+                gameTableScrollProxy?.scrollTo(newID, anchor: nil)
+            }
+        } else {
+            gameTableScrollProxy?.scrollTo(newID, anchor: nil)
+        }
     }
 
-    /// Matches `keyPress` against the classic type-ahead pattern (see
+    /// Matches `event` against the classic type-ahead pattern (see
     /// `typeAheadBuffer`'s own doc comment): only a single, printable,
     /// non-modified character is handled here — everything else (return,
-    /// delete, ⌘-anything) is left `.ignored`. Arrow keys are no longer
-    /// among those "left to Table's own handling" — see
-    /// `moveGameSelection(by:)`'s own doc comment for why that assumption
-    /// broke on macOS 27; they're now handled by dedicated
-    /// `.onKeyPress(.upArrow)`/`.onKeyPress(.downArrow)` modifiers instead
-    /// (`GameTreeTableView.swift`), never reaching this function at all.
-    private func handleTypeAheadKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
-        guard keyPress.modifiers.isEmpty || keyPress.modifiers == .shift,
-              let character = keyPress.characters.first, keyPress.characters.count == 1,
+    /// delete, ⌘-anything) is left untouched (returns `false`, and the
+    /// shared monitor calling this passes the event straight through).
+    ///
+    /// Called from `installResultsArrowKeyMonitor`'s own raw `NSEvent`
+    /// monitor, NOT a SwiftUI `.onKeyPress` on the Table — jensyleo's own
+    /// report (2026-09-29): typed letters kept landing in the sidebar's
+    /// "Search games…" field instead of jumping to a game here, no matter
+    /// where he'd just clicked. Same root cause as the arrow-key/Page Up-
+    /// Down fixes right above this one in that monitor: real AppKit
+    /// key-window focus apparently never reliably transfers TO this
+    /// `Table` on macOS 27, so a plain `.onKeyPress` (which only fires for
+    /// whatever view genuinely holds that focus) simply never ran —
+    /// whatever real text field last had focus kept eating every
+    /// keystroke instead. Routing through the monitor (which intercepts
+    /// events regardless of which view "really" has focus, exactly like
+    /// arrow keys already do) fixes this the same way.
+    private func handleGamesTypeAheadKeyDown(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              let characters = event.charactersIgnoringModifiers, let character = characters.first, characters.count == 1,
               character.isLetter || character.isNumber || character.isPunctuation || character.isSymbol else {
-            return .ignored
+            return false
         }
         let now = Date()
         if now.timeIntervalSince(lastTypeAheadKeystroke) > Self.typeAheadTimeout {
@@ -7265,14 +7448,37 @@ struct LibraryDetailView: View {
         guard let match = cachedGameNodes.first(where: { node in
             (node.actualFileName ?? node.name).lowercased().hasPrefix(lowercasedBuffer)
         }) else {
-            return .handled
+            return true
         }
         selectedGameID = match.id
+        // Reveals enough of `displayedGameNodes`'s own "Show N more" page
+        // to actually include the match before scrolling to it — jensyleo's
+        // own report (2026-09-29): typing used to silently do nothing once
+        // the match sat past whatever page was currently revealed (a real
+        // risk in a 1,776-game ROM folder), since `scrollTo` has nothing to
+        // scroll to for an id the Table hasn't even rendered yet. Same fix
+        // as `moveGameSelection(by:)`'s own cap-expansion, just keyed off
+        // where the match actually lands rather than an arrow-key offset.
+        let matchIndex = displayedGameNodes.firstIndex(where: { $0.id == match.id })
+        let capNeedsExpansion = (matchIndex ?? 0) >= gamesTableVisibleCap
+        if let matchIndex, capNeedsExpansion {
+            gamesTableVisibleCap = matchIndex + 1
+        }
         // No `withAnimation` — jensyleo's own request (2026-08-13):
         // animated transitions aren't wanted anywhere in this app, this
         // type-ahead scroll included.
-        gameTableScrollProxy?.scrollTo(match.id, anchor: nil)
-        return .handled
+        //
+        // Deferred one run-loop tick when the cap just changed — same
+        // `ScrollViewReader.scrollTo` timing gap as `moveGameSelection(by:)`'s
+        // own identical fix; see that one's doc comment.
+        if capNeedsExpansion {
+            DispatchQueue.main.async {
+                gameTableScrollProxy?.scrollTo(match.id, anchor: nil)
+            }
+        } else {
+            gameTableScrollProxy?.scrollTo(match.id, anchor: nil)
+        }
+        return true
     }
 
     /// jensyleo's own request (2026-07-28): scanning used to only ever
@@ -7346,7 +7552,20 @@ struct LibraryDetailView: View {
     /// `actualFileURL(for:)` above, which can point at a stray borrowed
     /// path for a game with no rom of its own actually present.
     private func infoText(for node: GameNode) -> String {
-        let base = node.infoText
+        var base = node.infoText
+        // `SimilarNameSuggester`'s own live preview — jensyleo's own
+        // request (2026-09-29): this used to show only in the Roms panel
+        // (the rightmost table/detail entry), never in the Games panel
+        // (this one) — confusing for a system like NES where a zip holds
+        // exactly one rom and both always share the DAT's own single
+        // declared name, so there's really only one "Possible match" to
+        // show either way. Reuses the exact same live lookup
+        // `infoText(for entry:)` already does, keyed off any one of this
+        // node's own entries (a surplus/unknown row has exactly one for a
+        // single-rom system like this).
+        if let path = node.entries.first?.path, let suggestion = viewModel.similarNameSuggestion(forFileAt: path) {
+            base += " — Possible match: \(suggestion.suggestedName) (\(Int((suggestion.confidence * 100).rounded()))%)"
+        }
         // jensyleo's own request (2026-09-14), applied everywhere this
         // exact "append the archive's own ZIP comment" pattern is used —
         // see `infoText(for entry:)`'s own doc comment for why the raw
@@ -7995,6 +8214,19 @@ struct LibraryDetailView: View {
             // real distinction — use it to word this correctly instead.
             let dumpKind = entry.romDumpStatus == .nodump ? "nodump" : "bad dump"
             base = entry.status == .missing ? "Missing (also a known \(dumpKind) in DAT)" : "\(base) (\(dumpKind) in DAT)"
+        }
+        // `SimilarNameSuggester`'s own live preview — jensyleo's own request
+        // (2026-09-29): "esa opcion debería indicar algo como 'possible
+        // name' en la vista de los paneles en la sección info." Only ever
+        // non-nil for a genuinely gray row (`.surplus`/`.unknownFile`/
+        // `.surplusInArchive` — every other status already has a real
+        // match, hash-verified or otherwise, and never gets a suggestion at
+        // all — see `ROMMatcher.annotateSimilarNameSurplusFiles`'s own
+        // guard). See `LibraryViewModel.similarNameSuggestion(forFileAt:)`'s
+        // own doc comment for why this reads the LIVE scan result, not
+        // anything persisted.
+        if let path = entry.path, let suggestion = viewModel.similarNameSuggestion(forFileAt: path) {
+            base += " — Possible match: \(suggestion.suggestedName) (\(Int((suggestion.confidence * 100).rounded()))%)"
         }
         // A zip's own archive-level comment (jensyleo's own request,
         // 2026-07-30) — some real romsets carry notes in this field (dump
@@ -8856,6 +9088,7 @@ struct LibraryDetailView: View {
                 }
         }
         var realGames = nodes.filter { !$0.isSurplusBucket }
+
         // Search narrows the category down before any capping happens at
         // all — see `databaseSearchText`'s own doc comment for why this,
         // not a bigger cap, is the actually-safe way to reach any row of a
@@ -8863,18 +9096,24 @@ struct LibraryDetailView: View {
         // manufacturer — see `matchesDatabaseSearch(_:pattern:)`'s own doc
         // comment for exactly what counts as a match; a game with no
         // manufacturer just never matches on that half.
-        if !searchText.isEmpty {
-            realGames = realGames.filter { node in
-                Self.matchesDatabaseSearch(node.gameName, pattern: searchText)
-                    || Self.matchesDatabaseSearch((node.entries.first?.gameManufacturer ?? node.sourceGame?.manufacturer) ?? "", pattern: searchText)
-            }
+        //
+        // For `.byManufacturer`/`.byYear`/the plain leaf list, filtering
+        // each node individually (right here) is correct — those views
+        // have no parent/clone nesting to break. `.allGames` is handled
+        // separately below, AFTER building the family structure, not here.
+        func matchesSearch(_ node: GameNode) -> Bool {
+            searchText.isEmpty
+                || Self.matchesDatabaseSearch(node.gameName, pattern: searchText)
+                || Self.matchesDatabaseSearch((node.entries.first?.gameManufacturer ?? node.sourceGame?.manufacturer) ?? "", pattern: searchText)
         }
 
         if filter == .byManufacturer || filter == .byYear {
+            if !searchText.isEmpty { realGames = realGames.filter(matchesSearch) }
             return groupedTreeChildren(realGames, by: filter, effectiveCap: effectiveCap, searchActive: !searchText.isEmpty)
         }
 
         guard filter == .allGames else {
+            if !searchText.isEmpty { realGames = realGames.filter(matchesSearch) }
             let sorted = sortedByLowercasedKey(realGames, key: \.gameName)
             return capped(sorted.map { leafNode(for: $0) }, to: effectiveCap, filter: filter, searchActive: !searchText.isEmpty)
         }
@@ -8892,6 +9131,26 @@ struct LibraryDetailView: View {
                 clonesByParent[node.cloneOf, default: []].append(node)
             } else {
                 roots.append(node)
+            }
+        }
+
+        // jensyleo's own report (2026-09-29): "Contra" es clon de
+        // "Probotector" (a genuine, confirmed-correct No-Intro relationship
+        // — Probotector Europe is modeled as the actual parent), but
+        // searching "Probotector" showed it with no family at all. Root
+        // cause: the OLD code filtered `realGames` by the search text
+        // BEFORE this parent/clone grouping ran — "Contra" doesn't contain
+        // "Probotector" in its own name, so it (and every other clone
+        // whose own name doesn't happen to match the search) got dropped
+        // before it ever had a chance to be attached to its parent, making
+        // a family that genuinely has clones look like it has none. Now
+        // grouped from the FULL, unfiltered list first, and only the
+        // ROOTS get filtered by search afterward — keeping a root whenever
+        // it OR any of its own (still-complete, unfiltered) clones
+        // matches, so the whole family always shows together.
+        if !searchText.isEmpty {
+            roots = roots.filter { root in
+                matchesSearch(root) || (clonesByParent[root.name]?.contains(where: matchesSearch) ?? false)
             }
         }
 
@@ -9180,8 +9439,10 @@ struct LibraryDetailView: View {
                     // (search results included) never scrolled the Games
                     // table to reveal the row it just selected — see
                     // `moveDatabaseSelection(by:)`'s own doc comment for the
-                    // same fix on the arrow-key path.
-                    gameTableScrollProxy?.scrollTo(node.id, anchor: nil)
+                    // same fix on the arrow-key path. `revealAndScrollGamesTable(to:)`
+                    // also expands the visible page first if the row isn't
+                    // in it yet (jensyleo's own follow-up report, 2026-09-29).
+                    revealAndScrollGamesTable(to: node.id)
                 }
             )
             // A real selection background, not just bold text — same
@@ -9558,48 +9819,124 @@ struct LibraryDetailView: View {
     /// `true` once EITHER a live scan ran this session OR a past session's
     /// persisted result was restored on open, `false` only for a system
     /// that's genuinely never been scanned at all.
-    private func canLaunchMAME(_ node: GameNode) -> Bool {
-        !node.isSurplusBucket && MAMELaunchSettings.executablePath != nil && viewModel.auditReport != nil
+    /// `true` for MAME, `true` for any non-MAME (console/computer) system
+    /// — the two kinds this whole feature knows how to launch, gated on
+    /// whichever one's own emulator is actually configured
+    /// (`isEmulatorInstalled`). Anything else `canLaunchInEmulator(_:)`
+    /// already checks (a real scan, a non-surplus row) applies to both.
+    /// MAME for an Arcade system; the user's own configured choice
+    /// (`ConsoleEmulatorSettings.selected`, Settings → Systems → Consoles)
+    /// for a console/computer one — jensyleo's own request (2026-09-29):
+    /// unlike MAME, a console system's emulator "no es único," so this is
+    /// never hardcoded.
+    private var emulatorName: String {
+        system.isMAMEStyle ? "MAME" : ConsoleEmulatorSettings.selected.displayName
     }
 
-    private var canLaunchSelectedGameInMAME: Bool {
-        selectedGameNode.map(canLaunchMAME) ?? false
+    /// `true` only when the RIGHT emulator for this system's own kind is
+    /// genuinely installed right now — jensyleo's own request (2026-09-29):
+    /// "Play in MAME" and its siblings (and now their console-system
+    /// counterpart) should only ever appear when that emulator is actually
+    /// installed, never just because a stale/explicit setting happens to
+    /// be non-empty. See `MAMELaunchSettings.isInstalled`/
+    /// `ConsoleEmulatorSettings.isInstalled`'s own doc comments for why
+    /// each needed its own re-verified-on-every-call check rather than
+    /// trusting a cached path string.
+    private var isEmulatorInstalled: Bool {
+        system.isMAMEStyle ? MAMELaunchSettings.isInstalled : ConsoleEmulatorSettings.isInstalled
+    }
+
+    /// Real gap found live by jensyleo (2026-09-23): "las opciones de Play
+    /// in MAME, Reveal in Finder siempre deben pedir rescan... toda
+    /// interacción con lo que muestra la app debe tener un escaneo previo"
+    /// — these two never checked for one at all, unlike every write action
+    /// in this app (which already refuse via `scopeCoveredByLastScan`).
+    /// `viewModel.auditReport != nil` is the same bar every Fix toolbar
+    /// button already uses for "there's a real result to act on" — it's
+    /// `true` once EITHER a live scan ran this session OR a past session's
+    /// persisted result was restored on open, `false` only for a system
+    /// that's genuinely never been scanned at all.
+    ///
+    /// For MAME, an unrecognized/"Unknown game" row (`isSurplusBucket`) has
+    /// no real DAT machine name behind it — MAME itself needs one to
+    /// launch anything at all, so this exclusion is structural, not a
+    /// judgment call. For a console/computer system, "Play" launches by
+    /// FILE, not by machine name — jensyleo's own report (2026-09-29): a
+    /// gray, unrecognized NES file is still a perfectly real, playable ROM
+    /// file on disk, the exact same one "Reveal in Finder" (never gated on
+    /// `isSurplusBucket` at all) already opens — there's no reason Nestopia/
+    /// FCEUX/a custom emulator couldn't open it too, matched to a DAT
+    /// entry or not. Gated on `actualFileURL(for:)` instead: `true` for
+    /// any row with a genuine file behind it, `isSurplusBucket` or not.
+    private func canLaunchInEmulator(_ node: GameNode) -> Bool {
+        let hasLaunchableFile = system.isMAMEStyle ? !node.isSurplusBucket : actualFileURL(for: node) != nil
+        return hasLaunchableFile && isEmulatorInstalled && viewModel.auditReport != nil
+    }
+
+    private var canLaunchSelectedGameInEmulator: Bool {
+        selectedGameNode.map(canLaunchInEmulator) ?? false
     }
 
     private var playButtonHelpText: String {
-        guard MAMELaunchSettings.executablePath != nil else { return "Locate a MAME executable in Settings → Systems first" }
+        guard isEmulatorInstalled else {
+            if system.isMAMEStyle { return "Locate a MAME executable in Settings → Systems first" }
+            if let installCommand = ConsoleEmulatorSettings.selected.installCommand {
+                return "Install \(ConsoleEmulatorSettings.selected.displayName) (`\(installCommand)`) in Settings → Systems → Consoles, or configure one there"
+            }
+            return "Locate an emulator in Settings → Systems → Consoles first"
+        }
         guard viewModel.auditReport != nil else { return "Scan this system at least once first" }
-        guard let node = selectedGameNode, !node.isSurplusBucket else { return "Select a game to play it in MAME" }
-        return "Launch \(node.gameName) in MAME to test it"
+        guard let node = selectedGameNode, canLaunchInEmulator(node) else { return "Select a game to play it in \(emulatorName)" }
+        return "Launch \(node.gameName) in \(emulatorName) to test it"
     }
 
-    private func launchSelectedGameInMAME() {
+    private func launchSelectedGameInEmulator() {
         guard let node = selectedGameNode else { return }
-        launchInMAME(node)
+        launchInEmulator(node)
     }
 
-    /// jensyleo's own request (2026-08-17): a MAME launch failure — which
-    /// used to show in its own separate `errorMessage` sheet — belongs in
-    /// the Log panel like everything else this view reports, in red so it
+    /// jensyleo's own request (2026-08-17): a launch failure — which used
+    /// to show in its own separate `errorMessage` sheet — belongs in the
+    /// Log panel like everything else this view reports, in red so it
     /// still reads as an error at a glance ("mantén el color rojo del
     /// error"). No bespoke presentation to maintain, and no risk of a long
-    /// diagnostic (a full "did you mean" candidate list for an unknown
-    /// MAME sub-system) distorting the main window's own layout the way
-    /// the very first version of this fix (an unbounded inline `Text`) did.
-    private func launchInMAME(_ node: GameNode) {
+    /// diagnostic distorting the main window's own layout the way the very
+    /// first version of this fix (an unbounded inline `Text`) did. Applies
+    /// to both `MAMELauncher`/`ConsoleEmulatorLauncher` — this dispatches
+    /// to whichever one `system.isMAMEStyle` actually calls for.
+    private func launchInEmulator(_ node: GameNode) {
+        if system.isMAMEStyle {
+            do {
+                try MAMELauncher.launch(machineName: node.name, romFolders: system.romFolderURLs) { reason in
+                    // MAME's own termination handler fires on a background
+                    // queue, not the main actor `logError` needs to be
+                    // touched from.
+                    Task { @MainActor in
+                        viewModel.logError("MAME couldn't run \(node.gameName):\n\n\(reason)")
+                    }
+                }
+            } catch let error as MAMELauncher.LaunchError {
+                viewModel.logError(error.description)
+            } catch {
+                viewModel.logError("Failed to launch MAME: \(error.localizedDescription)")
+            }
+            return
+        }
+        guard let fileURL = actualFileURL(for: node) else {
+            viewModel.logError("Couldn't find \(node.gameName)'s own file on disk to launch.")
+            return
+        }
+        let emulatorLabel = emulatorName
         do {
-            try MAMELauncher.launch(machineName: node.name, romFolders: system.romFolderURLs) { reason in
-                // MAME's own termination handler fires on a background
-                // queue, not the main actor `logError` needs to be touched
-                // from.
+            try ConsoleEmulatorLauncher.launch(romFileURL: fileURL) { reason in
                 Task { @MainActor in
-                    viewModel.logError("MAME couldn't run \(node.gameName):\n\n\(reason)")
+                    viewModel.logError("\(emulatorLabel) couldn't open \(node.gameName):\n\n\(reason)")
                 }
             }
-        } catch let error as MAMELauncher.LaunchError {
+        } catch let error as ConsoleEmulatorLauncher.LaunchError {
             viewModel.logError(error.description)
         } catch {
-            viewModel.logError("Failed to launch MAME: \(error.localizedDescription)")
+            viewModel.logError("Failed to launch \(emulatorLabel): \(error.localizedDescription)")
         }
     }
 
@@ -9800,6 +10137,8 @@ struct LibraryDetailView: View {
             if showDetailYear { infoRow("Year", node.year) }
         case .manufacturer:
             if showDetailManufacturer { infoRow("Manufacturer", node.manufacturer) }
+        case .category:
+            if showDetailCategory { infoRow("Category", node.category) }
         case .deviceRefs:
             if showDetailDeviceRefs { infoRow("Device refs", node.deviceRefNames) }
         case .cloneOfInternalName:
@@ -9902,7 +10241,45 @@ struct LibraryDetailView: View {
             if showDetailRomType {
                 Text("Type: \(entryKindText(for: entry))")
             }
+            if let sourceRom = sourceRom(for: entry) {
+                if showDetailRomSerial, let serial = sourceRom.serial, !serial.isEmpty {
+                    Text("Serial: \(serial)").foregroundStyle(.secondary)
+                }
+                if showDetailRomSHA256, let sha256 = sourceRom.sha256, !sha256.isEmpty {
+                    Text("SHA-256: \(sha256)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                if showDetailRomHeader, let header = sourceRom.header, !header.isEmpty {
+                    Text("Header (iNES): \(header)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                    if let decoded = INESHeaderDecoder.decode(hexString: header) {
+                        Text("  Mapper \(decoded.mapper) · PRG \(decoded.prgSizeKB)KB · CHR \(decoded.chrSizeKB)KB · \(decoded.mirroring) mirroring · \(decoded.tvSystem)\(decoded.hasBattery ? " · Battery" : "")")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
+    }
+
+    /// The DAT's own declared rom this `entry` came from, found by `entry`'s
+    /// own `game` name against the loaded DAT directly — needed for fields
+    /// (`serial`/`sha256`/`header`) that live only on `DATRom` itself, never
+    /// copied into `AuditEntry`/the SQLite audit database the way the hash-
+    /// verification fields are (see `DATRom.serial`'s own doc comment for
+    /// why: rare enough, No-Intro-only, that persisting them per scanned
+    /// row wasn't worth a schema change).
+    ///
+    /// Deliberately does NOT go through `selectedGameNode` (which needs
+    /// `selectedGameID` set) — real bug found live (2026-09-29): clicking
+    /// straight into a Roms-table row, without the matching Games-table row
+    /// having ever been separately clicked/selected, leaves `selectedGameID`
+    /// nil (or stale from whatever was selected before), so every field
+    /// gated on `selectedGameNode` silently failed to show at all —
+    /// `selectedEntry` is populated from the Roms-table's own selection
+    /// regardless, so resolving straight from `entry.game` (present on every
+    /// real row) instead of the separate, independently-tracked game
+    /// selection fixes it unconditionally.
+    private func sourceRom(for entry: AuditEntry) -> DATRom? {
+        guard let gameName = entry.game else { return nil }
+        return gamesByNameCache.games(from: viewModel.preloadedGames)[gameName.lowercased()]?.roms.first { $0.name == entry.name }
     }
 
     /// One labeled line of game metadata — skipped entirely when `value`

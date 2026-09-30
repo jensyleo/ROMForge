@@ -48,6 +48,77 @@ struct LogiqxDATParserTests {
         #expect(anotherGame.roms[0].md5 == nil)
     }
 
+    @Test("resolves No-Intro's numeric cloneofid to the parent's own name, clone appearing before its parent in the file")
+    func resolvesCloneOfIdRegardlessOfDocumentOrder() throws {
+        // Real structure confirmed 2026-09-29 against a freshly-downloaded
+        // No-Intro NES DAT (DAT-o-MATIC schema v4): parent/clone is declared
+        // via a numeric `cloneofid` referencing another `<game>`'s own
+        // numeric `id`, not the classic Logiqx `cloneof="<name>"` — and a
+        // clone can appear before its own parent in the file, exactly as
+        // reproduced here.
+        let xml = """
+        <?xml version="1.0"?>
+        <datafile>
+            <header>
+                <name>Test System</name>
+                <description>Test System DAT</description>
+                <version>1.0</version>
+                <author>ROMForge Tests</author>
+            </header>
+            <game name="10-Yard Fight (Japan) (En)" id="0002" cloneofid="0003">
+                <description>10-Yard Fight (Japan) (En)</description>
+                <rom name="10-Yard Fight (Japan) (En).nes" size="24592" crc="44aa3eeb"/>
+            </game>
+            <game name="10-Yard Fight (USA, Europe)" id="0003">
+                <description>10-Yard Fight (USA, Europe)</description>
+                <rom name="10-Yard Fight (USA, Europe).nes" size="40976" crc="c986cda2"/>
+            </game>
+            <game name="Standalone Game" id="0004">
+                <description>Standalone Game</description>
+                <rom name="Standalone Game.nes" size="16384" crc="00000000"/>
+            </game>
+        </datafile>
+        """
+        let dat = try LogiqxDATParser.parse(data: Data(xml.utf8))
+
+        let clone = try #require(dat.games.first { $0.name == "10-Yard Fight (Japan) (En)" })
+        #expect(clone.cloneOf == "10-Yard Fight (USA, Europe)")
+
+        let parent = try #require(dat.games.first { $0.name == "10-Yard Fight (USA, Europe)" })
+        #expect(parent.cloneOf == nil)
+
+        let standalone = try #require(dat.games.first { $0.name == "Standalone Game" })
+        #expect(standalone.cloneOf == nil)
+
+        #expect(dat.hasClones)
+    }
+
+    @Test("a game's own by-name cloneof attribute wins over a stray cloneofid, if both are somehow present")
+    func nameBasedCloneOfTakesPrecedenceOverCloneOfId() throws {
+        let xml = """
+        <?xml version="1.0"?>
+        <datafile>
+            <header>
+                <name>Test System</name>
+                <description>Test System DAT</description>
+                <version>1.0</version>
+                <author>ROMForge Tests</author>
+            </header>
+            <game name="Clone" id="0001" cloneof="Explicit Parent Name" cloneofid="0002">
+                <description>Clone</description>
+                <rom name="Clone.nes" size="16384" crc="00000000"/>
+            </game>
+            <game name="Other Parent" id="0002">
+                <description>Other Parent</description>
+                <rom name="Other Parent.nes" size="16384" crc="11111111"/>
+            </game>
+        </datafile>
+        """
+        let dat = try LogiqxDATParser.parse(data: Data(xml.utf8))
+        let clone = try #require(dat.games.first { $0.name == "Clone" })
+        #expect(clone.cloneOf == "Explicit Parent Name")
+    }
+
     @Test("throws on malformed XML")
     func throwsOnMalformedXML() {
         let xml = "<datafile><header><name>Broken</name>"
@@ -102,6 +173,39 @@ struct LogiqxDATParserTests {
         #expect(game.disks[0].name == "g")
         #expect(game.disks[0].sha1 == "da39a3ee5e6b4b0d3255bfef95601890afd80709")
         #expect(game.hasSamples == true)
+    }
+
+    @Test("parses No-Intro DAT-o-MATIC v4's own extra fields — <category>, rom serial/sha256/header — confirmed against a real freshly-downloaded NES DAT (2026-09-29)")
+    func parsesCategorySerialSha256AndHeader() throws {
+        let xml = """
+        <datafile>
+            <header><name>T</name><description>T</description><version>1</version><author>A</author></header>
+            <game name="G">
+                <category>Games</category>
+                <description>G</description>
+                <rom name="g.nes" size="1" crc="00000000" sha256="aa" serial="DIF-001" header="4E 45 53 1A"/>
+            </game>
+            <game name="H">
+                <description>H</description>
+                <rom name="h.nes" size="1" crc="00000000"/>
+            </game>
+        </datafile>
+        """
+        let dat = try LogiqxDATParser.parse(data: Data(xml.utf8))
+        let g = try #require(dat.games.first { $0.name == "G" })
+        let h = try #require(dat.games.first { $0.name == "H" })
+
+        #expect(g.category == "Games")
+        #expect(g.roms[0].sha256 == "aa")
+        #expect(g.roms[0].serial == "DIF-001")
+        #expect(g.roms[0].header == "4E 45 53 1A")
+        // A game/rom that declares none of these stays `nil`, not an
+        // empty string — same "absent means absent" convention every
+        // other optional DAT field here follows.
+        #expect(h.category == nil)
+        #expect(h.roms[0].sha256 == nil)
+        #expect(h.roms[0].serial == nil)
+        #expect(h.roms[0].header == nil)
     }
 
     @Test("throws missingHeader when <datafile> has a game but no <header> at all")

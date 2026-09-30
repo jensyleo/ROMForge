@@ -15,7 +15,25 @@ import Observation
 @MainActor
 final class SystemLibraryStore {
     private(set) var systems: [RomSystem] = []
-    var selectedSystemID: RomSystem.ID?
+    /// Persisted to `UserDefaults` on every change (`didSet` below) — jensyleo's
+    /// own report (2026-09-29), right after switching back and forth between
+    /// MAME and NES: every relaunch jumped back to whichever system happens to
+    /// be first in `systems` (effectively "whichever was added first," MAME in
+    /// practice), regardless of which one was actually being worked on when the
+    /// app quit. `load()` now restores this instead of always defaulting to
+    /// `systems.first`.
+    var selectedSystemID: RomSystem.ID? {
+        didSet {
+            guard selectedSystemID != oldValue else { return }
+            if let selectedSystemID {
+                UserDefaults.standard.set(selectedSystemID.uuidString, forKey: Self.lastSelectedSystemIDKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.lastSelectedSystemIDKey)
+            }
+        }
+    }
+
+    private static let lastSelectedSystemIDKey = "ROMForge.lastSelectedSystemID"
 
     private let storageURL: URL
 
@@ -52,6 +70,11 @@ final class SystemLibraryStore {
         save()
         ScanCacheLocation.remove(for: system)
         DATCacheLocation.remove(for: system)
+        // Cleans up ROMForge's own internal copy of this system's DAT
+        // (`DATStorageLocation`), if it has one and no remaining system
+        // still shares it — a no-op for an external path the user still
+        // owns, or one still referenced by another system.
+        DATStorageLocation.removeIfOrphaned(system.datURL, keeping: systems)
         // jensyleo's own report (2026-09-16): "verifica que cuando se quite
         // el sistema se purgue toda la información" — a real, if harmless,
         // orphan found during that audit: this system's own persisted
@@ -82,7 +105,8 @@ final class SystemLibraryStore {
     private func load() {
         guard let data = try? Data(contentsOf: storageURL) else { return }
         systems = (try? JSONDecoder().decode([RomSystem].self, from: data)) ?? []
-        selectedSystemID = systems.first?.id
+        let lastSelectedID = UserDefaults.standard.string(forKey: Self.lastSelectedSystemIDKey).flatMap(UUID.init(uuidString:))
+        selectedSystemID = systems.first { $0.id == lastSelectedID }?.id ?? systems.first?.id
     }
 
     private func save() {

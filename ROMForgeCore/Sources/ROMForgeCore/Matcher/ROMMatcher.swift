@@ -75,7 +75,7 @@ public enum ROMMatcher {
     /// unchanged.
     public static func match(
         dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil, cancellationFlag: CancellationFlag? = nil,
-        recentlyScannedPaths: [URL] = [], nameOnlyMatching: Bool = false
+        recentlyScannedPaths: [URL] = [], nameOnlyMatching: Bool = false, nameSimilarityThreshold: Double? = nil
     ) throws -> MatchReport {
         try Task.checkCancellation()
         let recentlyScannedPrefixes = recentlyScannedPaths.map(\.path)
@@ -113,14 +113,14 @@ public enum ROMMatcher {
         // rather than resolved from an unrelated archive. A loose-file
         // scan (no archive concept at all) keeps the original unrestricted
         // pooling, since there's nothing to scope by.
-        let archiveNameIndex = indexByArchiveName(hashedFiles)
+        var archiveNameIndex = indexByArchiveName(hashedFiles)
         let isArchiveOrganized = hashedFiles.contains { $0.file.url.lastPathComponent != $0.file.name }
         // Every hashed file's own entry name, regardless of hash — the only
         // way to detect a genuine "Bad" (`RomMatchStatus.hashMismatch`):
         // something sitting in this rom's own expected slot (same name, own
         // archive) whose *content* is wrong, which by definition a
         // hash-keyed index alone could never find.
-        let nameIndex = index(hashedFiles, by: \.file.name)
+        var nameIndex = index(hashedFiles, by: \.file.name)
         // An archive whose own name matches some *other* real DAT game is
         // "claimed" by that game — still consulted below by
         // `.foundElsewhere`'s own gate (`isInClaimedArchive`), purely to
@@ -140,6 +140,40 @@ public enum ROMMatcher {
         // Merged mode's own `dat.games` excludes every clone by design —
         // reopening the door this check exists to keep shut).
         let allGameNames = dat.allMachineNames
+        // GoodTools-vs-No-Intro name translation — jensyleo's own request
+        // (2026-09-29), only ever active under `nameOnlyMatching` (a
+        // GoodTools-tagged local name is exactly the kind of "trust the
+        // file name" situation that toggle already exists for — see its
+        // own doc comment on `match(...)`). Additive only: every
+        // translated key is appended alongside whatever real, untranslated
+        // keys `archiveNameIndex`/`nameIndex` already have, and only ever
+        // added when `GoodToolsNameTranslator` resolves it against a name
+        // that genuinely exists in this DAT — see `GoodToolsNameTranslator`'s
+        // own doc comment for why this is deterministic table lookups, not
+        // fuzzy/similarity guessing.
+        if nameOnlyMatching {
+            let normalizedGameNames = Dictionary(
+                allGameNames.map { (GoodToolsNameTranslator.normalizedKey($0), $0) }, uniquingKeysWith: { first, _ in first }
+            )
+            for (rawKey, indices) in archiveNameIndex {
+                for candidate in GoodToolsNameTranslator.candidateNames(forLocalName: rawKey) {
+                    if let real = normalizedGameNames[GoodToolsNameTranslator.normalizedKey(candidate)] {
+                        archiveNameIndex[real.lowercased(), default: []].append(contentsOf: indices)
+                    }
+                }
+            }
+            let allRomNames = Set(dat.games.flatMap { $0.roms.map(\.name) })
+            let normalizedRomNames = Dictionary(
+                allRomNames.map { (GoodToolsNameTranslator.normalizedKey($0), $0) }, uniquingKeysWith: { first, _ in first }
+            )
+            for (rawKey, indices) in nameIndex {
+                for candidate in GoodToolsNameTranslator.candidateFileNames(forRawFileName: rawKey) {
+                    if let real = normalizedRomNames[GoodToolsNameTranslator.normalizedKey(candidate)] {
+                        nameIndex[real, default: []].append(contentsOf: indices)
+                    }
+                }
+            }
+        }
         // jensyleo's own philosophy directive (2026-08-05), after a real,
         // confusing live case: `ghouls copy.zip` (a duplicate) and unrelated
         // CPS1 titles sharing tiny hardware-PAL roms both fed a fallback
@@ -282,7 +316,18 @@ public enum ROMMatcher {
                 if nameOnlyMatching {
                     if let nameMatchIndex = candidate.nameMatchIndex, !consumed[nameMatchIndex] {
                         consumed[nameMatchIndex] = true
-                        resolvedStatuses[index] = .correct(hashedFiles[nameMatchIndex], viaHeaderStrip: false)
+                        let hashedFile = hashedFiles[nameMatchIndex]
+                        // Same bookkeeping as the hash-verified branch below
+                        // (see its own comment on `claimedArchiveURLsByGame`)
+                        // — without this, a genuine duplicate of this exact
+                        // archive placed in another ROM folder can never be
+                        // recognized as "already satisfied elsewhere" by
+                        // `requiredByGame`'s name-based fallback, since that
+                        // fallback reads this same map.
+                        if hashedFile.file.url.lastPathComponent != hashedFile.file.name {
+                            claimedArchiveURLsByGame[game.name.lowercased(), default: []].insert(hashedFile.file.url)
+                        }
+                        resolvedStatuses[index] = .correct(hashedFile, viaHeaderStrip: false)
                         claimedAnyFile = true
                     } else {
                         resolvedStatuses[index] = .missing
@@ -489,6 +534,25 @@ public enum ROMMatcher {
         // could actually be *claimed*, so it can't reopen the cross-game
         // "steal" problem the rest of this file guards against.
         let romsByHash = indexRomsByHash(dat.games)
+        // Name-based counterpart to `romsByHash` above, used ONLY as a
+        // fallback when `nameOnlyMatching` is on — jensyleo's own report
+        // (2026-09-29): a NES rom he'd deliberately trusted by name (its
+        // real, on-disk hash genuinely doesn't match what the DAT
+        // declares — the whole reason `nameOnlyMatching` exists at all)
+        // got correctly claimed as `.correct` for its OWN slot by name,
+        // but a second, identical COPY of that exact file dropped in a
+        // different ROM folder (a real, common workflow: copying a
+        // handful of favorites into a "SELECTED" folder) showed up gray/
+        // unrecognized instead of "Not needed here (required by X)" — the
+        // surplus classifier (`requiredByGame` below) only ever looks
+        // leftover files up by HASH, and this file's hash was never going
+        // to be in `romsByHash` in the first place; that's precisely why
+        // its own primary copy needed name-only matching to be
+        // recognized at all. Without this, `nameOnlyMatching` only ever
+        // helped a file's FIRST/primary copy — every further duplicate of
+        // it was invisible to the one classification path that still
+        // only trusts hashes.
+        let romsByName = nameOnlyMatching ? indexRomsByName(dat.games) : [:]
         // jensyleo's own real incident (2026-09-19): which hashes each game
         // ALREADY has genuinely satisfied — see `SurplusFile
         // .requiredByGameConfirmedRedundant`'s own doc comment for the full
@@ -585,8 +649,8 @@ public enum ROMMatcher {
         var surplusFiles = unclaimedForSurplus.map { index -> SurplusFile in
             let file = hashedFiles[index]
             let ownerResult = requiredByGame(
-                for: file, gamesByName: gamesByName, romsByHash: romsByHash, claimedArchiveURLsByGame: claimedArchiveURLsByGame,
-                satisfiedHashesByGameName: satisfiedHashesByGameName
+                for: file, gamesByName: gamesByName, romsByHash: romsByHash, romsByName: romsByName,
+                claimedArchiveURLsByGame: claimedArchiveURLsByGame, satisfiedHashesByGameName: satisfiedHashesByGameName
             )
             let owner = ownerResult?.game
             if let owner { owningGameByIndex[index] = owner }
@@ -632,6 +696,40 @@ public enum ROMMatcher {
             unclaimedIndices: unclaimedForSurplus,
             allGameNames: allGameNames, claimedArchiveURLsByGame: claimedArchiveURLsByGame
         )
+        if let nameSimilarityThreshold {
+            // Real, display-cased names (`dat.games`), never
+            // `allGameNames` (already lowercased, and the wrong casing to
+            // rename a file TO) — a suggestion feeds straight into
+            // `RebuildPlanner.planRepair`'s own rename target.
+            //
+            // jensyleo's own report (2026-09-30), found live against a
+            // genuine NES collection at a 50% threshold: with only 2 of 3
+            // ROM folders configured, "Pictionary (U).zip" got suggested as
+            // "Dirty Harry (USA)" (53%), "Asterix (E).zip" as
+            // "Castelian (Europe)" (50%) — confidently wrong identifications
+            // of a DIFFERENT game, not merely a close variant of the right
+            // one. jensyleo's own framing: no threshold value fixes this by
+            // itself — the matcher needs to recognize this SHAPE of
+            // conflict (a name-only guess whose own CONTENT contradicts it)
+            // regardless of how the threshold is tuned. A rom's declared
+            // SIZE is exactly that second, independent signal: two
+            // genuinely different NES games essentially never share the
+            // same byte size by coincidence, so a suggestion whose
+            // candidate's own declared size doesn't match this file's real
+            // size is discarded outright, never surfaced at all — the same
+            // "no suggestion is safer than a wrong one" principle
+            // `SimilarNameSuggester`'s own doc comment already states for
+            // low-confidence cases in general, now enforced by CONTENT
+            // evidence rather than only by the confidence number.
+            var candidateSizesByName: [String: Int64] = [:]
+            for game in dat.games {
+                candidateSizesByName[game.name.lowercased(), default: 0] += game.roms.reduce(0) { $0 + $1.size }
+            }
+            annotateSimilarNameSurplusFiles(
+                &surplusFiles, candidateNames: dat.games.map(\.name), threshold: nameSimilarityThreshold,
+                claimedArchiveURLsByGame: claimedArchiveURLsByGame, candidateSizesByName: candidateSizesByName
+            )
+        }
         return MatchReport(games: gameResults, surplusFiles: surplusFiles)
     }
 
@@ -779,6 +877,88 @@ public enum ROMMatcher {
                     misnamedArchiveForGameName: topGame.name
                 )
             }
+        }
+    }
+
+    /// Fills in `SurplusFile.similarNameSuggestion` — jensyleo's own request
+    /// (2026-09-29), only ever run when the caller passes a non-nil
+    /// `nameSimilarityThreshold` to `match(...)` (opt-in per system —
+    /// `LibraryViewModel` only ever does this for a system with
+    /// `RomSystem.similarNameFixEnabled` on, and never for a MAME-style one
+    /// at all — see that field's own doc comment for why).
+    ///
+    /// Unlike `annotateMisnamedArchives` above, this has NO content
+    /// evidence behind it whatsoever — it runs on every surplus file that
+    /// still has neither a `requiredByGameDescription` (recognized by hash)
+    /// nor a `misnamedArchiveForGameName` (recognized by a qualifying
+    /// majority of its own content) after every other pass has already had
+    /// its say, and suggests a rename purely because the file's own name
+    /// happens to closely resemble a real DAT game name. See
+    /// `SimilarNameSuggester`'s own doc comment for why this is a genuine
+    /// guess, surfaced only as a "Fix Mismatched Files"/"Fix Misnamed ROMs
+    /// Inside Their Archives…" suggestion the user must explicitly confirm,
+    /// never applied on its own.
+    /// A suggestion's candidate's own DECLARED size may differ from this
+    /// file's real size by at most this many bytes before the suggestion is
+    /// discarded outright — see `annotateSimilarNameSurplusFiles`'s own
+    /// call-site doc comment for the real, live-found conflict this guards
+    /// against. `512` — not `0` — because the local file may still carry a
+    /// copier header the DAT's own declared size never counted (the widest
+    /// header this codebase knows about, `HeaderSkipRule.copier512`, is
+    /// exactly 512 bytes; a genuinely different game is never merely a few
+    /// hundred bytes off from the right one).
+    private static let similarNameSuggestionSizeTolerance: Int64 = 512
+
+    private static func annotateSimilarNameSurplusFiles(
+        _ surplusFiles: inout [SurplusFile], candidateNames: [String], threshold: Double,
+        claimedArchiveURLsByGame: [String: Set<URL>], candidateSizesByName: [String: Int64]
+    ) {
+        for (position, existing) in surplusFiles.enumerated() {
+            guard existing.requiredByGameDescription == nil, existing.misnamedArchiveForGameName == nil else { continue }
+            let file = existing.file.file
+            // An archive's own base name (extension-free, e.g. "Contra
+            // (Usa)" from "Contra (Usa).zip") for a real archive; a loose
+            // file's own full name (extension included — `bestMatch`
+            // strips it itself) otherwise.
+            let localName = file.url.lastPathComponent != file.name
+                ? file.url.deletingPathExtension().lastPathComponent
+                : file.name
+            guard let suggestion = SimilarNameSuggester.bestMatch(
+                forLocalName: localName, candidateNames: candidateNames, threshold: threshold,
+                // jensyleo's own request (2026-09-29): when more than one
+                // real DAT name is a close enough match, prefer whichever
+                // one doesn't already have a real archive present in this
+                // scan — same "already satisfied" signal
+                // `annotateMisnamedArchives` above already uses for the
+                // exact same reason (never re-attribute content toward a
+                // game that already has its own real copy).
+                isAvailable: { (claimedArchiveURLsByGame[$0.lowercased()] ?? []).isEmpty }
+            ) else { continue }
+            // jensyleo's own report (2026-09-30): a NAME-only guess can
+            // still be a confidently wrong GAME — see this function's own
+            // call-site doc comment for the real "Pictionary → Dirty Harry"
+            // /"Asterix → Castelian" case this closes. Two genuinely
+            // different games essentially never share a byte size by
+            // coincidence, so requiring the candidate's own declared size
+            // to actually match this file's real size (within a copier-
+            // header's worth of slack) rejects a wrong-game guess
+            // regardless of how textually close its name happened to be —
+            // independent of, and in addition to, the confidence threshold.
+            if let candidateSize = candidateSizesByName[suggestion.suggestedName.lowercased()],
+               abs(candidateSize - file.size) > similarNameSuggestionSizeTolerance {
+                continue
+            }
+            surplusFiles[position] = SurplusFile(
+                file: existing.file,
+                requiredByGameDescription: existing.requiredByGameDescription,
+                requiredByGameMachineName: existing.requiredByGameMachineName,
+                requiredByGameConfirmedRedundant: existing.requiredByGameConfirmedRedundant,
+                requiredByGameOwnerSatisfiedElsewhere: existing.requiredByGameOwnerSatisfiedElsewhere,
+                matchesNodumpRomName: existing.matchesNodumpRomName,
+                isInKnownArchive: existing.isInKnownArchive,
+                misnamedArchiveForGameName: existing.misnamedArchiveForGameName,
+                similarNameSuggestion: suggestion
+            )
         }
     }
 
@@ -1061,6 +1241,22 @@ public enum ROMMatcher {
         return result
     }
 
+    /// Same shape as `indexRomsByHash` above, keyed by the rom's own
+    /// declared NAME (lowercased) instead — see `romsByName`'s own call
+    /// site doc comment for why this exists at all (a `nameOnlyMatching`-
+    /// only fallback for recognizing a genuine duplicate of a
+    /// hash-mismatched-but-name-trusted file).
+    private static func indexRomsByName(_ games: [DATGame]) -> [String: DATGame] {
+        var result: [String: DATGame] = [:]
+        for game in games {
+            for rom in game.roms {
+                let key = rom.name.lowercased()
+                if result[key] == nil { result[key] = game }
+            }
+        }
+        return result
+    }
+
     /// The DAT game that actually declares this leftover file's content, if
     /// any — see `indexRomsByHash`'s own doc comment and this file's own
     /// `surplusFiles` computation for why an unclaimed file can still be
@@ -1103,8 +1299,8 @@ public enum ROMMatcher {
     /// filename for a misnamed archive (see
     /// `SurplusFile.misnamedArchiveForGameName`).
     private static func requiredByGame(
-        for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame], claimedArchiveURLsByGame: [String: Set<URL>],
-        satisfiedHashesByGameName: [String: Set<String>]
+        for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame], romsByName: [String: DATGame],
+        claimedArchiveURLsByGame: [String: Set<URL>], satisfiedHashesByGameName: [String: Set<String>]
     ) -> (game: DATGame, confirmedRedundant: Bool)? {
         let fileHashes = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
         let isArchiveEntry = file.file.url.lastPathComponent != file.file.name
@@ -1138,6 +1334,22 @@ public enum ROMMatcher {
                 let confirmedRedundant = satisfiedHashesByGameName[game.name.lowercased()]?.contains(key) ?? false
                 return (game, confirmedRedundant)
             }
+        }
+        // Name-based fallback — only ever populated (`romsByName` non-empty)
+        // under `nameOnlyMatching`. See `romsByName`'s own call-site doc
+        // comment: a genuine duplicate of a hash-mismatched-but-name-trusted
+        // file has NOTHING in `romsByHash` to find at all (that mismatch is
+        // exactly why its own primary copy needed name-only matching in the
+        // first place), so without this it always reads as plain
+        // unrecognized junk instead of "Not needed here (required by X)".
+        // `confirmedRedundant` here means "this game's archive is already
+        // claimed by something real" — there's no hash key to check against
+        // `satisfiedHashesByGameName` (the whole point is this file's own
+        // hash isn't a recognized one), so claimed-archive presence is the
+        // closest available signal.
+        if let game = romsByName[file.file.name.lowercased()] {
+            let confirmedRedundant = claimedArchiveURLsByGame[game.name.lowercased()]?.isEmpty == false
+            return (game, confirmedRedundant)
         }
         return nil
     }

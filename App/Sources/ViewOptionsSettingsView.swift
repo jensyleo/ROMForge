@@ -122,6 +122,7 @@ enum DetailPanelGameFieldSettings {
     static let showBiosKey = "ROMForge.view.detail.game.showBios"
     static let showYearKey = "ROMForge.view.detail.game.showYear"
     static let showManufacturerKey = "ROMForge.view.detail.game.showManufacturer"
+    static let showCategoryKey = "ROMForge.view.detail.game.showCategory"
     static let showDeviceRefsKey = "ROMForge.view.detail.game.showDeviceRefs"
     static let showCloneOfInternalNameKey = "ROMForge.view.detail.game.showCloneOfInternalName"
     static let showFamilyKey = "ROMForge.view.detail.game.showFamily"
@@ -150,7 +151,7 @@ enum DetailPanelGameFieldSettings {
 /// Defaults") — matches the Games table's own real column menu.
 enum DetailGameField: String, CaseIterable, Identifiable, Hashable, Sendable {
     case fileName, expectedFileName, size, oneGameOneROM, info, cloneOf, requiredBios, chd, samples, bios, year,
-        manufacturer, deviceRefs, cloneOfInternalName, family, dependencies, details
+        manufacturer, category, deviceRefs, cloneOfInternalName, family, dependencies, details
 
     var id: String { rawValue }
 
@@ -168,6 +169,7 @@ enum DetailGameField: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .bios: return "BIOS"
         case .year: return "Year"
         case .manufacturer: return "Manufacturer"
+        case .category: return "Category"
         case .deviceRefs: return "Device refs"
         case .cloneOfInternalName: return "Clone of (internal name)"
         case .family: return "Family"
@@ -214,6 +216,22 @@ enum DetailPanelRomFieldSettings {
     static let showMD5Key = "ROMForge.view.detail.rom.showMD5"
     static let showDumpStatusKey = "ROMForge.view.detail.rom.showDumpStatus"
     static let showTypeKey = "ROMForge.view.detail.rom.showType"
+    /// The DAT's own `serial="..."` (No-Intro DAT-o-MATIC schema v4) — see
+    /// `DATRom.serial`'s own doc comment. No matching Roms-table column
+    /// (unlike every other toggle here) since it's rare enough (only some
+    /// No-Intro entries declare one) that a whole extra column would mostly
+    /// sit empty — shown only here, in the Detail panel, when present.
+    static let showSerialKey = "ROMForge.view.detail.rom.showSerial"
+    /// The DAT's own `sha256="..."` (No-Intro DAT-o-MATIC schema v4) — see
+    /// `DATRom.sha256`'s own doc comment. Same reasoning as `showSerialKey`
+    /// for having no Roms-table column counterpart.
+    static let showSHA256Key = "ROMForge.view.detail.rom.showSHA256"
+    /// The DAT's own `header="..."` (No-Intro DAT-o-MATIC schema v4, NES
+    /// specifically) — see `DATRom.header`'s own doc comment. Shows both
+    /// the raw hex bytes and, when they decode as a recognized iNES
+    /// header, the plain-English fields `INESHeaderDecoder` extracts from
+    /// them (mapper, PRG/CHR size, mirroring, battery, TV system).
+    static let showHeaderKey = "ROMForge.view.detail.rom.showHeader"
 }
 
 /// New Settings tab, alongside "General" and "Systems" — jensyleo's own
@@ -367,6 +385,7 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelGameFieldSettings.showBiosKey) private var showDetailBios = true
     @AppStorage(DetailPanelGameFieldSettings.showYearKey) private var showDetailYear = true
     @AppStorage(DetailPanelGameFieldSettings.showManufacturerKey) private var showDetailManufacturer = true
+    @AppStorage(DetailPanelGameFieldSettings.showCategoryKey) private var showDetailCategory = true
     @AppStorage(DetailPanelGameFieldSettings.showDeviceRefsKey) private var showDetailDeviceRefs = true
     @AppStorage(DetailPanelGameFieldSettings.showCloneOfInternalNameKey) private var showDetailCloneOfInternalName = true
     @AppStorage(DetailPanelGameFieldSettings.showFamilyKey) private var showDetailFamily = true
@@ -382,6 +401,9 @@ private struct ViewOptionsPanelsTab: View {
     @AppStorage(DetailPanelRomFieldSettings.showMD5Key) private var showDetailRomMD5 = true
     @AppStorage(DetailPanelRomFieldSettings.showDumpStatusKey) private var showDetailRomDumpStatus = true
     @AppStorage(DetailPanelRomFieldSettings.showTypeKey) private var showDetailRomType = true
+    @AppStorage(DetailPanelRomFieldSettings.showSerialKey) private var showDetailRomSerial = true
+    @AppStorage(DetailPanelRomFieldSettings.showSHA256Key) private var showDetailRomSHA256 = true
+    @AppStorage(DetailPanelRomFieldSettings.showHeaderKey) private var showDetailRomHeader = true
     @State private var didPurgeViews = false
     @State private var purgedViewCount = 0
     @State private var didResetFolderOrder = false
@@ -416,6 +438,7 @@ private struct ViewOptionsPanelsTab: View {
         case .bios: return $showDetailBios
         case .year: return $showDetailYear
         case .manufacturer: return $showDetailManufacturer
+        case .category: return $showDetailCategory
         case .deviceRefs: return $showDetailDeviceRefs
         case .cloneOfInternalName: return $showDetailCloneOfInternalName
         case .family: return $showDetailFamily
@@ -606,6 +629,7 @@ private struct ViewOptionsPanelsTab: View {
                     showDetailBios = true
                     showDetailYear = true
                     showDetailManufacturer = true
+                    showDetailCategory = true
                     showDetailDeviceRefs = true
                     showDetailCloneOfInternalName = true
                     showDetailFamily = true
@@ -627,6 +651,9 @@ private struct ViewOptionsPanelsTab: View {
                 Toggle("MD5", isOn: $showDetailRomMD5)
                 Toggle("Dump status", isOn: $showDetailRomDumpStatus)
                 Toggle("Type", isOn: $showDetailRomType)
+                Toggle("Serial", isOn: $showDetailRomSerial)
+                Toggle("SHA-256", isOn: $showDetailRomSHA256)
+                Toggle("Header (iNES)", isOn: $showDetailRomHeader)
                 Button("Reset to Defaults") {
                     showDetailRomFileName = true
                     showDetailRomInfo = true
@@ -637,6 +664,9 @@ private struct ViewOptionsPanelsTab: View {
                     showDetailRomMD5 = true
                     showDetailRomDumpStatus = true
                     showDetailRomType = true
+                    showDetailRomSerial = true
+                    showDetailRomSHA256 = true
+                    showDetailRomHeader = true
                 }
                 Text("The exact same fields as the Roms table's own columns (\"Rom name\" and the status icon always show here, same as this panel's own header — not optional, same as the Games table's own \"Game name\" column isn't either). A field with no value is still skipped automatically — these toggles only control fields that DO have a value.")
                     .font(.caption)

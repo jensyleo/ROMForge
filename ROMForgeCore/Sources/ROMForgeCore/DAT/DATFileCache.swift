@@ -37,7 +37,20 @@ public struct DATFileCache: Sendable, Codable, Equatable {
     /// time such logic changes, forces every existing cache entry to miss
     /// exactly once after an update like that, rather than silently
     /// serving stale results indefinitely.
-    private static let currentFormatVersion = 5
+    private static let currentFormatVersion = 6
+    // v6 (2026-09-29): `LogiqxDATParser` now captures No-Intro DAT-o-MATIC
+    // v4's own extra fields — `DATGame.category` and `DATRom.serial`/
+    // `sha256`/`header` — real bug found live by jensyleo: after adding
+    // these and rebuilding, the Detail panel still showed nothing for any
+    // of them on an already-scanned NES system, even though a fresh parse
+    // of the exact same DAT file (confirmed directly, bypassing this
+    // cache) produced every one of them correctly. A `DATFile` cached
+    // before this change decodes fine (`Codable` defaults every missing
+    // optional key to `nil`) and would otherwise keep silently serving
+    // `nil` for all four fields forever, for any (DAT file, mode)
+    // combination already visited, until the DAT file itself happened to
+    // change — the exact shape of bug `currentFormatVersion` itself exists
+    // to force a one-time miss for.
     // v5 (2026-09-10): `MAMEListXMLParser` now captures the root `<mame
     // build="...">` attribute into `MAMEDataset.build`, and
     // `DATLoader.datFile(from: MAMEDataset...)` threads it into
