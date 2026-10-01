@@ -1404,7 +1404,91 @@ chips (VRC6/VRC7/MMC5/N163/FDS) — that's a separate, already-researched
 topic (chip presence can be derived from the iNES header's mapper number,
 see `INESHeaderDecoder`, but doesn't change region-vs-region "better"
 judgments for the titles checked so far, none of which use an expansion
-chip). Status: **documented only, not started, no commitment to build.**
+chip).
+
+**Research update (2026-10-01)** — challenged the "must hand-curate 100%
+from scratch" assumption with real research before committing to that as
+the only path:
+- **No existing structured dataset or API catalogs this.** TCRF (tcrf.net)
+  is pure MediaWiki prose with only the generic MediaWiki API (page
+  text/revisions, no "regional_quality" field or equivalent). GameFAQs has
+  no structured export either. No GitHub dataset found cataloging
+  region-vs-region content/censorship differences specifically (No-Intro/
+  TOSEC only catalog hashes, confirmed not equivalent). ScreenScraper/
+  LaunchBox/IGDB's "Region Priority" is a USER PREFERENCE for picking a
+  default duplicate, never an objective content-quality judgment — not
+  usable as a source.
+- **One real efficiency gain, not a shortcut**: TCRF's own API can still
+  help DISCOVERY — searching page text for "censored"/"uncensored"/"extra
+  lives"/etc. to find candidate games faster than browsing manually — but
+  the actual curation (deciding what the note says) remains manual either
+  way.
+- **Licensing, confirmed**: TCRF content is **CC BY 3.0** (not CC BY-SA —
+  no share-alike clause), permitting commercial use with attribution only.
+  The curated data schema should therefore always store `sourceURL` +
+  `sourceLicense` + a consultation date, and the `reason` field should be
+  written in ROMForge's own words — never TCRF prose copy-pasted verbatim,
+  even though the license would technically permit it with attribution.
+- **Bottom line**: doesn't change the feature's scope, confirms the
+  original plan was already right not to assume a shortcut existed.
+
+**Scope note (2026-10-01)**: jensyleo wants this configurable specifically
+in the NES system's own settings first (not a global, cross-system
+toggle) — see the cost analysis below for what that implies.
+
+### Cost analysis (2026-10-01) — what building this would actually take
+
+Scoped as: a per-system (starting with NES) toggle in `SystemSettingsView`
+("Show region-quality hints"), a small curated JSON seed file shipped in
+the app bundle (NOT a SQLite table — far simpler for a read-mostly,
+developer-curated list that's small by nature, maybe dozens to low
+hundreds of entries even at a mature state), a user-editable override file
+in Application Support, a badge in `GameTreeTableView`, and the note
+surfaced in the Info panel.
+
+- **Data model + loading** (`ROMForgeCore`): a `RegionQualityNote` struct
+  (`gameFamily`, `recommendedRegion`, `reason`, `sourceURL`,
+  `sourceLicense`, `consultedDate`) + a loader reading the bundled seed
+  JSON and merging a user override file on top. **Small** — a few hours,
+  closely mirrors existing patterns already in this codebase (e.g. how
+  `SystemLibraryStore`/`DATFileCache` load+merge JSON).
+- **Matching a game to a note**: reuses the DAT's own existing parent/clone
+  grouping (`GameNode.cloneOf`, already computed) — no new relationship
+  data needed, just a lookup by family name. **Small.**
+- **Per-system setting (NES-scoped)**: one new `@AppStorage`-backed toggle
+  in `SystemSettingsView`'s NES-specific section, read the same way
+  `similarNameFixEnabled`/`maintenanceFolderEnabled` already are per
+  system. **Small** — this codebase already has several examples of
+  exactly this shape of per-system opt-in.
+- **UI badge + Info panel surfacing**: a small icon in `GameTreeTableView`
+  (two states: "you have the recommended region" vs. "a better region
+  exists and you don't have it") + a line in the Info/detail panel showing
+  `reason` and a clickable `sourceURL`. **Small-medium** — similar scope to
+  the mapper→chip-name label added earlier this session, just with two
+  display states instead of one and a clickable link.
+- **The actual curated data itself**: **this is the real cost, and it's
+  ongoing, not one-time.** Every entry requires real research (web search,
+  verifying claims, writing a reason in ROMForge's own words, finding and
+  citing a real source) — the kind of work already done live in this
+  session for Contra/Rush'n Attack/Bionic Commando (3 games, each one took
+  a real research pass). A seed file covering even "the obviously famous
+  cases" (the ones already discussed, plus maybe 10-20 more well-known
+  ones like Castlevania/Simon's Quest's infamous bad English translation,
+  Ghosts'n Goblins difficulty differences, etc.) is realistically its own
+  multi-session research effort, not a side task — this is the dominant
+  cost of the whole feature by a wide margin, not the code.
+- **User-override file**: reuses the exact same JSON shape as the seed,
+  loaded from Application Support and merged (user entries win on a
+  `gameFamily` collision). **Small.**
+
+**Overall engineering cost: small-medium** (a few focused sessions, mostly
+boilerplate this codebase already has patterns for). **The data curation
+cost is open-ended** and is a genuinely separate, ongoing commitment from
+the code itself — worth deciding explicitly whether to ship with just the
+handful of titles already researched this session (Contra, Rush'n Attack,
+Bionic Commando) as a proof-of-concept seed, versus delaying until a
+bigger curated list exists. Status: **documented and costed, not started,
+no commitment to build yet.**
 
 ## Bugfix log (2026-09-30, continued) — zip comment display, real root cause
 
@@ -1437,3 +1521,215 @@ chip). Status: **documented only, not started, no commitment to build.**
   show comment length `0x0000`), then traced the actual display path
   (`infoText(for:)` → `zipCommentCache.comment(forZipAt:)`) to find the
   missed invalidation. Built Release, installed to `/Applications`.
+
+## Bugfix log (2026-10-01) — global NAS-access premise audit
+
+jensyleo set an explicit, global design premise: "Solo consultar la NAS
+para escaneos y Fix. Lo demas debe estar en cache." A full codebase audit
+was run against it (App/Sources + ROMForgeCore/Sources), checking every
+`FileManager`/`Data(contentsOf:)`/`Archive(url:)`/`ZipCommentReader` call
+site for whether it's reachable from a render/selection-change path
+instead of an explicit Scan or Fix action.
+
+- **Real violation #1 (already described above, 2026-10-01 entry) —
+  `ZipCommentCache` read live per ROM-folder-not-yet-visited-this-session**:
+  fixed by skipping the whole preload for `isMAMEStyle` systems and keeping
+  it background-preloaded (never live) for console systems.
+- **Real violation #2, found by this follow-up audit —
+  `GameTreeTableView`'s own Games-table context menu**: building the
+  menu (`GameTreeTableView.swift`, the context-menu closure) called
+  `viewModel.planRemoveZipCommentsPreviewCount(scopeFolders:)`, which (unlike
+  every sibling preview count in the same closure — all pure in-memory
+  `matchReport` reads) does a live `ZipCommentReader` disk/NAS read per
+  candidate zip. Merely right-clicking/opening the context menu on a
+  selection paid this cost, unscoped, every time — the same class of bug
+  already fixed elsewhere, missed at this specific call site. Fixed:
+  added `ZipCommentCache.hasCachedComment(forZipAt:)` — a true cache-only
+  read (no live fallback, returns `false` for a URL not yet warmed by the
+  background preload) — and the context menu now counts via that instead.
+  The real action, once actually clicked, still goes through the normal,
+  accurate `removeZipComments` path — legitimate, since that's an explicit
+  Fix action. `ZipCommentCache` itself (`LibraryDetailView.swift`) widened
+  from `private` to internal access so `GameTreeTableView.swift` (a
+  different file) can reference `ZipCommentCache.shared` directly.
+- **Known, deliberately-not-fixed residual edge case**: `ZipCommentCache
+  .comment(forZipAt:)` (the ordinary, filling accessor used by
+  `infoText`/`zipCommentHelpText`) still falls through to a live read if
+  queried for a URL the background preload genuinely hasn't reached yet
+  (e.g. a narrow race between a fast folder switch and the detached
+  preload task completing). Left as a defensive fallback rather than
+  returning a possibly-wrong "no comment" during that narrow window —
+  flagged here for visibility rather than silently left unexamined.
+- Audited and confirmed already correctly cache-only, not re-litigated:
+  `organizeBIOSFilesAvailableCache`/`organizeComplementaryChipsAvailableCache`
+  (recomputed only on scan completion, never per-render),
+  `maintenanceSubfolderExistsRefreshGeneration` (off-main-actor,
+  generation-guarded), every other context-menu preview count besides the
+  one fixed above, and every genuinely user-initiated one-off action (Play,
+  Reveal in Finder, File Actions, Settings folder pickers) — these are
+  expected to touch disk when explicitly triggered, not render-path reads.
+
+## Bugfix log (2026-10-01, continued) — unified scan progress bar covers every real phase
+
+jensyleo's report after a real NES scan: "hay parte del escaneo que no es
+parte integral del progreso global de la barra de progreso." Traced all 13
+real phases of `scan(system:folders:)`; `overallScanFraction` only weighted
+4 of them (listing/hashing/matching/saving) — DAT loading, the folder walk,
+every post-match annotation pass (report generation, CHD audit, duplicate
+sets, orphaned BIOS, filename/CRC mismatches, Maintenance donors), and the
+zip-comment preload tail all ran with the bar either on a disconnected
+separate scale or completely frozen (label-only). Worse, the zip-comment
+preload (`refreshCachedGameDataAfterAuditReportChangeAsync`'s own tail) is
+a fire-and-forget `Task` never awaited by `scan()` — it could keep reading
+disk/NAS well after the overlay already disappeared.
+
+Fixed, all in `App/Sources/LibraryDetailView.swift` /
+`App/Sources/LibraryViewModel.swift`:
+- `ScanOverallPhase` extended with `.datLoad`/`.datLoadIndeterminate`/
+  `.folderWalkIndeterminate`/`.postMatchStep`/`.finalPreload`; weights
+  rebalanced across 9 phases (fixOps 0.10, DAT load 0.05, folder walk 0.05,
+  listing 0.10, hashing 0.30, matching 0.20, post-match 0.05, saving 0.10,
+  final preload 0.05 — sums to 1.0), all still one monotonically increasing
+  fraction.
+- The 3 DAT-loading sub-bars (machine count, file-read bytes, byte-count
+  pass) and the folder-walk spinner now plot through `overallScanFraction`
+  instead of their own disconnected 0–100% scales.
+- New `LibraryViewModel.scanPostMatchStepProgress` — a step counter over a
+  FIXED, known-order list of the 6 named post-match passes
+  (`postMatchStepOrder`), advancing the bar one coarse notch per pass
+  instead of holding completely dead through that whole stretch. A skipped
+  conditional step (CHD audit, Maintenance donors) just means the next real
+  one jumps the bar by more than one notch — no need to precompute which
+  steps will run.
+- New `LibraryDetailView.isPreloadingZipComments` (`@State`) — keeps the
+  SAME scan overlay up through the zip-comment preload tail (`.overlay`'s
+  gate is now `viewModel.isBusy || isPreloadingZipComments`), with its own
+  weighted slice, so "the bar says done" and "the scan is actually done"
+  are the same moment again. Never set for a MAME system (that preload is
+  already skipped entirely there, see the earlier 2026-10-01 entry above).
+- Build green, installed to `/Applications`.
+
+## Bugfix log (2026-10-01, continued) — real main-thread NAS hang ("se estrelló")
+
+jensyleo reported "la app se estrelló" while working over NAS — turned out
+to be a genuine main-thread freeze, not a crash: `ps`/`sample` on the
+running process showed state `UN` (uninterruptible sleep) and a live stack
+trace pinned exactly on: right-clicking a row in the Games table →
+`NSTableView.menuForEvent` → `GameTreeTableView`'s context-menu closure →
+`planRemoveRedundantFilesPreviewCount`/`planRemoveRedundantRomsPreviewCount`
+→ `redundantArchiveEntryCounts(matchReport:)` → `ZipArchiveScanner.scan`/
+`Archive.init` → a blocking `fopen`/`open$NOCANCEL` on a NAS-mounted file,
+all synchronously on the main actor. Both preview-count functions called
+this fresh on EVERY context-menu open — the exact same "NAS only for
+scans/Fix" violation already fixed for zip comments earlier this session
+(`GameTreeTableView.swift:513`), just in a different function this
+session's earlier audit didn't happen to flag.
+
+Fixed in `App/Sources/LibraryViewModel.swift`: added
+`redundantArchiveEntryCountsCache` (memoized per `matchReport`, invalidated
+in its own `didSet` alongside the existing `matchedZipArchiveURLsCache` —
+same precedent pattern), and a `redundantArchiveEntryCounts(for:)` instance
+wrapper. Both preview-count functions now call the memoized wrapper
+instead of the raw `Self.redundantArchiveEntryCounts` static. The two real
+Fix-action call sites (`removeRedundantFiles`/`removeRedundantRoms`'s own
+`Task.detached` bodies) were deliberately left calling the raw static
+directly — those already run off the main actor, so they were never the
+bug; reusing the cache value opportunistically there is a natural
+follow-up but not required for correctness.
+
+**Honest residual gap**: this stops the hang on every REPEATED menu open
+(the common case that actually produced today's incident), but the FIRST
+context-menu open after a scan still computes this synchronously on
+whatever thread opens the menu (the main actor) — a real, if one-time,
+blocking read. A full fix would pre-warm this cache in the background as
+part of `scan()`'s own post-match pipeline (the same `postMatchStepOrder`
+machinery added earlier today for the progress bar would be a natural fit)
+— not done yet, flagged here for a future pass rather than silently
+considered closed.
+
+Verified: build green, force-killed the hung process (`UN` state didn't
+respond to normal quit), reinstalled, relaunched.
+
+## Bugfix log (2026-10-01, continued again) — residual redundant-counts gap closed
+
+Closed the residual gap flagged in the entry just above: `redundantArchiveEntryCounts`
+is now pre-warmed inside `scan()`'s own post-match pipeline (new named step
+"Checking for redundant archive containers…", added to `postMatchStepOrder`
+— the progress bar now shows 7 post-match steps instead of 6), computed
+inside the SAME `Task.detached` the rest of the matching/report-generation
+pipeline already runs in (confirmed by a real compiler error when first
+attempting to call the `@MainActor`-isolated memoized wrapper from there —
+this whole post-match block was already off the main actor, not on it as
+first assumed). The result is threaded out through the detached task's own
+return tuple and assigned to `redundantArchiveEntryCountsCache` AFTER
+`matchReport` itself is set (its own `didSet` clears this same cache, so
+order matters). Every context-menu preview count now reuses this for free
+— the first right-click after a scan no longer pays any NAS cost at all,
+closing the gap documented in the entry above. Build green, installed.
+
+## Feature follow-up (2026-10-01) — region-quality hints, full coverage + panel + link/copy
+
+jensyleo tested the region-quality hint (Games panel + tooltip) and
+confirmed it works, then asked for 3 fixes:
+1. **"Revisa que no se te escape nada"** — the feature only covered the
+   Games panel (`GameNode` overloads); the Roms panel's own `infoText`/
+   `zipCommentHelpText(for entry:)` never got it. Fixed: `regionQualityNote`
+   refactored into a shared `regionQualityNote(forGameName:)` core, both
+   `AuditEntry` overloads now append the same "⭐ Recommended version"/
+   "ℹ️ Better version exists" suffix and tooltip, keyed off
+   `entry.gameDescription ?? entry.game`.
+2. **Bottom-left detail panel** — new `regionQualityDetailRow(forGameName:)`
+   (shared by both `gameDetailRow`'s `.info` case and `romDetailSection`),
+   showing the full reason as an always-visible row (not just a hover
+   tooltip) right under "Info"/"Info: ". Not wired as a toggleable View
+   Options field — deliberately simpler, same "nothing to report, don't
+   show the row" self-gating `.family`/`.oneGameOneROM` already use.
+3. **Clickable link + copy** — the source URL renders as a real SwiftUI
+   `Link` (clickable, opens in the default browser) when it parses as a
+   valid `URL`, falling back to plain text otherwise; a copy button
+   (`doc.on.doc`) next to it copies the full "region recommended: reason
+   (url)" text to the pasteboard via `NSPasteboard`.
+
+Build green, installed.
+
+## Bugfix log (2026-10-01, continued) — third audit pass: stuck overlay fix
+
+Third audit pass this session (focused on all NEW code: region-quality
+feature, unified progress bar, network-volume auto-concurrency). One real
+bug found:
+
+- **`isPreloadingZipComments` could get stuck `true` forever** —
+  `refreshCachedGameDataAfterAuditReportChangeAsync()`'s zip-comment preload
+  task shares `pendingFolderRecompute`/`folderRecomputeGeneration` with
+  `triggerCachedGameDataRecompute()` (the folder-click path). Cancelling
+  that shared task (e.g. a folder click arriving while the preload tail was
+  still in flight) made the preload task exit through one of its own
+  `Task.isCancelled` guards — which never reset `isPreloadingZipComments`,
+  only the success path did. Left `true`, this kept the scan overlay stuck
+  on screen forever (`.overlay`'s gate is `viewModel.isBusy ||
+  isPreloadingZipComments`), blocking all further interaction — a real,
+  if narrow-timing-window, freeze. Fixed: both `triggerCachedGameDataRecompute()`
+  and `refreshCachedGameDataAfterAuditReportChangeAsync()` now reset the
+  flag to `false` immediately after `pendingFolderRecompute?.cancel()`,
+  before anything else — harmless when nothing was stuck, since whichever
+  function actually proceeds sets it back to `true` moments later if
+  applicable.
+- **Verified clean** (explicitly checked, not re-litigated): the
+  `redundantArchiveEntryCountsCache` pre-warm ordering (survives
+  `matchReport`'s own `didSet`), `overallScanFraction`'s weights (sum to
+  1.0 exactly), `RegionQualityNotes.baseTitle(for:)` on a plain name with no
+  tags, `VolumeLocality.isNetworkVolume` on a nonexistent path (`statfs`
+  fails gracefully, no crash), `statfs`/`URL.path` encoding (no injection
+  risk, plain local syscall), and every new `LibraryViewModel` cache's
+  thread-safety (all `@MainActor`-only access, no unsafe `nonisolated`
+  touch).
+- **Honest, not-fixed finding**: `RegionQualityNotes.note(forGameName:)`'s
+  `overrides` parameter is never actually populated by any real caller —
+  the "user override file in Application Support" part of the original
+  design (ROADMAP's own region-quality section) was documented but never
+  wired up. Not a bug (the parameter defaults to `[]` and behaves exactly
+  as intended for the seed-only v1 shipped), just an honest gap between the
+  original design doc and what actually got built — flagged here rather
+  than left to look finished.
+
+Build green, installed.

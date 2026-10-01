@@ -5,6 +5,42 @@
 // or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
 
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
+
+/// Detects whether a given path lives on a network-mounted volume (SMB,
+/// AFP, NFS, WebDAV, …) rather than a local disk — jensyleo's own request
+/// (2026-10-01), after confirming (real research, Microsoft's own SMB
+/// troubleshooting docs) that scanning many small files over a NAS is
+/// dominated by per-file round-trip latency, not local CPU/disk throughput,
+/// and that raising hashing concurrency well above core count helps hide
+/// that latency (more requests in flight) even though it never helps a
+/// local, CPU-bound scan. A single `statfs(2)` call answers this: `f_flags
+/// & MNT_LOCAL` is Darwin's own, standard way to tell (confirmed via
+/// Apple's "Testing for a Network Volume" developer note and the
+/// `statfs`/`fstatfs` man page) — the same thing Foundation's own
+/// `URLResourceKey.volumeIsLocalKey` reports under the hood, but `statfs`
+/// needs no resource-value round trip and works equally well against a
+/// path that doesn't exist yet. No entitlement needed either way — this is
+/// a plain BSD syscall, not sandboxed/privileged file access, and ROMForge
+/// isn't sandboxed regardless (no `.entitlements` file in the project).
+///
+/// Deliberately does NOT try to identify the specific protocol (SMB vs NFS
+/// vs AFP) or measure actual link speed/latency — every real NAS protocol
+/// has the same per-file round-trip cost, and no API exposes a reliable
+/// "how fast is this link" number without actually probing it (a real
+/// read, which is its own added complexity/startup cost for little gain).
+/// A plain local/network boolean is the one piece of information that's
+/// both cheap and actually reliable — see this file's own git history for
+/// the research that justified not going further than this.
+enum VolumeLocality {
+    static func isNetworkVolume(at url: URL) -> Bool {
+        var stat = statfs()
+        guard statfs(url.path, &stat) == 0 else { return false }
+        return stat.f_flags & UInt32(MNT_LOCAL) == 0
+    }
+}
 
 /// The `fixPreferences.numberOfThreads` `UserDefaults` key/default,
 /// governing `HashingConcurrency.workerCount(for:)`'s manual override —
@@ -54,9 +90,30 @@ public enum HashingConcurrencySettings {
 /// `HashingConcurrencySettings.numberOfThreadsKey` (Settings → Fix) can
 /// override this automatic policy with a specific worker count.
 enum HashingConcurrency {
-    static func workerCount(for itemCount: Int) -> Int {
+    /// Auto's own fixed profile for a network-mounted ROM folder — jensyleo's
+    /// own request (2026-10-01), applied only when "Number of threads" is
+    /// still "Auto" (`0`) AND `sampleURL` resolves to a network volume
+    /// (`VolumeLocality.isNetworkVolume`). A manual override always wins
+    /// regardless of locality — this only changes what "Auto" itself means.
+    /// `16` rather than something derived from core count: the whole point
+    /// is that these workers mostly sit blocked on network I/O, not
+    /// competing for cores, so core count is the wrong basis entirely here
+    /// — see this file's own research-citing doc comment above
+    /// (`VolumeLocality`) for why no better number can be derived without
+    /// an actual network probe, which isn't worth the added complexity for
+    /// this case.
+    static let networkVolumeAutoWorkerCount = 16
+
+    static func workerCount(for itemCount: Int, sampleURL: URL? = nil) -> Int {
         let manualOverride = HashingConcurrencySettings.currentOverride()
-        let available = manualOverride > 0 ? manualOverride : max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
+        let available: Int
+        if manualOverride > 0 {
+            available = manualOverride
+        } else if let sampleURL, VolumeLocality.isNetworkVolume(at: sampleURL) {
+            available = networkVolumeAutoWorkerCount
+        } else {
+            available = max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
+        }
         return max(1, min(available, itemCount))
     }
 }

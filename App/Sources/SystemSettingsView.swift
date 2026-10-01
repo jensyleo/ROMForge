@@ -463,6 +463,36 @@ private struct SimilarNameFixSettingsSection: View {
     }
 }
 
+/// Per-system opt-in for the region-quality hint badge/Info note — jensyleo's
+/// own request (2026-10-01), starting with NES specifically. Console-only,
+/// same reasoning as `SimilarNameFixSettingsSection` right above: a MAME
+/// system has no concept of regional releases of the same game the way a
+/// console DAT does. Off by default, same as every other per-system opt-in
+/// here, so an existing system never gains new sidebar/table decoration it
+/// never asked for.
+private struct RegionQualityHintsSettingsSection: View {
+    var store: SystemLibraryStore
+    var relevantSystems: [RomSystem]
+
+    var body: some View {
+        Section("Region-quality hints") {
+            Text("Flags a game ROMForge has a hand-curated note about — e.g. \"the Japanese release has extra content/less censorship than the version you have\". A small, deliberately short seed list (see Help) — most games have no note at all, which is expected, not a sign anything's missing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(relevantSystems) { system in
+                Toggle(system.name, isOn: Binding(
+                    get: { system.regionQualityHintsEnabled },
+                    set: { newValue in
+                        var updated = system
+                        updated.regionQualityHintsEnabled = newValue
+                        store.update(updated)
+                    }
+                ))
+            }
+        }
+    }
+}
+
 private struct MAMEMergeSettingsForm: View {
     var store: SystemLibraryStore
     @AppStorage(MAMEMergeModeSettings.mergeModeKey) private var mergeModeRaw = MAMEMergeModeSettings.defaultMergeMode.rawValue
@@ -1359,6 +1389,7 @@ private struct ConsoleSettingsForm: View {
             // one for consoles.
             MaintenanceFolderSettingsSection(store: store, relevantSystems: consoleSystems)
             SimilarNameFixSettingsSection(store: store, relevantSystems: consoleSystems)
+            RegionQualityHintsSettingsSection(store: store, relevantSystems: consoleSystems)
             Section("Database tree branches") {
                 ForEach(consoleFilters) { filter in
                     Toggle(filter.rawValue, isOn: Binding(

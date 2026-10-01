@@ -179,6 +179,20 @@ final class LibraryViewModel {
     /// false, or while `ROMMatcher.match` itself is still the thing
     /// running (that phase already has its own real `matchProgress` text).
     var scanPostMatchPhase: String?
+    /// Set alongside `scanPostMatchPhase` above, from the SAME fixed,
+    /// known-order list of named post-match passes
+    /// (`postMatchPhaseHandler`'s own `Self.postMatchStepOrder`) — jensyleo's
+    /// own report (2026-10-01): the progress bar held completely frozen
+    /// through this whole stretch (only the label moved), on a real NES
+    /// scan where several of these passes genuinely run (orphaned BIOS,
+    /// filename/CRC checks, duplicate sets, Maintenance donors). None of
+    /// these passes are internally per-item throttleable (each is one
+    /// synchronous sweep over the report, not a loop worth reporting
+    /// progress inside), so this doesn't track real sub-progress — it's a
+    /// step counter over a FIXED, known total of named steps, advancing the
+    /// bar one coarse notch per pass rather than holding it dead. `nil`
+    /// whenever `scanPostMatchPhase` is `nil`.
+    var scanPostMatchStepProgress: (completed: Int, total: Int)?
     /// True while a finished scan's (or "Verify ZIP Integrity"'s) report is
     /// being written to `AuditReportDatabase` — jensyleo's own report
     /// (2026-09-17): matching finishing (bar at 100%) didn't mean the
@@ -317,6 +331,7 @@ final class LibraryViewModel {
             matchedZipArchiveURLsCache = nil
             unscopedFixOperationsCache = nil
             unscopedRenameRomsOperationsCache = nil
+            redundantArchiveEntryCountsCache = nil
         }
     }
 
@@ -416,6 +431,29 @@ final class LibraryViewModel {
         let urls = RebuildPlanner.matchedZipArchiveURLs(matchReport: matchReport)
         matchedZipArchiveURLsCache = urls
         return urls
+    }
+
+    /// Real hang found live (2026-10-01), confirmed via `sample`: right-
+    /// clicking the Games table to open its context menu froze the whole
+    /// app (main-thread stack trace: `rightMouseDown` → `menuForEvent` →
+    /// `planRemoveRedundantRomsPreviewCount`/`planRemoveRedundantFilesPreviewCount`
+    /// → `redundantArchiveEntryCounts` → `ZipArchiveScanner.scan`/
+    /// `Archive.init` → a blocking `fopen` on a NAS-mounted file, right on
+    /// the main actor). `redundantArchiveEntryCounts` opens EVERY distinct
+    /// redundant-surplus container in the whole system — real disk/NAS I/O,
+    /// both preview-count functions above called it fresh on EVERY menu
+    /// open, same violation of the "NAS only for scans/Fix" premise already
+    /// fixed elsewhere this session for zip comments. Same fix shape:
+    /// memoized once per `matchReport` (invalidated in its own `didSet`
+    /// above, same as `matchedZipArchiveURLsCache`) instead of recomputed on
+    /// every context-menu build.
+    private var redundantArchiveEntryCountsCache: [URL: Int]?
+
+    private func redundantArchiveEntryCounts(for matchReport: MatchReport) -> [URL: Int] {
+        if let cached = redundantArchiveEntryCountsCache { return cached }
+        let counts = Self.redundantArchiveEntryCounts(matchReport: matchReport)
+        redundantArchiveEntryCountsCache = counts
+        return counts
     }
 
     /// This session's own cached Maintenance-folder donor hashes, keyed by
@@ -1378,6 +1416,7 @@ final class LibraryViewModel {
         isMatching = false
         matchProgress = nil
         scanPostMatchPhase = nil
+        scanPostMatchStepProgress = nil
         folderScanFilesFound = nil
         currentlyScanningFolder = nil
         archiveListingProgress = nil
@@ -1561,8 +1600,28 @@ final class LibraryViewModel {
             // pass over the report, not a per-item loop worth throttling
             // like `ScanProgressCounter` does), so this just names whichever
             // one is currently running instead of leaving the text stale.
+            // Fixed, known order these 6 named passes always run in below
+            // (some conditionally skipped — CHD audit only when the DAT has
+            // disks, Maintenance donors only when something's actually
+            // missing/incorrect) — `scanPostMatchStepProgress` advances to
+            // this step's own index whenever one fires, so a skipped step
+            // just means the next one that DOES fire jumps the bar by more
+            // than one notch, rather than needing to know ahead of time
+            // exactly which ones will run this scan.
+            let postMatchStepOrder = [
+                "Generating the report…", "Auditing CHDs…", "Detecting duplicate sets…",
+                "Checking for redundant archive containers…", "Checking for orphaned BIOS files…",
+                "Checking filename/CRC consistency…", "Checking the Maintenance folder for donors…"
+            ]
             let postMatchPhaseHandler: @Sendable (String?) -> Void = { [weak self] phase in
-                Task { @MainActor in self?.scanPostMatchPhase = phase }
+                Task { @MainActor in
+                    self?.scanPostMatchPhase = phase
+                    if let phase, let index = postMatchStepOrder.firstIndex(of: phase) {
+                        self?.scanPostMatchStepProgress = (completed: index + 1, total: postMatchStepOrder.count)
+                    } else {
+                        self?.scanPostMatchStepProgress = nil
+                    }
+                }
             }
             let datLoadLogHandler: @Sendable (TimeInterval) -> Void = { [weak self] duration in
                 Task { @MainActor in
@@ -1817,6 +1876,23 @@ final class LibraryViewModel {
                 // (found live during today's own duplicate-handling audit).
                 postMatchPhaseHandler("Detecting duplicate sets…")
                 auditReport = try AuditReporter.addingDuplicateSets(to: auditReport, rootFolders: Self.effectiveScanFolders(for: system), recentlyScannedPaths: forcedRescanPaths)
+                // Real hang found live (2026-10-01) — see
+                // `redundantArchiveEntryCountsCache`'s own doc comment: this
+                // same real disk/NAS read (opening every distinct
+                // redundant-surplus container to count its entries) used to
+                // only ever happen lazily, the first time a context menu
+                // asked for it — meaning the FIRST right-click after a scan
+                // could still freeze the UI with a surprise NAS read, even
+                // after that call site itself was memoized. Pre-warming it
+                // HERE, during the scan's own already-visible progress
+                // overlay (where the user already expects to wait), closes
+                // that residual gap — this class is `@MainActor`, same
+                // execution context every other post-match pass above
+                // already runs in, so no extra `Task.detached` is needed;
+                // the result is simply cached as a side effect for every
+                // context-menu preview count to reuse for free afterward.
+                postMatchPhaseHandler("Checking for redundant archive containers…")
+                let redundantCounts = Self.redundantArchiveEntryCounts(matchReport: matchReport)
                 // Flags a BIOS archive nothing currently present actually
                 // needs (e.g. `neogeo.zip` sitting unused once every
                 // Neo-Geo game that used to depend on it was removed) — a
@@ -1947,10 +2023,10 @@ final class LibraryViewModel {
                 // "which entries did this rescan touch" question needs the
                 // corrected path too.
                 let freshlyObservedPaths = Set(freshHashedFiles.map(\.file.url.path)).map { URL(fileURLWithPath: $0) }
-                return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths, failedFolders)
+                return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths, failedFolders, redundantCounts)
             }
             cancelDetachedWork = { detached.cancel() }
-            let (header, report, audit, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths, failedFolders) = try await detached.value
+            let (header, report, audit, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths, failedFolders, redundantCounts) = try await detached.value
             // jensyleo's own follow-up (2026-09-16): "verifica que solo
             // muestre el mensaje al final... pero igual lo que encuentre
             // sí lo escanee. Los recursos que no encontró debería
@@ -2036,6 +2112,12 @@ final class LibraryViewModel {
             // artificially held back by this.
             let displayedAudit = AuditReporter.replacingRescannedEntries(in: auditReport, with: audit, rescannedPaths: effectiveRescannedPaths)
             matchReport = report
+            // See `redundantArchiveEntryCountsCache`'s own doc comment —
+            // pre-warmed during the scan's own detached work above (this
+            // same scan's `matchReport`, not a stale one), assigned AFTER
+            // `matchReport` itself so its own `didSet` (which clears this
+            // cache) doesn't immediately wipe out what was just computed.
+            redundantArchiveEntryCountsCache = redundantCounts
             // jensyleo's own rule (2026-09-10): "el último scan es el que
             // aplica" for Fix purposes — recorded here, at the exact same
             // success point `matchReport` itself is updated, so the two can
@@ -2080,6 +2162,7 @@ final class LibraryViewModel {
             isMatching = false
             matchProgress = nil
             scanPostMatchPhase = nil
+        scanPostMatchStepProgress = nil
             let totalDuration = Date().timeIntervalSince(scanStart)
             // jensyleo's own report (2026-09-11): this completion line read
             // whole-SYSTEM totals even for a scoped "Scan File"/"Scan
@@ -2144,6 +2227,7 @@ final class LibraryViewModel {
             isMatching = false
             matchProgress = nil
             scanPostMatchPhase = nil
+        scanPostMatchStepProgress = nil
             logWarning("Scan cancelled.")
         } catch {
             isLoadingDAT = false
@@ -2158,6 +2242,7 @@ final class LibraryViewModel {
             isMatching = false
             matchProgress = nil
             scanPostMatchPhase = nil
+        scanPostMatchStepProgress = nil
             logError("Failed: \(String(describing: error))")
             // jensyleo's own report (2026-09-16): scanning a ROM folder
             // that lives on a NAS, with the NAS currently unreachable,
@@ -2875,7 +2960,7 @@ final class LibraryViewModel {
         let fileOperations = RebuildPlanner.planRemoveRedundantFiles(matchReport: matchReport)
         let diskOperations = RebuildPlanner.planRemoveRedundantDisks(auditEntries: auditReport?.entries ?? [])
         let wholeArchiveOperations = RebuildPlanner.planRemoveRedundantWholeArchives(
-            matchReport: matchReport, entryCounts: Self.redundantArchiveEntryCounts(matchReport: matchReport)
+            matchReport: matchReport, entryCounts: redundantArchiveEntryCounts(for: matchReport)
         )
         return Self.restrictToScope(fileOperations + diskOperations + wholeArchiveOperations, scopeFolders: scopeFolders).count
     }
@@ -3174,7 +3259,7 @@ final class LibraryViewModel {
         // comment: also read from the context-menu construction closure.
         guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
         let fullyRedundant = RebuildPlanner.fullyRedundantArchiveContainers(
-            matchReport: matchReport, entryCounts: Self.redundantArchiveEntryCounts(matchReport: matchReport)
+            matchReport: matchReport, entryCounts: redundantArchiveEntryCounts(for: matchReport)
         )
         return Self.restrictToScope(
             RebuildPlanner.planRemoveRedundantRoms(matchReport: matchReport, fullyRedundantContainers: fullyRedundant), scopeFolders: scopeFolders

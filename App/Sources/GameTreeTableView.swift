@@ -510,7 +510,24 @@ struct GameTreeTableView: View {
                     // "Ok — Has ZIP comment" had no context-menu action to
                     // strip just its own comment — only the toolbar's own
                     // unscoped, whole-system "Remove Zip Comments…" existed.
-                    let removeZipCommentsCount = viewModel.planRemoveZipCommentsPreviewCount(scopeFolders: fileURLs)
+                    //
+                    // Real NAS violation found live (2026-10-01), jensyleo's
+                    // own premise applied globally: "Solo consultar la NAS
+                    // para escaneos y Fix. Lo demas debe estar en cache."
+                    // This used to call `viewModel.planRemoveZipCommentsPreviewCount`,
+                    // which does a live `ZipCommentReader` disk/NAS read per
+                    // candidate zip — merely opening this context menu paid
+                    // that cost, unscoped, on every selection, unlike every
+                    // sibling preview count above (all pure in-memory
+                    // `matchReport` reads). Now reads only the already-warmed
+                    // `ZipCommentCache` (same cache `infoText`'s own "Has ZIP
+                    // comment" suffix already renders from) — a URL the
+                    // background preload hasn't reached yet just doesn't
+                    // offer this item yet, rather than blocking the menu on
+                    // disk I/O. The real action, once clicked, still goes
+                    // through the normal accurate (and now NAS-legitimate,
+                    // since it's an explicit Fix) `removeZipComments` path.
+                    let removeZipCommentsCount = fileURLs.filter { ZipCommentCache.shared.hasCachedComment(forZipAt: $0) }.count
                     // Cheap, already-computed signal (from the same scan
                     // pass `gameStatusIcon`'s own yellow-override reads) —
                     // NOT a fresh Maintenance-folder read, which would mean

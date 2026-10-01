@@ -180,6 +180,25 @@ struct GeneralSettingsView: View {
                 Text("0 = Auto (leaves one core free for the rest of the Mac — recommended, and already the right number on any Mac without needing to know its exact core count). Hashing is CPU-bound, so a manual value higher than your Mac's own core count rarely hashes anything faster; 100 is offered as a generous hard ceiling, not a target to actually reach for.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // jensyleo's own report (2026-10-01): scanning NES over a
+                // NAS is dramatically slower than locally — confirmed real
+                // and well-documented (Microsoft's own SMB troubleshooting
+                // docs: "a single file operation requires several
+                // roundtrips... thousands of small files will always
+                // transfer far slower than one large file of the same total
+                // size"). The exception to the CPU-bound advice right above:
+                // over a network-mounted ROM folder, each worker spends most
+                // of its time BLOCKED waiting on the NAS, not using CPU — so
+                // a manual value well above your core count (try 16-32)
+                // keeps more requests in flight at once, hiding round-trip
+                // latency instead of competing for cores. This is exactly
+                // why a NES collection (many small files) feels much slower
+                // over NAS than a MAME collection of the same total size
+                // (fewer, larger per-machine zips, so fewer round trips for
+                // the same bytes) — not a bug, an inherent SMB/network cost.
+                Label("Scanning over a NAS specifically: since each worker mostly waits on the network rather than using CPU, try a manual value well above your core count (e.g. 16–32) — it keeps more requests in flight at once and can meaningfully speed up scanning many small files (a NES collection, for example) over network storage, even though it wouldn't help a local scan.", systemImage: "network")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
                 HStack {
                     Button("Reset to Defaults") { numberOfThreads = HashingConcurrencySettings.numberOfThreadsDefault }
                     Spacer()

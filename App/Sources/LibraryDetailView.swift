@@ -256,7 +256,7 @@ private struct DatabaseTreeNode: Identifiable {
 /// entry, so a table with hundreds of rows from a handful of archives only
 /// ever reads each archive's End of Central Directory record once.
 @MainActor
-private final class ZipCommentCache {
+final class ZipCommentCache {
     /// Shared across every system, not just one `LibraryDetailView` —
     /// jensyleo's own report (2026-09-26), same full-session slowness audit
     /// that added `LibraryViewModel.sharedAuditReportCache`: this used to be
@@ -272,11 +272,37 @@ private final class ZipCommentCache {
 
     private var storage: [URL: String?] = [:]
 
+    /// Cache-only — jensyleo's own premise (2026-10-01), applied globally
+    /// and enforced strictly here: "Solo consultar la NAS para escaneos y
+    /// Fix. Lo demas debe estar en cache." Used to have a live
+    /// `ZipCommentReader` fallback for a not-yet-cached URL; removed after
+    /// confirming (full codebase audit, 2026-10-01) every caller of
+    /// `infoText`/`zipCommentHelpText` renders exclusively from
+    /// `cachedGameNodes`/`cachedGameNodesByID`, both of which the two
+    /// preload functions (`triggerCachedGameDataRecompute()`,
+    /// `refreshCachedGameDataAfterAuditReportChangeAsync()`) always warm
+    /// BEFORE reassigning those arrays, atomically within the same
+    /// `MainActor.run` block — no orphan render path exists that could ever
+    /// need this fallback. Returns `nil` (same as "no comment") for a URL
+    /// genuinely not yet cached rather than reading it live — a real row
+    /// should never reach this with a cache miss given the above, so this
+    /// is effectively unreachable in practice, not a behavior change for
+    /// any real screen.
     func comment(forZipAt url: URL) -> String? {
-        if let cached = storage[url] { return cached }
-        let comment = ZipCommentReader.comment(ofZipAt: url)
-        storage[url] = comment
-        return comment
+        storage[url] ?? nil
+    }
+
+    /// Cache-only read, never a live NAS fallback — jensyleo's own premise
+    /// (2026-10-01), applied globally. Used by the Games-table
+    /// context-menu's own preview (`GameTreeTableView`'s "Remove Zip
+    /// Comments…" item), which only needs to decide whether to OFFER the
+    /// action, not compute its exact real count. Returns `false` (not
+    /// "maybe") for a not-yet-cached URL — the item simply doesn't show
+    /// until the background preload catches up, rather than ever blocking
+    /// a menu-open on disk I/O.
+    func hasCachedComment(forZipAt url: URL) -> Bool {
+        guard let cached = storage[url], let comment = cached else { return false }
+        return !comment.isEmpty
     }
 
     /// Real bug found live by jensyleo (2026-09-22): "Remove Zip
@@ -2458,6 +2484,21 @@ struct LibraryDetailView: View {
     /// doc comment for why one shared task/counter pair is correct for
     /// both rather than each needing its own.
     @State private var pendingFolderRecompute: Task<Void, Never>?
+    /// True only during `refreshCachedGameDataAfterAuditReportChangeAsync()`'s
+    /// own zip-comment preload tail — jensyleo's own report (2026-10-01),
+    /// after a real NES scan: that preload used to be a fire-and-forget
+    /// `Task.detached`, started mid-scan (right as `viewModel.auditReport`
+    /// changes) and never awaited by `scan()` itself, so it could keep
+    /// reading zip comments off disk/NAS well AFTER `viewModel.isBusy` went
+    /// false and the progress overlay disappeared — "the bar says done" and
+    /// "the scan is actually done" were two different moments. This flag
+    /// keeps the SAME overlay up through that tail (`.overlay` below now
+    /// checks `viewModel.isBusy || isPreloadingZipComments`), with its own
+    /// weighted slice in `overallScanFraction`. Never true for
+    /// `triggerCachedGameDataRecompute()` (the folder-click path) — that one
+    /// never shows the scan overlay in the first place (clicking a folder
+    /// isn't a "scan"), so there's no overlay for it to keep alive.
+    @State private var isPreloadingZipComments = false
     /// Monotonic counter, bumped once per `triggerCachedGameDataRecompute()`
     /// call — jensyleo's own report (2026-08-03): once the recompute in
     /// `pendingFolderRecompute` genuinely runs on a background thread
@@ -3965,7 +4006,7 @@ struct LibraryDetailView: View {
             // doc comment above (right before `statusSummary`) for why the
             // full-screen blank this used to avoid double-showing with is
             // gone entirely now, not just narrowed.
-            if viewModel.isBusy {
+            if viewModel.isBusy || isPreloadingZipComments {
                 scanProgressOverlay
             }
         }
@@ -5256,11 +5297,16 @@ struct LibraryDetailView: View {
     /// on the combined bar rather than reading as 0%.
     private enum ScanOverallPhase {
         case fixOperations(completed: Int, total: Int)
+        case datLoad(parsed: Int, total: Int)
+        case datLoadIndeterminate
+        case folderWalkIndeterminate
         case listingArchives(read: Int, total: Int)
         case hashing(completed: Int, total: Int)
         case matching(completed: Int, total: Int)
         case matchingIndeterminate
+        case postMatchStep(completed: Int, total: Int)
         case saving(completed: Int, total: Int)
+        case finalPreload(completed: Int, total: Int)
     }
 
     /// One shared, monotonically increasing fraction across the three
@@ -5292,36 +5338,95 @@ struct LibraryDetailView: View {
     /// show DURING one busy/`isBusy` stretch — fixing, listing, hashing,
     /// matching, saving — now shares this SAME one monotonically
     /// increasing fraction, not just the three that already did.
+    ///
+    /// Extended again 2026-10-01, jensyleo's own report after a real NES
+    /// scan: several real phases still ran with the bar completely frozen
+    /// (just the label changing) — DAT loading, the folder walk, and every
+    /// post-match annotation pass (report generation, CHD audit, duplicate
+    /// sets, orphaned BIOS, filename/CRC mismatches, Maintenance donors).
+    /// Worse, the zip-comment background preload
+    /// (`refreshCachedGameDataAfterAuditReportChangeAsync`'s own tail) kept
+    /// reading from disk/NAS well AFTER this bar already reached 100% and
+    /// the overlay disappeared — `isPreloadingZipComments` (see that
+    /// function's own doc comment) now keeps the overlay up through that
+    /// tail too, with its own weighted slice here, so "the bar says done"
+    /// and "the scan is actually done" are the same moment again. Every
+    /// phase below is now part of the same one monotonic fraction, even
+    /// the ones with no real per-item total to report (DAT loading before
+    /// its own byte-count pass, the folder walk) — those just hold at
+    /// their slice's starting point, exactly like `.matchingIndeterminate`
+    /// already did, rather than running on a disconnected 0–100% scale of
+    /// their own.
     private func overallScanFraction(_ phase: ScanOverallPhase) -> Double {
         let fixOperationsWeight = 0.10
+        let datLoadWeight = 0.05
+        let folderWalkWeight = 0.05
         let archiveListingWeight = 0.10
-        let hashingWeight = 0.40
-        let matchingWeight = 0.25
-        let savingWeight = 0.15
+        let hashingWeight = 0.30
+        let matchingWeight = 0.20
+        let postMatchWeight = 0.05
+        let savingWeight = 0.10
+        let finalPreloadWeight = 0.05
+        let afterFixOps = fixOperationsWeight
+        let afterDatLoad = afterFixOps + datLoadWeight
+        let afterFolderWalk = afterDatLoad + folderWalkWeight
+        let afterListing = afterFolderWalk + archiveListingWeight
+        let afterHashing = afterListing + hashingWeight
+        let afterMatching = afterHashing + matchingWeight
+        let afterPostMatch = afterMatching + postMatchWeight
+        let afterSaving = afterPostMatch + savingWeight
         switch phase {
         case .fixOperations(let completed, let total):
             let local = total > 0 ? Double(completed) / Double(total) : 0
             return fixOperationsWeight * local
+        case .datLoad(let parsed, let total):
+            let local = total > 0 ? Double(parsed) / Double(total) : 0
+            return afterFixOps + datLoadWeight * local
+        case .datLoadIndeterminate:
+            return afterFixOps
+        case .folderWalkIndeterminate:
+            return afterDatLoad
         case .listingArchives(let read, let total):
             let local = total > 0 ? Double(read) / Double(total) : 0
-            return fixOperationsWeight + archiveListingWeight * local
+            return afterFolderWalk + archiveListingWeight * local
         case .hashing(let completed, let total):
             let local = total > 0 ? Double(completed) / Double(total) : 0
-            return fixOperationsWeight + archiveListingWeight + hashingWeight * local
+            return afterListing + hashingWeight * local
         case .matching(let completed, let total):
             let local = total > 0 ? Double(completed) / Double(total) : 0
-            return fixOperationsWeight + archiveListingWeight + hashingWeight + matchingWeight * local
+            return afterHashing + matchingWeight * local
         case .matchingIndeterminate:
-            return fixOperationsWeight + archiveListingWeight + hashingWeight
+            return afterHashing
+        case .postMatchStep(let completed, let total):
+            let local = total > 0 ? Double(completed) / Double(total) : 0
+            return afterMatching + postMatchWeight * local
         case .saving(let completed, let total):
             let local = total > 0 ? Double(completed) / Double(total) : 0
-            return fixOperationsWeight + archiveListingWeight + hashingWeight + matchingWeight + savingWeight * local
+            return afterPostMatch + savingWeight * local
+        case .finalPreload(let completed, let total):
+            let local = total > 0 ? Double(completed) / Double(total) : 0
+            return afterSaving + finalPreloadWeight * local
         }
     }
 
     private var scanProgressOverlay: some View {
         VStack(spacing: 8) {
-            if let fixAction = viewModel.fixActionProgress {
+            if isPreloadingZipComments {
+                // Checked first — see `isPreloadingZipComments`'s own doc
+                // comment. This phase genuinely runs AFTER `viewModel
+                // .isBusy` has already gone false (the scan itself is done),
+                // so it's the only phase ever shown while every other
+                // `viewModel.*` busy flag below is already false.
+                // No real per-item total is worth plumbing through for this
+                // one — it's a single bulk read, not a throttleable loop —
+                // so this just holds at the slice's own starting point,
+                // same pattern as `.matchingIndeterminate`/`.folderWalkIndeterminate`.
+                ProgressView(value: overallScanFraction(.finalPreload(completed: 0, total: 1)))
+                    .frame(width: 240)
+                Text("Reading ZIP comments…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let fixAction = viewModel.fixActionProgress {
                 // jensyleo's own report (2026-09-19): running "Remove
                 // Redundant Files…" only ever showed this overlay's generic
                 // scan phases ("Scanning folders…", "Saving results…") —
@@ -5382,7 +5487,7 @@ struct LibraryDetailView: View {
                 // its own message this silently looked like "scanning
                 // folders" for a phase that hadn't started scanning at all.
                 if let dat = viewModel.datLoadProgress, dat.total > 0 {
-                    ProgressView(value: Double(dat.parsed), total: Double(dat.total))
+                    ProgressView(value: overallScanFraction(.datLoad(parsed: dat.parsed, total: dat.total)))
                         .frame(width: 240)
                     Text("Loading DAT… \(dat.parsed) of \(dat.total) machines")
                         .font(.caption)
@@ -5394,7 +5499,7 @@ struct LibraryDetailView: View {
                     // (this app's own ROM folders live there) — that used
                     // to show nothing but a bare, generic spinner with no
                     // indication of what was actually happening.
-                    ProgressView(value: Double(fileRead.read), total: Double(fileRead.total))
+                    ProgressView(value: overallScanFraction(.datLoad(parsed: Int(clamping: fileRead.read), total: Int(clamping: fileRead.total))))
                         .frame(width: 240)
                     Text("Reading DAT file… \(Self.formattedBytes(fileRead.read)) of \(Self.formattedBytes(fileRead.total))")
                         .font(.caption)
@@ -5408,19 +5513,17 @@ struct LibraryDetailView: View {
                     // to read as an unexplained stall for however long it
                     // took.
                     if let counting = viewModel.datCountingProgress, counting.total > 0 {
-                        ProgressView(value: Double(counting.scanned), total: Double(counting.total))
+                        ProgressView(value: overallScanFraction(.datLoad(parsed: counting.scanned, total: counting.total)))
                             .frame(width: 240)
                     } else {
-                        ProgressView()
-                            .progressViewStyle(.linear)
+                        ProgressView(value: overallScanFraction(.datLoadIndeterminate))
                             .frame(width: 240)
                     }
                     Text("Counting machines…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    ProgressView()
-                        .progressViewStyle(.linear)
+                    ProgressView(value: overallScanFraction(.datLoadIndeterminate))
                         .frame(width: 240)
                     Text("Loading DAT…")
                         .font(.caption)
@@ -5463,12 +5566,21 @@ struct LibraryDetailView: View {
                     // then took, looking indistinguishable from a hang.
                     // None of them are internally progress-reportable (each
                     // is one synchronous pass, not a throttleable per-item
-                    // loop), so the bar itself just holds at matching's own
-                    // 100% mark (real progress already made, none of it
-                    // lost) while the label names whichever one is
-                    // currently running.
-                    ProgressView(value: overallScanFraction(.matching(completed: 1, total: 1)))
-                        .frame(width: 240)
+                    // loop) — but jensyleo's own follow-up report
+                    // (2026-10-01) was that the bar itself STILL looked
+                    // frozen through this whole stretch (only the label
+                    // moved), on a real NES collection where several of
+                    // these passes genuinely run. `scanPostMatchStepProgress`
+                    // (set alongside `phase`, see its own doc comment) at
+                    // least advances the bar one fixed step per named pass
+                    // — real, if coarse, motion instead of a dead hold.
+                    if let step = viewModel.scanPostMatchStepProgress {
+                        ProgressView(value: overallScanFraction(.postMatchStep(completed: step.completed, total: step.total)))
+                            .frame(width: 240)
+                    } else {
+                        ProgressView(value: overallScanFraction(.matching(completed: 1, total: 1)))
+                            .frame(width: 240)
+                    }
                     Text(phase)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -5517,8 +5629,17 @@ struct LibraryDetailView: View {
                 // "actively working" exactly like the circular spinner
                 // did, just in the same visual language as the rest of
                 // this overlay instead of standing out as generic.
-                ProgressView()
-                    .progressViewStyle(.linear)
+                //
+                // Switched to a determinate, frozen `overallScanFraction`
+                // value instead of a bare indeterminate animation —
+                // jensyleo's own report (2026-10-01): this phase used to
+                // run on a visually disconnected "animation" rather than
+                // being part of the same unified 0–100% scale at all,
+                // which is exactly the "part of the scan isn't part of the
+                // overall bar" complaint this whole pass fixes. Holds at
+                // `.folderWalkIndeterminate`'s fixed slice start, same
+                // pattern as `.matchingIndeterminate`.
+                ProgressView(value: overallScanFraction(.folderWalkIndeterminate))
                     .frame(width: 240)
                 // jensyleo's own request (2026-08-12): "Scan All Folders"
                 // (and "Scan Folder", which — see `LibraryViewModel.scan`'s
@@ -7145,7 +7266,13 @@ struct LibraryDetailView: View {
                 Button {
                     expandGamesTableVisibleCapIfNeeded()
                 } label: {
-                    Text("Show \(min(Self.treeLoadMoreIncrement, displayedGameNodes.count - gamesTableVisibleCap)) more (\(displayedGameNodes.count - gamesTableVisibleCap) left)")
+                    // jensyleo's own request (2026-10-01): "quiero que
+                    // coloque el numero total de juegos" — complementing
+                    // this row's existing "N left" figure (which only
+                    // counts what's still hidden by pagination) with the
+                    // actual grand total, so it reads at a glance without
+                    // doing the "left + already shown" math yourself.
+                    Text("Show \(min(Self.treeLoadMoreIncrement, displayedGameNodes.count - gamesTableVisibleCap)) more (\(displayedGameNodes.count - gamesTableVisibleCap) left) — \(displayedGameNodes.count) total")
                         .font(.caption)
                         .foregroundStyle(Color.accentColor)
                 }
@@ -7741,23 +7868,62 @@ struct LibraryDetailView: View {
         // exact "append the archive's own ZIP comment" pattern is used —
         // see `infoText(for entry:)`'s own doc comment for why the raw
         // text moved to a tooltip instead of appearing inline here.
-        guard let name = node.actualFileName,
-              let url = node.entries.first(where: { $0.path?.lastPathComponent == name })?.path,
-              url.pathExtension.lowercased() == "zip",
-              let comment = zipCommentCache.comment(forZipAt: url), !comment.isEmpty
-        else { return base }
-        return "\(base) — Has ZIP comment"
+        if let name = node.actualFileName,
+           let url = node.entries.first(where: { $0.path?.lastPathComponent == name })?.path,
+           url.pathExtension.lowercased() == "zip",
+           let comment = zipCommentCache.comment(forZipAt: url), !comment.isEmpty {
+            base += " — Has ZIP comment"
+        }
+        // jensyleo's own request (2026-10-01), per-system opt-in (Settings
+        // → Systems → Consoles → "Region-quality hints") — see
+        // `RegionQualityNote`'s own doc comment for why this is hand-curated
+        // rather than DAT-derived. Two states: this node's own region tag
+        // already matches the curated recommendation (a quiet star, nothing
+        // actionable), or it doesn't (an info glyph naming which region is
+        // actually recommended) — the full reason/source lives in the
+        // tooltip (`zipCommentHelpText(for node:)` below), not inline, same
+        // "keep the column readable" rule the zip-comment suffix already
+        // follows.
+        if let note = regionQualityNote(for: node) {
+            let ownRegion = GameNameTagParser.parse(name: node.name).region
+            base += ownRegion == note.recommendedRegion ? " — ⭐ Recommended version" : " — ℹ️ Better version exists (\(note.recommendedRegion))"
+        }
+        return base
+    }
+
+    /// Per-system opt-in gate for the region-quality hint — see
+    /// `RomSystem.regionQualityHintsEnabled`'s own doc comment. Shared by
+    /// both the `GameNode` (Games panel) and `AuditEntry` (Roms panel)
+    /// call sites below — real gap found live by jensyleo (2026-10-01,
+    /// "revisa de nuevo que no se te escape nada"): the feature only
+    /// covered the Games panel at first, the Roms panel's own `infoText`/
+    /// `zipCommentHelpText(for entry:)` never got the same treatment.
+    private func regionQualityNote(forGameName name: String) -> RegionQualityNote? {
+        guard system.regionQualityHintsEnabled else { return nil }
+        return RegionQualityNotes.note(forGameName: name)
+    }
+
+    private func regionQualityNote(for node: GameNode) -> RegionQualityNote? {
+        regionQualityNote(forGameName: node.name)
     }
 
     /// The `GameNode` counterpart to `zipCommentHelpText(for entry:)` —
     /// same reasoning, same tooltip-on-hover fallback for the real text.
+    /// Also carries the full region-quality reason/source when one applies
+    /// — the inline suffix (`infoText(for node:)` above) only ever shows a
+    /// short glyph, the actual explanation only shows on hover.
     private func zipCommentHelpText(for node: GameNode) -> String {
-        guard let name = node.actualFileName,
-              let url = node.entries.first(where: { $0.path?.lastPathComponent == name })?.path,
-              url.pathExtension.lowercased() == "zip",
-              let comment = zipCommentCache.comment(forZipAt: url), !comment.isEmpty
-        else { return "" }
-        return comment
+        var parts: [String] = []
+        if let name = node.actualFileName,
+           let url = node.entries.first(where: { $0.path?.lastPathComponent == name })?.path,
+           url.pathExtension.lowercased() == "zip",
+           let comment = zipCommentCache.comment(forZipAt: url), !comment.isEmpty {
+            parts.append(comment)
+        }
+        if let note = regionQualityNote(for: node) {
+            parts.append("\(note.recommendedRegion) recommended: \(note.reason) (\(note.sourceURL))")
+        }
+        return parts.joined(separator: "\n")
     }
 
     private func canScanFile(_ node: GameNode) -> Bool {
@@ -8413,11 +8579,18 @@ struct LibraryDetailView: View {
         // straight into the Info column — a plain "has a comment" flag is
         // enough to tell the user one exists; the actual text is still one
         // hover away via `zipCommentHelpText(for:)`'s own tooltip.
-        guard let path = entry.path, path.pathExtension.lowercased() == "zip",
-              let comment = zipCommentCache.comment(forZipAt: path), !comment.isEmpty else {
-            return base
+        if let path = entry.path, path.pathExtension.lowercased() == "zip",
+           let comment = zipCommentCache.comment(forZipAt: path), !comment.isEmpty {
+            base += " — Has ZIP comment"
         }
-        return "\(base) — Has ZIP comment"
+        // See `infoText(for node:)`'s own doc comment — same region-quality
+        // suffix, keyed off this entry's own game name instead of a
+        // `GameNode`'s.
+        if let note = regionQualityNote(forGameName: entry.gameDescription ?? entry.game ?? "") {
+            let ownRegion = GameNameTagParser.parse(name: entry.gameDescription ?? entry.game ?? "").region
+            base += ownRegion == note.recommendedRegion ? " — ⭐ Recommended version" : " — ℹ️ Better version exists (\(note.recommendedRegion))"
+        }
+        return base
     }
 
     /// The real comment text `infoText(for entry:)`/`infoText(for node:)`
@@ -8425,11 +8598,15 @@ struct LibraryDetailView: View {
     /// on whichever cell renders that Info text, so the comment itself is
     /// still fully visible on hover without cluttering the table cell.
     private func zipCommentHelpText(for entry: AuditEntry) -> String {
-        guard let path = entry.path, path.pathExtension.lowercased() == "zip",
-              let comment = zipCommentCache.comment(forZipAt: path), !comment.isEmpty else {
-            return ""
+        var parts: [String] = []
+        if let path = entry.path, path.pathExtension.lowercased() == "zip",
+           let comment = zipCommentCache.comment(forZipAt: path), !comment.isEmpty {
+            parts.append(comment)
         }
-        return comment
+        if let note = regionQualityNote(forGameName: entry.gameDescription ?? entry.game ?? "") {
+            parts.append("\(note.recommendedRegion) recommended: \(note.reason) (\(note.sourceURL))")
+        }
+        return parts.joined(separator: "\n")
     }
 
     private func sizeText(for entry: AuditEntry) -> String {
@@ -8830,6 +9007,19 @@ struct LibraryDetailView: View {
     /// only applies when a burst is genuinely happening.
     private func triggerCachedGameDataRecompute() {
         pendingFolderRecompute?.cancel()
+        // Real bug found live (2026-10-01 audit): `pendingFolderRecompute`
+        // is shared with `refreshCachedGameDataAfterAuditReportChangeAsync()`
+        // — cancelling it here (e.g. a folder click arriving while that
+        // function's own zip-comment preload tail is still in flight) makes
+        // that task exit through one of its own early `Task.isCancelled`
+        // guards, which never got a chance to reset `isPreloadingZipComments`
+        // back to `false` (only its success path did). Left `true` forever,
+        // this keeps the scan overlay stuck on screen (`.overlay`'s gate is
+        // `viewModel.isBusy || isPreloadingZipComments`), blocking all
+        // further interaction. Resetting it here too, since cancelling the
+        // shared task for ANY reason means whatever it was doing — including
+        // that preload — is no longer relevant to what's about to render.
+        isPreloadingZipComments = false
         folderRecomputeGeneration += 1
         let generation = folderRecomputeGeneration
         let now = ContinuousClock.now
@@ -8846,6 +9036,7 @@ struct LibraryDetailView: View {
         let statusFilters = activeStatusFilters
         let hidden1G1RNames = show1G1ROnly ? cachedOneGameOneROMSummary.hiddenWhenFilteredNames : []
         let alreadyCachedZipComments = zipCommentCache.snapshot
+        let isMAMEStyle = system.isMAMEStyle
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
             if isBurst {
                 try? await Task.sleep(for: Self.keyboardNavigationDebounceDelay)
@@ -8935,14 +9126,27 @@ struct LibraryDetailView: View {
             // continuation keeps this same complete, correct preload
             // coverage while never starving the pool other `await`s depend
             // on to make progress at all.
-            let zipURLsToPreload = Set(nodes.flatMap { node in
+            // Real NAS cost found live (2026-10-01), jensyleo's own report
+            // ("solo dar clic en el romfolder... tarda demasiado... viendo
+            // que solo tienen que leer un cache local"): the audit report
+            // itself IS persisted/cached (SQLite), but `ZipCommentCache` is
+            // purely in-memory — every ROM folder not yet visited THIS
+            // session still pays one real NAS round-trip per zip here, no
+            // matter how old/complete the underlying scan is. Zip file
+            // comments are a RomCenter/ClrMamePro/No-Intro-era convention
+            // ("— Has ZIP comment" only ever matters for a console/No-Intro
+            // DAT) — a real MAME set's own archives are never produced with
+            // one, so this entire preload is pure unrewarded NAS cost for
+            // `isMAMEStyle` systems. Skipped entirely for those; unchanged
+            // for console systems, where it's the real, useful feature.
+            let zipURLsToPreload: Set<URL> = isMAMEStyle ? [] : Set(nodes.flatMap { node in
                 node.entries.compactMap { entry -> URL? in
                     guard let path = entry.path, path.pathExtension.lowercased() == "zip" else { return nil }
                     return path
                 }
             }).subtracting(alreadyCachedZipComments.keys)
             let pt7 = Date()
-            let preloadedZipComments = await Self.readZipComments(zipURLsToPreload)
+            let preloadedZipComments = zipURLsToPreload.isEmpty ? [:] : await Self.readZipComments(zipURLsToPreload)
             let pt8 = Date()
             PerfDebugLog.write("""
             triggerCachedGameDataRecompute: entries=\(entries.count) zipURLsToPreload=\(zipURLsToPreload.count) \
@@ -9000,6 +9204,14 @@ struct LibraryDetailView: View {
     /// have it read the stale, pre-update value.
     private func refreshCachedGameDataAfterAuditReportChangeAsync() {
         pendingFolderRecompute?.cancel()
+        // Same reset as `triggerCachedGameDataRecompute()`'s own — this
+        // function can also cancel an EARLIER run of itself (two scans
+        // finishing in quick succession), which would otherwise leave
+        // `isPreloadingZipComments` stuck `true` the same way. Harmless to
+        // reset unconditionally here even when nothing was stuck — this
+        // function sets it back to `true` moments later anyway, for
+        // whichever run actually proceeds.
+        isPreloadingZipComments = false
         folderRecomputeGeneration += 1
         let generation = folderRecomputeGeneration
         let hasAuditReport = viewModel.auditReport != nil
@@ -9013,6 +9225,13 @@ struct LibraryDetailView: View {
         let show1G1R = show1G1ROnly
         let regionOrder = RegionOrderSettings.order(from: regionOrderRaw)
         let alreadyCachedZipComments = zipCommentCache.snapshot
+        let isMAMEStyle = system.isMAMEStyle
+        // See `isPreloadingZipComments`'s own doc comment — keeps the scan
+        // overlay up through this function's own zip-comment preload tail,
+        // which otherwise kept reading disk/NAS well after `viewModel
+        // .isBusy` already went false. Never set for MAME, which skips the
+        // whole preload below anyway.
+        if !isMAMEStyle { isPreloadingZipComments = true }
         pendingFolderRecompute = Task.detached(priority: .userInitiated) {
             // TEMP PERF INSTRUMENTATION (2026-09-17) — remove once the
             // slow-launch bottleneck is identified.
@@ -9054,8 +9273,11 @@ struct LibraryDetailView: View {
             let nodesByID = Self.indexByID(nodes)
             // See `ZipCommentCache.preload(_:)`'s own doc comment — reads
             // every zip comment this newly-scoped node list could ever
-            // show, off the main thread, before any of it renders.
-            let zipURLsToPreload = Set(nodes.flatMap { node in
+            // show, off the main thread, before any of it renders. Skipped
+            // entirely for a MAME-style system — see
+            // `triggerCachedGameDataRecompute()`'s own doc comment on this
+            // same guard for the real NAS cost this avoids.
+            let zipURLsToPreload: Set<URL> = isMAMEStyle ? [] : Set(nodes.flatMap { node in
                 node.entries.compactMap { entry -> URL? in
                     guard let path = entry.path, path.pathExtension.lowercased() == "zip" else { return nil }
                     return path
@@ -9064,7 +9286,7 @@ struct LibraryDetailView: View {
             // See `triggerCachedGameDataRecompute()`'s own doc comment on
             // `readZipComments` for why this runs off Swift concurrency's
             // own cooperative thread pool instead of inline here.
-            let preloadedZipComments = await Self.readZipComments(zipURLsToPreload)
+            let preloadedZipComments = zipURLsToPreload.isEmpty ? [:] : await Self.readZipComments(zipURLsToPreload)
             let t8 = Date()
             let counts = Self.computeScopedStatusCounts(scopedEntries: scoped, gamesByName: Self.gamesByName(preloadedGames))
             let t9 = Date()
@@ -9093,6 +9315,7 @@ struct LibraryDetailView: View {
                 cachedScopedStatusCounts = counts
                 cachedUnknownArchivesCount = unknownCount
                 refreshExpandedDatabaseCategoryCachesAsync(debounced: false)
+                isPreloadingZipComments = false
             }
         }
     }
@@ -10291,6 +10514,7 @@ struct LibraryDetailView: View {
         case .info:
             if showDetailInfo {
                 coloredInfoRow("Info", infoText(for: node), tint: node.aggregateStatus?.tint ?? .secondary)
+                regionQualityDetailRow(for: node)
             }
         case .cloneOf:
             if showDetailGameCloneOf {
@@ -10362,6 +10586,74 @@ struct LibraryDetailView: View {
         }
     }
 
+    /// Full region-quality reason + a clickable source link, shown right
+    /// under "Info" in the bottom-left detail panel — jensyleo's own
+    /// follow-up (2026-10-01) after confirming the inline "⭐ Recommended
+    /// version"/"ℹ️ Better version exists" suffix (`infoText(for node:)`)
+    /// and its hover tooltip both work: the full reason deserves a real,
+    /// always-visible row here too, not just a tooltip you have to find.
+    /// Not a toggleable View Options field (unlike `.family`/`.oneGameOneROM`
+    /// right below) — deliberately simpler, since this only ever shows
+    /// anything at all for the handful of games with a curated note, same
+    /// "nothing to report, don't show the row" rule those two already
+    /// follow, just without a separate on/off switch for something this
+    /// narrow.
+    @ViewBuilder
+    private func regionQualityDetailRow(for node: GameNode) -> some View {
+        regionQualityDetailRow(forGameName: node.name)
+    }
+
+    /// Shared by the Games panel (`for node:`, above) and the Roms panel
+    /// (`romDetailSection`'s own call site) — real gap found live by
+    /// jensyleo (2026-10-01): this row originally only existed for the
+    /// Games panel.
+    @ViewBuilder
+    private func regionQualityDetailRow(forGameName name: String) -> some View {
+        if let note = regionQualityNote(forGameName: name) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 8) {
+                    Text("Region note").bold().frame(width: 100, alignment: .leading)
+                    Text("\(note.recommendedRegion) recommended: \(note.reason)")
+                }
+                HStack(spacing: 8) {
+                    Spacer().frame(width: 100)
+                    if let url = URL(string: note.sourceURL) {
+                        Link(note.sourceURL, destination: url)
+                            .foregroundStyle(.blue)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            // `Link` on macOS doesn't switch the cursor to
+                            // the pointing-hand on its own the way a real
+                            // web link does — jensyleo's own request
+                            // (2026-10-01) to make that affordance explicit.
+                            .onHover { isHovering in
+                                if isHovering {
+                                    NSCursor.pointingHand.push()
+                                } else {
+                                    NSCursor.pop()
+                                }
+                            }
+                    } else {
+                        Text(note.sourceURL)
+                    }
+                    Button {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString("\(note.recommendedRegion) recommended: \(note.reason) (\(note.sourceURL))", forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .imageScale(.medium)
+                            .font(.system(size: 13))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy this note's full text")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
     /// Same field set as the Roms table's own customizable columns
     /// (`romsList`), each showing the exact same content — jensyleo's own
     /// correction (2026-08-27): "la idea es que tenga exactamente los
@@ -10397,6 +10689,7 @@ struct LibraryDetailView: View {
                     Text("Info: ")
                     Text(infoText(for: entry)).foregroundStyle(entry.status.tint)
                 }
+                regionQualityDetailRow(forGameName: entry.gameDescription ?? entry.game ?? "")
             }
             if showDetailRomSize {
                 Text("Size: \(sizeText(for: entry))")

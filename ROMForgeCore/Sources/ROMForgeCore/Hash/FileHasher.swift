@@ -47,7 +47,7 @@ public enum FileHasher {
             }
         }
 
-        let workerCount = HashingConcurrency.workerCount(for: files.count)
+        let workerCount = HashingConcurrency.workerCount(for: files.count, sampleURL: files.first?.url)
         let chunks = chunked(files, into: workerCount)
 
         let chunkResults = try await withThrowingTaskGroup(of: (Int, [HashedFile]).self) { group in

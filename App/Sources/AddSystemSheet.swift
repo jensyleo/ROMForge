@@ -8,7 +8,7 @@ import AppKit
 import ROMForgeCore
 import SwiftUI
 
-/// The fixed choices for "Category" in `AddSystemSheet` — jensyleo's own
+/// The fixed choices for "Platform" in `AddSystemSheet` — jensyleo's own
 /// request (2026-09-23), start of real NES support: this used to be plain
 /// free text (e.g. "Nintendo"), used only for grouping systems in the
 /// sidebar. Now it's ALSO what decides which "generate a DAT for me" button
@@ -18,21 +18,33 @@ import SwiftUI
 /// console/PC system, which is exactly what looked like "this app is
 /// MAME-only" before this change.
 ///
-/// Only `.arcade` is treated as MAME-style — every other case is a plain
+/// Narrowed further to a short, concrete platform list — jensyleo's own
+/// request (2026-10-01): "name" is now purely a free-text label the user
+/// picks for themselves (e.g. "My NES Collection"), while THIS picker is
+/// the one standardized, fixed-vocabulary field that actually decides
+/// behavior (MAME-style vs console-style). Real bug this closes: the
+/// previous list defaulted to `.arcade`, so a system added without
+/// deliberately changing the picker silently became MAME-style and never
+/// showed up under Settings → Systems → Consoles — not a DAT-loading gate,
+/// just a silent miscategorization waiting to happen. The default below is
+/// `.other` instead, so nothing is ever silently mis-added as MAME.
+///
+/// Only `.mame` is treated as MAME-style — every other case is a plain
 /// "point me at a DAT you already have" system, since ROMForge has no known
-/// way to *generate* a DAT for any of them (no console/handheld/PC emulator
-/// has an equivalent to `mame -listxml`; those DATs are downloaded
-/// ready-made from No-Intro/Redump/TOSEC). Deliberately NOT claiming a fake
-/// "Generate from Installed <emulator>…" for any of these — jensyleo's own
-/// concern, having no idea whether even Homebrew has a matching package for
-/// every possible console: better to offer nothing than to promise
-/// something that might not exist.
+/// way to *generate* a DAT for any of them (no console emulator has an
+/// equivalent to `mame -listxml`; those DATs are downloaded ready-made from
+/// No-Intro/Redump/TOSEC). Deliberately NOT claiming a fake "Generate from
+/// Installed <emulator>…" for any of these — jensyleo's own concern, having
+/// no idea whether even Homebrew has a matching package for every possible
+/// console: better to offer nothing than to promise something that might
+/// not exist.
 enum SystemCategoryKind: String, CaseIterable, Identifiable {
-    case arcade = "Arcade"
-    case console = "Console"
-    case handheld = "Handheld"
-    case computer = "PC"
-    case other = "Other"
+    case nes = "NES"
+    case snes = "SNES"
+    case n64 = "N64"
+    case mame = "MAME"
+    case segaGenesis = "SEGA Genesis"
+    case other = "Otros"
     var id: String { rawValue }
 }
 
@@ -41,7 +53,7 @@ struct AddSystemSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
-    @State private var category: SystemCategoryKind = .arcade
+    @State private var category: SystemCategoryKind = .other
     @State private var datURL: URL?
     @State private var romFolderURLs: [URL] = []
     /// jensyleo's own request (2026-08-13): "agregar la opción de sacar el
@@ -61,30 +73,30 @@ struct AddSystemSheet: View {
             Text("Add System")
                 .font(.headline)
 
-            TextField("Name (e.g. Super Nintendo)", text: $name)
+            TextField("Name (e.g. My SNES Collection)", text: $name)
                 .textFieldStyle(.roundedBorder)
 
-            Picker("Category", selection: $category) {
+            Picker("Platform", selection: $category) {
                 ForEach(SystemCategoryKind.allCases) { kind in
                     Text(kind.rawValue).tag(kind)
                 }
             }
             .pickerStyle(.menu)
             .labelsHidden()
-            Text("Decides which of the DAT options below make sense to offer, and groups this system in the sidebar.")
+            Text("Decides which of the DAT options below make sense to offer, and groups this system in the sidebar — \"Name\" is just your own label.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             HStack {
                 Button("Select DAT…") { chooseDAT() }
-                // Only ever offered for Arcade — see `SystemCategoryKind`'s
+                // Only ever offered for MAME — see `SystemCategoryKind`'s
                 // own doc comment for why every other category only ever
                 // gets "Select DAT…". Also requires a real MAME executable
                 // already configured (Settings → Systems → MAME) — nothing
                 // to generate from otherwise. Disabled while a generation is
                 // already running, rather than letting a second click start
                 // a second overlapping `mame -listxml` process.
-                if category == .arcade, MAMELaunchSettings.isInstalled {
+                if category == .mame, MAMELaunchSettings.isInstalled {
                     Button("Generate from Installed MAME…") { generateDATFromMAME() }
                         .disabled(isGeneratingDAT)
                 }
@@ -141,12 +153,12 @@ struct AddSystemSheet: View {
             // it's now one global setting (Settings → Systems → "MAME")
             // that applies to every MAME system uniformly, since it isn't
             // really a per-DAT preference (see `RomSystem`'s own doc
-            // comment for the full reasoning). Only relevant for Arcade —
+            // comment for the full reasoning). Only relevant for MAME —
             // real gap found live by jensyleo (2026-09-23): this used to
             // show unconditionally, even while adding a plain console DAT
             // (e.g. a No-Intro NES set) that has no concept of Rom/Bios
             // merge mode whatsoever.
-            if category == .arcade {
+            if category == .mame {
                 Text("MAME's Rom/Bios merge mode is configured once for every system, in Settings (⌘,) → Systems.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -227,7 +239,7 @@ struct AddSystemSheet: View {
                 category: category.rawValue,
                 datURL: datURL,
                 romFolderURLs: romFolderURLs,
-                isMAMEStyle: category == .arcade
+                isMAMEStyle: category == .mame
             )
         )
         dismiss()

@@ -292,11 +292,12 @@ struct ContentView: View {
     /// `SystemCategoryKind` existed) is shown as-is, unpluralized.
     private static func sidebarSectionTitle(forCategory category: String) -> String {
         switch SystemCategoryKind(rawValue: category) {
-        case .arcade: return "Arcade"
-        case .console: return "Consoles"
-        case .handheld: return "Handhelds"
-        case .computer: return "PC"
-        case .other: return "Other"
+        case .nes: return "NES"
+        case .snes: return "SNES"
+        case .n64: return "N64"
+        case .mame: return "MAME"
+        case .segaGenesis: return "SEGA Genesis"
+        case .other: return "Otros"
         case nil: return category
         }
     }

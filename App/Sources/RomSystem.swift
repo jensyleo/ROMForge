@@ -47,10 +47,12 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
 
     /// Whether this system's DAT parses as a MAME format (`-listxml` or a
     /// Software List) rather than plain Logiqx — decided once, in
-    /// `AddSystemSheet`, by actually parsing the chosen DAT with
-    /// `DATLoader.parse(contentsOf:)` (the same auto-detector the real load
-    /// path uses), not by which button was clicked or the system's name.
-    /// This is what lets the GUI stop mixing MAME-only concepts (Rom/Bios
+    /// `AddSystemSheet.add()`, directly from the "Platform" picker's value
+    /// (`category == .mame`), not by actually parsing the DAT — corrected
+    /// 2026-10-01, a prior version of this comment claimed the DAT itself
+    /// was parsed to decide this; the real code never does that, it trusts
+    /// the explicit platform choice. This is what lets the GUI stop mixing
+    /// MAME-only concepts (Rom/Bios
     /// merge mode, the MAME executable, Samples, and the MAME-only
     /// "Database" tree branches) into a console system's own settings —
     /// jensyleo's own request (2026-09-23), starting with NES: "hay que
@@ -99,6 +101,16 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
     /// forth between 90% (safer, misses more real matches) and 80%
     /// (catches more, slightly more false-match risk). Defaults to 0.80.
     var similarNameFixThreshold: Double
+    /// Whether this system shows a region-quality hint badge (and the Info
+    /// panel note) for a game ROMForge has a hand-curated note about — e.g.
+    /// "the Japanese release has extra content the one you have doesn't".
+    /// jensyleo's own request (2026-10-01): configurable per system,
+    /// starting with NES — off by default like every other per-system
+    /// opt-in here, so an existing system never gains new sidebar/table
+    /// decoration it never asked for. See `RegionQualityNote` (Core) for
+    /// why this can never be auto-derived from a DAT and has to be
+    /// hand-curated.
+    var regionQualityHintsEnabled: Bool
 
     init(
         id: UUID = UUID(),
@@ -110,7 +122,8 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         isMAMEStyle: Bool = true,
         maintenanceFolderEnabled: Bool = false,
         similarNameFixEnabled: Bool = false,
-        similarNameFixThreshold: Double = 0.80
+        similarNameFixThreshold: Double = 0.80,
+        regionQualityHintsEnabled: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -122,11 +135,12 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         self.maintenanceFolderEnabled = maintenanceFolderEnabled
         self.similarNameFixEnabled = similarNameFixEnabled
         self.similarNameFixThreshold = similarNameFixThreshold
+        self.regionQualityHintsEnabled = regionQualityHintsEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, category, datURL, romFolderURLs, hasClones, isMAMEStyle, maintenanceFolderEnabled
-        case similarNameFixEnabled, similarNameFixThreshold
+        case similarNameFixEnabled, similarNameFixThreshold, regionQualityHintsEnabled
         // From earlier, since-abandoned per-system designs — kept only so
         // systems saved by those builds still decode instead of crashing;
         // the values themselves are never read anymore (merge mode is a
@@ -159,6 +173,7 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         maintenanceFolderEnabled = try container.decodeIfPresent(Bool.self, forKey: .maintenanceFolderEnabled) ?? false
         similarNameFixEnabled = try container.decodeIfPresent(Bool.self, forKey: .similarNameFixEnabled) ?? false
         similarNameFixThreshold = try container.decodeIfPresent(Double.self, forKey: .similarNameFixThreshold) ?? 0.80
+        regionQualityHintsEnabled = try container.decodeIfPresent(Bool.self, forKey: .regionQualityHintsEnabled) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -173,5 +188,6 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         try container.encode(maintenanceFolderEnabled, forKey: .maintenanceFolderEnabled)
         try container.encode(similarNameFixEnabled, forKey: .similarNameFixEnabled)
         try container.encode(similarNameFixThreshold, forKey: .similarNameFixThreshold)
+        try container.encode(regionQualityHintsEnabled, forKey: .regionQualityHintsEnabled)
     }
 }

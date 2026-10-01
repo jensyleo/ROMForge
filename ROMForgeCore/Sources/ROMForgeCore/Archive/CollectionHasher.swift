@@ -202,7 +202,7 @@ public enum CollectionHasher {
             }
         }
 
-        let workerCount = HashingConcurrency.workerCount(for: pending.count)
+        let workerCount = HashingConcurrency.workerCount(for: pending.count, sampleURL: pending.first?.archivedFile.archiveURL)
         let chunks = chunked(pending, into: workerCount)
 
         let chunkResults = try await withThrowingTaskGroup(of: (Int, [HashedFile]).self) { group in
@@ -245,7 +245,7 @@ public enum CollectionHasher {
             }
         }
 
-        let workerCount = HashingConcurrency.workerCount(for: pending.count)
+        let workerCount = HashingConcurrency.workerCount(for: pending.count, sampleURL: pending.first?.archivedFile.archiveURL)
         let chunks = chunked(pending, into: workerCount)
 
         let chunkResults = try await withThrowingTaskGroup(of: (Int, [HashedFile]).self) { group in

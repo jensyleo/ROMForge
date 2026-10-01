@@ -105,6 +105,27 @@ final class SystemLibraryStore {
     private func load() {
         guard let data = try? Data(contentsOf: storageURL) else { return }
         systems = (try? JSONDecoder().decode([RomSystem].self, from: data)) ?? []
+        // One-time migration — jensyleo's own report (2026-10-01): a system
+        // saved before `AddSystemSheet`'s category picker existed has
+        // `category == ""`, which the sidebar (`ContentView.groupedSystems`)
+        // buckets into its own separate "SYSTEM" section instead of
+        // grouping it with same-kind systems added since (e.g. a real
+        // "MAME" system landing apart from a newly-added "MAME-TEST" one,
+        // both actually MAME). Backfills the same historically-correct
+        // fallback `isMAMEStyle`'s own default already uses ("every system
+        // ROMForge supported until now WAS a MAME system") — `category`
+        // itself didn't get the same backfill until now. A non-MAME legacy
+        // system (shouldn't exist in practice, `isMAMEStyle` only defaults
+        // `true`) falls back to "Otros" rather than staying empty.
+        var migrated = false
+        systems = systems.map { system in
+            guard system.category.isEmpty else { return system }
+            migrated = true
+            var updated = system
+            updated.category = system.isMAMEStyle ? SystemCategoryKind.mame.rawValue : SystemCategoryKind.other.rawValue
+            return updated
+        }
+        if migrated { save() }
         let lastSelectedID = UserDefaults.standard.string(forKey: Self.lastSelectedSystemIDKey).flatMap(UUID.init(uuidString:))
         selectedSystemID = systems.first { $0.id == lastSelectedID }?.id ?? systems.first?.id
     }

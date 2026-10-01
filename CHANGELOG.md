@@ -2,6 +2,43 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.3.0] - 2026-10-01
+
+### Added
+
+- Region-quality hints: a per-system opt-in (Settings → Systems → Consoles)
+  that flags a game with a hand-curated note that another region's release
+  is meaningfully better/more complete (seeded with Contra, Rush'n Attack,
+  and Bionic Commando) — shown as a badge in the Games/Roms panels, a full
+  note row (with a clickable source link and a copy button) in the detail
+  panel, and a hover tooltip.
+- NES/console Help topic covering: choosing a Headered vs. Headerless DAT,
+  the mapper/audio-expansion-chip naming in the Info panel, why a duplicate
+  archive never blocks Fix, and scanning over a NAS.
+- Scanning a network-mounted (SMB/AFP/NFS) ROM folder with "Number of
+  threads" left on "Auto" now automatically uses a higher worker count,
+  since each worker mostly waits on the network rather than competing for
+  CPU — a manual override still always takes priority.
+- Add System's "Category" picker replaced with a fixed "Platform" list
+  (NES/SNES/N64/MAME/SEGA Genesis/Otros); "Name" is now a free label.
+- The scan progress bar now covers every real phase (DAT loading, the
+  folder walk, every post-match annotation pass, and the zip-comment
+  preload tail) as one unified, monotonically increasing fraction, instead
+  of several phases running with the bar frozen or already hidden.
+
+### Fixed
+
+- **Real hang**: opening a Games-table context menu could freeze the whole
+  app — two preview-count functions did a live, synchronous NAS archive
+  read on every menu open; both are now cache-backed, with the expensive
+  one pre-warmed during the scan itself.
+- A zip-comment preload task's own progress flag could get stuck `true`
+  forever if cancelled mid-flight by a fast folder click, leaving the scan
+  overlay stuck on screen indefinitely.
+- A legacy system (saved before the category picker existed) could be
+  grouped into a separate "SYSTEM" sidebar section instead of alongside
+  same-platform systems added since.
+
 ## [1.2.0] - 2026-09-30
 
 ### Added
