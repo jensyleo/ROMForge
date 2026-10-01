@@ -2,6 +2,24 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.3.1] - 2026-10-01
+
+### Fixed
+
+- Region-quality hints were written in Spanish in the (English) app UI —
+  translated to English.
+- Two of the three region-quality source links pointed at a bare homepage
+  instead of the actual cited comparison report — corrected to the real,
+  verified URLs.
+- Region-quality matching never worked for a game whose Japanese release
+  uses a genuinely different DAT title (e.g. Bionic Commando → "Hitler no
+  Fukkatsu - Top Secret", Rush'n Attack → "Green Beret") — added support
+  for alternate per-game titles.
+- A hovered region-quality source link's pointing-hand cursor could get
+  stuck app-wide if the row disappeared mid-hover (e.g. selecting a
+  different game while hovering) — switched from a cursor push/pop stack
+  to a plain set/restore.
+
 ## [1.3.0] - 2026-10-01
 
 ### Added

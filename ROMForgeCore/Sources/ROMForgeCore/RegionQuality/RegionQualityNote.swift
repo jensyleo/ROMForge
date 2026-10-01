@@ -19,14 +19,27 @@ import Foundation
 /// (extra content, removed censorship, bug fixes), not something a CRC/
 /// hash encodes.
 public struct RegionQualityNote: Codable, Equatable, Sendable {
-    /// The game's common title with every parenthesized region/language/
-    /// revision tag stripped (see `RegionQualityNotes.baseTitle(for:)`) —
-    /// e.g. "Contra", not "Contra (USA)" or "Contra (Japan)". Matching by
-    /// stripped title rather than the DAT's own `cloneOf` parent name is
-    /// deliberate: which region a DAT happens to pick as the "parent" of a
-    /// clone family is an arbitrary DAT-authoring choice, not something a
-    /// hand-curated note should have to track per DAT.
+    /// The game's common (usually Western) title with every parenthesized
+    /// region/language/revision tag stripped (see `RegionQualityNotes
+    /// .baseTitle(for:)`) — e.g. "Contra", not "Contra (USA)"/"Contra
+    /// (Japan)". Matching by stripped title rather than the DAT's own
+    /// `cloneOf` parent name is deliberate: which region a DAT happens to
+    /// pick as the "parent" of a clone family is an arbitrary
+    /// DAT-authoring choice, not something a hand-curated note should have
+    /// to track per DAT.
     public let gameFamily: String
+    /// Real bug found live (2026-10-01, "barrido exhaustivo"): a No-Intro
+    /// DAT doesn't always use the SAME base title across regions — a
+    /// Japan-exclusive original is often cataloged under its own real
+    /// Japanese title, not "<Western title> (Japan)". Two of this file's
+    /// own 3 seed entries hit this exactly: "Bionic Commando" (US/EU) is
+    /// "Hitler no Fukkatsu - Top Secret" (Japan) in the DAT, and "Rush'n
+    /// Attack" (US/EU) is "Green Beret" (Japan) — neither would ever match
+    /// `gameFamily` by stripped-title alone. Every OTHER base title this
+    /// same game is known by in a DAT (stripped the same way as
+    /// `gameFamily`) goes here — empty for the common case where every
+    /// region genuinely shares one title (e.g. "Contra").
+    public let alternateTitles: [String]
     /// The recommended region, exactly as it appears in a game's own name
     /// tag (e.g. "Japan") — compared against `GameNameTagParser.parse(name:)
     /// .region`.
@@ -39,8 +52,9 @@ public struct RegionQualityNote: Codable, Equatable, Sendable {
     public let sourceLicense: String
     public let consultedDate: String
 
-    public init(gameFamily: String, recommendedRegion: String, reason: String, sourceURL: String, sourceLicense: String, consultedDate: String) {
+    public init(gameFamily: String, alternateTitles: [String] = [], recommendedRegion: String, reason: String, sourceURL: String, sourceLicense: String, consultedDate: String) {
         self.gameFamily = gameFamily
+        self.alternateTitles = alternateTitles
         self.recommendedRegion = recommendedRegion
         self.reason = reason
         self.sourceURL = sourceURL
@@ -59,25 +73,27 @@ public enum RegionQualityNotes {
         RegionQualityNote(
             gameFamily: "Contra",
             recommendedRegion: "Japan",
-            reason: "La versión japonesa (Famicom) tiene animaciones de fondo e introducción que la versión USA recortó durante la localización.",
+            reason: "The Japanese (Famicom) release has background animation and an intro sequence that the US version cut during localization.",
             sourceURL: "https://gaminghistory101.com/2012/12/07/the-japanese-always-get-the-better-version-contra-famicom/",
-            sourceLicense: "Resumen propio con atribución — no es texto copiado de la fuente",
+            sourceLicense: "Own summary with attribution — not text copied from the source",
             consultedDate: "2026-09-30"
         ),
         RegionQualityNote(
             gameFamily: "Rush'n Attack",
+            alternateTitles: ["Green Beret"],
             recommendedRegion: "Japan",
-            reason: "El original japonés \"Green Beret\" tiene más vidas, más cargas de arma secundaria y áreas subterráneas extra que la versión NES/Europa.",
-            sourceURL: "https://www.movie-censorship.com",
-            sourceLicense: "Resumen propio con atribución — no es texto copiado de la fuente",
+            reason: "The Japanese original \"Green Beret\" allows up to 9 rounds of any secondary weapon (vs. 3 on NES), lets you continue at the exact spot you died, and has hidden underground areas in stages 2, 4, and 5 that the NES/Europe release lacks.",
+            sourceURL: "https://www.movie-censorship.com/report.php?ID=439710",
+            sourceLicense: "Own summary with attribution — not text copied from the source",
             consultedDate: "2026-09-30"
         ),
         RegionQualityNote(
             gameFamily: "Bionic Commando",
+            alternateTitles: ["Hitler no Fukkatsu - Top Secret"],
             recommendedRegion: "Japan",
-            reason: "La versión japonesa \"Hitler no Fukkatsu - Top Secret\" no está censurada (esvásticas/Hitler); USA y Europa están censuradas por igual.",
-            sourceURL: "https://www.movie-censorship.com",
-            sourceLicense: "Resumen propio con atribución — no es texto copiado de la fuente",
+            reason: "The Japanese release \"Hitler no Fukkatsu - Top Secret\" is uncensored (swastikas, Adolf Hitler as the final boss); the US/European releases replace Hitler with \"Master-D\" and the crooked cross with an eagle symbol, equally censored in both.",
+            sourceURL: "https://www.movie-censorship.com/report.php?ID=3851",
+            sourceLicense: "Own summary with attribution — not text copied from the source",
             consultedDate: "2026-09-30"
         ),
     ]
@@ -102,11 +118,17 @@ public enum RegionQualityNotes {
     }
 
     /// Looks up a curated note for `name` by its stripped base title,
-    /// checking `overrides` (user-provided, Application Support) before
-    /// `seed` — a user's own override always wins on a `gameFamily` match.
+    /// matching either `gameFamily` itself OR any of its own
+    /// `alternateTitles` (see that field's own doc comment for why a
+    /// single title isn't enough) — checking `overrides` (user-provided,
+    /// Application Support) before `seed`, a user's own override always
+    /// winning on a match.
     public static func note(forGameName name: String, overrides: [RegionQualityNote] = []) -> RegionQualityNote? {
-        let family = baseTitle(for: name)
-        if let override = overrides.first(where: { $0.gameFamily == family }) { return override }
-        return seed.first { $0.gameFamily == family }
+        let title = baseTitle(for: name)
+        func matches(_ note: RegionQualityNote) -> Bool {
+            note.gameFamily == title || note.alternateTitles.contains(title)
+        }
+        if let override = overrides.first(where: matches) { return override }
+        return seed.first(where: matches)
     }
 }

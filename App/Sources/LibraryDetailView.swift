@@ -10626,11 +10626,26 @@ struct LibraryDetailView: View {
                             // the pointing-hand on its own the way a real
                             // web link does — jensyleo's own request
                             // (2026-10-01) to make that affordance explicit.
+                            // Real bug found by this session's own audit:
+                            // `.push()`/`.pop()` is a global cursor STACK —
+                            // `onHover`'s `false` callback isn't guaranteed
+                            // to fire if this row disappears mid-hover (this
+                            // whole block is conditional on `note != nil`,
+                            // so selecting a different game while hovering
+                            // the link can remove it without ever un-hovering
+                            // first), which would leave an unbalanced push
+                            // and the pointing-hand cursor stuck app-wide.
+                            // `.set()` has no stack to unbalance — it just
+                            // overwrites the current cursor outright, so a
+                            // missed "un-hover" call only ever risks the
+                            // cursor staying as a hand one frame too long
+                            // (corrected by the very next real mouse move),
+                            // never stuck forever.
                             .onHover { isHovering in
                                 if isHovering {
-                                    NSCursor.pointingHand.push()
+                                    NSCursor.pointingHand.set()
                                 } else {
-                                    NSCursor.pop()
+                                    NSCursor.arrow.set()
                                 }
                             }
                     } else {

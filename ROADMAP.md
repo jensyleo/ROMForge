@@ -1733,3 +1733,46 @@ bug found:
   than left to look finished.
 
 Build green, installed.
+
+## Bugfix log (2026-10-01, continued) — region-quality exhaustive sweep: 2 real bugs
+
+jensyleo asked for one final exhaustive sweep of the region-quality feature
+before closing the NES work for this session. Found and fixed:
+
+1. **UI text written in Spanish inside the English app** — `reason` fields
+   in `RegionQualityNote.swift`'s seed data were written in Spanish (a
+   leftover from drafting the feature in a Spanish-language conversation),
+   but this text renders live in the app's own (English) UI — badges,
+   tooltips, detail-panel rows. Translated all 3 entries to English.
+2. **2 of 3 source URLs were bare domains, not the actual cited pages** —
+   `sourceURL` for Rush'n Attack and Bionic Commando was just
+   `https://www.movie-censorship.com` (the homepage), not the specific
+   comparison report actually referenced. Re-verified via live web search
+   and confirmed via the real page titles returned by Google's own index
+   (a direct browser fetch hit a Cloudflare bot-check page, which is
+   normal for this site and not a sign of a bad URL — the search engine's
+   own cached titles were independent enough confirmation): Rush'n Attack
+   → `movie-censorship.com/report.php?ID=439710` ("Rush 'n Attack (aka
+   Green Beret)... Comparison"), Bionic Commando →
+   `movie-censorship.com/report.php?ID=3851` ("Bionic Commando...
+   Comparison: International Version - Japanese Version"). Reasons also
+   rewritten with more precise detail pulled from this same re-verification
+   pass (exact secondary-weapon round counts, exact censorship
+   substitutions).
+3. **Real matching bug, found during the sweep, not previously caught**:
+   `RegionQualityNotes.note(forGameName:)` matched purely by stripping
+   region/language tags from a name and comparing the remaining base
+   title — but a No-Intro DAT doesn't always use the same base title
+   across regions. Two of the 3 seed entries hit this exactly: "Bionic
+   Commando" (US/EU) is cataloged as "Hitler no Fukkatsu - Top Secret"
+   (Japan) in the DAT, and "Rush'n Attack" (US/EU) is "Green Beret"
+   (Japan) — neither would ever have matched `gameFamily`, meaning the
+   badge/note silently never appeared for either of these two games despite
+   being "confirmed working" earlier against Contra alone (the one seed
+   entry where both regions genuinely share one title). Fixed: new
+   `RegionQualityNote.alternateTitles: [String]` field — `note(forGameName:)`
+   now matches on `gameFamily` OR any `alternateTitles` entry. Contra needs
+   none (empty array); Bionic Commando/Rush'n Attack each list their real
+   Japanese-DAT title.
+
+Build green, installed. This closes the NES work for this session.
