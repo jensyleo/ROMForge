@@ -1327,3 +1327,113 @@ Tracked in `TODO.md` (local, gitignored): automatic DAT/metadata source
 integration (per-source API check), and whether MAME's web-published XML
 can be read as-is by `MAMEListXMLParser` or needs the same transformation
 `mame -listxml` does at the command line.
+
+## Bugfix log (2026-09-30)
+
+- **"Mapper" line now names the audio-expansion chip, when there is one**:
+  the Info panel already decoded the iNES header's mapper number
+  (`INESHeaderDecoder`) but just printed the raw number. New
+  `NESAudioExpansionChip.name(forMapper:)` (`INESHeaderDecoder.swift`) maps
+  mapper 5/19/24/26/85 to their real chip name (MMC5/N163/VRC6/VRC7) —
+  sourced from the NESdev Wiki's own "List of games with expansion audio".
+  Wired into the one line that prints it
+  (`LibraryDetailView.swift:10395`), e.g. "Mapper 24 (Konami VRC6 — audio
+  expansion) · PRG ...". `nil` (most mappers) renders identically to
+  before — no behavior change for the common case.
+- **"Remove Zip Comments" via "Fix All" didn't visually refresh the table —
+  real regression, found live (jensyleo: "lo de remover zip comments puede
+  que si lo haya hecho, pero no lo vi actualizado en la pantalla")**. Root
+  cause: the table's forced-reload mechanism for this specific action
+  (`zipCommentTableReloadToken`, a `.id()` bump — `Table`'s own AppKit
+  diffing can't detect an off-model, cache-only field change like a zip
+  comment) was only ever bumped from the toolbar's
+  `commitRemoveZipComments()` and the context menu's
+  `commitContextMenuRemoveZipComments()`. `commitFixAll()` calls
+  `viewModel.fixAll(...)`, which internally also calls
+  `removeZipComments(...)` as one of its automatic sub-actions — but
+  `commitFixAll()` never bumped the token itself, since it lives in the
+  view model, not the view, and has no access to that `@State`. The
+  underlying fix *did* execute correctly (log line confirmed it; the
+  scoped `ZipCommentCache` invalidation runs automatically off
+  `viewModel.auditReport` changing, so the cache itself wasn't stale
+  either) — only the forced table re-render was missing for this one call
+  path. Fixed: `commitFixAll()` (`LibraryDetailView.swift`) now also
+  increments `zipCommentTableReloadToken` after `fixAll` completes, same
+  as the other two call sites. Confirmed via `grep` that these are the
+  only three call sites of `removeZipComments`/`fixAll` in the app, so no
+  other path has this same gap. Verified build green (Core + Xcode
+  Release), installed to `/Applications`.
+
+## Future idea (not started, not prioritized) — region-quality visual indicator
+
+Idea from a 2026-09-30 conversation about regional ROM differences (e.g.
+Contra's Japanese Famicom release has more background animation/intro than
+the US NES release; Rush'n Attack's Japanese original "Green Beret" has
+more lives/ammo/content than the NES port; Bionic Commando's Japanese
+"Hitler no Fukkatsu - Top Secret" is uncensored vs. the US/EU releases).
+The ask: show a visual signal in the game tree when one region's version of
+a game is known to be meaningfully better/more complete than another
+region's version the user has (or is missing).
+
+**Why this can't be auto-derived from the DAT**: which region is "better"
+is editorial/historical knowledge (extra cutscenes, removed censorship,
+extra lives/content, fixed bugs) — it's not something a CRC/hash/DAT field
+encodes, and no standard DAT ecosystem (No-Intro/TOSEC/Redump) publishes
+this. It would require a hand-curated knowledge base, built up incrementally
+per game family (same parent/clone grouping the DAT already gives us), not
+something that can ship "complete" on day one.
+
+**Proposed design, if picked up later**:
+1. New curated data file (JSON or a SQLite table) — `RegionQualityNotes`:
+   entries keyed by game family (the DAT's own parent/clone grouping),
+   each with `recommendedRegion`, a short `reason`, and a `source` citation.
+2. When a game has region siblings (via existing parent/clone data) and a
+   curated note exists for that family, surface it: a small icon/badge in
+   `GameTreeTableView` next to the game name, different states for "you
+   already have the recommended region" vs. "a better region's version
+   exists and you don't have it."
+3. Surface the full note (reason + source) in the Info panel for the
+   selected file.
+4. Let the user add/override their own notes (an Application Support
+   overlay file) rather than being locked to whatever ships in the repo,
+   since this is opinionated/editorial data that can be wrong or disputed
+   for a given title.
+
+**Explicitly out of scope for this idea**: anything about audio expansion
+chips (VRC6/VRC7/MMC5/N163/FDS) — that's a separate, already-researched
+topic (chip presence can be derived from the iNES header's mapper number,
+see `INESHeaderDecoder`, but doesn't change region-vs-region "better"
+judgments for the titles checked so far, none of which use an expansion
+chip). Status: **documented only, not started, no commitment to build.**
+
+## Bugfix log (2026-09-30, continued) — zip comment display, real root cause
+
+- **The earlier "fixAll didn't bump the reload token" theory was real but
+  incomplete** — jensyleo reported the bug persisted even after that fix
+  ("para eso ches largos... no aprendieras que probar las compresion
+  descompresion no aplica" — correctly calling out that chasing the
+  zip-bomb/compression angle was a distraction from this report). Verified
+  on disk directly (hex-dumped the EOCD record of a real affected file)
+  that `clearZipComment` genuinely works — the comment IS gone from the
+  file. The real root cause: `AuditReport`/`AuditEntry` are `Equatable`
+  structs that hold NOTHING about a zip's own trailing comment (that's
+  `ZipCommentCache`, entirely outside this data model) — so after a
+  comment-only change, `removeZipComments`'s own internal re-`scan()`
+  produces a NEW `AuditReport` that is **value-equal** to the old one.
+  SwiftUI's `.onChange(of: viewModel.auditReport)` — the ONLY place that
+  ever called `zipCommentCache.invalidate(underAnyOf:)` — therefore never
+  fires at all for this specific case, on EVERY call path (toolbar,
+  context menu, and Fix All alike), not just the one this session
+  previously patched. The forced-reload token (`zipCommentTableReloadToken`)
+  was redrawing `Table` correctly the whole time — it just kept redrawing
+  from the same never-invalidated, stale cache.
+  Fixed: all three commit sites
+  (`commitRemoveZipComments`/`commitContextMenuRemoveZipComments`/
+  `commitFixAll`, `LibraryDetailView.swift`) now call
+  `zipCommentCache.invalidate(underAnyOf:)` directly after their own
+  `removeZipComments`/`fixAll` call, instead of relying on the `onChange`
+  side effect that silently doesn't apply to this one action. Verified the
+  file-level fix is real before touching any Swift code (raw EOCD bytes
+  show comment length `0x0000`), then traced the actual display path
+  (`infoText(for:)` → `zipCommentCache.comment(forZipAt:)`) to find the
+  missed invalidation. Built Release, installed to `/Applications`.

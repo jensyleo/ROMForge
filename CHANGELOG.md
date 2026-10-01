@@ -2,6 +2,35 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.2.0] - 2026-09-30
+
+### Added
+
+- NES mapper audio-expansion chip naming: the Info panel's "Mapper" line now names the real
+  chip when the mapper implies one (Konami VRC6/VRC7, Nintendo MMC5, Namco 163), instead of just
+  the raw mapper number.
+- A duplicate archive's name/rom-entry mismatches can now always be fixed, never blocked just
+  because the archive is a duplicate — applies to both single-rom name-trust matches and general
+  hash-based matches (MAME included).
+- Renamed the "Trust file names for console/computer systems" setting to "Ignore CRC/hash
+  verification for console/computer systems" — more literal about its actual effect.
+
+### Fixed
+
+- **Security**: `RebuildExecutor`'s two zip-extraction code paths (used during Rebuild/Repair file
+  writes) had no zip-bomb guard, unlike the hashing path (`ZipArchiveHasher`/
+  `SevenZipArchiveHasher`) — a crafted archive could decompress unbounded data during an actual
+  file write. Now aborts past 10x the entry's declared size, same as the hashing path.
+- "Remove Zip Comments" (toolbar, context menu, and "Fix All" alike) could report success in the
+  log while the table and Info panel kept showing "Has ZIP comment" — root cause: the comment
+  lives entirely outside `AuditEntry`/`AuditReport`'s own `Equatable` data, so the one place that
+  ever invalidated the display cache (`onChange(of: auditReport)`) never actually fired for a
+  comment-only change. Fixed by invalidating the cache directly at each of the three call sites
+  instead of relying on that side effect.
+- A self-referential "Possible match" suggestion (an already-correctly-named archive suggesting
+  a 100% match against its own name) no longer appears — it was never actionable and just
+  contradicted Fix's own "Nothing to fix" result for the same file.
+
 ## [1.1.0] - 2026-09-30
 
 ### Added — DAT metadata enrichment

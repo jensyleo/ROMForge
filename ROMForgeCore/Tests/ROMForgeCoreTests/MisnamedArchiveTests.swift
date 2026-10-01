@@ -193,12 +193,27 @@ struct MisnamedArchiveTests {
         )
     }
 
-    @Test("when the game ALSO owns a correctly-named archive, the extra copy stays a duplicate rather than becoming 'misnamed'")
-    func aSpareCopyStaysADuplicate() throws {
-        // jensyleo's own distinction: `1949.zip` is only "1943 under the
-        // wrong name" while no real `1943.zip` exists. Once one does, the
-        // renamed one is genuinely a spare copy — and mislabelling it as a
-        // rename-to-fix would tell the user to overwrite their good set.
+    @Test("when the game ALSO owns a correctly-named archive, the extra copy is STILL offered as 'misnamed' (fixable), on top of also reading as a duplicate")
+    func aSpareCopyIsStillFixableAsWellAsADuplicate() throws {
+        // jensyleo's own original distinction (2026-08-xx): `1949.zip` is
+        // only "1943 under the wrong name" while no real `1943.zip` exists;
+        // once one does, mislabelling the spare as a rename-to-fix would
+        // tell the user to overwrite their good set — so it used to be
+        // excluded from `misnamedArchiveForGameName` entirely.
+        //
+        // jensyleo's own explicit REVERSAL of that call (2026-09-30):
+        // "Asi sea duplicado, los fix de nombre y cualquier otro deben
+        // aplicar sin problema, nunca. Esto tambien aplica para MAME" — a
+        // genuinely misnamed SPARE copy is exactly as fixable as a
+        // misnamed PRIMARY one; the "overwrite the good set" risk this
+        // test originally guarded against never actually existed once
+        // `RebuildPlanner.planRepair`'s own shared `occupiedPaths`
+        // collision guard is keyed by full PATH, not bare filename — this
+        // rename only ever targets `1949.zip`'s own path inside "OTHER",
+        // never colliding with the real `1943.zip` sitting in "CPS1".
+        // Being already satisfied elsewhere must never again mean
+        // un-fixable here; only a genuine path collision should ever
+        // block it (see `RebuildPlannerTests` for that collision case).
         let gameRoms = roms(38, prefix: "bm")
         let game = DATGame(name: "1943", description: "1943: The Battle of Midway (Euro)", cloneOf: nil, romOf: nil, roms: gameRoms)
         let dat = DATFile(header: DATHeader(name: "t", description: "t", version: "1", author: "t"), games: [game])
@@ -210,8 +225,8 @@ struct MisnamedArchiveTests {
         #expect(report.games.first!.matches.allSatisfy { if case .correct = $0.status { true } else { false } })
         #expect(report.surplusFiles.count == 38)
         #expect(
-            report.surplusFiles.allSatisfy { $0.misnamedArchiveForGameName == nil },
-            "with a real 1943.zip present, the renamed copy is a duplicate, not a rename to fix"
+            report.surplusFiles.allSatisfy { $0.misnamedArchiveForGameName == "1943" },
+            "even with a real 1943.zip already present, the renamed spare copy is still offered as a fixable rename"
         )
         #expect(report.surplusFiles.allSatisfy { $0.requiredByGameDescription == "1943: The Battle of Midway (Euro)" })
     }

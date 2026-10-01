@@ -218,21 +218,7 @@ public enum RebuildPlanner {
         // `pathKey` below is the single place every comparison in this
         // function goes through, so this can't quietly regress case by
         // case as new rename loops are added.
-        var occupiedPaths: Set<String> = []
-        for gameResult in matchReport.games {
-            for romMatch in gameResult.matches {
-                switch romMatch.status {
-                case .correct(let file, _), .misnamed(let file, _), .foundElsewhere(let file),
-                     .hashMismatch(let file), .nodump(let file):
-                    occupiedPaths.insert(pathKey(file.file.url))
-                case .missing:
-                    break
-                }
-            }
-        }
-        for surplusFile in matchReport.surplusFiles {
-            occupiedPaths.insert(pathKey(surplusFile.file.file.url))
-        }
+        var occupiedPaths = allOccupiedPaths(in: matchReport)
         for gameResult in matchReport.games {
             for romMatch in gameResult.matches {
                 guard case .misnamed(let hashedFile, _) = romMatch.status else { continue }
@@ -439,6 +425,87 @@ public enum RebuildPlanner {
         url.standardizedFileURL.path.lowercased()
     }
 
+    /// Every real, on-disk path this scan already knows about, case-folded
+    /// through `pathKey` — factored out of `planRepair`'s own top so
+    /// `planSingleSimilarNameRename` below can reuse the identical
+    /// collision picture instead of quietly drifting from it over time.
+    private static func allOccupiedPaths(in matchReport: MatchReport) -> Set<String> {
+        var occupiedPaths: Set<String> = []
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                switch romMatch.status {
+                case .correct(let file, _), .misnamed(let file, _), .foundElsewhere(let file),
+                     .hashMismatch(let file), .nodump(let file):
+                    occupiedPaths.insert(pathKey(file.file.url))
+                case .missing:
+                    break
+                }
+            }
+        }
+        for surplusFile in matchReport.surplusFiles {
+            occupiedPaths.insert(pathKey(surplusFile.file.file.url))
+        }
+        return occupiedPaths
+    }
+
+    /// The result of `planSingleSimilarNameRename` — distinguishes exactly
+    /// why no rename came back, since "the app silently did nothing" was
+    /// itself the confusing behavior jensyleo's own report (2026-09-30)
+    /// flagged when a single row's own similarity suggestion had no way to
+    /// be confirmed at all below `minimumSimilarNameConfidenceToAct`.
+    public enum SingleSimilarNameRenameResult: Sendable {
+        /// A real rename to actually run, if the caller confirms it.
+        case rename(RebuildOperation)
+        /// This file has no `similarNameSuggestion` at all right now.
+        case noSuggestion
+        /// The suggested name is already this file's own current name —
+        /// nothing to rename (see `planRepair`'s own self-match guard).
+        case alreadyCorrect
+        /// The suggested destination is already a DIFFERENT real file on
+        /// disk — renaming here would collide for real; `URL` is that
+        /// existing file, so the caller can explain exactly what's in the
+        /// way.
+        case collidesWithExistingFile(URL)
+    }
+
+    /// jensyleo's own request (2026-09-30): "Battle City (J).zip" scored
+    /// only 57% against the real "BattleCity (Japan) (En)" (a genuinely
+    /// correct match — the DAT itself spells the game with no space, not a
+    /// wrong-game guess), below `minimumSimilarNameConfidenceToAct`'s fixed
+    /// 90% floor `planRepair`'s own BATCH "Fix Mismatched Files" must never
+    /// go below (see that floor's own doc comment for the real wrong-game
+    /// cases it exists to block). That floor protects an unattended,
+    /// whole-folder batch — it was never meant to also block a user who
+    /// right-clicked this ONE specific file, already read its own
+    /// suggested name and confidence number, and wants to confirm it
+    /// themselves. This is that per-file path: honors the system's own
+    /// configured display threshold (already the gate on whether a
+    /// suggestion exists at all — see `ROMMatcher.annotateSimilarNameSurplusFiles`),
+    /// with NO additional confidence floor of its own — only the same
+    /// data-integrity guards `planRepair` itself never skips (never
+    /// renaming onto a name that's already correct, never colliding with a
+    /// different real file, case-insensitively).
+    public static func planSingleSimilarNameRename(
+        matchReport: MatchReport, fileURL: URL, filesCasePolicy: FileCasePolicy = .datafileCase
+    ) -> SingleSimilarNameRenameResult {
+        guard let surplusFile = matchReport.surplusFiles.first(where: { $0.file.file.url == fileURL }),
+              let suggestion = surplusFile.similarNameSuggestion
+        else { return .noSuggestion }
+        let currentURL = surplusFile.file.file.url
+        let ext = currentURL.pathExtension
+        let declaredName = ext.isEmpty ? suggestion.suggestedName : "\(suggestion.suggestedName).\(ext)"
+        let expectedName = mismatchFixName(declaredName: declaredName, policy: filesCasePolicy)
+        guard currentURL.lastPathComponent != declaredName, currentURL.lastPathComponent != expectedName else {
+            return .alreadyCorrect
+        }
+        let destination = currentURL.deletingLastPathComponent().appendingPathComponent(expectedName)
+        let occupiedPaths = allOccupiedPaths(in: matchReport)
+        guard pathKey(destination) == pathKey(currentURL) || !occupiedPaths.contains(pathKey(destination)) else {
+            return .collidesWithExistingFile(destination)
+        }
+        return .rename(.rename(from: currentURL, to: destination))
+    }
+
     /// The fixed floor a `similarNameSuggestion` must clear before
     /// `planRepair` ever turns it into a real `.rename` — see that loop's
     /// own call-site doc comment for why this is deliberately independent
@@ -482,6 +549,57 @@ public enum RebuildPlanner {
                 ))
                 operations.append(.removeEntryFromZip(archive: zipURL, entryName: currentEntryName))
             }
+        }
+        // jensyleo's own explicit rule (2026-09-30): "Asi sea duplicado,
+        // los fix de nombre y cualquier otro deben aplicar sin problema...
+        // Esto tambien aplica para MAME" — a recognized duplicate
+        // (`SurplusFile.requiredByGameMachineName` set, whether via a real
+        // hash match — MAME and console alike, always worked this way —
+        // or `ROMMatcher`'s console-only single-rom name-trust fallback)
+        // is still a KNOWN file: we already know exactly which game it
+        // duplicates, so its entry's own name is just as fixable as the
+        // primary copy's. `SurplusFile`s are never part of
+        // `matchReport.games`' own `RomMatch`es the loop above walks, so
+        // without this they had no entry-rename path at all — being
+        // "not needed here" must never mean "un-fixable here" too.
+        // Real live case that first found this gap: "BattleCity (Japan)
+        // (En).zip" existed in two folders, identical content, neither
+        // hash-verified — one became this game's real `.correct` claim
+        // (via the fallback above), the other correctly tagged
+        // "Duplicated archive, not needed here".
+        for surplusFile in matchReport.surplusFiles {
+            guard let machineName = surplusFile.requiredByGameMachineName,
+                  let owningGame = matchReport.games.first(where: { $0.game.name == machineName })?.game
+            else { continue }
+            let file = surplusFile.file.file
+            guard isZipEntry(file) else { continue }
+            // The general (MAME-included) case: this duplicate's own
+            // content genuinely hash-matches ONE specific rom of the
+            // owning game — exactly which one is never ambiguous,
+            // regardless of how many roms the game declares in total.
+            // Falls back to "the game's only rom" only when there's no
+            // hash match at all to go by — the shape the console-only
+            // single-rom name-trust fallback produces (see its own doc
+            // comment): a genuine duplicate whose content was never a
+            // recognized hash in the first place, so hash lookup here can
+            // never find it either, but a single-rom game still leaves no
+            // real ambiguity about which rom its one entry means.
+            let fileHashes = [surplusFile.file.hash.crc32, surplusFile.file.hash.md5, surplusFile.file.hash.sha1].compactMap { $0?.lowercased() }
+            let rom = owningGame.roms.first { rom in
+                let romHashes = [rom.crc, rom.md5, rom.sha1].compactMap { $0?.lowercased() }
+                return !romHashes.isEmpty && !Set(romHashes).isDisjoint(with: fileHashes)
+            } ?? (owningGame.roms.count == 1 ? owningGame.roms.first : nil)
+            guard let rom else { continue }
+            let currentEntryName = file.effectiveEntryPath
+            let expectedEntryName = mismatchFixName(declaredName: rom.name, policy: romsCasePolicy)
+            guard currentEntryName != expectedEntryName else { continue }
+            let zipURL = file.url
+            operations.append(.addEntryToZip(
+                targetArchive: zipURL,
+                entryName: expectedEntryName,
+                source: ArchiveEntrySource(source: zipURL, entryName: expectedEntryName, sourceArchiveEntryName: currentEntryName)
+            ))
+            operations.append(.removeEntryFromZip(archive: zipURL, entryName: currentEntryName))
         }
         return operations
     }

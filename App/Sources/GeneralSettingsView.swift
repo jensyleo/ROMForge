@@ -108,8 +108,17 @@ struct GeneralSettingsView: View {
             // each standing alone as its own short, unambiguous sentence.
             // See "Settings — General & View Options" in the in-app Help
             // for the same two facts spelled out in full.
-            Section("Matching") {
-                Toggle("Trust file names for console/computer systems (skip CRC/hash verification)", isOn: $nameOnlyMatchingForConsoles)
+            // jensyleo's own report (2026-09-30): plain "Matching" read as
+            // vague for a section holding exactly one toggle — renamed to
+            // "Trust File Names" to match the toggle's own opening words.
+            // Same day, later: jensyleo asked for "Ignore CRC/Hash
+            // Verification" instead — more literal about what the toggle
+            // actually does to the match outcome, less about the mechanism
+            // (file names) than the effect (hash mismatches stop mattering).
+            // Internal plumbing (`nameOnlyMatching`) is unaffected — this is
+            // user-facing label text only.
+            Section("Ignore CRC/Hash Verification") {
+                Toggle("Ignore CRC/hash verification for console/computer systems", isOn: $nameOnlyMatchingForConsoles)
                 Label("Never applies to Arcade/MAME systems — those always verify CRC/hash, regardless of this toggle.", systemImage: "checkmark.shield")
                     .font(.caption)
                     .foregroundStyle(.secondary)

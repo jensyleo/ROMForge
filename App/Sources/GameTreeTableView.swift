@@ -189,11 +189,38 @@ struct GameTreeTableView: View {
     // reads) should offer its own repair right here, not only from the
     // toolbar's whole-system "Fix" dropdown.
     let startRepairFromMaintenanceFolder: ([URL]) -> Void
+    // jensyleo's own report (2026-09-30): "permite que el scroll avance
+    // siempre con el mouse... en este momento no lo hace cuando uno está en
+    // el límite de lo que yo llamo tu buffer" — `visibleGameNodes` is
+    // capped (`gamesTableVisibleCap` in `LibraryDetailView`) with a manual
+    // "Show N more" link rendered BELOW this whole `Table`, outside its own
+    // internal scroll view. A `Table`'s scroll view consumes every wheel
+    // event itself and never hands leftover scroll to whatever's below it,
+    // so reaching the bottom of the current page just stops scrolling dead
+    // — the user has to move the mouse off the table and click the link.
+    // Called (from the always-visible, never-hidden "status" column below)
+    // the moment the LAST currently-visible row actually appears on
+    // screen, so `LibraryDetailView` can raise the cap and the next batch
+    // of rows is already there by the time native scrolling would have
+    // reached them — scrolling itself never has to stop or hand off to
+    // anything.
+    let onLastVisibleRowAppeared: () -> Void
+    // jensyleo's own request (2026-09-30) — see the context-menu button's
+    // own doc comment for the real "Battle City (J).zip" (57%) case this
+    // exists for. `SimilarNameSuggestion` passed straight through (not
+    // re-fetched inside `LibraryDetailView`) so the confirmation dialog can
+    // show the exact name/confidence the user just saw in this menu,
+    // rather than risking a second, slightly-later read of a live
+    // `matchReport` disagreeing with what was actually clicked.
+    let renameToSimilarNameSuggestion: (URL, SimilarNameSuggestion) -> Void
 
     var body: some View {
         Table(visibleGameNodes, selection: $selection, columnCustomization: $columnCustomization) {
             TableColumn("") { node in
                 gameStatusIcon(node)
+                    .onAppear {
+                        if node.id == visibleGameNodes.last?.id { onLastVisibleRowAppeared() }
+                    }
             }
             .width(20)
             .customizationID("status")
@@ -504,6 +531,34 @@ struct GameTreeTableView: View {
                         } label: {
                             Label(
                                 fileURLs.count == 1 ? "Fix Mismatched File" : "Fix \(fileURLs.count) Mismatched Files",
+                                systemImage: "wrench.and.screwdriver"
+                            )
+                        }
+                        .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
+                    }
+                    // jensyleo's own request (2026-09-30): "Battle City
+                    // (J).zip" scored only 57% against the genuinely
+                    // correct "BattleCity (Japan) (En)" — below the fixed
+                    // 90% floor `fixMismatchedFileCount` above (backed by
+                    // `RebuildPlanner.planRepair`) must never go below, so
+                    // this row had NO way to confirm a rename at all, even
+                    // though jensyleo had deliberately configured this
+                    // system's own similarity threshold down to 50%
+                    // specifically to surface suggestions like this one.
+                    // Only shown for a SINGLE selected file (a batch rename
+                    // by hand defeats the point of reviewing each one) that
+                    // `fixMismatchedFileCount` didn't already offer to fix
+                    // (avoids two overlapping "rename this" menu items for
+                    // the same file once it clears 90% and both would
+                    // apply) and that genuinely still has a live suggestion
+                    // right now.
+                    if fixMismatchedFileCount == 0, fileURLs.count == 1,
+                       let suggestion = viewModel.similarNameSuggestion(forFileAt: fileURLs[0]) {
+                        Button {
+                            renameToSimilarNameSuggestion(fileURLs[0], suggestion)
+                        } label: {
+                            Label(
+                                "Rename to \"\(suggestion.suggestedName)\" (\(Int((suggestion.confidence * 100).rounded()))%)…",
                                 systemImage: "wrench.and.screwdriver"
                             )
                         }

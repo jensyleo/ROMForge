@@ -11,6 +11,23 @@ import ZIPFoundation
 /// overwrites an existing destination — a collision is always an error, not
 /// a silent clobber.
 public enum RebuildExecutor {
+    /// Same zip-bomb guard as `ZipArchiveHasher`'s own
+    /// `maxOverDeclaredSizeFactor`/`overageLimit` — the central directory's
+    /// declared `uncompressedSize` is attacker-controlled, so extraction
+    /// here (a real file write during rebuild/repair, not just hashing) must
+    /// abort once the actual decompressed byte count runs far past what the
+    /// entry claims, rather than trusting it as a hard cap (real ROM/CD
+    /// dumps can legitimately be many GB). Found during a 2026-09-30 code
+    /// audit: the hashing path (`ZipArchiveHasher`/`SevenZipArchiveHasher`)
+    /// already had this guard, but these two extraction call sites didn't —
+    /// a crafted zip could still be decompressed unbounded here even though
+    /// it would have been rejected as a suspected bomb if it were ever
+    /// hashed first.
+    private static func zipBombOverageLimit(for declaredSize: UInt64) -> UInt64 {
+        max(1_048_576, declaredSize * 10)
+    }
+
+
     public static func execute(_ operations: [RebuildOperation], fileManager: FileManager = .default) throws {
         for operation in operations {
             try perform(operation, fileManager: fileManager)
@@ -292,8 +309,25 @@ public enum RebuildExecutor {
         guard let entry = archive[entryName] else {
             throw RebuildError.sourceMissing(archiveURL.appendingPathComponent(entryName))
         }
+        let limit = zipBombOverageLimit(for: entry.uncompressedSize)
+        fileManager.createFile(atPath: destination.path, contents: nil)
+        guard let handle = FileHandle(forWritingAtPath: destination.path) else {
+            throw RebuildError.underlying("Could not open \(destination.path) for writing.")
+        }
+        defer { try? handle.close() }
+        var extracted: UInt64 = 0
         do {
-            _ = try archive.extract(entry, to: destination)
+            _ = try archive.extract(entry) { chunk in
+                extracted += UInt64(chunk.count)
+                guard extracted <= limit else {
+                    throw RebuildError.underlying("Refusing to extract \(entryName): decompressed size exceeds \(limit) bytes, more than 10x its declared size — suspected zip bomb.")
+                }
+                handle.write(chunk)
+            }
+        } catch let error as RebuildError {
+            try? handle.close()
+            try? fileManager.removeItem(at: destination)
+            throw error
         } catch {
             throw RebuildError.underlying(error.localizedDescription)
         }
@@ -316,9 +350,17 @@ public enum RebuildExecutor {
         guard let zipEntry = archive[innerEntryName] else {
             throw RebuildError.sourceMissing(entry.source.appendingPathComponent(innerEntryName))
         }
+        let limit = zipBombOverageLimit(for: zipEntry.uncompressedSize)
         var data = Data()
         do {
-            _ = try archive.extract(zipEntry) { data.append($0) }
+            _ = try archive.extract(zipEntry) { chunk in
+                guard UInt64(data.count + chunk.count) <= limit else {
+                    throw RebuildError.underlying("Refusing to read \(innerEntryName): decompressed size exceeds \(limit) bytes, more than 10x its declared size — suspected zip bomb.")
+                }
+                data.append(chunk)
+            }
+        } catch let error as RebuildError {
+            throw error
         } catch {
             throw RebuildError.underlying(error.localizedDescription)
         }

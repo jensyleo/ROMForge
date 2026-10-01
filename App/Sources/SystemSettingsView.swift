@@ -423,7 +423,7 @@ private struct SimilarNameFixSettingsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !nameOnlyMatchingEnabled {
-                Text("Requires \"Trust file names for console/computer systems\" (General settings) to be on — a name-resemblance guess only makes sense alongside that same toggle. Every row below is disabled until it's on.")
+                Text("Requires \"Ignore CRC/hash verification for console/computer systems\" (General settings) to be on — a name-resemblance guess only makes sense alongside that same toggle. Every row below is disabled until it's on.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

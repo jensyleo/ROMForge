@@ -912,4 +912,83 @@ struct RebuildPlannerTests {
         }))
         #expect(plan.count == 2)
     }
+
+    @Test("planSingleSimilarNameRename honors a suggestion planRepair's own 90% floor would reject — real case found live (2026-09-30): \"Battle City (J).zip\" scored only 57% against the genuinely correct \"BattleCity (Japan) (En)\" (the DAT itself spells the game with no space, not a wrong-game guess), and jensyleo's own explicit push-back (\"57 es mas de 50 que es el piso\") confirmed a per-file, user-confirmed path must honor the system's own configured threshold, not planRepair's separate batch-safety floor")
+    func planSingleSimilarNameRenameHonorsLowConfidenceBelowTheBatchFloor() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let surplusURL = folder.appendingPathComponent("Battle City (J).zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: surplusURL, name: "Battle City (J).nes", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            similarNameSuggestion: SimilarNameSuggestion(suggestedName: "BattleCity (Japan) (En)", confidence: 0.57)
+        )
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusFile])
+
+        let result = RebuildPlanner.planSingleSimilarNameRename(matchReport: matchReport, fileURL: surplusURL)
+
+        #expect(result.isEqualTo(.rename(.rename(from: surplusURL, to: folder.appendingPathComponent("BattleCity (Japan) (En).zip")))))
+    }
+
+    @Test("planSingleSimilarNameRename still refuses to collide with a DIFFERENT real, on-disk file — the same data-integrity guard planRepair itself never skips, independent of any confidence floor")
+    func planSingleSimilarNameRenameStillRefusesRealCollision() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let correctArchiveURL = folder.appendingPathComponent("Bases Loaded 3 (USA).zip")
+        let rom = DATRom(name: "Bases Loaded 3 (USA).nes", size: 1, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let game = DATGame(name: "Bases Loaded 3 (USA)", description: "Bases Loaded 3 (USA)", cloneOf: nil, romOf: nil, roms: [rom])
+        let correctHashedFile = HashedFile(
+            file: ScannedFile(url: correctArchiveURL, name: "Bases Loaded 3 (USA).nes", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let gameResult = GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(correctHashedFile))])
+        let surplusURL = folder.appendingPathComponent("Bases Loaded 3 (U).zip")
+        let surplusFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: surplusURL, name: "Bases Loaded 3 (U).nes", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "1", sha1: "1")),
+            similarNameSuggestion: SimilarNameSuggestion(suggestedName: "Bases Loaded 3 (USA)", confidence: 0.9)
+        )
+        let matchReport = MatchReport(games: [gameResult], surplusFiles: [surplusFile])
+
+        let result = RebuildPlanner.planSingleSimilarNameRename(matchReport: matchReport, fileURL: surplusURL)
+
+        #expect(result.isEqualTo(.collidesWithExistingFile(correctArchiveURL)))
+    }
+
+    @Test("planRenameRomsInArchive fixes a recognized DUPLICATE archive's own entry name too, not just the primary claimed copy's — real case found live (2026-09-30): \"Bump 'n' Jump (USA).zip\" existed in two folders, identical content, one claimed as this game's real \\`.correct\\` match (via the single-rom name-trust fallback), the other correctly tagged \"Duplicated archive, not needed here\" — jensyleo's own explicit rule: \"Asi sea duplicado, los fix de nombre y cualquier otro deben aplicar sin problema\"")
+    func planRenameRomsInArchiveFixesARecognizedDuplicatesOwnEntryNameToo() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let rom = DATRom(name: "Bump 'n' Jump (USA).nes", size: 1, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let game = DATGame(name: "Bump 'n' Jump (USA)", description: "Bump 'n' Jump (USA)", cloneOf: nil, romOf: nil, roms: [rom])
+        let primaryURL = folder.appendingPathComponent("NO_INTRO/Bump 'n' Jump (USA).zip")
+        let primaryFile = HashedFile(
+            file: ScannedFile(url: primaryURL, name: "Bump 'n' Jump (USA).nes", size: 1),
+            hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")
+        )
+        let gameResult = GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .correct(primaryFile))])
+
+        let duplicateURL = folder.appendingPathComponent("SELECTED/Bump 'n' Jump (USA).zip")
+        let duplicateFile = SurplusFile(
+            file: HashedFile(file: ScannedFile(url: duplicateURL, name: "Bump'n'Jump (USA).nes", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")),
+            requiredByGameDescription: "Bump 'n' Jump (USA)", requiredByGameMachineName: "Bump 'n' Jump (USA)"
+        )
+        let matchReport = MatchReport(games: [gameResult], surplusFiles: [duplicateFile])
+
+        let plan = RebuildPlanner.planRenameRomsInArchive(matchReport: matchReport)
+
+        #expect(plan.contains(.addEntryToZip(
+            targetArchive: duplicateURL, entryName: "Bump 'n' Jump (USA).nes",
+            source: ArchiveEntrySource(source: duplicateURL, entryName: "Bump 'n' Jump (USA).nes", sourceArchiveEntryName: "Bump'n'Jump (USA).nes")
+        )))
+        #expect(plan.contains(.removeEntryFromZip(archive: duplicateURL, entryName: "Bump'n'Jump (USA).nes")))
+    }
+}
+
+extension RebuildPlanner.SingleSimilarNameRenameResult {
+    /// Plain `==` would need `Equatable` on the whole enum just for tests —
+    /// this one-off comparison is simpler and just as clear here.
+    fileprivate func isEqualTo(_ other: Self) -> Bool {
+        switch (self, other) {
+        case (.rename(let a), .rename(let b)): return a == b
+        case (.noSuggestion, .noSuggestion), (.alreadyCorrect, .alreadyCorrect): return true
+        case (.collidesWithExistingFile(let a), .collidesWithExistingFile(let b)): return a == b
+        default: return false
+        }
+    }
 }

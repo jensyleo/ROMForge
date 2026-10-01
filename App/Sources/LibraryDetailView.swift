@@ -1007,7 +1007,10 @@ private extension View {
         showCopyToFolder: Binding<Bool>,
         onCopyToFolder: @escaping () -> Void,
         showMoveToFolder: Binding<Bool>,
-        onMoveToFolder: @escaping () -> Void
+        onMoveToFolder: @escaping () -> Void,
+        replaceFilenames: [String],
+        showReplaceExisting: Binding<Bool>,
+        onReplaceExisting: @escaping () -> Void
     ) -> some View {
         self
             .confirmationDialog(
@@ -1054,6 +1057,44 @@ private extension View {
                     Text("Moved into \"\(destination.lastPathComponent)\", removed from their current location. This system will need a rescan afterward.")
                 }
             }
+            // jensyleo's own request (2026-09-30) — see
+            // `showReplaceExistingConfirmation`'s own doc comment. Deliberately
+            // its own, separate dialog (not folded into the Copy/Move ones
+            // above) so the message can name the exact colliding filenames
+            // — those two above fire unconditionally on every Copy/Move,
+            // long before it's known whether anything actually collides.
+            .confirmationDialog(
+                "Replace \(replaceFilenames.count) Existing File\(replaceFilenames.count == 1 ? "" : "s")?",
+                isPresented: showReplaceExisting,
+                titleVisibility: .visible
+            ) {
+                Button("Replace", role: .destructive, action: onReplaceExisting)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Already exists at the destination: \(replaceFilenames.joined(separator: ", ")). Replacing overwrites it permanently — the current copy there cannot be recovered afterward.")
+            }
+    }
+
+    /// jensyleo's own request (2026-09-30) — see `GameTreeTableView`'s own
+    /// "Rename to…" context-menu button doc comment. A separate modifier
+    /// (not folded into `fileActionsConfirmations` above) since it needs
+    /// its own two pieces of state (`url`/`suggestion`) that function has
+    /// no reason to know about.
+    func renameToSimilarNameConfirmation(
+        url: URL?, suggestion: SimilarNameSuggestion?, isPresented: Binding<Bool>, onConfirm: @escaping () -> Void
+    ) -> some View {
+        self.confirmationDialog(
+            "Rename \"\(url?.lastPathComponent ?? "")\"?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Rename", action: onConfirm)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let suggestion {
+                Text("To \"\(suggestion.suggestedName)\(url?.pathExtension.isEmpty == false ? ".\(url!.pathExtension)" : "")\" — a \(Int((suggestion.confidence * 100).rounded()))% name match. This is a best-effort GUESS based on the name alone, not a verified content match — the DAT still can't confirm this file's actual content.")
+            }
+        }
     }
 
     /// The pop-up alert after a Fix/File Action finishes — jensyleo's own
@@ -1626,7 +1667,7 @@ struct LibraryDetailView: View {
                 }
                 // jensyleo's own report (2026-09-29), right after adding
                 // NES: the main folder scan (`LibraryViewModel.scan`) already
-                // honors "Trust file names for console/computer systems",
+                // honors "Ignore CRC/hash verification for console/computer systems",
                 // but this Maintenance-folder preview match had its own,
                 // separate `ROMMatcher.match(...)` call that never passed
                 // `nameOnlyMatching` at all — it always fell back to `false`
@@ -2604,6 +2645,31 @@ struct LibraryDetailView: View {
     @State private var showDeletePermanentlyConfirmation = false
     @State private var showCopyToFolderConfirmation = false
     @State private var showMoveToFolderConfirmation = false
+    /// jensyleo's own request (2026-09-30), after "Copy File(s) to…" simply
+    /// refused with "Refusing to overwrite existing file" and no way to
+    /// say "yes, replace it": `commitCopyFilesToFolder`/
+    /// `commitMoveFilesToFolder` check `LibraryViewModel
+    /// .existingDestinationFilenames` first; if any of `pendingFileActionURLs`'
+    /// own names already exist at `pendingFileActionDestination`, THIS
+    /// dialog (not the plain Copy/Move one above) asks explicitly before
+    /// committing. `pendingReplaceIsMove` remembers which of the two
+    /// actions to actually run once confirmed, since both share this one
+    /// dialog and `pendingFileActionURLs`/`Destination`. Deliberately never
+    /// Finder's "Keep Both" (" 2" suffix) — see
+    /// `existingDestinationFilenames`'s own doc comment for why that would
+    /// be actively harmful here.
+    @State private var pendingReplaceFilenames: [String] = []
+    @State private var pendingReplaceIsMove = false
+    @State private var showReplaceExistingConfirmation = false
+    /// jensyleo's own request (2026-09-30) — see `GameTreeTableView`'s own
+    /// "Rename to…" context-menu button doc comment for the real "Battle
+    /// City (J).zip" (57%) case this exists for. `pendingSimilarNameURL`/
+    /// `Suggestion` are set together by `startRenameToSimilarNameSuggestion`,
+    /// right before showing this dialog; cleared together once answered
+    /// either way.
+    @State private var pendingSimilarNameURL: URL?
+    @State private var pendingSimilarNameSuggestion: SimilarNameSuggestion?
+    @State private var showRenameToSimilarNameConfirmation = false
     /// Fase 2 Step 7 "Remove Useless Files…" state — same preview-then-
     /// confirm shape as the rebuild state above, its own separate dialog.
     @State private var removeUselessFilesCount = 0
@@ -4250,6 +4316,11 @@ struct LibraryDetailView: View {
             count: contextMenuRemoveRedundantRomsCount,
             onConfirm: commitContextMenuRemoveRedundantRoms
         )
+        .renameToSimilarNameConfirmation(
+            url: pendingSimilarNameURL, suggestion: pendingSimilarNameSuggestion,
+            isPresented: $showRenameToSimilarNameConfirmation,
+            onConfirm: commitRenameToSimilarNameSuggestion
+        )
         .handleCorruptedFilesConfirmation(
             isPresented: $showHandleCorruptedFilesConfirmation,
             count: handleCorruptedFilesCount,
@@ -4271,7 +4342,10 @@ struct LibraryDetailView: View {
             showCopyToFolder: $showCopyToFolderConfirmation,
             onCopyToFolder: commitCopyFilesToFolder,
             showMoveToFolder: $showMoveToFolderConfirmation,
-            onMoveToFolder: commitMoveFilesToFolder
+            onMoveToFolder: commitMoveFilesToFolder,
+            replaceFilenames: pendingReplaceFilenames,
+            showReplaceExisting: $showReplaceExistingConfirmation,
+            onReplaceExisting: commitReplaceExisting
         )
         .romEntryActionsConfirmations(
             showExtract: $showExtractRomEntriesConfirmation,
@@ -4403,6 +4477,13 @@ struct LibraryDetailView: View {
     private func commitCopyFilesToFolder() {
         let urls = pendingFileActionURLs
         guard let destination = pendingFileActionDestination else { return }
+        let collisions = LibraryViewModel.existingDestinationFilenames(for: urls, in: destination)
+        guard collisions.isEmpty else {
+            pendingReplaceFilenames = collisions
+            pendingReplaceIsMove = false
+            showReplaceExistingConfirmation = true
+            return
+        }
         pendingFileActionURLs = []
         pendingFileActionDestination = nil
         Task { await viewModel.copyFiles(system: system, urls, to: destination) }
@@ -4424,9 +4505,52 @@ struct LibraryDetailView: View {
     private func commitMoveFilesToFolder() {
         let urls = pendingFileActionURLs
         guard let destination = pendingFileActionDestination else { return }
+        let collisions = LibraryViewModel.existingDestinationFilenames(for: urls, in: destination)
+        guard collisions.isEmpty else {
+            pendingReplaceFilenames = collisions
+            pendingReplaceIsMove = true
+            showReplaceExistingConfirmation = true
+            return
+        }
         pendingFileActionURLs = []
         pendingFileActionDestination = nil
         Task { await viewModel.moveFiles(system: system, urls: urls, to: destination) }
+    }
+
+    /// Runs after the user explicitly confirms `showReplaceExistingConfirmation`
+    /// — see that state's own doc comment. Re-derives `urls`/`destination`
+    /// from the same `pendingFileActionURLs`/`Destination` the original
+    /// Copy/Move confirmation already populated (never cleared until this
+    /// point, precisely so this second, replace-specific step can still
+    /// reach them).
+    private func commitReplaceExisting() {
+        let urls = pendingFileActionURLs
+        guard let destination = pendingFileActionDestination else { return }
+        pendingFileActionURLs = []
+        pendingFileActionDestination = nil
+        let filenames = Set(pendingReplaceFilenames)
+        pendingReplaceFilenames = []
+        if pendingReplaceIsMove {
+            Task { await viewModel.moveFiles(system: system, urls: urls, to: destination, replacingFilenames: filenames) }
+        } else {
+            Task { await viewModel.copyFiles(system: system, urls, to: destination, replacingFilenames: filenames) }
+        }
+    }
+
+    /// `GameTreeTableView`'s own "Rename to…" context-menu button — see its
+    /// own doc comment. Stores both the URL and the exact suggestion the
+    /// user just saw so the confirmation dialog can quote them precisely.
+    private func startRenameToSimilarNameSuggestion(_ url: URL, _ suggestion: SimilarNameSuggestion) {
+        pendingSimilarNameURL = url
+        pendingSimilarNameSuggestion = suggestion
+        showRenameToSimilarNameConfirmation = true
+    }
+
+    private func commitRenameToSimilarNameSuggestion() {
+        guard let url = pendingSimilarNameURL else { return }
+        pendingSimilarNameURL = nil
+        pendingSimilarNameSuggestion = nil
+        Task { await viewModel.renameToSimilarNameSuggestion(system: system, url: url) }
     }
 
     /// No confirmation dialog — same as Finder's own "Duplicate"/"Compress",
@@ -4460,7 +4584,19 @@ struct LibraryDetailView: View {
     }
 
     private func commitFixAll() {
-        Task { await viewModel.fixAll(system: system, enabledActionIDs: Self.fixActionsEnabledForTesting) }
+        Task {
+            await viewModel.fixAll(system: system, enabledActionIDs: Self.fixActionsEnabledForTesting)
+            // "Fix All" can run Remove Zip Comments among its sub-actions;
+            // same real root cause as `commitRemoveZipComments` above —
+            // `onChange(of: viewModel.auditReport)` never fires for a
+            // comment-only change (nothing `Equatable` compares actually
+            // differs), so this cache is never invalidated as a side
+            // effect of fixAll's own internal scan. Invalidate the whole
+            // system directly (fixAll's own removeZipComments call always
+            // runs unscoped, i.e. every folder), then force the redraw.
+            zipCommentCache.invalidate(underAnyOf: system.romFolderURLs)
+            zipCommentTableReloadToken += 1
+        }
     }
 
     private func startRepairFromSiblingSets() {
@@ -4518,6 +4654,19 @@ struct LibraryDetailView: View {
         let scopeFolders = selectedRomFolder.map { [$0] } ?? []
         Task {
             await viewModel.removeZipComments(system: system, scopeFolders: scopeFolders)
+            // Real root cause found live (2026-09-30, jensyleo: "lo de
+            // remover zip comments... no lo vi actualizado en la
+            // pantalla"): `.onChange(of: viewModel.auditReport)` is the
+            // ONLY other place this cache gets invalidated, but a zip
+            // comment lives entirely OUTSIDE `AuditEntry`/`AuditReport` —
+            // removing one changes nothing `Equatable` compares, so the
+            // recomputed report is value-equal to the old one and
+            // `onChange` never fires at all. Invalidating directly here,
+            // rather than trusting that side effect, is what actually
+            // clears the stale entry — the token bump below only forces
+            // `Table` to redraw, which was previously redrawing from the
+            // very same poisoned cache.
+            zipCommentCache.invalidate(underAnyOf: scopeFolders.isEmpty ? system.romFolderURLs : scopeFolders)
             zipCommentTableReloadToken += 1
         }
     }
@@ -4537,6 +4686,11 @@ struct LibraryDetailView: View {
         guard !contextMenuRemoveZipCommentsURLs.isEmpty else { return }
         Task {
             await viewModel.removeZipComments(system: system, scopeFolders: contextMenuRemoveZipCommentsURLs)
+            // Same real root cause as `commitRemoveZipComments` above —
+            // `onChange(of: viewModel.auditReport)` never fires for a
+            // comment-only change, so invalidate directly rather than
+            // relying on that side effect.
+            zipCommentCache.invalidate(underAnyOf: contextMenuRemoveZipCommentsURLs)
             zipCommentTableReloadToken += 1
         }
     }
@@ -6989,7 +7143,7 @@ struct LibraryDetailView: View {
             // the current page.
             if displayedGameNodes.count > gamesTableVisibleCap {
                 Button {
-                    gamesTableVisibleCap += Self.treeLoadMoreIncrement
+                    expandGamesTableVisibleCapIfNeeded()
                 } label: {
                     Text("Show \(min(Self.treeLoadMoreIncrement, displayedGameNodes.count - gamesTableVisibleCap)) more (\(displayedGameNodes.count - gamesTableVisibleCap) left)")
                         .font(.caption)
@@ -7205,6 +7359,21 @@ struct LibraryDetailView: View {
         gamesTableVisibleCap = Self.maxTreeChildrenPerCategory
     }
 
+    /// Shared by the manual "Show N more" link and `GameTreeTableView`'s own
+    /// `onLastVisibleRowAppeared` — see that closure's own doc comment for
+    /// jensyleo's real report (2026-09-30) this exists to fix: reaching the
+    /// bottom of the current page used to just stop scrolling dead until
+    /// the user moved off the table and clicked the link below it. Guarded
+    /// (rather than an unconditional `+=`) since `onLastVisibleRowAppeared`
+    /// can fire for a page that's already complete (e.g. the very last, no
+    /// longer full page) — nothing to expand there, and bumping the cap
+    /// anyway would just make `visibleGameNodes` silently drift ahead of
+    /// the real total for no reason.
+    private func expandGamesTableVisibleCapIfNeeded() {
+        guard displayedGameNodes.count > gamesTableVisibleCap else { return }
+        gamesTableVisibleCap += Self.treeLoadMoreIncrement
+    }
+
     /// Thin wrapper handing every piece of state/behavior `GameTreeTableView`
     /// needs down as params/bindings/closures -- see that struct's own doc
     /// comment (`GameTreeTableView.swift`) for why this is its own `View`
@@ -7267,7 +7436,9 @@ struct LibraryDetailView: View {
             startContextMenuRemoveZipComments: startContextMenuRemoveZipComments,
             startContextMenuRemoveRedundantFiles: startContextMenuRemoveRedundantFiles,
             startContextMenuRemoveRedundantRoms: startContextMenuRemoveRedundantRoms,
-            startRepairFromMaintenanceFolder: { startRepairFromMaintenanceFolder(scopeFolders: $0, skipConfirmation: true) }
+            startRepairFromMaintenanceFolder: { startRepairFromMaintenanceFolder(scopeFolders: $0, skipConfirmation: true) },
+            onLastVisibleRowAppeared: expandGamesTableVisibleCapIfNeeded,
+            renameToSimilarNameSuggestion: startRenameToSimilarNameSuggestion
         )
         // Real bug found live by jensyleo (2026-09-23): "Remove Zip
         // Comment(s)…" (unlike every other Fix/File Action) never visibly
@@ -10251,7 +10422,8 @@ struct LibraryDetailView: View {
                 if showDetailRomHeader, let header = sourceRom.header, !header.isEmpty {
                     Text("Header (iNES): \(header)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                     if let decoded = INESHeaderDecoder.decode(hexString: header) {
-                        Text("  Mapper \(decoded.mapper) · PRG \(decoded.prgSizeKB)KB · CHR \(decoded.chrSizeKB)KB · \(decoded.mirroring) mirroring · \(decoded.tvSystem)\(decoded.hasBattery ? " · Battery" : "")")
+                        let mapperLabel = NESAudioExpansionChip.name(forMapper: decoded.mapper).map { " (\($0))" } ?? ""
+                        Text("  Mapper \(decoded.mapper)\(mapperLabel) · PRG \(decoded.prgSizeKB)KB · CHR \(decoded.chrSizeKB)KB · \(decoded.mirroring) mirroring · \(decoded.tvSystem)\(decoded.hasBattery ? " · Battery" : "")")
                             .foregroundStyle(.secondary)
                     }
                 }

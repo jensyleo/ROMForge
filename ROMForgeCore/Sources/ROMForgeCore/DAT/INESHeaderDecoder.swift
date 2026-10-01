@@ -37,6 +37,27 @@ public struct INESHeaderInfo: Equatable, Sendable {
     }
 }
 
+/// Maps an iNES mapper number to the name of the audio-expansion chip it
+/// implies, when that mapper's cartridge hardware adds extra sound channels
+/// beyond the console's own built-in APU. `nil` for every other mapper —
+/// most NES/Famicom mappers (including very common ones like MMC1/MMC3) add
+/// no audio of their own, only memory banking/IRQ logic.
+///
+/// Mapper numbers and their real-world audio-expansion games confirmed
+/// against the NESdev Wiki's own "List of games with expansion audio"
+/// (nesdev.org/wiki/List_of_games_with_expansion_audio).
+public enum NESAudioExpansionChip {
+    public static func name(forMapper mapper: Int) -> String? {
+        switch mapper {
+        case 5: return "Nintendo MMC5 — audio expansion"
+        case 19: return "Namco 163 — audio expansion"
+        case 24, 26: return "Konami VRC6 — audio expansion"
+        case 85: return "Konami VRC7 — audio expansion"
+        default: return nil
+        }
+    }
+}
+
 public enum INESHeaderDecoder {
     /// Decodes a `DATRom.header`-style space-separated hex string (exactly
     /// as No-Intro's DAT declares it) into its meaningful fields. Returns

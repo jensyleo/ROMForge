@@ -1312,4 +1312,120 @@ struct ROMMatcherTests {
 
         #expect(report.surplusFiles.first?.similarNameSuggestion == nil)
     }
+
+    @Test("a similarNameSuggestion is never surfaced for an archive whose own name is ALREADY exactly a real DAT game name — real bug found live (2026-09-30) against a genuine NES collection: \"Bump 'n' Jump (USA).zip\" (already correctly named, but a bad/different dump inside) got a self-match \"Possible match: Bump 'n' Jump (USA) (100%)\" suggestion — Fix correctly reported \"Nothing to fix\" (there's no rename to make), but the Info column kept advertising a match as if something were actionable")
+    func nameSimilarityNeverSuggestsAnArchivesOwnAlreadyCorrectName() throws {
+        let game = DATGame(
+            name: "Bump 'n' Jump (USA)", description: "Bump 'n' Jump (USA)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "Bump 'n' Jump (USA).nes", size: 65_552, crc: "5768d6c8", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        // Same size as the real rom (so the size cross-check alone
+        // wouldn't catch this), but a different hash — a genuinely bad/
+        // different dump sitting under the archive's own, already-correct
+        // name.
+        let file = zipEntryHashedFile(
+            archiveName: "Bump 'n' Jump (USA)", entryName: "Bump'n'Jump (USA).nes",
+            size: 65_552, crc: "79bfe095", sha1: "0000000000000000000000000000000000000a"
+        )
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameSimilarityThreshold: 0.50)
+
+        #expect(report.surplusFiles.first?.similarNameSuggestion == nil)
+    }
+
+    @Test("nameOnlyMatching trusts a single-rom archive's own name even when the ONE entry inside it has a different internal name — real case found live (2026-09-30): \"BattleCity (Japan) (En).zip\" (the archive correctly renamed to match the DAT exactly) held one entry named \"BattleCity (Ja).nes\" — no GoodTools translation table entry for \"(Ja)\" exists, so it still reported \"Unknown game\" even with \"Trust file names\" on, because the one entry's own name didn't ALSO match. For a single-rom game there's no ambiguity about which file the declared rom means — the archive's own name already identified the game")
+    func nameOnlyMatchingTrustsSingleRomArchiveRegardlessOfItsOwnEntryName() throws {
+        let game = DATGame(
+            name: "BattleCity (Japan) (En)", description: "BattleCity (Japan) (En)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "BattleCity (Japan) (En).nes", size: 24_592, crc: "b9c34f28", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        // Real, live mismatch: entry name and hash both differ from the
+        // DAT's declaration — exactly what "Trust file names" exists to
+        // paper over, at the archive level.
+        let file = zipEntryHashedFile(
+            archiveName: "BattleCity (Japan) (En)", entryName: "BattleCity (Ja).nes",
+            size: 24_592, crc: "f599a07e", sha1: "0000000000000000000000000000000000000a"
+        )
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameOnlyMatching: true)
+
+        let match = try #require(report.games.first?.matches.first)
+        guard case .correct = match.status else {
+            Issue.record("expected .correct, got \(match.status)")
+            return
+        }
+    }
+
+    @Test("the single-rom name-trust fallback never applies to a MULTI-rom archive — each entry still needs its own name to match, exactly as before")
+    func nameOnlyMatchingFallbackNeverAppliesToMultiRomArchive() throws {
+        let romA = DATRom(name: "Game (USA) (Track 1).bin", size: 1, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let romB = DATRom(name: "Game (USA) (Track 2).bin", size: 1, crc: "bbbbbbbb", md5: nil, sha1: nil)
+        let game = DATGame(name: "Game (USA)", description: "Game (USA)", cloneOf: nil, romOf: nil, roms: [romA, romB])
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        // Only ONE of the two entries is present, and its own name doesn't
+        // match either declared rom — with two roms declared but only one
+        // real file in the archive, the fallback must never guess which
+        // rom it's "supposed" to be.
+        let file = zipEntryHashedFile(
+            archiveName: "Game (USA)", entryName: "Game (USA) (Track One).bin",
+            size: 1, crc: "cccccccc", sha1: "0000000000000000000000000000000000000a"
+        )
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameOnlyMatching: true)
+
+        for match in report.games.first?.matches ?? [] {
+            #expect(match.status == .missing)
+        }
+    }
+
+    @Test("a SECOND, physically identical copy of a single-rom archive the name-trust fallback already claimed is tagged as required by that same game (a real duplicate), never left as plain unrecognized junk — real case found live (2026-09-30): \"BattleCity (Japan) (En).zip\" existed in BOTH \"NO_INTRO\" and \"SELECTED\", identical content, neither hash-verified against the DAT; jensyleo's own explicit rule: \"Asi sea duplicado, los fix de nombre y cualquier otro deben aplicar sin problema\" — a duplicate must still be recognized and actionable, never silently invisible")
+    func nameOnlyMatchingFallbackTagsASecondIdenticalCopyAsDuplicate() throws {
+        let game = DATGame(
+            name: "BattleCity (Japan) (En)", description: "BattleCity (Japan) (En)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "BattleCity (Japan) (En).nes", size: 24_592, crc: "b9c34f28", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        // Two physically distinct archives (different folders), identical
+        // content, neither matching the DAT's own declared hash — the
+        // exact real shape found live.
+        let noIntroCopy = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/NO_INTRO/BattleCity (Japan) (En).zip"), name: "BattleCity (Japan).nes", size: 24_592),
+            hash: FileHash(crc32: "f599a07e", md5: "0", sha1: "0")
+        )
+        let selectedCopy = HashedFile(
+            file: ScannedFile(url: URL(fileURLWithPath: "/roms/SELECTED/BattleCity (Japan) (En).zip"), name: "BattleCity (Ja).nes", size: 24_592),
+            hash: FileHash(crc32: "f599a07e", md5: "0", sha1: "0")
+        )
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [noIntroCopy, selectedCopy], nameOnlyMatching: true)
+
+        guard case .correct(let claimed, _) = report.games.first?.matches.first?.status else {
+            Issue.record("expected the game to be .correct via one of the two copies")
+            return
+        }
+        let loserURL = claimed.file.url.path.contains("NO_INTRO") ? selectedCopy.file.url : noIntroCopy.file.url
+        let loser = try #require(report.surplusFiles.first { $0.file.file.url == loserURL })
+        #expect(loser.requiredByGameDescription == "BattleCity (Japan) (En)")
+    }
+
+    @Test("annotateMisnamedArchives still flags a genuinely misnamed archive for a game even when that game ALREADY has a real, correctly-claimed archive elsewhere — real bug found live (2026-09-30), jensyleo's own explicit rule: \"Asi sea duplicado, los fix de nombre y cualquier otro deben aplicar sin problema, nunca. Esto tambien aplica para MAME\" — being already satisfied elsewhere must never mean a genuinely misnamed spare copy becomes un-fixable")
+    func misnamedArchiveStillFlaggedWhenGameAlreadyHasARealArchive() throws {
+        let rom = DATRom(name: "correct.bin", size: 1, crc: "aaaaaaaa", md5: nil, sha1: nil)
+        let game = DATGame(name: "Real Game", description: "Real Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+
+        // The game's own, correctly-named, correctly-hashed archive.
+        let correctFile = zipEntryHashedFile(archiveName: "Real Game", entryName: "correct.bin", size: 1, crc: "aaaaaaaa", sha1: "1111111111111111111111111111111111111111")
+        // A SECOND, wrongly-named archive whose content ALSO genuinely
+        // hash-matches this same game's only rom — a spare/misnamed
+        // duplicate, not a different game.
+        let misnamedDuplicate = zipEntryHashedFile(archiveName: "Real Game (wrong name)", entryName: "correct.bin", size: 1, crc: "aaaaaaaa", sha1: "1111111111111111111111111111111111111111")
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [correctFile, misnamedDuplicate])
+
+        let duplicate = try #require(report.surplusFiles.first { $0.file.file.url.lastPathComponent.contains("wrong name") })
+        #expect(duplicate.misnamedArchiveForGameName == "Real Game")
+    }
 }

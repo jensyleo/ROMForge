@@ -337,6 +337,60 @@ final class LibraryViewModel {
         matchReport?.surplusFiles.first { $0.file.file.url == url }?.similarNameSuggestion
     }
 
+    /// jensyleo's own request (2026-09-30): "Battle City (J).zip" scored
+    /// only 57% against the genuinely correct "BattleCity (Japan) (En)"
+    /// (the DAT itself spells the game with no space) — below the fixed
+    /// 90% floor `RebuildPlanner.planRepair`'s own BATCH "Fix Mismatched
+    /// Files" must never go below (see that floor's own doc comment for
+    /// the real wrong-game cases it exists to block), so neither the
+    /// context menu nor a folder-wide Fix ever offered it. jensyleo's own
+    /// push-back once that floor was explained: "57 es mas de 50 que es
+    /// el piso" — he'd already configured this system's own similarity
+    /// threshold down to 50% specifically so a suggestion like this one
+    /// would surface, and the fixed batch floor was blocking the one
+    /// thing that setting was FOR. This is the per-file path: acts on
+    /// exactly the suggestion already computed under the existing,
+    /// correctly-layered global ("Ignore CRC/Hash Verification")/per-system
+    /// (`RomSystem.similarNameFixThreshold`) gate — no separate floor of
+    /// its own — for a single file the user already looked at and
+    /// confirmed through an explicit dialog, never a silent batch.
+    /// Returns before doing anything if `RebuildPlanner
+    /// .planSingleSimilarNameRename` finds no actual rename to make (no
+    /// suggestion, already correct, or a real collision) — the UI checks
+    /// this first (see `LibraryDetailView.startRenameToSimilarNameSuggestion`)
+    /// so a real collision is explained BEFORE asking the user to confirm,
+    /// not discovered only after they already clicked "Rename".
+    func renameToSimilarNameSuggestion(system: RomSystem, url: URL) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        guard let matchReport else { return }
+        let scopeFolders = Self.romFolders(containing: [url], in: system)
+        guard scopeCoveredByLastScan(scopeFolders) else {
+            logRescanRequiredForFix(scopeFolders: scopeFolders)
+            return
+        }
+        let result = RebuildPlanner.planSingleSimilarNameRename(
+            matchReport: matchReport, fileURL: url, filesCasePolicy: FixPreferencesSettings.currentSetsCasePolicy()
+        )
+        guard case .rename(let operation) = result, case .rename(_, let destination) = operation else {
+            logWarning("\(url.lastPathComponent): nothing to rename (the suggestion is no longer available — try rescanning).")
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try RebuildExecutor.execute([operation])
+            }.value
+            logSuccess("Renamed \"\(url.lastPathComponent)\" to \"\(destination.lastPathComponent)\".")
+            await scan(system: system, folders: scopeFolders)
+        } catch {
+            logError("\(url.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
     /// Real perf bug found live by jensyleo (2026-09-22): right after
     /// "Remove Zip Comment…" was added to the Games table's own context
     /// menu, right-clicking ANY row (and, apparently, general scrolling —
@@ -1707,7 +1761,7 @@ final class LibraryViewModel {
                     // Same MAME-never-eligible scoping as `nameOnlyMatching`
                     // just above, and for the same reason — see
                     // `RomSystem.similarNameFixEnabled`'s own doc comment.
-                    // ALSO requires "Trust file names" itself to be on —
+                    // ALSO requires "Ignore CRC/Hash Verification" itself to be on —
                     // jensyleo's own explicit call (2026-09-29): a rename
                     // suggested purely by name resemblance only makes sense
                     // alongside the same toggle that already means "trust
@@ -3464,10 +3518,37 @@ final class LibraryViewModel {
         postFixResultPopup(action: "Delete Permanently", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
+    /// Every one of `urls`' own filename that already exists directly under
+    /// `destination` — jensyleo's own report (2026-09-30): "Copy File(s)
+    /// to…" silently refused (`RebuildExecutor` never overwrites — see its
+    /// own doc comment, a deliberate invariant kept everywhere else in this
+    /// codebase too) with no way for the user to say "yes, replace it
+    /// anyway", the exact confusion behind a real collision copying a
+    /// genuinely correct "Bump 'n' Jump (USA).zip" over a bad dump already
+    /// sitting under that same name in the destination. Queried by the UI
+    /// BEFORE committing the action, so it can ask "N file(s) already
+    /// exist — replace them?" instead of silently failing partway through
+    /// a batch. jensyleo's own explicit call: never Finder's "Keep Both"
+    /// auto-suffix (" 2") — an appended-number filename would never again
+    /// match anything in the DAT, permanently creating a NEW unrecognized
+    /// file instead of fixing the one that was already there.
+    nonisolated static func existingDestinationFilenames(for urls: [URL], in destination: URL, fileManager: FileManager = .default) -> [String] {
+        urls.map(\.lastPathComponent).filter { fileManager.fileExists(atPath: destination.appendingPathComponent($0).path) }
+    }
+
     /// Copies `urls` into `destination`, keeping each file's own name —
     /// never touches the source, so no rescan needed. Each file attempted
     /// independently, same reasoning as every other batch action here.
-    func copyFiles(system: RomSystem, _ urls: [URL], to destination: URL) async {
+    /// `replacingFilenames` — exactly the subset of `urls`' own filenames
+    /// the user explicitly confirmed replacing (via
+    /// `existingDestinationFilenames` above, surfaced through a real
+    /// confirmation dialog) — is removed from `destination` FIRST, one file
+    /// at a time, immediately before that specific copy, so
+    /// `RebuildExecutor`'s own "never overwrites" guard still sees a clean,
+    /// empty destination and its invariant is never silently bypassed; the
+    /// actual, irreversible act of removing the old file only ever happens
+    /// here, for a filename the user was shown and explicitly agreed to.
+    func copyFiles(system: RomSystem, _ urls: [URL], to destination: URL, replacingFilenames: Set<String> = []) async {
         guard Self.modificationsEnabled else {
             logError("File Actions are disabled — enable file modifications in Settings → General first.")
             return
@@ -3487,6 +3568,9 @@ final class LibraryViewModel {
             for url in urls {
                 let target = destination.appendingPathComponent(url.lastPathComponent)
                 do {
+                    if replacingFilenames.contains(url.lastPathComponent) {
+                        try? FileManager.default.removeItem(at: target)
+                    }
                     try RebuildExecutor.execute([.copy(from: url, to: target)])
                     succeeded += 1
                 } catch {
@@ -3507,8 +3591,10 @@ final class LibraryViewModel {
 
     /// Moves `urls` into `destination`, keeping each file's own name —
     /// removes each from its source, so rescans afterward, same as
-    /// `moveFilesToTrash`/`deleteFilesPermanently`.
-    func moveFiles(system: RomSystem, urls: [URL], to destination: URL) async {
+    /// `moveFilesToTrash`/`deleteFilesPermanently`. `replacingFilenames` —
+    /// see `copyFiles`'s own doc comment on `existingDestinationFilenames`/
+    /// `replacingFilenames`, identical reasoning here.
+    func moveFiles(system: RomSystem, urls: [URL], to destination: URL, replacingFilenames: Set<String> = []) async {
         guard Self.modificationsEnabled else {
             logError("File Actions are disabled — enable file modifications in Settings → General first.")
             return
@@ -3527,6 +3613,9 @@ final class LibraryViewModel {
             for url in urls {
                 let target = destination.appendingPathComponent(url.lastPathComponent)
                 do {
+                    if replacingFilenames.contains(url.lastPathComponent) {
+                        try? FileManager.default.removeItem(at: target)
+                    }
                     try RebuildExecutor.execute([.move(from: url, to: target)])
                     succeeded += 1
                 } catch {
