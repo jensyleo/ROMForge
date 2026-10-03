@@ -192,7 +192,7 @@ struct ContentView: View {
     private var sidebarList: some View {
         List(selection: $store.selectedSystemID) {
             ForEach(groupedSystems, id: \.category) { group in
-                Section(group.category.isEmpty ? "SYSTEM" : Self.sidebarSectionTitle(forCategory: group.category)) {
+                Section(group.category) {
                     ForEach(group.systems) { system in
                         // jensyleo's own request (2026-09-16): "quita ese
                         // punto rojo al lado de MAME" — the per-system
@@ -273,33 +273,14 @@ struct ContentView: View {
     /// entirely when nobody uses categories yet would save a section header,
     /// but keeping it consistent is simpler and one empty-label group reads
     /// fine either way.
+    /// Only two sidebar sections exist — "Arcade" (MAME-style systems) and
+    /// "CONSOLES" (everything else) — per jensyleo's own request
+    /// (2026-10-02). `RomSystem.category` itself is untouched.
     private var groupedSystems: [(category: String, systems: [RomSystem])] {
-        let categories = Set(store.systems.map(\.category))
-        let ordered = categories.filter { !$0.isEmpty }.sorted() + (categories.contains("") ? [""] : [])
-        return ordered.map { category in
-            (category: category, systems: store.systems.filter { $0.category == category })
-        }
-    }
-
-    /// A sidebar section groups every system sharing one `AddSystemSheet`
-    /// category together, so its header reads more naturally as a plural
-    /// ("Consoles", not "Console") — jensyleo's own request (2026-09-29),
-    /// right after the first "Console" group appeared with just NES in it.
-    /// Purely a display label: `RomSystem.category` itself stays exactly
-    /// the singular value `AddSystemSheet` stores (`SystemCategoryKind`'s
-    /// own raw values), so nothing about matching/grouping/persistence
-    /// changes — a category the user typed by hand (free text, from before
-    /// `SystemCategoryKind` existed) is shown as-is, unpluralized.
-    private static func sidebarSectionTitle(forCategory category: String) -> String {
-        switch SystemCategoryKind(rawValue: category) {
-        case .nes: return "NES"
-        case .snes: return "SNES"
-        case .n64: return "N64"
-        case .mame: return "MAME"
-        case .segaGenesis: return "SEGA Genesis"
-        case .other: return "Otros"
-        case nil: return category
-        }
+        let arcade = store.systems.filter(\.isMAMEStyle)
+        let consoles = store.systems.filter { !$0.isMAMEStyle }
+        return [(category: "Arcade", systems: arcade), (category: "CONSOLES", systems: consoles)]
+            .filter { !$0.systems.isEmpty }
     }
 
     /// jensyleo's own request (2026-09-26), after a full-session slowness

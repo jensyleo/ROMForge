@@ -7886,7 +7886,7 @@ struct LibraryDetailView: View {
         // follows.
         if let note = regionQualityNote(for: node) {
             let ownRegion = GameNameTagParser.parse(name: node.name).region
-            base += ownRegion == note.recommendedRegion ? " — ⭐ Recommended version" : " — ℹ️ Better version exists (\(note.recommendedRegion))"
+            base += ownRegion.map(note.bestRegions.contains) == true ? " — ⭐ Recommended version" : " — ℹ️ Better version exists (\(note.bestRegionsLabel))"
         }
         return base
     }
@@ -7900,7 +7900,7 @@ struct LibraryDetailView: View {
     /// `zipCommentHelpText(for entry:)` never got the same treatment.
     private func regionQualityNote(forGameName name: String) -> RegionQualityNote? {
         guard system.regionQualityHintsEnabled else { return nil }
-        return RegionQualityNotes.note(forGameName: name)
+        return RegionQualityNotes.note(forGameName: name, platform: system.category)
     }
 
     private func regionQualityNote(for node: GameNode) -> RegionQualityNote? {
@@ -7921,7 +7921,7 @@ struct LibraryDetailView: View {
             parts.append(comment)
         }
         if let note = regionQualityNote(for: node) {
-            parts.append("\(note.recommendedRegion) recommended: \(note.reason) (\(note.sourceURL))")
+            parts.append("\(note.bestRegionsLabel) recommended: \(note.reason) (\(note.sourceURL))")
         }
         return parts.joined(separator: "\n")
     }
@@ -8224,7 +8224,8 @@ struct LibraryDetailView: View {
     /// Hidden by default: useful for spotting a suspiciously large/small
     /// archive, but not something most users need visible all the time.
     private func totalSizeText(for node: GameNode) -> String {
-        let total = node.entries.reduce(Int64(0)) { $0 + ($1.expectedSize ?? $1.actualSize ?? 0) }
+        var total = node.entries.reduce(Int64(0)) { $0 + ($1.expectedSize ?? $1.actualSize ?? 0) }
+        if node.entries.isEmpty, let game = node.sourceGame { total = game.roms.reduce(Int64(0)) { $0 + $1.size } }
         return total > 0 ? ByteCountFormatter.string(fromByteCount: total, countStyle: .file) : ""
     }
 
@@ -8588,7 +8589,7 @@ struct LibraryDetailView: View {
         // `GameNode`'s.
         if let note = regionQualityNote(forGameName: entry.gameDescription ?? entry.game ?? "") {
             let ownRegion = GameNameTagParser.parse(name: entry.gameDescription ?? entry.game ?? "").region
-            base += ownRegion == note.recommendedRegion ? " — ⭐ Recommended version" : " — ℹ️ Better version exists (\(note.recommendedRegion))"
+            base += ownRegion.map(note.bestRegions.contains) == true ? " — ⭐ Recommended version" : " — ℹ️ Better version exists (\(note.bestRegionsLabel))"
         }
         return base
     }
@@ -8604,7 +8605,7 @@ struct LibraryDetailView: View {
             parts.append(comment)
         }
         if let note = regionQualityNote(forGameName: entry.gameDescription ?? entry.game ?? "") {
-            parts.append("\(note.recommendedRegion) recommended: \(note.reason) (\(note.sourceURL))")
+            parts.append("\(note.bestRegionsLabel) recommended: \(note.reason) (\(note.sourceURL))")
         }
         return parts.joined(separator: "\n")
     }
@@ -10480,6 +10481,99 @@ struct LibraryDetailView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(node.gameName).font(.headline)
             ForEach(gameFieldOrder) { field in gameDetailRow(field, for: node) }
+            if system.isMAMEStyle { mameGameDetails(node) } else { consoleGameDetails(node) }
+        }
+    }
+
+    /// MAME-only extras straight from the DAT/`-listxml`, beyond the
+    /// user-orderable rows above: identity, ROM/disk inventory, chips,
+    /// driver/display/input info and the clone family.
+    @ViewBuilder
+    private func mameGameDetails(_ node: GameNode) -> some View {
+        if let game = node.sourceGame {
+            Divider()
+            Text("From the DAT").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            infoRow("Machine name", game.name)
+            infoRow("Type", game.isBios ? "BIOS set" : game.isDevice ? "Device" : game.cloneOf != nil ? "Clone" : "Parent")
+            if let romOf = game.romOf { infoRow("ROM of", romOf) }
+            if let sampleOf = game.sampleOf { infoRow("Sample of", sampleOf) }
+            let total = game.roms.reduce(Int64(0)) { $0 + $1.size }
+            infoRow("ROM files", "\(game.roms.count) · \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))")
+            let optionalCount = game.roms.filter(\.optional).count
+            if optionalCount > 0 { infoRow("Optional ROMs", "\(optionalCount)") }
+            let bad = game.roms.filter { $0.status == .baddump }.count, nodump = game.roms.filter { $0.status == .nodump }.count
+            if bad > 0 { infoRow("Bad dumps", "\(bad)") }
+            if nodump > 0 { infoRow("No dumps", "\(nodump)") }
+            let merged = game.roms.filter { $0.mergeName != nil }.count
+            if merged > 0 { infoRow("Merged ROMs", "\(merged) (stored in parent)") }
+            if !game.disks.isEmpty { infoRow("CHD disks", game.disks.map(\.name).joined(separator: ", ")) }
+            if !game.biosSetNames.isEmpty { infoRow("BIOS sets", game.biosSetNames.joined(separator: ", ")) }
+            let cpus = game.chips.filter { $0.type == "cpu" }.map(\.name), audio = game.chips.filter { $0.type == "audio" }.map(\.name)
+            if !cpus.isEmpty { infoRow("CPUs", cpus.joined(separator: ", ")) }
+            if !audio.isEmpty { infoRow("Sound chips", audio.joined(separator: ", ")) }
+            if let status = game.driverStatus { infoRow("Driver status", status) }
+            if let display = game.displayType {
+                infoRow("Display", display + (game.displayRotate.map { " · rotated \($0)°" } ?? ""))
+            }
+            if let players = game.players { infoRow("Players", players) }
+            if let coins = game.coins { infoRow("Coins", coins) }
+            if !game.mergedFamilyMachineNames.isEmpty { infoRow("Merged family", "\(game.mergedFamilyMachineNames.count) machines") }
+            let root = game.cloneOf ?? game.name
+            let clones = viewModel.preloadedGames.filter { $0.cloneOf == root && $0.name != game.name }
+            if !clones.isEmpty {
+                infoRow(game.cloneOf == nil ? "Clones" : "Siblings", "\(clones.count): " + clones.prefix(10).map(\.name).joined(separator: ", ") + (clones.count > 10 ? "…" : ""))
+            }
+        }
+    }
+
+    /// Console-only facts decoded from the game's own DAT name/entry (region,
+    /// languages, video standard, release stage, revision, distribution,
+    /// flags), its declared ROM files (size/hashes — shown even before any
+    /// scan) and its other regional/revision variants in the same DAT family.
+    @ViewBuilder
+    private func consoleGameDetails(_ node: GameNode) -> some View {
+        let details = GameNameDetails.parse(name: node.name)
+        let game = node.sourceGame
+        Divider()
+        Text("From the DAT").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+        if !details.regions.isEmpty { infoRow("Region", details.regions.joined(separator: ", ")) }
+        if let standard = details.videoStandard { infoRow("Video standard", standard) }
+        if !details.languages.isEmpty { infoRow("Languages", details.languages.joined(separator: ", ")) }
+        infoRow("Release", details.releaseStage ?? "Retail")
+        if let revision = details.revision { infoRow("Revision", revision) }
+        if let version = details.version { infoRow("Version", version) }
+        if !details.distribution.isEmpty { infoRow("Distribution", details.distribution.joined(separator: ", ")) }
+        ForEach(details.flags, id: \.self) { Text("• \($0)") }
+        ForEach(details.otherTags, id: \.self) { Text("• \($0)").foregroundStyle(.secondary) }
+        if let category = game?.category, !category.isEmpty { infoRow("DAT category", category) }
+        if let game {
+            ForEach(Array(game.roms.enumerated()), id: \.offset) { _, rom in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("ROM file: \(rom.name)")
+                    Text("Size: \(ByteCountFormatter.string(fromByteCount: rom.size, countStyle: .file)) (\(rom.size.formatted()) bytes · \(Double(rom.size) * 8 / 1_048_576, format: .number.precision(.fractionLength(0...2))) Mbit)").foregroundStyle(.secondary)
+                    if rom.status != .good { Text("Dump status: \(String(describing: rom.status))").foregroundStyle(.orange) }
+                    if let crc = rom.crc { Text("CRC: \(crc)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary) }
+                    if let md5 = rom.md5 { Text("MD5: \(md5)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary) }
+                    if let sha1 = rom.sha1 { Text("SHA-1: \(sha1)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary) }
+                    if let sha256 = rom.sha256 { Text("SHA-256: \(sha256)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary) }
+                    if let serial = rom.serial, !serial.isEmpty { Text("Serial: \(serial)").foregroundStyle(.secondary) }
+                    if let header = rom.header, !header.isEmpty {
+                        Text("Header: \(header)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                        if let decoded = INESHeaderDecoder.decode(hexString: header) {
+                            let chip = NESAudioExpansionChip.name(forMapper: decoded.mapper).map { " (\($0))" } ?? ""
+                            Text("Mapper \(decoded.mapper)\(chip) · PRG \(decoded.prgSizeKB) KB · CHR \(decoded.chrSizeKB) KB")
+                            Text("Mirroring: \(decoded.mirroring) · TV: \(decoded.tvSystem) · Battery: \(decoded.hasBattery ? "yes" : "no")")
+                        }
+                    }
+                }
+            }
+            let root = game.cloneOf ?? game.name
+            let family = viewModel.preloadedGames.filter { ($0.cloneOf ?? $0.name) == root && $0.name != game.name }
+            if !family.isEmpty {
+                Text("Other versions in this DAT (\(family.count))").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(family.prefix(12), id: \.name) { Text("• \($0.name)").foregroundStyle(.secondary) }
+                if family.count > 12 { Text("…and \(family.count - 12) more").foregroundStyle(.secondary) }
+            }
         }
     }
 
@@ -10613,7 +10707,7 @@ struct LibraryDetailView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .top, spacing: 8) {
                     Text("Region note").bold().frame(width: 100, alignment: .leading)
-                    Text("\(note.recommendedRegion) recommended: \(note.reason)")
+                    Text("\(note.bestRegionsLabel) recommended: \(note.reason)")
                 }
                 HStack(spacing: 8) {
                     Spacer().frame(width: 100)
@@ -10654,7 +10748,7 @@ struct LibraryDetailView: View {
                     Button {
                         let pasteboard = NSPasteboard.general
                         pasteboard.clearContents()
-                        pasteboard.setString("\(note.recommendedRegion) recommended: \(note.reason) (\(note.sourceURL))", forType: .string)
+                        pasteboard.setString("\(note.bestRegionsLabel) recommended: \(note.reason) (\(note.sourceURL))", forType: .string)
                     } label: {
                         Image(systemName: "doc.on.doc")
                             .imageScale(.medium)

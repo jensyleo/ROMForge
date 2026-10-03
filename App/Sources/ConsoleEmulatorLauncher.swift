@@ -20,6 +20,7 @@ import Foundation
 public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     case nestopia
     case fceux
+    case snes9x
     case custom
 
     public var id: String { rawValue }
@@ -28,6 +29,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .nestopia: return "Nestopia"
         case .fceux: return "FCEUX"
+        case .snes9x: return "Snes9x"
         case .custom: return "Custom…"
         }
     }
@@ -44,6 +46,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .nestopia: return "brew install --cask nestopia"
         case .fceux: return "brew install fceux"
+        case .snes9x: return "brew install --cask snes9x"
         case .custom: return nil
         }
     }
@@ -61,7 +64,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     /// this static property.
     var isAppBundle: Bool {
         switch self {
-        case .nestopia: return true
+        case .nestopia, .snes9x: return true
         case .fceux, .custom: return false
         }
     }
@@ -76,7 +79,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var bundleIdentifier: String? {
         switch self {
         case .nestopia: return "com.bannister.Nestopia"
-        case .fceux, .custom: return nil
+        case .fceux, .snes9x, .custom: return nil
         }
     }
 
@@ -86,7 +89,27 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var homebrewDefaultPath: String? {
         switch self {
         case .fceux: return "/opt/homebrew/bin/fceux"
-        case .nestopia, .custom: return nil
+        case .nestopia, .snes9x, .custom: return nil
+        }
+    }
+
+    /// The fixed, deterministic location `brew install --cask snes9x`
+    /// always installs to — used INSTEAD of `bundleIdentifier` for this one
+    /// emulator. Honest gap, not an oversight: every other app-bundle
+    /// emulator here (Nestopia) has its bundle id confirmed live via `mdls
+    /// -name kMDItemCFBundleIdentifier` against a real install (see
+    /// `bundleIdentifier`'s own doc comment) — Snes9x's own real identifier
+    /// was never confirmed that same way (no real install available to
+    /// check against when this was added), so rather than guess one and
+    /// risk it being silently wrong the way Nestopia's own first guess was,
+    /// `resolvedAppURL` below falls back to checking this fixed path
+    /// directly on disk when `bundleIdentifier` is `nil` for a known
+    /// (non-custom) emulator — exactly as reliable, since a Homebrew cask's
+    /// own install location is itself fixed and documented.
+    var homebrewCaskAppPath: String? {
+        switch self {
+        case .snes9x: return "/Applications/Snes9x.app"
+        case .nestopia, .fceux, .custom: return nil
         }
     }
 }
@@ -143,8 +166,16 @@ enum ConsoleEmulatorSettings {
             let path = customExecutablePath
             return path.isEmpty ? nil : URL(fileURLWithPath: path)
         }
-        guard let bundleIdentifier = selected.bundleIdentifier else { return nil }
-        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        if let bundleIdentifier = selected.bundleIdentifier {
+            return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        }
+        // See `KnownConsoleEmulator.homebrewCaskAppPath`'s own doc comment
+        // — a fixed-path fallback for an app-bundle emulator whose real
+        // bundle id was never confirmed live.
+        if let path = selected.homebrewCaskAppPath, FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
     }
 
     /// The resolved plain executable path — set only when

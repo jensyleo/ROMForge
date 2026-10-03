@@ -2,6 +2,27 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.4.0] - 2026-10-02
+
+### Added
+
+- SNES support: Snes9x as a supported console emulator.
+- Game detail panel for console systems (NES, SNES, …): a "From the DAT"
+  section with region, video standard, languages, release stage, revision,
+  distribution, flags, declared ROM files (size, CRC, MD5, SHA-1, SHA-256,
+  serial, header; the iNES header is decoded for NES) and other versions of
+  the same game — shown even before a system is scanned.
+- Game detail panel for MAME: machine type, ROM/CHD inventory, CPUs, sound
+  chips, driver status, display, players/coins and the clone family.
+- Region-quality notes for 5 more NES and 8 SNES games, each with a verified
+  source. A note can now list several equally-good regions ("Japan or USA")
+  when no single region clearly wins, and is scoped to its own platform so
+  it never fires for another platform's game of the same title.
+
+### Changed
+
+- The sidebar now has only two sections: "Arcade" and "CONSOLES".
+
 ## [1.3.1] - 2026-10-01
 
 ### Fixed
