@@ -1814,3 +1814,45 @@ Steps:
    Star Ocean) — a wrong chip name is worse than none, so no shipping
    without real ROMs.
 5. Targeted unit tests only (no long test runs).
+
+## Idea (future, optional): region-quality research via an AI integration
+
+Status (2026-10-02): idea only, not started. Evaluated, not prioritized.
+
+Goal: let the app research "which regional release is better" itself, the
+way the curated notes (NES/SNES) were researched by hand, instead of a
+person writing each note.
+
+How it would work: user supplies their own API key for an AI service with
+web search (stored in the Keychain); per game the app searches, reads
+sources, and drafts a `RegionQualityNote` with a source URL; the user
+reviews and accepts each draft before it is saved. Never auto-saved.
+
+Cost / risk (observed while researching by hand this session):
+- Many sources fail (HTTP 402/403) or are unusable; only ~5 of ~15 NES
+  candidates could be verified.
+- Some pages contain text aimed at AI agents (prompt injection) — web
+  content must be treated strictly as data, never as instructions.
+- Uneven quality: some notes are trade-offs (e.g. original content vs. bug
+  fixes), which a draft can state as a clean winner.
+- Each game costs tokens on the user's account and sends game names to an
+  external service (privacy).
+- Needs: API client, key storage, per-game cost cap, a review screen, and
+  the user-override store (see below).
+
+Verdict: not worth it yet — reviewing each draft costs about as much as
+writing the note, and a typical collection has only a few dozen games with
+real regional differences. Revisit if the curated list stops scaling.
+
+Preferred first step (much cheaper, no keys, no network per game):
+1. Move the curated notes out of Swift code into a JSON data file in the
+   repo.
+2. Let the app download the updated file, so new notes ship without an app
+   release.
+3. Wire the already-designed user-override file (documented gap), so users
+   can add their own notes.
+
+Arcade/MAME: deliberately excluded. Research (2026-10-02) showed arcade
+quality depends on the game revision more than on region (MAME's own
+parent set is the latest bug-fixed World revision by convention, not a
+quality ranking), so a per-region indicator would be misleading.
