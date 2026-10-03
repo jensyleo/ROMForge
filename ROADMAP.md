@@ -1776,3 +1776,41 @@ before closing the NES work for this session. Found and fixed:
    Japanese-DAT title.
 
 Build green, installed. This closes the NES work for this session.
+
+## Pending: SNES expansion-chip display (blocked on real SNES ROMs)
+
+Status (2026-10-02): not started; waiting for a real SNES ROM folder to
+verify against. The SNES DAT (No-Intro, 4,131 games, `.sfc`, no copier
+header) and the Snes9x launcher are already supported (v1.4.0).
+
+Goal: show a cartridge's coprocessor (Super FX / GSU, SA-1, DSP, S-DD1,
+OBC1, S-RTC, SPC7110/Cx4…) in the game info panel, like the NES mapper →
+audio-chip line.
+
+Why it is not a copy of the NES case: an NES DAT declares the 16-byte iNES
+header as a hex string, so the mapper decodes with no file access. A SNES
+DAT declares nothing of the sort — the map mode and chipset byte live INSIDE
+the ROM data, at the internal header (LoROM file offset 0x7FC0, HiROM
+0xFFC0; map mode at +0x15, chipset at +0x16; +0x200 when a 512-byte copier
+header is present). So it needs real ROM bytes, and for a zipped ROM the
+first ~64 KB must be decompressed.
+
+Chosen design (user decision, 2026-10-02): compute it during the scan (or
+the background preload), store it in the scan cache, and display it from the
+cache only — never read the NAS when a row is selected ("only touch the NAS
+for scans and Fix actions"; see the NAS performance premise above).
+
+Steps:
+1. Rewrite the header decoder (a first version was written and removed as
+   dead code in the v1.4.0 audit; plausibility check on the map-mode low
+   nibble; chip name from the chipset high nibble when the low nibble is
+   3–6; ExLoROM/rare variants unsupported at first).
+2. During scan, read the needed prefix of each SNES ROM (loose file or zip
+   entry, byte-capped, reusing the existing extraction machinery) and cache
+   `mapMode` + `expansionChip` per file.
+3. Show it in the Games/Roms info panels from the cache.
+4. Verify offsets and chip names against a real collection (Super FX:
+   Star Fox; SA-1: Super Mario RPG; DSP: Super Mario Kart; S-DD1:
+   Star Ocean) — a wrong chip name is worse than none, so no shipping
+   without real ROMs.
+5. Targeted unit tests only (no long test runs).
