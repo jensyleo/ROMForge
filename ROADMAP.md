@@ -1886,3 +1886,26 @@ Rollout order:
 Not verified yet: which Homebrew emulators exist for each platform (only
 Nestopia/FCEUX/Snes9x are known-good; others fall back to "Custom…" until
 confirmed), and whether loose multi-file disc games match completely.
+
+## Idea: recognize SNES MSU-1 hacks
+
+Status (2026-10-04): idea only, not started.
+
+MSU-1 games are fan hacks: a patched `.sfc` plus a `.msu` file and numbered
+`-N.pcm` audio tracks (sometimes a `.bml` manifest) kept next to it. No DAT
+catalogs them (research 2026-10-04: no No-Intro/Redump/TOSEC/RomVault list
+found; Zeldix keeps a forum index, not a DAT with hashes), and the patched
+`.sfc` has a different hash than the clean No-Intro ROM, so today they show
+up as "Unknown" and their `.pcm` tracks as unknown files.
+
+Proposal:
+- Recognize an MSU-1 game by a `.msu` file sitting next to a `.sfc`/`.smc`
+  and label it "MSU-1 hack" instead of "Unknown"; group its `.pcm`/`.msu`/
+  `.bml` companions with it so they are not reported as separate unknown
+  files and are never offered for deletion by "Remove Useless Files".
+- Optionally match the clean base ROM by name against the DAT to show which
+  game the hack is based on.
+- Do not try to verify `.pcm` hashes — there is no catalog; at most check
+  that the tracks the manifest lists are present.
+- Emulator note: Snes9x core supports MSU-1; support in the standalone
+  macOS Snes9x app is unverified.
