@@ -470,6 +470,45 @@ private struct SimilarNameFixSettingsSection: View {
 /// console DAT does. Off by default, same as every other per-system opt-in
 /// here, so an existing system never gains new sidebar/table decoration it
 /// never asked for.
+/// Status and buttons for the user's own notes file — see
+/// `RegionQualityOverrideStore` and the "Region-quality notes" Help topic.
+private struct RegionQualityNotesFileControls: View {
+    @State private var refreshToken = 0
+    @State private var errorMessage: String?
+
+    var body: some View {
+        let _ = refreshToken
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Your own notes (every console): \(RegionQualityOverrideStore.statusText)")
+                .font(.caption)
+            ForEach(Array(RegionQualityOverrideStore.currentIssues.prefix(6).enumerated()), id: \.offset) { _, issue in
+                Text("⚠︎ \(issue)").font(.caption).foregroundStyle(.orange)
+            }
+            if RegionQualityOverrideStore.currentIssues.count > 6 {
+                Text("…and \(RegionQualityOverrideStore.currentIssues.count - 6) more.").font(.caption).foregroundStyle(.orange)
+            }
+            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("Open Notes File") {
+                    run { NSWorkspace.shared.activateFileViewerSelecting([try RegionQualityOverrideStore.createTemplateIfNeeded()]) }
+                }
+                Button("Reload") { RegionQualityOverrideStore.reload(); refreshToken += 1 }
+                Button("Export Built-in Notes") {
+                    run { NSWorkspace.shared.activateFileViewerSelecting([try RegionQualityOverrideStore.exportBuiltIn()]) }
+                }
+            }
+            Text("The file is plain JSON you can edit in any text editor; changes are picked up automatically. See Help → Region-quality notes for the format and examples.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func run(_ action: () throws -> Void) {
+        do { try action(); errorMessage = nil } catch { errorMessage = error.localizedDescription }
+        refreshToken += 1
+    }
+}
+
 private struct RegionQualityHintsSettingsSection: View {
     var store: SystemLibraryStore
     var relevantSystems: [RomSystem]
@@ -479,6 +518,7 @@ private struct RegionQualityHintsSettingsSection: View {
             Text("Flags a game ROMForge has a hand-curated note about — e.g. \"the Japanese release has extra content/less censorship than the version you have\". A small, deliberately short seed list (see Help) — most games have no note at all, which is expected, not a sign anything's missing.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            RegionQualityNotesFileControls()
             ForEach(relevantSystems) { system in
                 Toggle(system.name, isOn: Binding(
                     get: { system.regionQualityHintsEnabled },

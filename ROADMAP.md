@@ -1914,6 +1914,12 @@ Proposal:
 
 Unreleased
 - SNES MSU-1 Help topic (written, installed locally, not committed).
+- User region-quality notes file (`RegionQualityNotes.json`, every console):
+  parsing/validation in Core with tests, Settings buttons (Open Notes File /
+  Reload / Export Built-in Notes), case-insensitive matching, `tiedRegions`,
+  `disabled`, and a full Help topic with examples. Still not done: moving the
+  built-in notes out of Swift into a bundled JSON, and the optional
+  downloadable update.
 
 Waiting on real data / a decision
 - SNES expansion-chip display: now unblocked (real SNES ROMs available) —

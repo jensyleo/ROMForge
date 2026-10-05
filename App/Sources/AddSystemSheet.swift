@@ -314,3 +314,100 @@ struct AddSystemSheet: View {
         dismiss()
     }
 }
+
+/// The user's own region-quality notes (`RegionQualityNotes.json` in
+/// Application Support/ROMForge) — see `RegionQualityOverrides` (Core) for
+/// the format. Cached in memory; the file's modification date is checked at
+/// most every 2 seconds so lookups from table rows stay cheap and an edit
+/// is picked up without restarting the app.
+@MainActor
+enum RegionQualityOverrideStore {
+    static let fileName = "RegionQualityNotes.json"
+    static let builtInExportName = "RegionQualityNotes-builtin.json"
+
+    private(set) static var notes: [RegionQualityNote] = []
+    private(set) static var issues: [String] = []
+    private static var fileExists = false
+    private static var lastModified: Date?
+    private static var lastCheck = Date.distantPast
+    private static var loaded = false
+
+    static var folderURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ROMForge", isDirectory: true)
+    }
+
+    static var fileURL: URL { folderURL.appendingPathComponent(fileName) }
+
+    /// Notes to hand to `RegionQualityNotes.note(forGameName:platform:overrides:)`.
+    static var current: [RegionQualityNote] {
+        refreshIfNeeded()
+        return notes
+    }
+
+    static var statusText: String {
+        refreshIfNeeded()
+        guard fileExists else { return "No notes file yet — only the built-in notes are used." }
+        return "\(notes.count) note\(notes.count == 1 ? "" : "s") loaded from \(fileName)."
+    }
+
+    static var currentIssues: [String] {
+        refreshIfNeeded()
+        return issues
+    }
+
+    private static func refreshIfNeeded() {
+        let now = Date()
+        guard !loaded || now.timeIntervalSince(lastCheck) > 2 else { return }
+        lastCheck = now
+        let modified = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.modificationDate]) as? Date
+        guard !loaded || modified != lastModified else { return }
+        reload()
+    }
+
+    static func reload() {
+        loaded = true
+        lastCheck = Date()
+        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        lastModified = attributes?[.modificationDate] as? Date
+        guard let data = try? Data(contentsOf: fileURL) else {
+            fileExists = false; notes = []; issues = []
+            return
+        }
+        fileExists = true
+        let result = RegionQualityOverrides.parse(data: data, knownPlatforms: Set(SystemCategoryKind.allCases.map(\.rawValue)))
+        notes = result.notes
+        issues = result.issues
+    }
+
+    /// Creates the notes file (if it does not exist yet) with one clearly
+    /// marked example entry that matches no real game, and returns its URL.
+    @discardableResult
+    static func createTemplateIfNeeded() throws -> URL {
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        guard !FileManager.default.fileExists(atPath: fileURL.path) else { return fileURL }
+        let example = RegionQualityNote(
+            gameFamily: "EXAMPLE - replace or delete this entry",
+            platform: "SNES",
+            alternateTitles: ["Another Title Of The Same Game"],
+            recommendedRegion: "Japan",
+            tiedRegions: ["USA"],
+            reason: "One or two sentences, in your own words, on why these regions are the best versions.",
+            sourceURL: "https://example.com/where-you-read-it",
+            sourceLicense: "Own summary",
+            consultedDate: ISO8601DateFormatter().string(from: Date()).prefix(10).description
+        )
+        try RegionQualityOverrides.encode(notes: [example]).write(to: fileURL, options: .atomic)
+        reload()
+        return fileURL
+    }
+
+    /// Writes every built-in note to a separate reference file (never read
+    /// back) so entries can be copied into the notes file and edited.
+    static func exportBuiltIn() throws -> URL {
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        let url = folderURL.appendingPathComponent(builtInExportName)
+        try RegionQualityOverrides.encode(notes: RegionQualityNotes.seed).write(to: url, options: .atomic)
+        return url
+    }
+}

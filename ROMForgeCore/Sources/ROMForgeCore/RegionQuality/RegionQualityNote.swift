@@ -64,8 +64,41 @@ public struct RegionQualityNote: Codable, Equatable, Sendable {
     public let sourceURL: String
     public let sourceLicense: String
     public let consultedDate: String
+    /// Only meaningful in a user overrides file: `true` switches OFF the
+    /// built-in note (or any other note) that matches this entry, so a note
+    /// the user disagrees with never shows.
+    public let disabled: Bool
 
-    public init(gameFamily: String, platform: String? = nil, alternateTitles: [String] = [], recommendedRegion: String, tiedRegions: [String] = [], reason: String, sourceURL: String, sourceLicense: String, consultedDate: String) {
+    private enum CodingKeys: String, CodingKey {
+        case gameFamily, platform, alternateTitles, recommendedRegion, tiedRegions
+        case reason, sourceURL, sourceLicense, consultedDate, disabled
+    }
+
+    /// Lenient decoding for a hand-written overrides file: only `gameFamily`
+    /// is mandatory here (further validation lives in
+    /// `RegionQualityOverrides.parse`), every other field has a default.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        gameFamily = try c.decode(String.self, forKey: .gameFamily)
+        platform = try c.decodeIfPresent(String.self, forKey: .platform)
+        alternateTitles = try c.decodeIfPresent([String].self, forKey: .alternateTitles) ?? []
+        recommendedRegion = try c.decodeIfPresent(String.self, forKey: .recommendedRegion) ?? ""
+        tiedRegions = try c.decodeIfPresent([String].self, forKey: .tiedRegions) ?? []
+        reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+        sourceURL = try c.decodeIfPresent(String.self, forKey: .sourceURL) ?? ""
+        sourceLicense = try c.decodeIfPresent(String.self, forKey: .sourceLicense) ?? "User-provided note"
+        consultedDate = try c.decodeIfPresent(String.self, forKey: .consultedDate) ?? ""
+        disabled = try c.decodeIfPresent(Bool.self, forKey: .disabled) ?? false
+    }
+
+    /// "Japan or USA recommended: <reason> (<url>)" — the one-line text the
+    /// tooltip, the copy button and the detail row share.
+    public var summaryText: String {
+        "\(bestRegionsLabel) recommended: \(reason)" + (sourceURL.isEmpty ? "" : " (\(sourceURL))")
+    }
+
+    public init(gameFamily: String, platform: String? = nil, alternateTitles: [String] = [], recommendedRegion: String, tiedRegions: [String] = [], reason: String, sourceURL: String, sourceLicense: String, consultedDate: String, disabled: Bool = false) {
+        self.disabled = disabled
         self.gameFamily = gameFamily
         self.platform = platform
         self.alternateTitles = alternateTitles
@@ -271,12 +304,117 @@ public enum RegionQualityNotes {
     /// Application Support) before `seed`, a user's own override always
     /// winning on a match.
     public static func note(forGameName name: String, platform: String? = nil, overrides: [RegionQualityNote] = []) -> RegionQualityNote? {
-        let title = baseTitle(for: name)
+        let title = baseTitle(for: name).lowercased()
         func matches(_ note: RegionQualityNote) -> Bool {
-            (note.platform == nil || note.platform == platform)
-                && (note.gameFamily == title || note.alternateTitles.contains(title))
+            (note.platform == nil || note.platform?.lowercased() == platform?.lowercased())
+                && (note.gameFamily.lowercased() == title || note.alternateTitles.contains { $0.lowercased() == title })
         }
-        if let override = overrides.first(where: matches) { return override }
+        if let override = overrides.first(where: matches) { return override.disabled ? nil : override }
         return seed.first(where: matches)
+    }
+}
+
+/// Reading/writing the user's own notes file (`RegionQualityNotes.json`):
+///
+///     { "version": 1, "notes": [ { "gameFamily": "Contra III - The Alien Wars", ... } ] }
+///
+/// Parsing is lenient on purpose — a typo in one note must never hide every
+/// other note — and defensive: the file is user-editable text, so a URL is
+/// only ever kept if it is plain `http`/`https`, strings are length-capped,
+/// and the number of notes is capped.
+public enum RegionQualityOverrides {
+    public static let supportedVersion = 1
+    public static let maxNotes = 2000
+    public static let maxReasonLength = 1000
+    public static let maxFileBytes = 1_048_576
+
+    public struct LoadResult: Equatable, Sendable {
+        public let notes: [RegionQualityNote]
+        /// Human-readable problems, one per skipped note or ignored field.
+        public let issues: [String]
+    }
+
+    private struct File: Decodable {
+        let version: Int?
+        let notes: [Lossy]
+    }
+
+    private struct Lossy: Decodable {
+        let note: RegionQualityNote?
+        let error: String?
+        init(from decoder: Decoder) throws {
+            do {
+                note = try RegionQualityNote(from: decoder)
+                error = nil
+            } catch {
+                note = nil
+                self.error = "\(error)"
+            }
+        }
+    }
+
+    /// - Parameter knownPlatforms: platform names the app knows ("NES",
+    ///   "SNES"…); a note naming any other platform is kept but reported,
+    ///   since it would never match anything. Pass an empty set to skip.
+    public static func parse(data: Data, knownPlatforms: Set<String> = []) -> LoadResult {
+        guard data.count <= maxFileBytes else {
+            return LoadResult(notes: [], issues: ["The file is larger than \(maxFileBytes / 1024) KB and was ignored."])
+        }
+        let file: File
+        do {
+            file = try JSONDecoder().decode(File.self, from: data)
+        } catch {
+            return LoadResult(notes: [], issues: ["The file is not valid JSON in the expected shape ({ \"version\": 1, \"notes\": [ … ] }): \(error.localizedDescription)"])
+        }
+        var issues: [String] = []
+        if let version = file.version, version > supportedVersion {
+            issues.append("The file declares version \(version), newer than the supported \(supportedVersion); unknown fields are ignored.")
+        }
+        var notes: [RegionQualityNote] = []
+        let lowercasedPlatforms = Set(knownPlatforms.map { $0.lowercased() })
+        for (index, entry) in file.notes.prefix(maxNotes).enumerated() {
+            let label = "Note \(index + 1)"
+            guard let note = entry.note else {
+                issues.append("\(label) skipped: it needs at least a \"gameFamily\" text.")
+                continue
+            }
+            let family = note.gameFamily.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !family.isEmpty else { issues.append("\(label) skipped: \"gameFamily\" is empty."); continue }
+            if !note.disabled {
+                guard !note.recommendedRegion.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    issues.append("\(label) (\(family)) skipped: \"recommendedRegion\" is empty."); continue
+                }
+                guard !note.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    issues.append("\(label) (\(family)) skipped: \"reason\" is empty."); continue
+                }
+            }
+            var url = note.sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !url.isEmpty {
+                let scheme = URL(string: url)?.scheme?.lowercased()
+                if scheme != "http" && scheme != "https" {
+                    issues.append("\(label) (\(family)): \"sourceURL\" must start with http:// or https:// — the link was dropped.")
+                    url = ""
+                }
+            }
+            if let platform = note.platform, !lowercasedPlatforms.isEmpty, !lowercasedPlatforms.contains(platform.lowercased()) {
+                issues.append("\(label) (\(family)): platform \"\(platform)\" is not a known platform name, so it will never match.")
+            }
+            notes.append(RegionQualityNote(
+                gameFamily: family, platform: note.platform, alternateTitles: note.alternateTitles,
+                recommendedRegion: note.recommendedRegion, tiedRegions: note.tiedRegions,
+                reason: String(note.reason.prefix(maxReasonLength)), sourceURL: url,
+                sourceLicense: note.sourceLicense, consultedDate: note.consultedDate, disabled: note.disabled
+            ))
+        }
+        if file.notes.count > maxNotes { issues.append("Only the first \(maxNotes) notes were read.") }
+        return LoadResult(notes: notes, issues: issues)
+    }
+
+    /// Pretty-printed JSON for `notes` in the overrides file shape.
+    public static func encode(notes: [RegionQualityNote]) throws -> Data {
+        struct Out: Encodable { let version: Int; let notes: [RegionQualityNote] }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(Out(version: supportedVersion, notes: notes))
     }
 }

@@ -325,5 +325,152 @@ enum HelpLibrary {
                 "Settings → General → Performance → \"Number of threads\": when this is left on \"Auto\" and the ROM folder being scanned/hashed is detected as a network volume, ROMForge automatically uses a higher worker count (16) instead of the usual \"CPU cores minus one\" — since each worker mostly sits blocked waiting on the network rather than competing for CPU, more requests in flight hides round-trip latency instead of helping throughput the way it would for local, CPU-bound hashing. A manual override (if you set one) always takes priority over this automatic behavior regardless of where the folder lives; try 16–32 by hand if \"Auto\" still feels slow on your particular network.",
             ]),
         ]),
+        HelpTopic(id: "snes-msu1", title: "SNES MSU-1 hacks", symbol: "music.note", sections: [
+            HelpSection(heading: "What MSU-1 is", paragraphs: [
+                "MSU-1 is a fan-made enhancement for SNES games: a patched `.sfc`/`.smc` ROM plus a `.msu` file and numbered audio tracks (`<name>-1.pcm`, `<name>-2.pcm`…), sometimes with a `.bml` manifest, all kept in the same folder. The tracks stream CD-quality music (and, in a few games, video) that the original cartridge could never hold. There are no commercial MSU-1 games — every one is a hack.",
+                "No-Intro, Redump, TOSEC and RomVault publish no DAT for MSU-1 games (nothing found as of 2026-10-04), and the patched ROM has a different hash than the clean No-Intro ROM, so ROMForge cannot recognize these files: a patched game shows up as \"Unknown\" and its `.pcm`/`.msu` files as unknown files. Recognizing them is planned (see the project ROADMAP).",
+            ]),
+            HelpSection(heading: "Building a game the clean way", paragraphs: [
+                "Take your own verified No-Intro ROM for the game, apply the hack's patch (IPS/BPS) to it, then put the `.msu` file and the `.pcm` tracks next to the patched ROM, named to match it. The patch's thread says which base ROM (region/revision) it needs — e.g. the Zelda: A Link to the Past video patch needs the NTSC-US ROM, and Super Metroid's needs the US or JP 1.0 ROM.",
+                "Emulators: the Snes9x core and bsnes support MSU-1. Support in the standalone Snes9x macOS app was not verified.",
+            ]),
+            HelpSection(heading: "Recommended download sites (patches and audio packs)", paragraphs: [
+                "Zeldix (the main community, patches and audio only, no ROMs): MSU-1 hacks database https://www.zeldix.net/f71-msu-1-hacks-database · alphabetical list of every MSU-1 hack https://www.zeldix.net/t2684-alphabetical-list-every-snes-msu1-hack · file links (500+ patch/audio downloads) https://www.zeldix.net/t1470-msu1-file-links · getting-started guide https://www.zeldix.net/t1607-msu1-getting-started-guide · Shiryu sound packs https://www.zeldix.net/t1589-shiryu-music-msu-1-sound-packs",
+                "romhacking.net hack pages (patches only): Super Metroid https://www.romhacking.net/hacks/2393/ · Super Mario World https://www.romhacking.net/hacks/2472/ · Zelda https://www.romhacking.net/hacks/2483/ · Mega Man X https://www.romhacking.net/hacks/2274/ · Secret of Mana https://www.romhacking.net/hacks/2467/",
+                "GitHub tools and projects: msupcm++ (the standard audio converter) https://github.com/qwertymodo/msupcmplusplus · Zelda driver https://github.com/qwertymodo/MSU1-Zelda · Final Fantasy VI installer https://github.com/Insidious611/DancingMadFF6 · Super Metroid https://github.com/mlarouche/SuperMetroid-MSU1 · WAV converter https://github.com/jbaiter/wav2msu · all MSU-1 repositories https://github.com/topics/msu1",
+                "Complete pre-patched collections also circulate online. Those are modified copies of commercial ROMs, so ROMForge does not link to them; patches and audio packs from the sources above need your own base ROM.",
+            ]),
+        ]),
+        HelpTopic(id: "region-quality", title: "Region-quality notes (and your own)", symbol: "star.leadinghalf.filled", sections: [
+            HelpSection(heading: "What these notes are", paragraphs: [
+                "A region-quality note says that one region's release of a console game is better than another — for example, the Japanese Super Castlevania IV keeps the crucifixes and blood the Western release censored. ROMForge ships a short built-in list of hand-researched notes (every one with its source link), and you can add, change or switch off notes with your own JSON file. It works for every console system (NES, SNES, SEGA Genesis, and any other non-MAME platform). It is never derived from the DAT: a DAT only carries names and hashes, so this is editorial knowledge.",
+                "Where you see it: in the Games and Roms panels' \"Info\" column a ⭐ \"Recommended version\" on the best release and an ℹ️ \"Better version exists (Japan or USA)\" on the others; a \"Region note\" row in the bottom-left detail panel with the reason and a clickable source link; and a tooltip on the Info cell. Arcade/MAME systems never show these notes — in arcade, the game revision matters more than the region.",
+            ]),
+            HelpSection(heading: "Turn it on", paragraphs: [
+                "Settings → Systems → Consoles → \"Region-quality hints\": one switch per console system, off by default. Notes only appear for systems that have it on.",
+            ]),
+            HelpSection(heading: "Where your notes file lives", paragraphs: [
+                "The file is `RegionQualityNotes.json` in `~/Library/Application Support/ROMForge/`. You never have to create it by hand: Settings → Systems → Consoles → Region-quality hints → \"Open Notes File\" creates it (with one example entry that matches no real game) and shows it in Finder. Open it with any text editor (TextEdit in plain-text mode, VS Code, BBEdit…).",
+                "The same section has: \"Reload\" (re-reads the file now — ROMForge also re-reads it by itself within a couple of seconds of you saving it) and \"Export Built-in Notes\", which writes every built-in note to `RegionQualityNotes-builtin.json` in the same folder. That export is a read-only reference: ROMForge never reads it back, but you can copy entries from it into your own file and edit them.",
+                "Right under the buttons ROMForge says how many notes it loaded and lists every problem it found (a skipped note, a dropped link, an unknown platform name) so you can fix the file without guessing.",
+            ]),
+            HelpSection(heading: "File structure", paragraphs: [
+                #"""
+                The whole file is one JSON object with a "version" and a list of "notes":
+
+                {
+                  "version": 1,
+                  "notes": [
+                    { ...one note... },
+                    { ...another note... }
+                  ]
+                }
+
+                JSON rules that trip people up: text goes in straight double quotes ("like this"); items are separated by commas, but the LAST item in a list or object has no comma after it; there are no comments; every { must have its }.
+                """#,
+            ]),
+            HelpSection(heading: "The fields of a note", paragraphs: [
+                #"""
+                gameFamily (required) — the game's title WITHOUT the parenthesised tags: "Contra III - The Alien Wars", not "Contra III - The Alien Wars (USA)". Upper/lower case does not matter.
+
+                platform (optional) — which platform the note applies to, written exactly like the platform picker in "Add System": NES, SNES, N64, SEGA SG-1000, SEGA Master System, SEGA Game Gear, SEGA Genesis, SEGA 32X, SEGA CD, SEGA Saturn, SEGA Dreamcast, Sony PlayStation, Sony PlayStation 2, Sony PSP, Sony PlayStation 3, Sony PlayStation 4, Microsoft Xbox, Microsoft Xbox 360, Microsoft Xbox One. Leave it out and the note applies to EVERY console system. Titles repeat across platforms (Contra exists on NES, Genesis and Game Boy), so set the platform whenever the note is about one platform's release.
+
+                alternateTitles (optional) — other titles the same game has in the DAT, also without tags. A Japan-only original is often listed under its own title, e.g. "Hitler no Fukkatsu - Top Secret" for the game the West knows as "Bionic Commando"; list it here or the note will never match the Japanese entry.
+
+                recommendedRegion (required unless disabled) — the best region, written exactly as it appears in a game's name tag: USA, Japan, Europe, World, Australia, Korea… (as in "Contra (USA)").
+
+                tiedRegions (optional) — other regions that are EQUALLY good, as a list. When no single region wins, put them here: the badge then reads "Japan or USA" and both regions get the ⭐.
+
+                reason (required unless disabled) — one or two sentences, in your own words, on why. Up to 1000 characters.
+
+                sourceURL (optional) — where you read it; must start with http:// or https://. It becomes the clickable blue link. Anything else is dropped (and reported).
+
+                sourceLicense, consultedDate (optional) — free text for your own records (e.g. "Own summary", "2026-10-05"). They are not shown.
+
+                disabled (optional, true/false) — see "Switching off a built-in note" below.
+                """#,
+            ]),
+            HelpSection(heading: "How a game is matched to a note", paragraphs: [
+                "ROMForge takes the game's DAT name, removes everything in parentheses and compares what is left with each note's gameFamily and alternateTitles, ignoring upper/lower case. \"Contra III - The Alien Wars (USA)\" becomes \"Contra III - The Alien Wars\". The note also has to be for that platform (or have no platform). The game's own region tag is then compared with recommendedRegion/tiedRegions to decide between ⭐ and ℹ️.",
+                "To find the exact title: look at the \"Game name\" column (or the DAT name in the detail panel) and delete every (…) group. If the same game has several names in the DAT — one per region — add the others to alternateTitles.",
+            ]),
+            HelpSection(heading: "Example 1 — one best region", paragraphs: [
+                #"""
+                {
+                  "version": 1,
+                  "notes": [
+                    {
+                      "gameFamily": "Super Castlevania IV",
+                      "platform": "SNES",
+                      "alternateTitles": ["Akumajou Dracula"],
+                      "recommendedRegion": "Japan",
+                      "reason": "The Western release removed crucifixes and recolored the stage 8 blood; the Japanese version keeps them.",
+                      "sourceURL": "https://en.wikipedia.org/wiki/Super_Castlevania_IV"
+                    }
+                  ]
+                }
+                """#,
+                "Super Castlevania IV (USA) now shows ℹ️ \"Better version exists (Japan)\" and Akumajou Dracula (Japan) shows ⭐ \"Recommended version\" — only on SNES systems.",
+            ]),
+            HelpSection(heading: "Example 2 — two equally good regions", paragraphs: [
+                #"""
+                {
+                  "gameFamily": "Contra III - The Alien Wars",
+                  "platform": "SNES",
+                  "alternateTitles": ["Contra Spirits", "Super Probotector - Alien Rebels"],
+                  "recommendedRegion": "Japan",
+                  "tiedRegions": ["USA"],
+                  "reason": "Japan and USA are about equal; the European release replaces the soldiers with robots and runs slower.",
+                  "sourceURL": "https://en.wikipedia.org/wiki/Contra_III:_The_Alien_Wars"
+                }
+                """#,
+                "Both the Japan and the USA releases get ⭐; the European one shows ℹ️ \"Better version exists (Japan or USA)\". (Only the note object is shown here — it goes inside the \"notes\" list.)",
+            ]),
+            HelpSection(heading: "Example 3 — a note for every console", paragraphs: [
+                #"""
+                {
+                  "gameFamily": "Some Multiplatform Game",
+                  "recommendedRegion": "World",
+                  "reason": "The World release is the only one with the full soundtrack on every platform."
+                }
+                """#,
+                "No \"platform\" means it applies to NES, SNES, Genesis and every other console system you have, as long as a game with that title exists there.",
+            ]),
+            HelpSection(heading: "Example 4 — a note for one specific platform only", paragraphs: [
+                #"""
+                {
+                  "gameFamily": "Contra",
+                  "platform": "SEGA Genesis",
+                  "alternateTitles": ["Contra - Hard Corps"],
+                  "recommendedRegion": "Japan",
+                  "reason": "Your own reasoning here.",
+                  "sourceURL": "https://example.com/your-source"
+                }
+                """#,
+                "The built-in note about Contra is for NES only, so this Genesis entry never clashes with it.",
+            ]),
+            HelpSection(heading: "Changing a built-in note", paragraphs: [
+                "A note of yours that matches the same game (same title and platform) wins over the built-in one. To change a built-in note, copy its entry from \"Export Built-in Notes\" into your file, edit what you disagree with and save — for example, to make Super Ghouls'n Ghosts recommend \"Japan or USA\", copy its entry and add \"tiedRegions\": [\"USA\"].",
+            ]),
+            HelpSection(heading: "Switching off a built-in note", paragraphs: [
+                #"""
+                {
+                  "gameFamily": "Dragon Warrior",
+                  "platform": "NES",
+                  "disabled": true
+                }
+                """#,
+                "A note with \"disabled\": true needs only gameFamily (and platform). It makes ROMForge show nothing for that game, built-in note included. Remove the entry to bring the built-in note back.",
+            ]),
+            HelpSection(heading: "Safety limits and problem reports", paragraphs: [
+                "Your file is plain text that ROMForge only ever displays — nothing in it is executed. A link is kept only if it starts with http:// or https://. A note with a mistake is skipped without affecting the others, and the problem is listed in Settings (for example: no gameFamily; empty recommendedRegion or reason; a platform name ROMForge does not know, which would never match). A file larger than 1 MB, more than 2,000 notes, or a reason over 1,000 characters is ignored or trimmed. If the file is not valid JSON at all, none of your notes load and Settings shows the parser's message — the built-in notes keep working.",
+            ]),
+            HelpSection(heading: "A note does not show — checklist", paragraphs: [
+                "1. Is \"Region-quality hints\" switched on for that system (Settings → Systems → Consoles)?  2. Does Settings list your note as loaded (the \"N notes loaded\" count)? If not, read the problem lines under it.  3. Is the title exactly the DAT name minus the (tags)? Compare it with the \"Game name\" column, and add the other regional titles to alternateTitles.  4. Does \"platform\" spell the platform exactly like the Add System picker (\"SEGA Genesis\", not \"Genesis\")?  5. Is the game's own tag one of the regions in the note? A game from a region that is not listed shows ℹ️, not ⭐.  6. Did you save the file? Press \"Reload\" if you want it applied immediately.",
+            ]),
+            HelpSection(heading: "Writing good notes", paragraphs: [
+                "Write the reason in your own words and keep the source link, so you can check it later. Prefer concrete, checkable differences (censorship removed, content cut, bugs fixed, an audio chip only one version uses, 60 Hz vs 50 Hz speed) over taste. When two regions are equal, list both with tiedRegions instead of picking one. Keep the file in a folder you back up — it is your own research.",
+            ]),
+        ]),
     ]
 }

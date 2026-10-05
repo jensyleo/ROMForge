@@ -7957,7 +7957,7 @@ struct LibraryDetailView: View {
     /// `zipCommentHelpText(for entry:)` never got the same treatment.
     private func regionQualityNote(forGameName name: String) -> RegionQualityNote? {
         guard system.regionQualityHintsEnabled else { return nil }
-        return RegionQualityNotes.note(forGameName: name, platform: system.category)
+        return RegionQualityNotes.note(forGameName: name, platform: system.category, overrides: RegionQualityOverrideStore.current)
     }
 
     private func regionQualityNote(for node: GameNode) -> RegionQualityNote? {
@@ -7978,7 +7978,7 @@ struct LibraryDetailView: View {
             parts.append(comment)
         }
         if let note = regionQualityNote(for: node) {
-            parts.append("\(note.bestRegionsLabel) recommended: \(note.reason) (\(note.sourceURL))")
+            parts.append(note.summaryText)
         }
         return parts.joined(separator: "\n")
     }
@@ -8662,7 +8662,7 @@ struct LibraryDetailView: View {
             parts.append(comment)
         }
         if let note = regionQualityNote(forGameName: entry.gameDescription ?? entry.game ?? "") {
-            parts.append("\(note.bestRegionsLabel) recommended: \(note.reason) (\(note.sourceURL))")
+            parts.append(note.summaryText)
         }
         return parts.joined(separator: "\n")
     }
@@ -10777,7 +10777,9 @@ struct LibraryDetailView: View {
                 }
                 HStack(spacing: 8) {
                     Spacer().frame(width: 100)
-                    if let url = URL(string: note.sourceURL) {
+                    if note.sourceURL.isEmpty {
+                        EmptyView()
+                    } else if let url = URL(string: note.sourceURL) {
                         Link(note.sourceURL, destination: url)
                             .foregroundStyle(.blue)
                             .lineLimit(1)
@@ -10814,7 +10816,7 @@ struct LibraryDetailView: View {
                     Button {
                         let pasteboard = NSPasteboard.general
                         pasteboard.clearContents()
-                        pasteboard.setString("\(note.bestRegionsLabel) recommended: \(note.reason) (\(note.sourceURL))", forType: .string)
+                        pasteboard.setString(note.summaryText, forType: .string)
                     } label: {
                         Image(systemName: "doc.on.doc")
                             .imageScale(.medium)

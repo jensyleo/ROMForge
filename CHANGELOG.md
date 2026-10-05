@@ -2,6 +2,30 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.4.2] - 2026-10-05
+
+### Added
+
+- Your own region-quality notes: a plain JSON file
+  (`~/Library/Application Support/ROMForge/RegionQualityNotes.json`) that
+  works for every console system. A note can add a new entry, override a
+  built-in one, name several equally good regions (`tiedRegions`), apply to
+  one platform or all of them, or switch a built-in note off
+  (`"disabled": true`). Settings → Systems → Consoles → Region-quality hints
+  gains "Open Notes File", "Reload" and "Export Built-in Notes", plus a live
+  count of loaded notes and a list of any problem found in the file. The file
+  is only ever displayed (never executed), links are limited to http/https,
+  and a mistake in one note never hides the others.
+- Help: a full "Region-quality notes (and your own)" topic — file format,
+  every field, how games are matched, worked examples, limits and a
+  troubleshooting checklist.
+- Help: a "SNES MSU-1 hacks" topic with how an MSU-1 game is built and
+  recommended sources for patches and audio packs.
+
+### Changed
+
+- Region-quality note matching ignores upper/lower case.
+
 ## [1.4.1] - 2026-10-04
 
 ### Added
