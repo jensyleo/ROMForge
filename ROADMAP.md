@@ -1909,3 +1909,40 @@ Proposal:
   that the tracks the manifest lists are present.
 - Emulator note: Snes9x core supports MSU-1; support in the standalone
   macOS Snes9x app is unverified.
+
+## Open items checklist (as of 2026-10-04, after v1.4.1)
+
+Unreleased
+- SNES MSU-1 Help topic (written, installed locally, not committed).
+
+Waiting on real data / a decision
+- SNES expansion-chip display: now unblocked (real SNES ROMs available) —
+  decode during scan, cache, show from cache only; verify with Super Mario
+  Kart (DSP), Star Fox (Super FX), Super Mario RPG (SA-1) if owned.
+- Region-quality notes: decide Zelda ALttP (Japan content vs USA bug fixes),
+  Final Fight, Street Fighter II Turbo, and whether Super Ghouls'n Ghosts
+  becomes "Japan or USA".
+- Verify visually: "Game group" column/detail row, "Other versions"/"One per
+  game" filters, per-system emulator/DAT in Settings → Systems → Consoles.
+- SNES scan leftovers: 12 "incorrect" (11 coprocessor firmware files in the
+  BIOS folder + Super Ghouls'n Ghosts (USA).sfc — possibly a patched copy;
+  not investigated) and 58 "unknown" (BS-X BIOS/patches, macOS `._*` files,
+  stray images). Note: `._*` files are meant to stay visible and be removed
+  with Fix → "Remove Useless Files" (which deletes every loose file the DAT
+  does not recognize — review before running).
+- MSU-1: for each game in SNES `SELECTED`, find which have an MSU-1 hack
+  (Zeldix alphabetical list, romhacking.net), independent of the app.
+
+Ideas (documented above, not started)
+- Recognize MSU-1 hacks by `.msu` next to `.sfc`.
+- Region-quality notes as a JSON data file: user override file first (no
+  network), then an optional downloadable update; text-only validation.
+- Optional AI-assisted region research (judged not worth it yet).
+- Console rollout order: SEGA cartridges → one disc platform as a test →
+  remaining disc platforms → catalog-only (PS3/PS4/Xbox 360/Xbox One).
+- Arcade/MAME region indicator: deliberately not planned (revision matters
+  more than region).
+
+Housekeeping
+- `project.yml` still says MARKETING_VERSION 1.0.1 (the Xcode project is the
+  source of truth at 1.4.1).
