@@ -162,7 +162,7 @@ enum DetailGameField: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .size: return "Size"
         case .oneGameOneROM: return "1G1R"
         case .info: return "Info"
-        case .cloneOf: return "Clone of"
+        case .cloneOf: return "Clone of / Game group"
         case .requiredBios: return "Required BIOS"
         case .chd: return "CHD"
         case .samples: return "Samples"

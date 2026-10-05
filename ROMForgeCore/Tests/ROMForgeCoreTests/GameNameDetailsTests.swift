@@ -27,3 +27,11 @@ struct GameNameDetailsTests {
         #expect(RegionQualityNotes.note(forGameName: "Contra (USA)", platform: "NES") != nil)
     }
 }
+
+@Suite("CollectionHasher RAR volumes")
+struct RARVolumeTests {
+    @Test func recognizesRARVolumes() {
+        for ext in ["rar", "r00", "r42"] { #expect(CollectionHasher.isRARVolume(ext)) }
+        for ext in ["zip", "7z", "sfc", "r", "rom", "r4x"] { #expect(!CollectionHasher.isRARVolume(ext)) }
+    }
+}

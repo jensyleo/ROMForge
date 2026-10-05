@@ -152,6 +152,7 @@ struct GameTreeTableView: View {
     let zipCommentHelpText: (GameNode) -> String
     let totalSizeText: (GameNode) -> String
     let gameDescription: (String) -> String
+    let gameGroupName: (String) -> String
     let familyIndicator: (GameNode) -> AnyView
     let dependenciesIndicator: (GameNode) -> AnyView
     let detailsIndicator: (GameNode) -> AnyView
@@ -238,7 +239,9 @@ struct GameTreeTableView: View {
             TableColumn("Size") { node in Text(totalSizeText(node)) }
                 .customizationID("size")
                 .defaultVisibility(.hidden)
-            TableColumn("Clone of") { node in Text(node.cloneOf.isEmpty ? "" : gameDescription(node.cloneOf)) }
+            TableColumn(system.isMAMEStyle ? "Clone of" : "Game group") { node in
+                Text(system.isMAMEStyle ? (node.cloneOf.isEmpty ? "" : gameDescription(node.cloneOf)) : gameGroupName(node.name))
+            }
                 .customizationID("cloneOf")
             TableColumn("CHD") { node in Text(node.chdNames) }
                 .customizationID("chd")
@@ -378,7 +381,7 @@ struct GameTreeTableView: View {
                 Button {
                     launchInMAME(node)
                 } label: {
-                    Label(system.isMAMEStyle ? "Play in MAME" : "Play in \(ConsoleEmulatorSettings.selected.displayName)", systemImage: "play.fill")
+                    Label(system.isMAMEStyle ? "Play in MAME" : "Play in \(ConsoleEmulatorSettings.emulator(for: system).displayName)", systemImage: "play.fill")
                 }
                 .disabled(!canLaunchMAME(node))
                 Button {

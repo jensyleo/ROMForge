@@ -50,6 +50,13 @@ public enum CollectionHasher {
     ///   archives, can itself take long enough to otherwise look like a
     ///   silent hang between "files found on disk" and the first hashing
     ///   progress update.
+    /// `rar`, or an old-style numbered volume (`r00`…`r99`).
+    public static func isRARVolume(_ lowercasedExtension: String) -> Bool {
+        if lowercasedExtension == "rar" { return true }
+        return lowercasedExtension.count == 3 && lowercasedExtension.hasPrefix("r")
+            && lowercasedExtension.dropFirst().allSatisfy(\.isNumber)
+    }
+
     public static func hash(scannedFiles: [ScannedFile], cache: ScanCache = ScanCache(), algorithms: HashAlgorithms = .all, onProgress: (@Sendable (ScanProgress) -> Void)? = nil, onArchiveListed: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [HashedFile] {
         let zipFiles = scannedFiles.filter { $0.url.pathExtension.lowercased() == "zip" }
         let sevenZipFiles = scannedFiles.filter { $0.url.pathExtension.lowercased() == "7z" }
@@ -59,9 +66,14 @@ public enum CollectionHasher {
         // data, not a rom), so hashing it here would only ever waste time
         // computing a hash `ROMMatcher` can never use. `DiskAuditor` audits
         // these separately, by each CHD's own *header* SHA1 (`CHDMatcher`).
+        // RAR volumes are excluded too: ROMForge can't read inside a RAR, a
+        // whole-file hash can never match a DAT, and a multi-part RAR pack
+        // is often several GB per part — real case (2026-10-04): 15+ 2 GB
+        // `.rar` parts in one SNES folder made "Scan All Folders" hash tens
+        // of GB over the NAS for nothing.
         let looseFiles = scannedFiles.filter {
             let ext = $0.url.pathExtension.lowercased()
-            return ext != "zip" && ext != "chd" && ext != "7z"
+            return ext != "zip" && ext != "chd" && ext != "7z" && !isRARVolume(ext)
         }
 
         // Scanning each archive's own listing (central directory for a

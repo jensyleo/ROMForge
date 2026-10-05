@@ -46,6 +46,19 @@ typealias GameNode = ROMForgeCore.GameNode
 /// that setting back to decide which cases `ForEach(DatabaseFilter.allCases)`
 /// (in `databaseListContent`) actually shows.
 enum DatabaseFilter: String, CaseIterable, Identifiable {
+    /// What a row shows. `rawValue` stays the stable persisted id; on a
+    /// console DAT "Clones"/"Originals" are misleading — No-Intro's
+    /// "parent" is just one arbitrary region/revision of a game, so a
+    /// console labels them by what they really are.
+    func title(forMAME isMAME: Bool) -> String {
+        guard !isMAME else { return rawValue }
+        switch self {
+        case .clones: return "Other versions"
+        case .originals: return "One per game"
+        default: return rawValue
+        }
+    }
+
     case allGames = "All games"
     /// Unlike the other categories (which reflect what the DAT itself
     /// declares about a game), this one reflects the *scan result* — only
@@ -432,6 +445,48 @@ private final class GamesByNameCache {
         sourceFirstName = games.first?.name
         sourceLastName = games.last?.name
         return storage
+    }
+}
+
+/// Maps every game in a console DAT to the name of its "game group": all
+/// the regional/revision variants No-Intro files under one parent. The name
+/// shown is the tag-stripped title of the best representative — the USA
+/// retail release when the group has one, else World, else Europe, else the
+/// DAT's own parent — never the raw parent entry, whose region is an
+/// arbitrary DAT-authoring choice. Groups of one game map to nothing.
+private final class GameGroupNameCache {
+    private var storage: [String: String] = [:]
+    private var sourceCount = -1
+    private var sourceFirstName: String?
+    private var sourceLastName: String?
+
+    func groupNames(from games: [DATGame]) -> [String: String] {
+        if games.count == sourceCount, games.first?.name == sourceFirstName, games.last?.name == sourceLastName {
+            return storage
+        }
+        var membersByRoot: [String: [DATGame]] = [:]
+        for game in games { membersByRoot[(game.cloneOf ?? game.name).lowercased(), default: []].append(game) }
+        var result: [String: String] = [:]
+        for members in membersByRoot.values where members.count > 1 {
+            let title = Self.representativeTitle(of: members)
+            for member in members { result[member.name.lowercased()] = title }
+        }
+        storage = result
+        sourceCount = games.count
+        sourceFirstName = games.first?.name
+        sourceLastName = games.last?.name
+        return storage
+    }
+
+    private static func representativeTitle(of members: [DATGame]) -> String {
+        let details = members.map { ($0, GameNameDetails.parse(name: $0.name)) }
+        for region in ["USA", "World", "Europe"] {
+            if let match = details.first(where: { $0.1.releaseStage == nil && $0.1.regions.contains(region) }) {
+                return RegionQualityNotes.baseTitle(for: match.0.name)
+            }
+        }
+        let parent = members.first(where: { $0.cloneOf == nil }) ?? members[0]
+        return RegionQualityNotes.baseTitle(for: parent.name)
     }
 }
 
@@ -1486,6 +1541,7 @@ struct LibraryDetailView: View {
     /// "Clone of" column from rebuilding the whole DAT index once per row,
     /// per layout pass.
     private let gamesByNameCache = GamesByNameCache()
+    private let gameGroupNameCache = GameGroupNameCache()
     /// The status filter (Correct/Incorrect/Missing/Surplus) is a genuine
     /// multi-select — each status button is an independent on/off toggle,
     /// not a single exclusive choice — so "Correct + Incorrect together,
@@ -6116,7 +6172,7 @@ struct LibraryDetailView: View {
                             // function's own doc comment for why) doing the
                             // actual selecting.
                             HStack {
-                                Label(filter.rawValue, systemImage: filter.symbolName)
+                                Label(filter.title(forMAME: system.isMAMEStyle), systemImage: filter.symbolName)
                                     .fontWeight(isSelected ? .semibold : .regular)
                                 Spacer(minLength: 0)
                             }
@@ -7542,6 +7598,7 @@ struct LibraryDetailView: View {
             zipCommentHelpText: { zipCommentHelpText(for: $0) },
             totalSizeText: { totalSizeText(for: $0) },
             gameDescription: { gameDescription(forMachineName: $0) },
+            gameGroupName: { gameGroupName(forMachineName: $0) },
             familyIndicator: { AnyView(familyIndicator(for: $0)) },
             dependenciesIndicator: { AnyView(dependenciesIndicator(for: $0)) },
             detailsIndicator: { AnyView(detailsIndicator(for: $0)) },
@@ -9969,6 +10026,10 @@ struct LibraryDetailView: View {
     /// back to the raw name itself only if no game by that name is found in
     /// the loaded DAT at all (shouldn't normally happen — `cloneof` always
     /// names a real machine in the same DAT).
+    private func gameGroupName(forMachineName name: String) -> String {
+        gameGroupNameCache.groupNames(from: viewModel.preloadedGames)[name.lowercased()] ?? ""
+    }
+
     private func gameDescription(forMachineName name: String) -> String {
         gamesByNameCache.games(from: viewModel.preloadedGames)[name.lowercased()]?.description ?? name
     }
@@ -10225,7 +10286,7 @@ struct LibraryDetailView: View {
     /// unlike MAME, a console system's emulator "no es único," so this is
     /// never hardcoded.
     private var emulatorName: String {
-        system.isMAMEStyle ? "MAME" : ConsoleEmulatorSettings.selected.displayName
+        system.isMAMEStyle ? "MAME" : ConsoleEmulatorSettings.emulator(for: system).displayName
     }
 
     /// `true` only when the RIGHT emulator for this system's own kind is
@@ -10238,7 +10299,7 @@ struct LibraryDetailView: View {
     /// each needed its own re-verified-on-every-call check rather than
     /// trusting a cached path string.
     private var isEmulatorInstalled: Bool {
-        system.isMAMEStyle ? MAMELaunchSettings.isInstalled : ConsoleEmulatorSettings.isInstalled
+        system.isMAMEStyle ? MAMELaunchSettings.isInstalled : (SystemCategoryKind(rawValue: system.category)?.canPlay ?? true) && ConsoleEmulatorSettings.isInstalled(ConsoleEmulatorSettings.emulator(for: system))
     }
 
     /// Real gap found live by jensyleo (2026-09-23): "las opciones de Play
@@ -10275,8 +10336,9 @@ struct LibraryDetailView: View {
     private var playButtonHelpText: String {
         guard isEmulatorInstalled else {
             if system.isMAMEStyle { return "Locate a MAME executable in Settings → Systems first" }
-            if let installCommand = ConsoleEmulatorSettings.selected.installCommand {
-                return "Install \(ConsoleEmulatorSettings.selected.displayName) (`\(installCommand)`) in Settings → Systems → Consoles, or configure one there"
+            let chosen = ConsoleEmulatorSettings.emulator(for: system)
+            if let installCommand = chosen.installCommand {
+                return "Install \(chosen.displayName) (`\(installCommand)`) in Settings → Systems → Consoles, or configure one there"
             }
             return "Locate an emulator in Settings → Systems → Consoles first"
         }
@@ -10323,7 +10385,7 @@ struct LibraryDetailView: View {
         }
         let emulatorLabel = emulatorName
         do {
-            try ConsoleEmulatorLauncher.launch(romFileURL: fileURL) { reason in
+            try ConsoleEmulatorLauncher.launch(romFileURL: fileURL, emulator: ConsoleEmulatorSettings.emulator(for: system)) { reason in
                 Task { @MainActor in
                     viewModel.logError("\(emulatorLabel) couldn't open \(node.gameName):\n\n\(reason)")
                 }
@@ -10372,7 +10434,7 @@ struct LibraryDetailView: View {
     /// now", not the raw underlying report.
     private func exportGameListCSV() {
         guard !cachedGameNodes.isEmpty else { return }
-        let header = ["Status", "Game name", "File name", "Info", "Expected file name", "Clone of", "Year", "Manufacturer"]
+        let header = ["Status", "Game name", "File name", "Info", "Expected file name", system.isMAMEStyle ? "Clone of" : "Game group", "Year", "Manufacturer"]
         let rows = cachedGameNodes.map { node -> [String] in
             [
                 node.aggregateStatus.map(String.init(describing:)) ?? "",
@@ -10612,7 +10674,11 @@ struct LibraryDetailView: View {
             }
         case .cloneOf:
             if showDetailGameCloneOf {
-                infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
+                if system.isMAMEStyle {
+                    infoRow("Clone of", node.cloneOf.isEmpty ? "" : gameDescription(forMachineName: node.cloneOf))
+                } else {
+                    infoRow("Game group", gameGroupName(forMachineName: node.name))
+                }
             }
         case .requiredBios:
             if showDetailRequiredBios { infoRow("Required BIOS", displayRequiredBiosNames(node.requiredBiosNames)) }

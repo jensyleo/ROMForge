@@ -111,6 +111,11 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
     /// why this can never be auto-derived from a DAT and has to be
     /// hand-curated.
     var regionQualityHintsEnabled: Bool
+    /// `KnownConsoleEmulator.rawValue` this console system plays with — each
+    /// system has its own choice since no single emulator covers every
+    /// platform. `nil` = the platform's default (see
+    /// `ConsoleEmulatorSettings.emulator(for:)`). Unused for MAME systems.
+    var emulatorRaw: String?
 
     init(
         id: UUID = UUID(),
@@ -123,7 +128,8 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         maintenanceFolderEnabled: Bool = false,
         similarNameFixEnabled: Bool = false,
         similarNameFixThreshold: Double = 0.80,
-        regionQualityHintsEnabled: Bool = false
+        regionQualityHintsEnabled: Bool = false,
+        emulatorRaw: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -136,11 +142,12 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         self.similarNameFixEnabled = similarNameFixEnabled
         self.similarNameFixThreshold = similarNameFixThreshold
         self.regionQualityHintsEnabled = regionQualityHintsEnabled
+        self.emulatorRaw = emulatorRaw
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, category, datURL, romFolderURLs, hasClones, isMAMEStyle, maintenanceFolderEnabled
-        case similarNameFixEnabled, similarNameFixThreshold, regionQualityHintsEnabled
+        case similarNameFixEnabled, similarNameFixThreshold, regionQualityHintsEnabled, emulatorRaw
         // From earlier, since-abandoned per-system designs — kept only so
         // systems saved by those builds still decode instead of crashing;
         // the values themselves are never read anymore (merge mode is a
@@ -174,6 +181,7 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         similarNameFixEnabled = try container.decodeIfPresent(Bool.self, forKey: .similarNameFixEnabled) ?? false
         similarNameFixThreshold = try container.decodeIfPresent(Double.self, forKey: .similarNameFixThreshold) ?? 0.80
         regionQualityHintsEnabled = try container.decodeIfPresent(Bool.self, forKey: .regionQualityHintsEnabled) ?? false
+        emulatorRaw = try container.decodeIfPresent(String.self, forKey: .emulatorRaw)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -189,5 +197,6 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         try container.encode(similarNameFixEnabled, forKey: .similarNameFixEnabled)
         try container.encode(similarNameFixThreshold, forKey: .similarNameFixThreshold)
         try container.encode(regionQualityHintsEnabled, forKey: .regionQualityHintsEnabled)
+        try container.encodeIfPresent(emulatorRaw, forKey: .emulatorRaw)
     }
 }

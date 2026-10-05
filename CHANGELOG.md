@@ -2,6 +2,36 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.4.1] - 2026-10-04
+
+### Added
+
+- Per-system emulator and per-system DAT for console systems (Settings →
+  Systems → Consoles), with the emulator list limited to what can run each
+  platform (NES: Nestopia/FCEUX, SNES: Snes9x, any: Custom).
+- Platform picker lists every planned platform (Nintendo, SEGA, Sony,
+  Microsoft), each with a media kind (cartridge, disc, catalog-only) and a
+  DAT hint; catalog-only platforms never offer Play.
+- "Game group" replaces "Clone of" on console systems (column and detail
+  row), showing the tag-stripped title of the group's best representative
+  (USA retail, else World, else Europe, else the DAT parent). Console
+  filters "Clones"/"Originals" are labeled "Other versions"/"One per game".
+- A skipped-RAR notice in the scan log.
+
+### Fixed
+
+- "Scan All Folders" appeared to do nothing on a folder holding multi-GB
+  `.rar` volumes: every RAR was hashed whole over the network. RAR volumes
+  (`.rar`, `.r00`–`.r99`) are no longer hashed.
+- The emulator opened empty when the game was sent to an app that was not
+  running yet — the emulator is now launched first and the game opened once
+  it has finished launching. Zipped ROMs are extracted to a temporary file
+  for emulators that cannot open zips (Snes9x).
+- Launching a ROM that is not reachable (e.g. an unmounted network volume)
+  now reports it in the log instead of opening an empty emulator.
+- Removed the console-wide "re-point every console at one DAT" button, which
+  was wrong as soon as two consoles existed.
+
 ## [1.4.0] - 2026-10-02
 
 ### Added

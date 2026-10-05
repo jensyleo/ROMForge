@@ -1856,3 +1856,33 @@ Arcade/MAME: deliberately excluded. Research (2026-10-02) showed arcade
 quality depends on the game revision more than on region (MAME's own
 parent set is the latest bug-fixed World revision by convention, not a
 quality ranking), so a per-region indicator would be misleading.
+
+## Multi-platform console rollout (SEGA, Sony, Microsoft) — in preparation
+
+Status (2026-10-04): groundwork done locally (not yet released); platforms
+are selectable in Add System but only NES/SNES are verified.
+
+Done:
+- Per-system emulator and per-system DAT (Settings → Systems → Consoles);
+  the old global emulator and the "re-point every console at one DAT"
+  button were wrong as soon as two consoles existed.
+- `SystemCategoryKind` now lists every planned platform, grouped
+  (Nintendo / SEGA / Sony / Microsoft / Arcade / Other) with a media kind:
+  cartridge, disc, or catalog-only. Add System shows a DAT hint per kind
+  (No-Intro for cartridges, Redump for discs, with an honest caveat).
+- Catalog-only platforms (PS3, PS4, Xbox 360, Xbox One) never offer Play
+  and show no emulator picker.
+- Hashing already streams in 1 MB chunks, so very large images are
+  memory-safe (but slow over a network volume on the first scan).
+
+Rollout order:
+1. SEGA cartridges (SG-1000, Master System, Game Gear, Genesis, 32X) —
+   same shape as NES/SNES; needs a real No-Intro DAT per platform.
+2. One disc platform as the test case (PS1 or SEGA CD) with a Redump DAT
+   and a real folder, to verify multi-file games (.cue + .bin, .chd).
+3. Remaining disc platforms (PS2, PSP, Saturn, Dreamcast, Xbox).
+4. Catalog-only platforms (audit/organize only).
+
+Not verified yet: which Homebrew emulators exist for each platform (only
+Nestopia/FCEUX/Snes9x are known-good; others fall back to "Custom…" until
+confirmed), and whether loose multi-file disc games match completely.

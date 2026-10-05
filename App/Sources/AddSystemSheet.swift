@@ -42,10 +42,70 @@ enum SystemCategoryKind: String, CaseIterable, Identifiable {
     case nes = "NES"
     case snes = "SNES"
     case n64 = "N64"
-    case mame = "MAME"
+    case segaSG1000 = "SEGA SG-1000"
+    case segaMasterSystem = "SEGA Master System"
+    case segaGameGear = "SEGA Game Gear"
     case segaGenesis = "SEGA Genesis"
+    case sega32X = "SEGA 32X"
+    case segaCD = "SEGA CD"
+    case segaSaturn = "SEGA Saturn"
+    case segaDreamcast = "SEGA Dreamcast"
+    case sonyPS1 = "Sony PlayStation"
+    case sonyPS2 = "Sony PlayStation 2"
+    case sonyPSP = "Sony PSP"
+    case sonyPS3 = "Sony PlayStation 3"
+    case sonyPS4 = "Sony PlayStation 4"
+    case xbox = "Microsoft Xbox"
+    case xbox360 = "Microsoft Xbox 360"
+    case xboxOne = "Microsoft Xbox One"
+    case mame = "MAME"
     case other = "Otros"
     var id: String { rawValue }
+
+    /// How a platform's games are stored — decides what the app can
+    /// promise: cartridge games are small single files (the case ROMForge
+    /// already handles well), disc games can be several files per game
+    /// (.cue + .bin) and are not verified end to end yet, and "catalog
+    /// only" platforms (huge images, no usable macOS emulator) can be
+    /// audited against a DAT but never launched.
+    enum Media { case cartridge, disc, catalogOnly, arcade, unknown }
+
+    var media: Media {
+        switch self {
+        case .nes, .snes, .n64, .segaSG1000, .segaMasterSystem, .segaGameGear, .segaGenesis, .sega32X: return .cartridge
+        case .segaCD, .segaSaturn, .segaDreamcast, .sonyPS1, .sonyPS2, .sonyPSP, .xbox: return .disc
+        case .sonyPS3, .sonyPS4, .xbox360, .xboxOne: return .catalogOnly
+        case .mame: return .arcade
+        case .other: return .unknown
+        }
+    }
+
+    /// Picker section title.
+    var group: String {
+        switch self {
+        case .nes, .snes, .n64: return "Nintendo"
+        case .segaSG1000, .segaMasterSystem, .segaGameGear, .segaGenesis, .sega32X, .segaCD, .segaSaturn, .segaDreamcast: return "SEGA"
+        case .sonyPS1, .sonyPS2, .sonyPSP, .sonyPS3, .sonyPS4: return "Sony"
+        case .xbox, .xbox360, .xboxOne: return "Microsoft"
+        case .mame: return "Arcade"
+        case .other: return "Other"
+        }
+    }
+
+    /// `false` for catalog-only platforms — there is no usable emulator to
+    /// launch their games with on macOS, so Play is never offered.
+    var canPlay: Bool { media != .catalogOnly }
+
+    /// Which DAT family normally covers this platform, plus any honest
+    /// caveat — shown under the platform picker in "Add System".
+    var datHint: String? {
+        switch media {
+        case .cartridge: return "Cartridge platform — use a No-Intro DAT."
+        case .disc: return "Disc platform — use a Redump DAT. Games made of several files (.cue + .bin) and large images are not verified end to end yet; scanning can be slow on a network volume."
+        case .catalogOnly: return "Catalog only — you can audit and organize against a Redump DAT, but there is no emulator to play these on macOS and the images are very large (scans can take a long time)."
+        case .arcade, .unknown: return nil
+        }
+    }
 }
 
 struct AddSystemSheet: View {
@@ -77,8 +137,12 @@ struct AddSystemSheet: View {
                 .textFieldStyle(.roundedBorder)
 
             Picker("Platform", selection: $category) {
-                ForEach(SystemCategoryKind.allCases) { kind in
-                    Text(kind.rawValue).tag(kind)
+                ForEach(["Nintendo", "SEGA", "Sony", "Microsoft", "Arcade", "Other"], id: \.self) { group in
+                    Section(group) {
+                        ForEach(SystemCategoryKind.allCases.filter { $0.group == group }) { kind in
+                            Text(kind.rawValue).tag(kind)
+                        }
+                    }
                 }
             }
             .pickerStyle(.menu)
@@ -86,6 +150,11 @@ struct AddSystemSheet: View {
             Text("Decides which of the DAT options below make sense to offer, and groups this system in the sidebar — \"Name\" is just your own label.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let hint = category.datHint {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(category.media == .cartridge ? Color.secondary : Color.orange)
+            }
 
             HStack {
                 Button("Select DAT…") { chooseDAT() }

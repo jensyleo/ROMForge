@@ -1730,6 +1730,10 @@ final class LibraryViewModel {
                 // Loose files are hashed directly; .zip archives are expanded
                 // and their entries hashed individually, since that's where
                 // most ROM sets actually keep each game.
+                let rarCount = scannedFiles.filter { CollectionHasher.isRARVolume($0.url.pathExtension.lowercased()) }.count
+                if rarCount > 0 {
+                    await MainActor.run { [weak self] in self?.logWarning("Skipped \(rarCount) RAR file(s) — RAR archives can't be read, so they're never hashed or matched.") }
+                }
                 let freshHashedFiles = try await CollectionHasher.hash(scannedFiles: scannedFiles, cache: scopedCache, algorithms: hashAlgorithms, onProgress: progressHandler, onArchiveListed: archiveListedHandler)
                 // Every OTHER folder's own files — reconstructed straight
                 // from the cache already on disk, with NO fresh walk/read

@@ -1305,11 +1305,13 @@ private struct ConsoleSettingsForm: View {
     /// for why Nestopia/FCEUX are the two listed (both genuinely
     /// installable via Homebrew right now) and why OpenEmu — probably the
     /// more widely-known option — isn't.
-    @AppStorage(ConsoleEmulatorSettings.selectedEmulatorKey) private var selectedEmulatorRaw = ConsoleEmulatorSettings.defaultEmulator.rawValue
     @AppStorage(ConsoleEmulatorSettings.customExecutablePathKey) private var customEmulatorPath = ""
+    /// The one console system whose DAT is being replaced — every console
+    /// has its own DAT, so the update is never applied to the others.
+    @State private var datTargetSystemID: UUID?
 
-    private var selectedEmulator: KnownConsoleEmulator {
-        KnownConsoleEmulator(rawValue: selectedEmulatorRaw) ?? ConsoleEmulatorSettings.defaultEmulator
+    private var datTargetSystem: RomSystem? {
+        consoleSystems.first { $0.id == datTargetSystemID }
     }
 
     private var consoleFilters: [DatabaseFilter] {
@@ -1322,62 +1324,20 @@ private struct ConsoleSettingsForm: View {
 
     var body: some View {
         Form {
-            Text("Applies to every console-style system (any system whose \"Category\" isn't \"Arcade\" — Console, Handheld, PC, and similar).")
+            Text("Applies to every console-style system (any system whose Platform isn't \"MAME\" — NES, SNES, SEGA Genesis, and similar). DAT and emulator are set per system.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Section("Database") {
-                HStack {
-                    Button("Choose DAT File…") { chooseNewDAT() }
-                        .disabled(consoleSystems.isEmpty || isUpdatingDAT)
-                    if isUpdatingDAT {
-                        ProgressView().controlSize(.small)
-                    }
-                    Spacer()
-                }
-                Text("Re-points EVERY configured console system at the chosen DAT in one step, instead of editing each one individually — the last scan result for each affected system is cleared too, so the next Scan re-audits against the new DAT rather than showing stale results from the old one. MAME systems are never touched here.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("Systems") {
                 if consoleSystems.isEmpty {
-                    Text("No console systems configured yet — add one first (the \"+\" in the sidebar, Category set to something other than \"Arcade\").")
+                    Text("No console systems configured yet — add one first (the \"+\" in the sidebar, Platform set to something other than \"MAME\").")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
-            Section("Emulator") {
-                Picker("Play games with", selection: $selectedEmulatorRaw) {
-                    ForEach(KnownConsoleEmulator.allCases) { emulator in
-                        Text(emulator.displayName).tag(emulator.rawValue)
-                    }
+                ForEach(consoleSystems) { system in
+                    consoleSystemRow(system)
                 }
-                .pickerStyle(.menu)
-                if selectedEmulator == .custom {
-                    HStack {
-                        Text(customEmulatorPath.isEmpty ? "Not configured" : customEmulatorPath)
-                            .font(.caption)
-                            .foregroundStyle(customEmulatorPath.isEmpty ? .secondary : .primary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button("Locate…") { locateCustomEmulator() }
-                        if !customEmulatorPath.isEmpty {
-                            Button("Clear") { customEmulatorPath = "" }
-                        }
-                    }
-                    Text("Pick either a plain command-line emulator executable, or a GUI `.app` — either kind works, launched the same way \"Play\" launches Nestopia/FCEUX.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    HStack {
-                        Image(systemName: ConsoleEmulatorSettings.isInstalled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(ConsoleEmulatorSettings.isInstalled ? .green : .orange)
-                        Text(ConsoleEmulatorSettings.isInstalled
-                            ? "\(selectedEmulator.displayName) is installed."
-                            : "\(selectedEmulator.displayName) isn't installed yet — run `\(selectedEmulator.installCommand ?? "")` in Terminal.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Text("Used by the toolbar's \"Play\" button and a game's own right-click menu, for every console-style system — same idea as MAME's own executable below, just picked from a short list since a console system has no single canonical emulator.")
+                if isUpdatingDAT { ProgressView().controlSize(.small) }
+                Text("Each console system has its own DAT and its own emulator. Replacing a DAT clears only that system's last scan result, so the next Scan re-audits against the new DAT. MAME systems are never touched here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1392,7 +1352,7 @@ private struct ConsoleSettingsForm: View {
             RegionQualityHintsSettingsSection(store: store, relevantSystems: consoleSystems)
             Section("Database tree branches") {
                 ForEach(consoleFilters) { filter in
-                    Toggle(filter.rawValue, isOn: Binding(
+                    Toggle(filter.title(forMAME: false), isOn: Binding(
                         get: { DatabaseFilterVisibilitySettings.isEnabled(filter, in: enabledDatabaseFiltersRaw) },
                         set: { enabledDatabaseFiltersRaw = DatabaseFilterVisibilitySettings.setEnabled($0, for: filter, in: enabledDatabaseFiltersRaw) }
                     ))
@@ -1416,17 +1376,15 @@ private struct ConsoleSettingsForm: View {
             "Update Database?",
             isPresented: Binding(get: { pendingDATUpdateURL != nil }, set: { if !$0 { pendingDATUpdateURL = nil } })
         ) {
-            Button("Update \(consoleSystems.count) Console System\(consoleSystems.count == 1 ? "" : "s")") {
-                if let pendingDATUpdateURL {
-                    applyDATUpdate(to: pendingDATUpdateURL)
+            Button("Update \(datTargetSystem?.name ?? "System")") {
+                if let pendingDATUpdateURL, let target = datTargetSystem {
+                    applyDATUpdate(to: pendingDATUpdateURL, system: target)
                 }
                 pendingDATUpdateURL = nil
             }
             Button("Cancel", role: .cancel) { pendingDATUpdateURL = nil }
         } message: {
-            Text(
-                "This points every one of your \(consoleSystems.count) configured console system(s) — \(consoleSystems.map(\.name).joined(separator: ", ")) — at \"\(pendingDATUpdateURL?.lastPathComponent ?? "")\" instead of whatever DAT each one currently uses, and clears each one's last scan result (a fresh Scan will be needed). MAME systems are never touched here. This can't be undone automatically."
-            )
+            Text("This points \(datTargetSystem?.name ?? "this system") at \"\(pendingDATUpdateURL?.lastPathComponent ?? "")\" instead of its current DAT and clears its last scan result (a fresh Scan will be needed). Other systems are not touched. This can't be undone automatically.")
         }
         .alert("Database Updated", isPresented: $didUpdateDAT) {
             Button("OK") {}
@@ -1435,15 +1393,84 @@ private struct ConsoleSettingsForm: View {
         }
     }
 
-    private func chooseNewDAT() {
+    private func chooseNewDAT(for system: RomSystem) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Select the new DAT (.dat or .xml)"
+        panel.message = "Select the new DAT for \(system.name) (.dat or .xml)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         // Copied into ROMForge's own storage right away — see
         // `DATStorageLocation`'s own doc comment for why.
+        datTargetSystemID = system.id
         pendingDATUpdateURL = DATStorageLocation.copy(from: url)
+    }
+
+    /// One row per console system: its DAT and the emulator it plays with.
+    @ViewBuilder
+    private func consoleSystemRow(_ system: RomSystem) -> some View {
+        let options = KnownConsoleEmulator.options(forCategory: system.category)
+        let chosen = ConsoleEmulatorSettings.emulator(for: system)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(system.name).font(.headline)
+            HStack {
+                Text("DAT: \(system.datURL.lastPathComponent)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Choose DAT…") { chooseNewDAT(for: system) }
+                    .disabled(isUpdatingDAT)
+            }
+            if options.isEmpty {
+                Text("Catalog only — there is no emulator to play this platform on macOS, so Play is not offered.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !options.isEmpty {
+            Picker("Play games with", selection: Binding(
+                get: { chosen.rawValue },
+                set: { newValue in
+                    var updated = system
+                    updated.emulatorRaw = newValue
+                    store.update(updated)
+                }
+            )) {
+                ForEach(options) { emulator in
+                    Text(emulator.displayName).tag(emulator.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            if chosen == .custom {
+                HStack {
+                    Text(customEmulatorPath.isEmpty ? "Not configured" : customEmulatorPath)
+                        .font(.caption)
+                        .foregroundStyle(customEmulatorPath.isEmpty ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Locate…") { locateCustomEmulator() }
+                    if !customEmulatorPath.isEmpty {
+                        Button("Clear") { customEmulatorPath = "" }
+                    }
+                }
+                Text("Pick either a plain command-line emulator executable or a GUI `.app`. This custom emulator is shared by every system set to \"Custom…\".")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            let installed = ConsoleEmulatorSettings.isInstalled(chosen)
+            HStack {
+                Image(systemName: installed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(installed ? .green : .orange)
+                Text(installed
+                    ? "\(chosen.displayName) is installed."
+                    : chosen.installCommand.map { "\(chosen.displayName) isn't installed yet — run `\($0)` in Terminal." } ?? "No custom emulator configured.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     /// "Custom…" emulator choice — same two-button "Locate…"/"Clear"
@@ -1462,24 +1489,19 @@ private struct ConsoleSettingsForm: View {
         customEmulatorPath = url.path
     }
 
-    private func applyDATUpdate(to newDATURL: URL) {
+    private func applyDATUpdate(to newDATURL: URL, system: RomSystem) {
         isUpdatingDAT = true
-        let systemsToUpdate = consoleSystems
-        let oldDATURLs = Set(systemsToUpdate.map(\.datURL))
-        for system in systemsToUpdate {
-            var updated = system
-            updated.datURL = newDATURL
-            store.update(updated)
-        }
+        let oldDATURL = system.datURL
+        var updated = system
+        updated.datURL = newDATURL
+        store.update(updated)
         // See `MAMEMergeSettingsForm.applyDATUpdate(to:)`'s own identical
         // cleanup comment.
-        for oldURL in oldDATURLs {
-            DATStorageLocation.removeIfOrphaned(oldURL, keeping: store.systems)
-        }
+        DATStorageLocation.removeIfOrphaned(oldDATURL, keeping: store.systems)
         Task {
-            await SavedViewStatePurger.purgeScanResults(systems: systemsToUpdate)
+            await SavedViewStatePurger.purgeScanResults(systems: [updated])
             isUpdatingDAT = false
-            updatedSystemCount = systemsToUpdate.count
+            updatedSystemCount = 1
             didUpdateDAT = true
         }
     }
