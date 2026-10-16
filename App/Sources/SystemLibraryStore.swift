@@ -125,6 +125,15 @@ final class SystemLibraryStore {
             updated.category = system.isMAMEStyle ? SystemCategoryKind.mame.rawValue : SystemCategoryKind.other.rawValue
             return updated
         }
+        // A system the user named after MSU-1 while "SNES-MSU1" did not exist
+        // yet was created as plain "SNES" — move it to the new platform.
+        systems = systems.map { system in
+            guard system.category == SystemCategoryKind.snes.rawValue, system.name.lowercased().contains("msu") else { return system }
+            migrated = true
+            var updated = system
+            updated.category = SystemCategoryKind.snesMSU1.rawValue
+            return updated
+        }
         if migrated { save() }
         let lastSelectedID = UserDefaults.standard.string(forKey: Self.lastSelectedSystemIDKey).flatMap(UUID.init(uuidString:))
         selectedSystemID = systems.first { $0.id == lastSelectedID }?.id ?? systems.first?.id

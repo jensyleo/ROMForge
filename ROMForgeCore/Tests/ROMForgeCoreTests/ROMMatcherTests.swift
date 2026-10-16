@@ -1429,3 +1429,60 @@ struct ROMMatcherTests {
         #expect(duplicate.misnamedArchiveForGameName == "Real Game")
     }
 }
+
+@Suite("AppleDouble sidecars never claim a game")
+struct AppleDoubleMatcherTests {
+    @Test("name-only matching: a zip with the real ROM plus its '._' sidecar is satisfied by the real ROM")
+    func sidecarDoesNotStealTheMatch() throws {
+        let rom = Data((0..<2048).map { UInt8($0 % 241) })
+        let h = FileHasher.hash(data: rom)
+        let game = DATGame(name: "Metroid Fusion (USA)", description: "Metroid Fusion (USA)", cloneOf: nil, romOf: nil,
+                           roms: [DATRom(name: "Metroid Fusion (USA).gba", size: Int64(rom.count), crc: h.crc32, md5: h.md5, sha1: h.sha1)])
+        let dat = DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"), games: [game])
+        let zip = URL(fileURLWithPath: "/tmp/Metroid Fusion (USA).zip")
+        let sidecarData = Data(repeating: 7, count: 305)
+        let sidecar = HashedFile(file: ScannedFile(url: zip, name: "._Metroid Fusion (USA, Australia).gba", size: 305), hash: FileHasher.hash(data: sidecarData))
+        let real = HashedFile(file: ScannedFile(url: zip, name: "Metroid Fusion (USA, Australia).gba", size: Int64(rom.count)), hash: h)
+        for nameOnly in [true, false] {
+            let report = try ROMMatcher.match(dat: dat, hashedFiles: [sidecar, real], nameOnlyMatching: nameOnly)
+            let audit = try AuditReporter.generate(from: report)
+            let gameEntries = audit.entries.filter { $0.game == "Metroid Fusion (USA)" }
+            #expect(gameEntries.count == 1 && gameEntries[0].status != .missing, "nameOnly=\(nameOnly)")
+            #expect(gameEntries.first?.actualSize == Int64(rom.count), "the claimed file must be the real ROM, nameOnly=\(nameOnly)")
+        }
+    }
+}
+
+
+@Suite("Name-only matching prefers content that verifies")
+struct NameOnlyPrefersVerifiedContentTests {
+    private func dat(_ rom: Data, _ h: FileHash) -> DATFile {
+        let game = DATGame(name: "Metroid Fusion (USA)", description: "Metroid Fusion (USA)", cloneOf: nil, romOf: nil,
+                           roms: [DATRom(name: "Metroid Fusion (USA).gba", size: Int64(rom.count), crc: h.crc32, md5: h.md5, sha1: h.sha1)])
+        return DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"), games: [game])
+    }
+
+    @Test("a 305-byte junk entry already NAMED like the DAT rom does not beat the real, differently named ROM")
+    func junkWithTheRightNameLoses() throws {
+        let rom = Data((0..<2048).map { UInt8($0 % 241) })
+        let h = FileHasher.hash(data: rom)
+        let zip = URL(fileURLWithPath: "/tmp/Metroid Fusion (USA).zip")
+        let junk = HashedFile(file: ScannedFile(url: zip, name: "Metroid Fusion (USA).gba", size: 305), hash: FileHasher.hash(data: Data(repeating: 7, count: 305)))
+        let real = HashedFile(file: ScannedFile(url: zip, name: "Metroid Fusion (USA, Australia).gba", size: Int64(rom.count)), hash: h)
+        let report = try ROMMatcher.match(dat: dat(rom, h), hashedFiles: [junk, real], nameOnlyMatching: true)
+        let audit = try AuditReporter.generate(from: report)
+        let entry = try #require(audit.entries.first { $0.game == "Metroid Fusion (USA)" })
+        #expect(entry.status == .correct)
+        #expect(entry.actualSize == Int64(rom.count))
+    }
+
+    @Test("a '._' sidecar never gets a 'possible match' rename suggestion")
+    func sidecarGetsNoSuggestion() throws {
+        let rom = Data((0..<2048).map { UInt8($0 % 241) })
+        let h = FileHasher.hash(data: rom)
+        let zip = URL(fileURLWithPath: "/tmp/Metroid Fusion (USA).zip")
+        let sidecar = HashedFile(file: ScannedFile(url: zip, name: "._Metroid Fusion (USA, Australia).gba", size: 305), hash: FileHasher.hash(data: Data(repeating: 7, count: 305)))
+        let report = try ROMMatcher.match(dat: dat(rom, h), hashedFiles: [sidecar], nameOnlyMatching: false, nameSimilarityThreshold: 0.5)
+        #expect(report.surplusFiles.allSatisfy { $0.similarNameSuggestion == nil })
+    }
+}

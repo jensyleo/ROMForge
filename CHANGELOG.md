@@ -2,6 +2,39 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.5.0] - 2026-10-16
+
+### Added
+
+- Game Boy Advance support: "GBA" platform, mGBA as its emulator
+  (`brew install --cask mgba-app`), and better handling of GBA DAT name tags
+  (multi-game language lists like "En,Fr,De+En", Test Program, Debug, Netcard,
+  Unknown region).
+- SNES cartridge info: the map mode (LoROM/HiROM) and expansion chip
+  (Super FX, SA-1, Cx4, DSP, S-DD1…) read from each ROM's own header at the
+  end of a scan — also inside zips — cached, and shown without touching the
+  disk or network while browsing.
+- "SNES-MSU1" platform for MSU-1 hacks: a game's ROM, `.msu`, `.bml` and `.pcm`
+  tracks are grouped into one row per game folder (instead of hundreds of
+  "unknown" files), labeled "MSU-1 hack · N audio tracks", named after the base
+  game, and never offered to "Remove Useless Files".
+- "Remove Useless Files" never deletes another program's files (Batocera/
+  EmulationStation `gamelist.xml`, `images`, `videos`, `manuals`…).
+- Your own region-quality notes file; more built-in notes (Zelda: A Link to the
+  Past as "Japan or USA").
+- Help topics: "SNES-specific notes", "SNES MSU-1 hacks".
+
+### Fixed
+
+- A zip holding the real ROM plus its macOS `._` sidecar could be matched on
+  the 305-byte sidecar (with "Ignore CRC/hash verification" on) — sidecars never
+  claim a game now, name matches that also verify by content win, and a
+  sidecar never gets a rename suggestion.
+- Zipped ROMs handed to emulators that cannot open zips are extracted to a
+  temporary file, refusing archives that expand past 1 GB and pruning old
+  extractions.
+- The sidebar section header "CONSOLES" is no longer cut to "CONSOL…".
+
 ## [1.4.2] - 2026-10-05
 
 ### Added

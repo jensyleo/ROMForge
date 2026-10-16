@@ -267,6 +267,17 @@ public enum RegionQualityNotes {
             consultedDate: "2026-10-02"
         ),
         RegionQualityNote(
+            gameFamily: "Legend of Zelda, The - A Link to the Past",
+            platform: "SNES",
+            alternateTitles: ["Zelda no Densetsu - Kamigami no Triforce"],
+            recommendedRegion: "Japan",
+            tiedRegions: ["USA"],
+            reason: "A trade-off: the Japanese release keeps the original religious references (the Western release turned the priest Agahnim into a wizard and changed the Hylian text), while the USA/PAL builds are a later revision (v1.2) with more bug fixes. Pick Japan for the original content, USA for fewer glitches.",
+            sourceURL: "https://en.wikipedia.org/wiki/The_Legend_of_Zelda:_A_Link_to_the_Past",
+            sourceLicense: "Own summary with attribution — not text copied from the source",
+            consultedDate: "2026-10-07"
+        ),
+        RegionQualityNote(
             gameFamily: "Super Mario Kart",
             platform: "SNES",
             recommendedRegion: "USA",

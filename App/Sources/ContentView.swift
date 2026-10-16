@@ -192,7 +192,7 @@ struct ContentView: View {
     private var sidebarList: some View {
         List(selection: $store.selectedSystemID) {
             ForEach(groupedSystems, id: \.category) { group in
-                Section(group.category) {
+                Section {
                     ForEach(group.systems) { system in
                         // jensyleo's own request (2026-09-16): "quita ese
                         // punto rojo al lado de MAME" — the per-system
@@ -208,6 +208,9 @@ struct ContentView: View {
                             }
                         }
                     }
+                } header: {
+                    // Shrinks to fit instead of showing "CONSOL…" in a narrow sidebar.
+                    Text(group.category).lineLimit(1).minimumScaleFactor(0.6)
                 }
             }
         }

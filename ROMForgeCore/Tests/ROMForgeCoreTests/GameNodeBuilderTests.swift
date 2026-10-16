@@ -324,3 +324,50 @@ struct GameNodeBuilderTests {
         #expect(GameNodeBuilder.unscannedCatalogNodes(matching: .completeGames, preloadedGames: games).isEmpty)
     }
 }
+
+@Suite("MSU-1 grouping")
+struct MSU1GroupingTests {
+    private func unknown(_ path: String) -> AuditEntry {
+        let url = URL(fileURLWithPath: path)
+        return AuditEntry(status: .unknownFile, game: nil, name: url.lastPathComponent, path: url)
+    }
+
+    private func nodes(_ paths: [String]) -> [GameNode] {
+        GameNodeBuilder.gameNodes(from: paths.map(unknown), gamesByName: [:], gameAggregateStatusByName: [:], combineRomAndCHD: false, isFolderScoped: false)
+    }
+
+    @Test("one game folder holding a ROM, .msu, .bml and many .pcm tracks becomes ONE group named after the folder")
+    func folderBecomesOneGroup() {
+        let dir = "/r/Batman Returns (USA) (MSU1)"
+        let result = nodes([
+            "\(dir)/Batman Returns (USA) (MSU1).sfc", "\(dir)/Batman Returns (USA) (MSU1).msu", "\(dir)/Batman Returns (USA) (MSU1).bml",
+            "\(dir)/Batman_Returns_(USA)_(MSU1)-1.pcm", "\(dir)/Batman_Returns_(USA)_(MSU1)-2.pcm",
+        ])
+        #expect(result.count == 1)
+        #expect(result[0].name == "Batman Returns (USA) (MSU1)")
+        #expect(result[0].entries.count == 5)
+    }
+
+    @Test("games sharing one flat folder are grouped by game name, not lumped together")
+    func flatFolderGroupsByGame() {
+        let result = nodes([
+            "/r/A Game (MSU1).sfc", "/r/A Game (MSU1).msu", "/r/A_Game_(MSU1)-1.pcm",
+            "/r/B Game (MSU1).sfc", "/r/B Game (MSU1).msu", "/r/B_Game_(MSU1)-7.pcm",
+        ])
+        #expect(Set(result.map(\.name)) == ["A Game (MSU1)", "B Game (MSU1)"])
+        #expect(result.allSatisfy { $0.entries.count == 3 })
+    }
+
+    @Test("a folder with .pcm tracks but no .msu file (and even no ROM) is still one group")
+    func pcmAloneIsEnough() {
+        let withRom = nodes(["/r/G/g.sfc", "/r/G/g-1.pcm", "/r/G/g-2.pcm", "/r/G/manifest.bml"])
+        #expect(withRom.count == 1 && withRom[0].name == "G")
+        let noRom = nodes(["/r/H/h-1.pcm", "/r/H/h-2.pcm"])
+        #expect(noRom.count == 1 && noRom[0].entries.count == 2)
+    }
+
+    @Test("without .msu or .pcm files nothing is grouped — every unknown file keeps its own row")
+    func ordinaryFoldersUnchanged() {
+        #expect(nodes(["/r/one.sfc", "/r/two.sfc", "/r/readme.txt"]).count == 3)
+    }
+}

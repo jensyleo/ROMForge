@@ -424,6 +424,12 @@ final class LibraryViewModel {
     /// smaller `surplusFiles` list. The actual candidate set only changes
     /// when `matchReport` itself changes (a real scan completing), so
     /// it's computed once and reused here instead of on every click.
+    /// SNES internal-header results, per system, keyed by `snesHeaderKey`.
+    /// Filled by `updateSNESHeaders` at the end of a scan and read from the
+    /// info panels — never read from disk/NAS while browsing. Observed via
+    /// `snesHeaderRevision`.
+    @ObservationIgnored private var snesHeaderCache: [UUID: [String: SNESHeaderCacheEntry]] = [:]
+    private(set) var snesHeaderRevision = 0
     private var matchedZipArchiveURLsCache: Set<URL>?
 
     private func matchedZipArchiveURLs(for matchReport: MatchReport) -> Set<URL> {
@@ -1642,6 +1648,7 @@ final class LibraryViewModel {
             // inside `Task.detached` below. See that property's own doc
             // comment for why this cache exists at all.
             let cachedMaintenanceDonor = cachedMaintenanceDonorFiles
+            let isMSU1System = system.category == SystemCategoryKind.snesMSU1.rawValue
             let detached = Task.detached(priority: .userInitiated) {
                 // Auto-detects Logiqx/ClrMamePro XML vs. MAME -listxml. A
                 // large MAME DAT is tens/hundreds of MB of XML, and parsing
@@ -2027,6 +2034,7 @@ final class LibraryViewModel {
                 // "which entries did this rescan touch" question needs the
                 // corrected path too.
                 let freshlyObservedPaths = Set(freshHashedFiles.map(\.file.url.path)).map { URL(fileURLWithPath: $0) }
+                if isMSU1System { auditReport = AuditReporter.discountingMSU1Companions(in: auditReport) }
                 return (dat.header, matchReport, auditReport, dat, freshlyParsed, freshlyParsedIdentity, freshlyObservedPaths, failedFolders, redundantCounts)
             }
             cancelDetachedWork = { detached.cancel() }
@@ -2147,6 +2155,10 @@ final class LibraryViewModel {
             lastScanScope = Self.mergedScanScope(lastScanScope, withNewScan: folders)
             auditReport = displayedAudit
             Self.sharedAuditReportCache[system.id] = auditReport
+            if system.category.hasPrefix("SNES") {
+                let snesEntries = audit.entries
+                Task { await self.updateSNESHeaders(system: system, entries: snesEntries) }
+            }
             scanProgress = nil
             folderScanFilesFound = nil
             currentlyScanningFolder = nil
@@ -2900,6 +2912,10 @@ final class LibraryViewModel {
         // actual deletes took.
         let fixProgressHandler: @Sendable (Int, Int) -> Void = { [weak self] completed, total in
             Task { @MainActor in self?.fixActionProgress = ("Removing useless files…", completed, total) }
+        }
+        let keptForeign = Self.restrictToScope(ForeignProgramFiles.protectedSurplus(matchReport: matchReport).map { RebuildOperation.delete($0) }, scopeFolders: scopeFolders).count
+        if keptForeign > 0 {
+            log("Kept \(keptForeign) file(s) that belong to another program (gamelist.xml, images, videos, manuals…) — they are never removed as \"useless\".")
         }
         let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
             let operations = Self.restrictToScope(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport), scopeFolders: scopeFolders)
@@ -5097,4 +5113,129 @@ private extension DateFormatter {
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
+}
+
+// MARK: - SNES internal headers (expansion chip)
+
+/// One cached header read: valid while the file's size and modification date
+/// are unchanged. `info == nil` means "read, and no valid SNES header found".
+struct SNESHeaderCacheEntry: Codable, Sendable {
+    let size: Int64
+    let modified: Double
+    let info: SNESHeaderInfo?
+    /// MSU-1 audio tracks found next to this ROM (SNES-MSU1 systems only);
+    /// `nil` when the ROM has no `.msu` file beside it.
+    let msuTracks: Int?
+}
+
+extension LibraryViewModel {
+    private static let snesROMExtensions: Set<String> = ["sfc", "smc", "swc", "fig", "gd3"]
+
+    /// How many `.pcm` tracks belong to the MSU-1 ROM at `url`, or `nil` if
+    /// no `.msu` file of the same name sits beside it. Track files are named
+    /// like the ROM with underscores for spaces and a `-N` suffix
+    /// ("Batman_Returns_(USA)_(MSU1)-12.pcm"), and may share a folder with
+    /// other games, so they are matched by that normalized name.
+    nonisolated static func msuTrackCount(forROMAt url: URL) -> Int? {
+        let fileManager = FileManager.default
+        guard url.pathExtension.lowercased() != "zip" else { return nil }
+        let hasMSUFile = fileManager.fileExists(atPath: url.deletingPathExtension().appendingPathExtension("msu").path)
+        let normalizedBase = url.deletingPathExtension().lastPathComponent.lowercased().replacingOccurrences(of: "_", with: " ")
+        let names = (try? fileManager.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)) ?? []
+        let tracks = names.filter { name in
+            guard (name as NSString).pathExtension.lowercased() == "pcm" else { return false }
+            var stem = (name as NSString).deletingPathExtension.lowercased()
+            if let dash = stem.lastIndex(of: "-"), stem[stem.index(after: dash)...].allSatisfy(\.isNumber) { stem = String(stem[..<dash]) }
+            return stem.replacingOccurrences(of: "_", with: " ") == normalizedBase
+        }.count
+        // MSU-1 when the flag file exists or audio tracks do — some packs
+        // ship without the empty `.msu` file.
+        return (hasMSUFile || tracks > 0) ? tracks : nil
+    }
+
+    /// Audio-track count of the MSU-1 game at `url`, from the last scan.
+    func snesMSUTrackCount(forFileAt url: URL?, systemID: UUID) -> Int? {
+        _ = snesHeaderRevision
+        guard let url else { return nil }
+        return loadedSNESHeaderCache(for: systemID)[Self.snesHeaderKey(url: url, entryName: nil)]?.msuTracks
+    }
+
+    nonisolated static func snesHeaderKey(url: URL, entryName: String?) -> String {
+        url.path + "#" + (entryName ?? url.lastPathComponent)
+    }
+
+    private static func snesHeaderCacheURL(for systemID: UUID) -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ROMForge/SNESHeaders", isDirectory: true)
+            .appendingPathComponent("\(systemID.uuidString).json")
+    }
+
+    private func loadedSNESHeaderCache(for systemID: UUID) -> [String: SNESHeaderCacheEntry] {
+        if let cached = snesHeaderCache[systemID] { return cached }
+        let loaded = (try? Data(contentsOf: Self.snesHeaderCacheURL(for: systemID)))
+            .flatMap { try? JSONDecoder().decode([String: SNESHeaderCacheEntry].self, from: $0) } ?? [:]
+        snesHeaderCache[systemID] = loaded
+        return loaded
+    }
+
+    /// The cartridge info for the ROM at `url` (a loose file, or `entryName`
+    /// inside a zip) — straight from memory, filled by the last scan.
+    func snesHeaderInfo(forFileAt url: URL?, entryName: String?, systemID: UUID) -> SNESHeaderInfo? {
+        _ = snesHeaderRevision
+        guard let url else { return nil }
+        return loadedSNESHeaderCache(for: systemID)[Self.snesHeaderKey(url: url, entryName: entryName)]?.info
+    }
+
+    /// Reads the internal header of every SNES ROM the last scan found that
+    /// is not cached yet (or changed), a few tens of KB each, then stores
+    /// the result. Runs at the end of a scan only — browsing never touches
+    /// the disk or the network for this.
+    func updateSNESHeaders(system: RomSystem, entries: [AuditEntry]) async {
+        let existing = loadedSNESHeaderCache(for: system.id)
+        struct Candidate: Sendable { let key: String; let url: URL; let entryName: String?; let size: Int64 }
+        var seen = Set<String>()
+        var candidates: [Candidate] = []
+        for entry in entries {
+            guard let url = entry.path else { continue }
+            let entryName = entry.actualEntryName
+            let name = entryName ?? url.lastPathComponent
+            guard Self.snesROMExtensions.contains((name as NSString).pathExtension.lowercased()) else { continue }
+            let key = Self.snesHeaderKey(url: url, entryName: entryName)
+            guard seen.insert(key).inserted else { continue }
+            candidates.append(Candidate(key: key, url: url, entryName: entryName, size: entry.actualSize ?? 0))
+        }
+        guard !candidates.isEmpty else { return }
+        let isMSU1System = system.category == SystemCategoryKind.snesMSU1.rawValue
+        let toRead = candidates.filter { candidate in
+            // An MSU-1 system re-checks its `.msu`/`.pcm` neighbours every scan.
+            if isMSU1System { return true }
+            guard let cached = existing[candidate.key] else { return true }
+            let modified = (try? FileManager.default.attributesOfItem(atPath: candidate.url.path)[.modificationDate] as? Date)?.timeIntervalSince1970
+            return cached.size != candidate.size || cached.modified != modified
+        }
+        guard !toRead.isEmpty else { return }
+        log("Reading SNES headers (\(toRead.count) file(s))…")
+        let started = Date()
+        let isMSU1 = system.category == SystemCategoryKind.snesMSU1.rawValue
+        let results: [String: SNESHeaderCacheEntry] = await Task.detached(priority: .utility) {
+            var results: [String: SNESHeaderCacheEntry] = [:]
+            for candidate in toRead {
+                if Task.isCancelled { break }
+                let modified = ((try? FileManager.default.attributesOfItem(atPath: candidate.url.path)[.modificationDate]) as? Date)?.timeIntervalSince1970 ?? 0
+                guard let prefix = try? ROMPrefixReader.read(url: candidate.url, entryName: candidate.entryName, maxBytes: SNESHeaderDecoder.bytesNeeded) else { continue }
+                let info = SNESHeaderDecoder.decode(prefix: prefix, fileSize: candidate.size)
+                results[candidate.key] = SNESHeaderCacheEntry(size: candidate.size, modified: modified, info: info, msuTracks: isMSU1 ? Self.msuTrackCount(forROMAt: candidate.url) : nil)
+            }
+            return results
+        }.value
+        var merged = existing
+        merged.merge(results) { _, new in new }
+        snesHeaderCache[system.id] = merged
+        snesHeaderRevision += 1
+        let cacheURL = Self.snesHeaderCacheURL(for: system.id)
+        try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(merged) { try? data.write(to: cacheURL, options: .atomic) }
+        let withChip = results.values.filter { $0.info?.expansionChip != nil }.count
+        log(String(format: "Read %d SNES header(s) in %.1fs (%d with an expansion chip).", results.count, Date().timeIntervalSince(started), withChip))
+    }
 }

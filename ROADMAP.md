@@ -1922,7 +1922,7 @@ Unreleased
   downloadable update.
 
 Waiting on real data / a decision
-- SNES expansion-chip display: now unblocked (real SNES ROMs available) —
+- SNES expansion-chip display: IMPLEMENTED 2026-10-07 (header read at the end of a scan, cached in `SNESHeaders/`, shown as a "Cartridge" line). Decoder checked offline against 47 real ROMs (Cx4 ×2, SA-1, Super FX found, no false positives); still to confirm in the app after a rescan. Was: now unblocked (real SNES ROMs available) —
   decode during scan, cache, show from cache only; verify with Super Mario
   Kart (DSP), Star Fox (Super FX), Super Mario RPG (SA-1) if owned.
 - Region-quality notes: decide Zelda ALttP (Japan content vs USA bug fixes),
@@ -1952,3 +1952,12 @@ Ideas (documented above, not started)
 Housekeeping
 - `project.yml` still says MARKETING_VERSION 1.0.1 (the Xcode project is the
   source of truth at 1.4.1).
+
+## Built-in No-Intro DATs — DROPPED (2026-10-16)
+
+Bundling No-Intro DATs inside the app was built and then removed: No-Intro
+publishes no license or redistribution terms (checked on its site and wiki),
+so nothing is bundled or published. Each system keeps the DAT the user picks.
+The personal DATs downloaded for testing live outside the repo
+(`~/Documents/Desarrollos/DATs-No-Intro-personales/`). Revisit only if
+No-Intro's maintainers grant explicit permission.

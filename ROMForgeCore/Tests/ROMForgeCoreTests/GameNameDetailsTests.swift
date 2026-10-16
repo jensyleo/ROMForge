@@ -21,6 +21,15 @@ struct GameNameDetailsTests {
         #expect(d.videoStandard == "PAL (50 Hz)")
     }
 
+    @Test func decodesMultiCartLanguagesAndGBAStyleTags() {
+        let multi = GameNameDetails.parse(name: "2 in 1 (Europe) (En,Fr,De+En)")
+        #expect(multi.languages == ["English", "French", "German"])
+        #expect(GameNameDetails.parse(name: "X (Unknown)").regions == ["Unknown"])
+        #expect(GameNameDetails.parse(name: "Y (USA) (Test Program)").releaseStage == "Test program")
+        #expect(GameNameDetails.parse(name: "Z (World) (Debug)").releaseStage == "Debug")
+        #expect(GameNameDetails.parse(name: "W (Japan) (Netcard)").distribution == ["Netcard"])
+    }
+
     @Test func tiedRegionsAndPlatformScoping() {
         let note = RegionQualityNotes.note(forGameName: "Contra III - The Alien Wars (USA)", platform: "SNES")
         #expect(note?.bestRegionsLabel == "Japan or USA")
@@ -66,5 +75,68 @@ struct RegionQualityOverridesTests {
     @Test func rejectsInvalidAndOversizedFiles() {
         #expect(RegionQualityOverrides.parse(data: Data("nonsense".utf8)).notes.isEmpty)
         #expect(RegionQualityOverrides.parse(data: Data(count: RegionQualityOverrides.maxFileBytes + 1)).notes.isEmpty)
+    }
+}
+
+@Suite("ForeignProgramFiles")
+struct ForeignProgramFilesTests {
+    @Test func protectsFrontEndFilesButNotMacJunk() {
+        for path in ["/r/snes-msu1/gamelist.xml", "/r/snes-msu1/gamelist.xml.old", "/r/snes-msu1/_info.txt",
+                     "/r/snes-msu1/images/Game-image.png", "/r/snes-msu1/videos/Game.mp4", "/r/x/manuals/a/b.pdf",
+                     "/r/Metadata.txt"] {
+            #expect(ForeignProgramFiles.isProtected(URL(fileURLWithPath: path)), "\\(path)")
+        }
+        for path in ["/r/snes/.DS_Store", "/r/snes/._cx4.rom", "/r/snes/readme.txt", "/r/snes/Some Game.sfc", "/r/snes/a/b/c/images2/x.png"] {
+            #expect(!ForeignProgramFiles.isProtected(URL(fileURLWithPath: path)), "\\(path)")
+        }
+    }
+}
+
+@Suite("SNESHeaderDecoder")
+struct SNESHeaderDecoderTests {
+    private func rom(loROM: Bool, chipset: UInt8, subtype: UInt8 = 0, checksum: Bool = true, copier: Bool = false) -> (Data, Int64) {
+        var data = Data(count: (copier ? 512 : 0) + 0x10000)
+        let base = (copier ? 512 : 0) + (loROM ? 0x7FC0 : 0xFFC0)
+        data[base + 0x15] = loROM ? 0x20 : 0x21
+        for i in 0..<21 { data[base + i] = 0x41 }
+        data[base + 0x16] = chipset
+        data[(copier ? 512 : 0) + (loROM ? 0x7FBF : 0xFFBF)] = subtype
+        if checksum { data[base + 0x1C] = 0x00; data[base + 0x1D] = 0x00; data[base + 0x1E] = 0xFF; data[base + 0x1F] = 0xFF }
+        return (data, Int64(data.count) + (copier ? 0 : 0))
+    }
+
+    @Test func decodesMapModeAndChips() {
+        let cases: [(Bool, UInt8, UInt8, String?)] = [
+            (true, 0x00, 0, nil), (true, 0x02, 0, nil), (true, 0x13, 0, "Super FX (GSU)"), (true, 0x15, 0, "Super FX (GSU)"),
+            (true, 0x34, 0, "SA-1"), (true, 0x03, 0, "DSP (DSP-1/2/3/4)"), (false, 0x43, 0, "S-DD1"), (true, 0xF3, 0x10, "Cx4"),
+            (false, 0xF5, 0x00, "SPC7110"),
+        ]
+        for (lo, chipset, subtype, expected) in cases {
+            let (data, size) = rom(loROM: lo, chipset: chipset, subtype: subtype)
+            let info = SNESHeaderDecoder.decode(prefix: data, fileSize: size)
+            #expect(info?.mapMode == (lo ? "LoROM" : "HiROM"))
+            #expect(info?.expansionChip == expected, "chipset \\(chipset)")
+        }
+    }
+
+    @Test func acceptsUnusualMapModeWhenChecksumIsValid() {
+        // Contra III (map mode 0x53) and Super Mario RPG (SA-1: 0x23 at the LoROM location), as seen in real dumps.
+        for (mapMode, chipset, expected) in [(UInt8(0x53), UInt8(0x00), String?.none), (UInt8(0x23), UInt8(0x35), "SA-1")] {
+            let (data, size) = rom(loROM: true, chipset: chipset)
+            var patched = data
+            patched[0x7FC0 + 0x15] = mapMode
+            let info = SNESHeaderDecoder.decode(prefix: patched, fileSize: size)
+            #expect(info?.mapMode == "LoROM")
+            #expect(info?.expansionChip == expected)
+        }
+    }
+
+    @Test func handlesCopierHeaderBadChecksumAndGarbage() {
+        let (withCopier, _) = rom(loROM: true, chipset: 0x13, copier: true)
+        #expect(SNESHeaderDecoder.decode(prefix: withCopier, fileSize: 512 + 0x80000)?.expansionChip == "Super FX (GSU)")
+        let (noChecksum, size) = rom(loROM: true, chipset: 0x34, checksum: false)
+        #expect(SNESHeaderDecoder.decode(prefix: noChecksum, fileSize: size)?.expansionChip == "SA-1")
+        #expect(SNESHeaderDecoder.decode(prefix: Data(count: 0x10200), fileSize: 0x80000) == nil)
+        #expect(SNESHeaderDecoder.decode(prefix: Data(count: 100), fileSize: 100) == nil)
     }
 }

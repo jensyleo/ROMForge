@@ -62,11 +62,12 @@ public enum GameNodeBuilder {
     public static func computeScopedStatusCounts(scopedEntries: [AuditEntry], gamesByName: [String: DATGame]) -> [AuditStatus: Int] {
         var entriesByGame: [String: [AuditEntry]] = [:]
         var surplusByArchive: [String: [AuditEntry]] = [:]
+        let archiveKeyFor = SurplusArchiveKey.keyProvider(for: scopedEntries)
         for entry in scopedEntries {
             if let game = entry.game {
                 entriesByGame[game, default: []].append(entry)
             } else {
-                surplusByArchive[SurplusArchiveKey.key(for: entry), default: []].append(entry)
+                surplusByArchive[archiveKeyFor(entry), default: []].append(entry)
             }
         }
         // Checked against the DAT's own real catalog (`gamesByName`), not
@@ -210,8 +211,9 @@ public enum GameNodeBuilder {
         // distinct rows.
         var surplusByArchive: [String: [AuditEntry]] = [:]
         var surplusOrder: [String] = []
+        let archiveKeyFor = SurplusArchiveKey.keyProvider(for: surplusEntries)
         for entry in surplusEntries {
-            let archiveKey = SurplusArchiveKey.key(for: entry)
+            let archiveKey = archiveKeyFor(entry)
             if surplusByArchive[archiveKey] == nil { surplusOrder.append(archiveKey) }
             surplusByArchive[archiveKey, default: []].append(entry)
         }

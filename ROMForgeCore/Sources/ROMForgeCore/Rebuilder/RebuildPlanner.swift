@@ -713,6 +713,9 @@ public enum RebuildPlanner {
     public static func planRemoveUselessFiles(matchReport: MatchReport) -> [RebuildOperation] {
         matchReport.surplusFiles
             .filter { $0.requiredByGameDescription == nil && !$0.matchesNodumpRomName }
+            // Never delete a front-end's own files (gamelist.xml, images,
+            // videos, manuals…) — see `ForeignProgramFiles`.
+            .filter { isArchivedEntry($0.file.file) || !ForeignProgramFiles.isProtected($0.file.file.url) }
             .compactMap { surplus in
                 let file = surplus.file.file
                 let url = file.url
@@ -2011,5 +2014,47 @@ public enum RebuildPlanner {
             }
             return "\(machineName) — \(description) (\(parts.joined(separator: "; ")))"
         }
+    }
+}
+
+/// Files that belong to ANOTHER program sitting in a ROM folder — typically a
+/// Batocera/EmulationStation/RetroPie share, whose `gamelist.xml`, `images`,
+/// `videos` and `manuals` the DAT knows nothing about. "Remove Useless Files"
+/// deletes every loose file the DAT does not recognize, so without this it
+/// would wipe a front-end's artwork and game list. macOS junk (`.DS_Store`,
+/// `._*`) is deliberately NOT protected — those are meant to be removed.
+public enum ForeignProgramFiles {
+    private static let fileNames: Set<String> = [
+        "gamelist.xml", "gamelist.xml.old", "gamelist.xml.bak", "_info.txt", "metadata.txt",
+        "systeminfo.txt", "es_systems.cfg", "es_settings.cfg",
+    ]
+    private static let folderNames: Set<String> = [
+        "images", "videos", "manuals", "media", "downloaded_images", "downloaded_videos",
+        "downloaded_media", "screenshots", "marquees", "covers", "boxart", "snaps",
+        "thumbnails", "wheel", "fanart", "titles",
+    ]
+
+    /// `true` when `url` is a known front-end file, or sits directly inside
+    /// (or one level below) a known front-end media folder.
+    public static func isProtected(_ url: URL) -> Bool {
+        if fileNames.contains(url.lastPathComponent.lowercased()) { return true }
+        // SNES MSU-1 data: the `.msu`/`.pcm`/`.bml` files are never junk, and a
+        // ROM sitting next to a `.msu` file of the same name is an MSU-1 game.
+        let ext = url.pathExtension.lowercased()
+        if AuditReporter.msu1CompanionExtensions.contains(ext) { return true }
+        if ["sfc", "smc", "swc", "fig"].contains(ext),
+           FileManager.default.fileExists(atPath: url.deletingPathExtension().appendingPathExtension("msu").path) { return true }
+        let parent = url.deletingLastPathComponent()
+        if folderNames.contains(parent.lastPathComponent.lowercased()) { return true }
+        return folderNames.contains(parent.deletingLastPathComponent().lastPathComponent.lowercased())
+    }
+
+    /// Surplus loose files `planRemoveUselessFiles` would have removed but
+    /// keeps because they belong to another program — for the log message.
+    public static func protectedSurplus(matchReport: MatchReport) -> [URL] {
+        matchReport.surplusFiles
+            .filter { $0.requiredByGameDescription == nil && !$0.matchesNodumpRomName }
+            .filter { $0.file.file.url.lastPathComponent == $0.file.file.name && isProtected($0.file.file.url) }
+            .map { $0.file.file.url }
     }
 }

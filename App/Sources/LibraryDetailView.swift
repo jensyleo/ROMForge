@@ -478,6 +478,38 @@ private final class GameGroupNameCache {
         return storage
     }
 
+    /// Index from a normalized title to the group title a game of that name
+    /// would show — used to name an MSU-1 hack's base game, which is not in
+    /// the DAT itself but whose title is (e.g. "Contra III … (MSU1)" →
+    /// "Contra III - The Alien Wars").
+    private var titleIndexStorage: [String: String] = [:]
+    private var titleIndexCount = -1
+
+    func titleIndex(from games: [DATGame]) -> [String: String] {
+        if games.count == titleIndexCount { return titleIndexStorage }
+        let groups = groupNames(from: games)
+        var index: [String: String] = [:]
+        for game in games {
+            let key = Self.normalizedTitleKey(game.name)
+            guard !key.isEmpty, index[key] == nil else { continue }
+            index[key] = groups[game.name.lowercased()] ?? RegionQualityNotes.baseTitle(for: game.name)
+        }
+        titleIndexStorage = index
+        titleIndexCount = games.count
+        return index
+    }
+
+    /// "Super Ghouls'n Ghosts (USA) (MSU1)" and "Super Ghouls 'N Ghosts
+    /// (USA)" share one key: no tags, no "the", no MSU-1 marker, letters and
+    /// digits only.
+    static func normalizedTitleKey(_ name: String) -> String {
+        var title = RegionQualityNotes.baseTitle(for: name).lowercased()
+        title = title.replacingOccurrences(of: "_", with: " ")
+        title = title.replacingOccurrences(of: "msu-1", with: " ").replacingOccurrences(of: "msu1", with: " ")
+        title = title.replacingOccurrences(of: "\\bthe\\b", with: " ", options: .regularExpression)
+        return String(title.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+
     private static func representativeTitle(of members: [DATGame]) -> String {
         let details = members.map { ($0, GameNameDetails.parse(name: $0.name)) }
         for region in ["USA", "World", "Europe"] {
@@ -7908,6 +7940,9 @@ struct LibraryDetailView: View {
     /// path for a game with no rom of its own actually present.
     private func infoText(for node: GameNode) -> String {
         var base = node.infoText
+        if node.isSurplusBucket, let tracks = node.entries.lazy.compactMap({ viewModel.snesMSUTrackCount(forFileAt: $0.path, systemID: system.id) }).first {
+            base = "MSU-1 hack · \(tracks) audio track\(tracks == 1 ? "" : "s")"
+        }
         // `SimilarNameSuggester`'s own live preview — jensyleo's own
         // request (2026-09-29): this used to show only in the Roms panel
         // (the rightmost table/detail entry), never in the Games panel
@@ -8566,7 +8601,15 @@ struct LibraryDetailView: View {
             } else {
                 base = entry.isOptional ? "Missing (optional)" : "Missing"
             }
-        case .surplus, .unknownFile: base = "Unrecognized"
+        case .surplus, .unknownFile:
+            if let tracks = viewModel.snesMSUTrackCount(forFileAt: entry.path, systemID: system.id) {
+                base = "MSU-1 hack · \(tracks) audio track\(tracks == 1 ? "" : "s")"
+            } else if system.category == SystemCategoryKind.snesMSU1.rawValue,
+                      let label = ["pcm": "MSU-1 audio track", "msu": "MSU-1 flag file", "bml": "MSU-1 manifest"][(entry.path?.pathExtension ?? "").lowercased()] {
+                base = label
+            } else {
+                base = "Unrecognized"
+            }
         // jensyleo's own gray-file split (2026-08-06): this specific
         // entry's own archive IS a real, recognized DAT machine name — a
         // more actionable message than plain "Unrecognized" (which reads as
@@ -10027,7 +10070,11 @@ struct LibraryDetailView: View {
     /// the loaded DAT at all (shouldn't normally happen — `cloneof` always
     /// names a real machine in the same DAT).
     private func gameGroupName(forMachineName name: String) -> String {
-        gameGroupNameCache.groupNames(from: viewModel.preloadedGames)[name.lowercased()] ?? ""
+        if let group = gameGroupNameCache.groupNames(from: viewModel.preloadedGames)[name.lowercased()] { return group }
+        // An MSU-1 hack is not in the DAT, but its base game is: name the
+        // group after that game, matched by title.
+        guard system.category == SystemCategoryKind.snesMSU1.rawValue else { return "" }
+        return gameGroupNameCache.titleIndex(from: viewModel.preloadedGames)[GameGroupNameCache.normalizedTitleKey(name)] ?? ""
     }
 
     private func gameDescription(forMachineName name: String) -> String {
@@ -10598,6 +10645,10 @@ struct LibraryDetailView: View {
         let game = node.sourceGame
         Divider()
         Text("From the DAT").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+        if system.category.hasPrefix("SNES"), let entry = node.entries.first(where: { $0.path != nil }),
+           let header = viewModel.snesHeaderInfo(forFileAt: entry.path, entryName: entry.actualEntryName, systemID: system.id) {
+            infoRow("Cartridge", "\(header.mapMode) · " + (header.expansionChip.map { "Expansion chip: \($0)" } ?? "no expansion chip"))
+        }
         if !details.regions.isEmpty { infoRow("Region", details.regions.joined(separator: ", ")) }
         if let standard = details.videoStandard { infoRow("Video standard", standard) }
         if !details.languages.isEmpty { infoRow("Languages", details.languages.joined(separator: ", ")) }
@@ -10881,6 +10932,11 @@ struct LibraryDetailView: View {
             if showDetailRomDumpStatus { dumpStatusDetailRow(entry) }
             if showDetailRomType {
                 Text("Type: \(entryKindText(for: entry))")
+            }
+            if system.category.hasPrefix("SNES"),
+               let header = viewModel.snesHeaderInfo(forFileAt: entry.path, entryName: entry.actualEntryName, systemID: system.id) {
+                Text("Cartridge: \(header.mapMode) · " + (header.expansionChip.map { "Expansion chip: \($0)" } ?? "no expansion chip"))
+                    .foregroundStyle(.secondary)
             }
             if let sourceRom = sourceRom(for: entry) {
                 if showDetailRomSerial, let serial = sourceRom.serial, !serial.isEmpty {

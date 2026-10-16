@@ -933,6 +933,11 @@ public enum ROMMatcher {
         for (position, existing) in surplusFiles.enumerated() {
             guard existing.requiredByGameDescription == nil, existing.misnamedArchiveForGameName == nil else { continue }
             let file = existing.file.file
+            // Never suggest renaming a macOS AppleDouble sidecar ("._Game.gba")
+            // to a game's name — real incident (2026-10-13, GBA): accepting
+            // that suggestion renamed the 305-byte sidecar inside a zip to
+            // "Metroid Fusion (USA).gba", leaving the real ROM misnamed.
+            guard !file.name.hasPrefix("._"), !file.effectiveEntryPath.hasPrefix("__MACOSX/") else { continue }
             // An archive's own base name (extension-free, e.g. "Contra
             // (Usa)" from "Contra (Usa).zip") for a real archive; a loose
             // file's own full name (extension included — `bestMatch`
@@ -1044,8 +1049,18 @@ public enum ROMMatcher {
         onProgress: (@Sendable (Int, Int) -> Void)?,
         cancellationFlag: CancellationFlag?
     ) -> [GameCandidates] {
+        // macOS AppleDouble sidecars ("._Game.gba", "__MACOSX/…") are never a
+        // ROM. Real bug found live (2026-10-13, GBA): with "Ignore CRC/hash
+        // verification" on, a zip holding the real ROM plus its "._" sidecar
+        // had BOTH translate to the same DAT name, the sidecar sorted first,
+        // and the game read "Correct" off a 305-byte junk file while the
+        // real ROM was reported as surplus.
+        @Sendable func isMacJunk(_ index: Int) -> Bool {
+            let file = hashedFiles[index].file
+            return file.name.hasPrefix("._") || file.effectiveEntryPath.hasPrefix("__MACOSX/") || file.name == ".DS_Store"
+        }
         @Sendable func candidates(for game: DATGame) -> GameCandidates {
-            let ownArchiveIndices = Set(primaryArchiveIndices(archiveNameIndex[game.name.lowercased()] ?? [], hashedFiles: hashedFiles, isRecentlyScanned: isRecentlyScanned, game: game))
+            let ownArchiveIndices = Set(primaryArchiveIndices(archiveNameIndex[game.name.lowercased()] ?? [], hashedFiles: hashedFiles, isRecentlyScanned: isRecentlyScanned, game: game).filter { !isMacJunk($0) })
             // Every archive belonging to this merged family (already
             // lowercased — see `DATGame.mergedFamilyMachineNames`'s own doc
             // comment) — empty for Split/Non-merged, where it's simply never
@@ -1069,10 +1084,14 @@ public enum ROMMatcher {
                     crcIndexStripped: crcIndexStripped, md5IndexStripped: md5IndexStripped, sha1IndexStripped: sha1IndexStripped, sizeIndexStripped: sizeIndexStripped,
                     allowSizeOnlyFallback: false
                 )
-                let nameMatches = nameIndex[rom.name] ?? []
+                let nameMatches = (nameIndex[rom.name] ?? []).filter { !isMacJunk($0) }
+                // A name match whose content ALSO hash-verifies beats one that
+                // merely shares the name.
+                let hashVerifiedSet = Set(hashVerifiedCandidates)
+                let preferredNameMatches = nameMatches.filter { hashVerifiedSet.contains($0) } + nameMatches.filter { !hashVerifiedSet.contains($0) }
                 var nameMatchIndex: Int? = isArchiveOrganized
-                    ? nameMatches.first { ownArchiveIndices.contains($0) }
-                    : nameMatches.first
+                    ? preferredNameMatches.first { ownArchiveIndices.contains($0) }
+                    : preferredNameMatches.first
                 // jensyleo's own report (2026-09-30) — "Trust file names"
                 // (`nameOnlyMatching`) is meant to mean exactly that per its
                 // own doc comment ("no valide ni el CRC ni el hash, que
@@ -1101,6 +1120,14 @@ public enum ROMMatcher {
                 if nameOnlyMatching, nameMatchIndex == nil, isArchiveOrganized,
                    game.roms.count == 1, ownArchiveIndices.count == 1 {
                     nameMatchIndex = ownArchiveIndices.first
+                }
+                // "Ignore hash verification" trusts NAMES, but when this game's
+                // own archive holds a file whose content ALSO verifies, that
+                // file is the one — never a different file that merely carries
+                // the expected name (e.g. a small junk entry renamed to it).
+                if nameOnlyMatching, isArchiveOrganized,
+                   let verified = hashVerifiedCandidates.first(where: { ownArchiveIndices.contains($0) }) {
+                    nameMatchIndex = verified
                 }
                 let familyNameMatchIndex: Int? = {
                     guard isArchiveOrganized, !familyArchiveIndices.isEmpty else { return nil }

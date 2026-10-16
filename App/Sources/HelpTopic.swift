@@ -472,5 +472,12 @@ enum HelpLibrary {
                 "Write the reason in your own words and keep the source link, so you can check it later. Prefer concrete, checkable differences (censorship removed, content cut, bugs fixed, an audio chip only one version uses, 60 Hz vs 50 Hz speed) over taste. When two regions are equal, list both with tiedRegions instead of picking one. Keep the file in a folder you back up — it is your own research.",
             ]),
         ]),
+        HelpTopic(id: "snes", title: "SNES-specific notes", symbol: "gamecontroller.fill", sections: [
+            HelpSection(heading: "Cartridge info: map mode and expansion chip", paragraphs: [
+                "A SNES ROM carries its own header inside the ROM data. After a scan, the Games panel's \"From the DAT\" section and the Roms panel show a \"Cartridge\" line: the memory map (LoROM or HiROM) and, when the cartridge has one, its expansion chip — Super FX (GSU), SA-1, Cx4, DSP, S-DD1, OBC-1, S-RTC, SPC7110… e.g. \"LoROM · Expansion chip: SA-1\". Most cartridges have no chip and show \"no expansion chip\".",
+                "Unlike NES (where the DAT itself declares the header), this has to be read from the ROM, so ROMForge reads it at the END of a scan — a few tens of KB per game, also inside a zip — and keeps the result in a small cache (`Application Support/ROMForge/SNESHeaders/`). Browsing never reads your disk or network for this: select a game and the line appears instantly from the cache. Run Scan once on a SNES system to fill it; later scans only re-read files that changed. The log shows \"Reading SNES headers…\" and a count of how many have a chip.",
+                "The header names the chip family, not always the exact variant: a DSP cartridge could carry a DSP-1, 2, 3 or 4, and a Super FX cartridge a GSU-1 or GSU-2. A ROM whose header cannot be recognized (a hack, a corrupt dump) shows no Cartridge line rather than a guess.",
+            ]),
+        ]),
     ]
 }

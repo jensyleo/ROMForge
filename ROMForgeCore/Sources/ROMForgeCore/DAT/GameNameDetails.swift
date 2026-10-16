@@ -43,7 +43,7 @@ public struct GameNameDetails: Equatable, Sendable {
     private static let regionNames: Set<String> = [
         "usa", "europe", "japan", "world", "asia", "australia", "brazil", "canada", "china", "denmark", "finland",
         "france", "germany", "greece", "hong kong", "ireland", "italy", "korea", "netherlands", "norway",
-        "portugal", "russia", "spain", "sweden", "taiwan", "uk", "united kingdom",
+        "portugal", "russia", "spain", "sweden", "taiwan", "uk", "united kingdom", "unknown",
     ]
 
     public static func parse(name: String) -> GameNameDetails {
@@ -54,8 +54,14 @@ public struct GameNameDetails: Equatable, Sendable {
             let lower = tag.lowercased()
             let parts = tag.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             if parts.allSatisfy({ regionNames.contains($0.lowercased()) }) { details.regions += parts; continue }
-            if parts.allSatisfy({ languageNames[$0.lowercased()] != nil }) {
-                details.languages += parts.compactMap { languageNames[$0.lowercased()] }; continue
+            // Multi-game cartridges write one language list per game joined
+            // with "+" ("En,Fr,De+En"): read them as one combined list.
+            let languageTokens = tag.split(whereSeparator: { $0 == "," || $0 == "+" }).map { $0.trimmingCharacters(in: .whitespaces) }
+            if !languageTokens.isEmpty, languageTokens.allSatisfy({ languageNames[$0.lowercased()] != nil }) {
+                for name in languageTokens.compactMap({ languageNames[$0.lowercased()] }) where !details.languages.contains(name) {
+                    details.languages.append(name)
+                }
+                continue
             }
             if lower.hasPrefix("rev ") { details.revision = String(tag.dropFirst(4)); continue }
             if lower.hasPrefix("v") , tag.dropFirst().first?.isNumber == true { details.version = String(tag.dropFirst()); continue }
@@ -64,6 +70,9 @@ public struct GameNameDetails: Equatable, Sendable {
             if lower.hasPrefix("sample") { details.releaseStage = "Sample"; continue }
             if lower.hasPrefix("demo") { details.releaseStage = "Demo"; continue }
             if lower.hasPrefix("kiosk") { details.releaseStage = "Kiosk"; continue }
+            if lower == "test program" { details.releaseStage = "Test program"; continue }
+            if lower == "program" { details.releaseStage = "Program"; continue }
+            if lower == "debug" { details.releaseStage = "Debug"; continue }
             if lower.hasPrefix("promo") { details.releaseStage = "Promotional"; continue }
             switch lower {
             case "unl": details.flags.append("Unlicensed"); continue
@@ -77,7 +86,8 @@ public struct GameNameDetails: Equatable, Sendable {
             case "bs": details.flags.append("Satellaview (BS-X) broadcast"); continue
             default: break
             }
-            if lower.contains("virtual console") || lower.contains("switch") || lower.contains("classic mini")
+            if lower.contains("netcard") || lower.contains("evercade") || lower.contains("limited run games")
+                || lower.contains("virtual console") || lower.contains("switch") || lower.contains("classic mini")
                 || lower.contains("wii") || lower.contains("e-reader") || lower.contains("collection") {
                 details.distribution += parts; continue
             }

@@ -293,6 +293,28 @@ public enum AuditReporter {
         OrphanedBIOSDetector.markingOrphaned(in: report)
     }
 
+    /// File extensions of an MSU-1 game's companion data: the `.msu` flag
+    /// file, its `.pcm` audio tracks and the `.bml` manifest.
+    public static let msu1CompanionExtensions: Set<String> = ["msu", "pcm", "bml"]
+
+    /// For an MSU-1 system: the unrecognized `.msu`/`.pcm`/`.bml` companion
+    /// files stay in the report (they are shown inside their game's group),
+    /// but stop counting as "surplus" so hundreds of audio tracks do not
+    /// inflate the unknown tally.
+    public static func discountingMSU1Companions(in report: AuditReport) -> AuditReport {
+        let companions = report.entries.filter { entry in
+            guard entry.status == .unknownFile else { return false }
+            let name = entry.actualEntryName ?? entry.path?.lastPathComponent ?? entry.name
+            return msu1CompanionExtensions.contains((name as NSString).pathExtension.lowercased())
+        }.count
+        guard companions > 0 else { return report }
+        return AuditReport(
+            entries: report.entries, correct: report.correct, incorrect: report.incorrect, badDump: report.badDump,
+            missing: report.missing, surplus: max(0, report.surplus - companions), unverifiable: report.unverifiable,
+            duplicateSets: report.duplicateSets
+        )
+    }
+
     /// Flags a TOSEC/GoodTools embedded-filename-CRC vs actual-content-hash
     /// mismatch (`FilenameCRCVerifier`) — cheap (string parsing only, no
     /// extra file I/O), so run right alongside the other pure flagging

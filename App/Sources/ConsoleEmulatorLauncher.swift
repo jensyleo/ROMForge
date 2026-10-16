@@ -21,6 +21,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     case nestopia
     case fceux
     case snes9x
+    case mgba
     case custom
 
     public var id: String { rawValue }
@@ -32,7 +33,8 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         guard SystemCategoryKind(rawValue: category)?.canPlay ?? true else { return [] }
         switch category {
         case "NES": return [.nestopia, .fceux, .custom]
-        case "SNES": return [.snes9x, .custom]
+        case "SNES", "SNES-MSU1": return [.snes9x, .custom]
+        case "GBA": return [.mgba, .custom]
         default: return [.custom]
         }
     }
@@ -42,6 +44,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         case .nestopia: return "Nestopia"
         case .fceux: return "FCEUX"
         case .snes9x: return "Snes9x"
+        case .mgba: return "mGBA"
         case .custom: return "Custom…"
         }
     }
@@ -59,6 +62,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         case .nestopia: return "brew install --cask nestopia"
         case .fceux: return "brew install fceux"
         case .snes9x: return "brew install --cask snes9x"
+        case .mgba: return "brew install --cask mgba-app"
         case .custom: return nil
         }
     }
@@ -70,7 +74,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var opensZipDirectly: Bool {
         switch self {
         case .nestopia, .fceux: return true
-        case .snes9x, .custom: return false
+        case .snes9x, .mgba, .custom: return false
         }
     }
 
@@ -87,7 +91,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     /// this static property.
     var isAppBundle: Bool {
         switch self {
-        case .nestopia, .snes9x: return true
+        case .nestopia, .snes9x, .mgba: return true
         case .fceux, .custom: return false
         }
     }
@@ -102,7 +106,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var bundleIdentifier: String? {
         switch self {
         case .nestopia: return "com.bannister.Nestopia"
-        case .fceux, .snes9x, .custom: return nil
+        case .fceux, .snes9x, .mgba, .custom: return nil
         }
     }
 
@@ -112,7 +116,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var homebrewDefaultPath: String? {
         switch self {
         case .fceux: return "/opt/homebrew/bin/fceux"
-        case .nestopia, .snes9x, .custom: return nil
+        case .nestopia, .snes9x, .mgba, .custom: return nil
         }
     }
 
@@ -132,6 +136,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var homebrewCaskAppPath: String? {
         switch self {
         case .snes9x: return "/Applications/Snes9x.app"
+        case .mgba: return "/Applications/mGBA.app"
         case .nestopia, .fceux, .custom: return nil
         }
     }
@@ -347,6 +352,10 @@ enum ConsoleEmulatorLauncher {
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("ROMForge-Play", isDirectory: true)
             .appendingPathComponent(folderName, isDirectory: true)
+        // Refuse a zip that would expand to an unreasonable size (zip bomb),
+        // and sweep extractions left from earlier launches.
+        try checkExpandedSize(of: url)
+        pruneOldExtractions(in: destination.deletingLastPathComponent())
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         let unzip = Process()
@@ -364,6 +373,37 @@ enum ConsoleEmulatorLauncher {
         func size(_ file: URL) -> Int { (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 }
         guard let largest = files.max(by: { size($0) < size($1) }) else { throw LaunchError.extractionFailed("the archive is empty") }
         return largest
+    }
+
+    private static let maxExtractedBytes: Int64 = 1 << 30
+
+    /// Total uncompressed size of `zip` per `unzip -Zt` ("N files, X bytes
+    /// uncompressed, …"); throws when it exceeds 1 GiB.
+    private static func checkExpandedSize(of zip: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = ["-Zt", zip.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try process.run()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        process.waitUntilExit()
+        guard let match = output.range(of: #"(\d+) bytes uncompressed"#, options: .regularExpression),
+              let bytes = Int64(output[match].split(separator: " ")[0]) else { return }
+        if bytes > maxExtractedBytes {
+            throw LaunchError.extractionFailed("the archive expands to \(bytes / 1_048_576) MB, more than the 1 GB limit")
+        }
+    }
+
+    /// Deletes extraction folders older than a day.
+    private static func pruneOldExtractions(in root: URL) {
+        let fileManager = FileManager.default
+        let cutoff = Date().addingTimeInterval(-86_400)
+        for folder in (try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+            let modified = (try? folder.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantFuture
+            if modified < cutoff { try? fileManager.removeItem(at: folder) }
+        }
     }
 
     /// Same reasoning as `MAMELauncher`'s own identical private type —

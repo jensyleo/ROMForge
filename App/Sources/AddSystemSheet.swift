@@ -41,7 +41,12 @@ import SwiftUI
 enum SystemCategoryKind: String, CaseIterable, Identifiable {
     case nes = "NES"
     case snes = "SNES"
+    /// SNES hacks with MSU-1 audio (patched ROM + `.msu` + `.pcm` tracks).
+    /// Kept apart from "SNES" so patched ROMs never mix with verified ones;
+    /// uses the same No-Intro SNES DAT to name the base game.
+    case snesMSU1 = "SNES-MSU1"
     case n64 = "N64"
+    case gba = "GBA"
     case segaSG1000 = "SEGA SG-1000"
     case segaMasterSystem = "SEGA Master System"
     case segaGameGear = "SEGA Game Gear"
@@ -72,7 +77,7 @@ enum SystemCategoryKind: String, CaseIterable, Identifiable {
 
     var media: Media {
         switch self {
-        case .nes, .snes, .n64, .segaSG1000, .segaMasterSystem, .segaGameGear, .segaGenesis, .sega32X: return .cartridge
+        case .nes, .snes, .snesMSU1, .n64, .gba, .segaSG1000, .segaMasterSystem, .segaGameGear, .segaGenesis, .sega32X: return .cartridge
         case .segaCD, .segaSaturn, .segaDreamcast, .sonyPS1, .sonyPS2, .sonyPSP, .xbox: return .disc
         case .sonyPS3, .sonyPS4, .xbox360, .xboxOne: return .catalogOnly
         case .mame: return .arcade
@@ -83,7 +88,7 @@ enum SystemCategoryKind: String, CaseIterable, Identifiable {
     /// Picker section title.
     var group: String {
         switch self {
-        case .nes, .snes, .n64: return "Nintendo"
+        case .nes, .snes, .snesMSU1, .n64, .gba: return "Nintendo"
         case .segaSG1000, .segaMasterSystem, .segaGameGear, .segaGenesis, .sega32X, .segaCD, .segaSaturn, .segaDreamcast: return "SEGA"
         case .sonyPS1, .sonyPS2, .sonyPSP, .sonyPS3, .sonyPS4: return "Sony"
         case .xbox, .xbox360, .xboxOne: return "Microsoft"
