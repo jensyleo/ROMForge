@@ -2,6 +2,15 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.6.1] - 2026-10-20
+
+### Fixed
+
+- A ROM folder nested inside another configured folder (for example `ROMS` and
+  `ROMS/SELECTED`) listed its files twice, so single-ROM games in it read as
+  "incorrect" instead of "correct". Each physical file now enters a scan once,
+  for every system; real duplicates in separate folders are detected as before.
+
 ## [1.6.0] - 2026-10-20
 
 ### Added
