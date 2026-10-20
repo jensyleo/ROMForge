@@ -1742,6 +1742,15 @@ final class LibraryViewModel {
                     await MainActor.run { [weak self] in self?.logWarning("Skipped \(rarCount) RAR file(s) — RAR archives can't be read, so they're never hashed or matched.") }
                 }
                 let freshHashedFiles = try await CollectionHasher.hash(scannedFiles: scannedFiles, cache: scopedCache, algorithms: hashAlgorithms, onProgress: progressHandler, onArchiveListed: archiveListedHandler)
+                // A zip with no entries at all is reported as a loose file
+                // named like the zip itself — surface it so it isn't mistaken
+                // for a game with content.
+                let emptyZips = freshHashedFiles.filter { LibraryDetailView.isEmptyZip(path: $0.file.url, name: $0.file.name) }
+                if !emptyZips.isEmpty {
+                    let names = emptyZips.prefix(5).map { "\"\($0.file.name)\"" }.joined(separator: ", ")
+                    let more = emptyZips.count > 5 ? " and \(emptyZips.count - 5) more" : ""
+                    await MainActor.run { [weak self] in self?.logWarning("Found \(emptyZips.count) empty zip file(s) with no ROM inside: \(names)\(more). Remove Useless Files… deletes them.") }
+                }
                 // Every OTHER folder's own files — reconstructed straight
                 // from the cache already on disk, with NO fresh walk/read
                 // of its own, for a genuinely scoped scan. Combined with
@@ -2891,6 +2900,33 @@ final class LibraryViewModel {
         logSuccess("Fix All: every automatic Fix action has run.")
     }
 
+    /// Hidden macOS junk under `roots`, at most 4 levels deep: AppleDouble
+    /// "._*" files, ".DS_Store" and "__MACOSX" folders. Never follows into a
+    /// "__MACOSX" folder (it is removed whole) or into packages.
+    nonisolated static func macOSJunkFiles(under roots: [URL]) -> [URL] {
+        var found: [URL] = []
+        for root in roots {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsPackageDescendants]
+            ) else { continue }
+            for case let url as URL in enumerator {
+                let name = url.lastPathComponent
+                let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                if isDirectory {
+                    if name == "__MACOSX" {
+                        found.append(url)
+                        enumerator.skipDescendants()
+                    } else if enumerator.level >= 4 {
+                        enumerator.skipDescendants()
+                    }
+                } else if name.hasPrefix("._") || name == ".DS_Store" {
+                    found.append(url)
+                }
+            }
+        }
+        return found
+    }
+
     func removeUselessFiles(system: RomSystem, scopeFolders: [URL]) async {
         guard Self.modificationsEnabled else {
             logError("Removing files is disabled — enable file modifications in Settings → General first.")
@@ -2917,8 +2953,15 @@ final class LibraryViewModel {
         if keptForeign > 0 {
             log("Kept \(keptForeign) file(s) that belong to another program (gamelist.xml, images, videos, manuals…) — they are never removed as \"useless\".")
         }
+        let junkRoots = scopeFolders.isEmpty ? system.romFolderURLs : scopeFolders
         let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
+            // macOS's own hidden junk next to the ROMs ("._Game.zip" AppleDouble
+            // files on network/FAT volumes, ".DS_Store", "__MACOSX" folders):
+            // the scan skips hidden files, so they never reach the report —
+            // collected here, only while this Fix action runs.
+            let junk = Self.macOSJunkFiles(under: junkRoots)
             let operations = Self.restrictToScope(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport), scopeFolders: scopeFolders)
+                + junk.map { RebuildOperation.delete($0) }
             var succeeded = 0
             var failed = 0
             var failureLines: [String] = []
@@ -3803,6 +3846,49 @@ final class LibraryViewModel {
         postFixResultPopup(action: "Duplicate File", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
 
+    /// Renames one File in place (Finder's "Rename"), never overwriting an
+    /// existing file. `newName` is a plain file name: no "/" or ":", not "."
+    /// or "..", not hidden, at most 255 bytes. Rescans that File's folder
+    /// afterwards so the list reflects the new name.
+    func renameFile(system: RomSystem, url: URL, to newName: String) async {
+        guard Self.modificationsEnabled else {
+            logError("File Actions are disabled — enable file modifications in Settings → General first.")
+            return
+        }
+        // A plain rename needs no prior scan — it only touches the one file.
+        let scopeFolders = Self.romFolders(containing: [url], in: system)
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.hasPrefix("."),
+              !name.contains("/"), !name.contains(":"), name.utf8.count <= 255,
+              !name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else {
+            logError("\"\(newName)\" is not a valid file name.")
+            postFixResultPopup(action: "Rename", succeeded: 0, failed: 1, failureLines: ["\"\(newName)\" is not a valid file name (no \"/\" or \":\", and it can't start with a dot)."])
+            return
+        }
+        guard name != url.lastPathComponent else { return }
+        let destination = url.deletingLastPathComponent().appendingPathComponent(name)
+        // A case-only rename ("game.zip" → "Game.zip") points at the same file on
+        // a case-insensitive volume; anything else must not exist yet.
+        let caseOnly = name.lowercased() == url.lastPathComponent.lowercased()
+        guard caseOnly || !FileManager.default.fileExists(atPath: destination.path) else {
+            logError("Cannot rename \"\(url.lastPathComponent)\": \"\(name)\" already exists in that folder.")
+            postFixResultPopup(action: "Rename", succeeded: 0, failed: 1, failureLines: ["\"\(name)\" already exists in that folder."])
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try FileManager.default.moveItem(at: url, to: destination)
+            }.value
+            logSuccess("Renamed \"\(url.lastPathComponent)\" to \"\(name)\".")
+            await scan(system: system, folders: scopeFolders)
+        } catch {
+            logError("Cannot rename \"\(url.lastPathComponent)\": \(error.localizedDescription)")
+            postFixResultPopup(action: "Rename", succeeded: 0, failed: 1, failureLines: [error.localizedDescription])
+        }
+    }
+
     /// Finder-style "Compress" output name: the source's own name with a
     /// ".zip" extension for a single file ("game.zip" from "game" or, if
     /// `url` is already a `.zip`, still just its own base name), or
@@ -3839,7 +3925,7 @@ final class LibraryViewModel {
     /// top-level entry, named after itself) rather than DAT-matched roms.
     /// Never touches the sources, but a compressed archive IS a new File
     /// the collection didn't have before, so this still rescans afterward.
-    func compressFiles(system: RomSystem, urls: [URL]) async {
+    func compressFiles(system: RomSystem, urls: [URL], separately: Bool = false) async {
         guard Self.modificationsEnabled else {
             logError("File Actions are disabled — enable file modifications in Settings → General first.")
             return
@@ -3851,6 +3937,28 @@ final class LibraryViewModel {
         }
         isBusy = true
         defer { isBusy = false }
+        if separately {
+            // One ROM per zip, named after the file — the layout a DAT-based
+            // collection expects. Originals stay in place (Finder-style).
+            var created = 0
+            var failures: [String] = []
+            for url in urls {
+                let destination = Self.uniqueCompressedArchiveURL(for: [url])
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try RebuildExecutor.execute([.createArchive(entries: [ArchiveEntrySource(source: url, entryName: url.lastPathComponent)], to: destination)])
+                    }.value
+                    created += 1
+                } catch {
+                    failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            await scan(system: system)
+            if created > 0 { logSuccess("Created \(created) .zip file(s), one per selected file.") }
+            for failure in failures { logError("Compress failed — \(failure)") }
+            postFixResultPopup(action: "Compress", succeeded: created, failed: failures.count, failureLines: failures)
+            return
+        }
         let destination = Self.uniqueCompressedArchiveURL(for: urls)
         let entries = urls.map { ArchiveEntrySource(source: $0, entryName: $0.lastPathComponent) }
         do {
