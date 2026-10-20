@@ -96,6 +96,13 @@ public enum FileHasher {
         }
 
         let headBytes = try handle.read(upToCount: 64) ?? Data()
+        // N64 in a non-native byte order: hash its big-endian equivalent too.
+        if let order = N64ByteOrder.detect(headBytes), order != .bigEndian, file.size % 4 == 0 {
+            try handle.seek(toOffset: 0)
+            let fullData = try handle.readToEnd() ?? Data()
+            guard let converted = N64ByteOrder.toBigEndian(fullData, from: order) else { return nil }
+            return HeaderStrippedHash(rule: .n64ByteOrder, size: Int64(converted.count), hash: hash(data: converted, algorithms: algorithms))
+        }
         guard let (rule, headerLength) = HeaderSkipRule.detect(fileSize: file.size, headBytes: headBytes) else {
             return nil
         }

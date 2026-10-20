@@ -23,12 +23,17 @@ public struct ScanCacheEntry: Equatable, Sendable, Codable {
     public let modificationDate: Date
     public let hash: FileHash
     public let headerStripped: HeaderStrippedHash?
+    /// `true` once hashed by a version that also checks an N64 dump's byte
+    /// order (`N64ByteOrder`); `nil` in caches written before that, which
+    /// forces a one-time rehash of `.n64`/`.v64` files only.
+    public let byteOrderChecked: Bool?
 
-    public init(size: Int64, modificationDate: Date, hash: FileHash, headerStripped: HeaderStrippedHash?) {
+    public init(size: Int64, modificationDate: Date, hash: FileHash, headerStripped: HeaderStrippedHash?, byteOrderChecked: Bool? = true) {
         self.size = size
         self.modificationDate = modificationDate
         self.hash = hash
         self.headerStripped = headerStripped
+        self.byteOrderChecked = byteOrderChecked
     }
 }
 
@@ -92,6 +97,10 @@ public struct ScanCache: Sendable, Codable, Equatable {
         guard let entry = entries[key], entry.size == size, entry.modificationDate == modificationDate,
               satisfies(entry.hash, algorithms)
         else {
+            return nil
+        }
+        // N64 byte-order support arrived after these entries were written.
+        if entry.byteOrderChecked != true, ["n64", "v64"].contains((key as NSString).pathExtension.lowercased()) {
             return nil
         }
         return entry

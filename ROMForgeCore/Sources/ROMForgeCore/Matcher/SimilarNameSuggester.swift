@@ -85,28 +85,41 @@ public enum SimilarNameSuggester {
         }
         base = base.trimmingCharacters(in: .whitespaces)
         guard !base.isEmpty else { return nil }
+        let baseParts = split(base)
         var bestAvailable: (name: String, score: Double)?
         var bestOverall: (name: String, score: Double)?
         for candidate in candidateNames {
-            // Skip anything wildly different in length outright — an
-            // O(n*m) edit distance against every one of a large DAT's
-            // names (tens of thousands for MAME) is only cheap because
-            // most pairs never get this far; a name whose length alone
-            // already rules out reaching `threshold` needn't compute a
-            // real distance at all (the best possible score for a length
-            // difference of `d` against a longer string of length `n` is
-            // `1 - d/n`).
+            // Titles and "(region)(languages)(revision)" groups are compared
+            // separately: a local name that simply omits the groups
+            // ("Mario Kart 64") is the same title as "Mario Kart 64 (Europe)
+            // (En,De)", and plain whole-string edit distance would punish it
+            // for every missing parenthesis.
+            let candidateParts = split(candidate)
+            var score = 0.0
+            // Whole-string similarity (the original measure).
             let maxLen = max(base.count, candidate.count)
             guard maxLen > 0 else { continue }
-            let lengthDelta = abs(base.count - candidate.count)
-            guard 1 - (Double(lengthDelta) / Double(maxLen)) >= threshold else { continue }
-            let distance = levenshteinDistance(base.lowercased(), candidate.lowercased())
-            let score = 1 - (Double(distance) / Double(maxLen))
+            if 1 - Double(abs(base.count - candidate.count)) / Double(maxLen) >= threshold {
+                score = 1 - Double(levenshteinDistance(base.lowercased(), candidate.lowercased())) / Double(maxLen)
+            }
+            // Title and tag groups compared separately.
+            let titleMax = max(baseParts.title.count, candidateParts.title.count)
+            if titleMax > 0, 1 - Double(abs(baseParts.title.count - candidateParts.title.count)) / Double(titleMax) >= (threshold - 0.1) / 0.9 {
+                let titleScore = 1 - Double(levenshteinDistance(baseParts.title.lowercased(), candidateParts.title.lowercased())) / Double(titleMax)
+                let tagScore: Double
+                if baseParts.tags.isEmpty || candidateParts.tags.isEmpty {
+                    tagScore = baseParts.tags.isEmpty && candidateParts.tags.isEmpty ? 1 : 0.5
+                } else {
+                    let tagMax = max(baseParts.tags.count, candidateParts.tags.count)
+                    tagScore = 1 - Double(levenshteinDistance(baseParts.tags.lowercased(), candidateParts.tags.lowercased())) / Double(tagMax)
+                }
+                score = max(score, titleScore * 0.9 + tagScore * 0.1)
+            }
             guard score >= threshold else { continue }
-            if bestOverall == nil || score > bestOverall!.score {
+            if bestOverall == nil || score > bestOverall!.score + 1e-9 || (abs(score - bestOverall!.score) <= 1e-9 && candidate.count < bestOverall!.name.count) {
                 bestOverall = (candidate, score)
             }
-            if isAvailable(candidate), bestAvailable == nil || score > bestAvailable!.score {
+            if isAvailable(candidate), bestAvailable == nil || score > bestAvailable!.score + 1e-9 || (abs(score - bestAvailable!.score) <= 1e-9 && candidate.count < bestAvailable!.name.count) {
                 bestAvailable = (candidate, score)
             }
         }
@@ -118,6 +131,13 @@ public enum SimilarNameSuggester {
         // an already-satisfied game", not a rename target at all).
         let winner = (bestAvailable?.score ?? -1) >= bestOverall.score - tieBreakTolerance ? (bestAvailable ?? bestOverall) : bestOverall
         return SimilarNameSuggestion(suggestedName: winner.name, confidence: winner.score)
+    }
+
+    /// "Title (USA) (En)" → ("Title", "(USA) (En)").
+    private static func split(_ name: String) -> (title: String, tags: String) {
+        guard let open = name.range(of: " (") else { return (name.trimmingCharacters(in: .whitespaces), "") }
+        return (String(name[..<open.lowerBound]).trimmingCharacters(in: .whitespaces),
+                String(name[open.lowerBound...]).trimmingCharacters(in: .whitespaces))
     }
 
     /// Classic single-row Levenshtein (edit distance) — insertions,

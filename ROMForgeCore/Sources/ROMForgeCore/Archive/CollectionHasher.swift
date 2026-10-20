@@ -89,6 +89,7 @@ public enum CollectionHasher {
         var sevenZipEntryCount = 0
         let totalArchives = zipFiles.count + sevenZipFiles.count
         var archivesRead = 0
+        var emptyZipFiles: [ScannedFile] = []
 
         for zipFile in zipFiles {
             try Task.checkCancellation()
@@ -102,6 +103,9 @@ public enum CollectionHasher {
             let entries = try ZipArchiveScanner.scan(archive: zipFile.url)
             archivesRead += 1
             onArchiveListed?(archivesRead, totalArchives)
+            // A zip with no entries at all still exists on disk — it must
+            // show up (as an unknown, removable file), not vanish.
+            if entries.isEmpty { emptyZipFiles.append(zipFile) }
             for entry in entries {
                 zipEntryCount += 1
                 let entryFile = ScannedFile(url: zipFile.url, name: entry.name, size: entry.size, modificationDate: zipFile.modificationDate, entryPath: entry.entryPath)
@@ -160,7 +164,7 @@ public enum CollectionHasher {
             }
         }
 
-        let allLooseFiles = looseFiles + sevenZipFallbackFiles
+        let allLooseFiles = looseFiles + sevenZipFallbackFiles + emptyZipFiles
         let total = max(allLooseFiles.count + zipEntryCount + sevenZipEntryCount, 1)
         let progress = onProgress.map { ScanProgressCounter(total: total, onProgress: $0) }
         // Archive entries already served from cache above were never

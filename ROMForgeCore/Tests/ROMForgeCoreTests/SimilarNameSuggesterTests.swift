@@ -112,3 +112,13 @@ struct SimilarNameSuggesterTests {
         #expect(suggestion.confidence == 1.0)
     }
 }
+
+@Suite("SimilarNameSuggester tags")
+struct SimilarNameSuggesterTagTests {
+    @Test("a local name without region groups matches the same title at 50%")
+    func omittedTags() throws {
+        let s = try #require(SimilarNameSuggester.bestMatch(
+            forLocalName: "Mario Kart 64.zip", candidateNames: ["Mario Kart 64 (Europe) (En,De)", "Mario Party (Europe)"], threshold: 0.5))
+        #expect(s.suggestedName == "Mario Kart 64 (Europe) (En,De)")
+    }
+}

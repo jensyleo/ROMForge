@@ -38,6 +38,10 @@ public enum HeaderSkipRule: String, CaseIterable, Sendable, Codable {
     /// headBytes:)` below. `headerLength` always returns 0 for it — it is
     /// never selected by the generic detection loop.
     case genesisSMD
+    /// A byte-swapped (`.v64`) or little-endian (`.n64`) N64 dump, matched
+    /// through its big-endian (`.z64`) equivalent — see `N64ByteOrder`. A
+    /// reordering, not a header, so it never reports a header length.
+    case n64ByteOrder
 
     /// Bytes to skip from the start of the file when hashing, or 0 if this
     /// rule's signature doesn't match. Takes the total file size (needed
@@ -55,7 +59,7 @@ public enum HeaderSkipRule: String, CaseIterable, Sendable, Codable {
         case .copier512:
             guard fileSize > 512 else { return 0 }
             return fileSize % 1024 == 512 ? 512 : 0
-        case .genesisSMD:
+        case .genesisSMD, .n64ByteOrder:
             return 0
         }
     }

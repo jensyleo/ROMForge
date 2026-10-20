@@ -162,6 +162,26 @@ public enum ROMMatcher {
                     }
                 }
             }
+            // No-Intro revision numbers and language groups — see
+            // `NoIntroNameVariants`. The language-free index keeps only
+            // names that stay unique once their language groups are removed.
+            var withoutLanguages: [String: String?] = [:]
+            for name in allGameNames {
+                let key = GoodToolsNameTranslator.normalizedKey(NoIntroNameVariants.withoutLanguageGroups(name))
+                withoutLanguages[key] = withoutLanguages[key] == nil ? .some(name) : .some(nil)
+            }
+            for (rawKey, indices) in archiveNameIndex where !allGameNames.contains(rawKey) {
+                var candidates = [rawKey] + GoodToolsNameTranslator.candidateNames(forLocalName: rawKey)
+                candidates += candidates.compactMap(NoIntroNameVariants.numericRevision)
+                for candidate in candidates {
+                    let key = GoodToolsNameTranslator.normalizedKey(candidate)
+                    let match = normalizedGameNames[key] ?? (withoutLanguages[GoodToolsNameTranslator.normalizedKey(NoIntroNameVariants.withoutLanguageGroups(candidate))] ?? nil)
+                    if let match, match.lowercased() != rawKey {
+                        archiveNameIndex[match.lowercased(), default: []].append(contentsOf: indices)
+                        break
+                    }
+                }
+            }
             let allRomNames = Set(dat.games.flatMap { $0.roms.map(\.name) })
             let normalizedRomNames = Dictionary(
                 allRomNames.map { (GoodToolsNameTranslator.normalizedKey($0), $0) }, uniquingKeysWith: { first, _ in first }
@@ -817,15 +837,25 @@ public enum ROMMatcher {
         // entirely (it's that machine's archive, holding wrong content) —
         // never silently re-attributed to whichever game its contents match.
         var positionsByArchive: [URL: [Int]] = [:]
+        var archivesNamedAfterAGame: Set<URL> = []
         for (position, index) in unclaimedIndices.enumerated() {
             let file = hashedFiles[index].file
-            guard file.url.lastPathComponent != file.name else { continue } // a loose file has no archive
+            // A loose file is its own "container": it is only a rename
+            // candidate for a single-ROM game (checked below), so a lone
+            // `.z64`/`.bin` whose content is a known game but whose name
+            // isn't can be fixed without being inside a .zip.
+            let isLoose = file.url.lastPathComponent == file.name
+            if isLoose, let owner = owningGameByIndex[index], owner.roms.count != 1 { continue }
             let base = file.url.deletingPathExtension().lastPathComponent.lowercased()
-            guard !allGameNames.contains(base) else { continue }
+            // An archive named after a DIFFERENT real game is only a rename
+            // candidate when its content clearly belongs to a game that has no
+            // archive of its own yet (checked per archive below) — e.g. a
+            // "Game (USA).zip" holding the Europe dump.
+            if allGameNames.contains(base) { archivesNamedAfterAGame.insert(file.url) }
             positionsByArchive[file.url, default: []].append(position)
         }
 
-        for (_, positions) in positionsByArchive {
+        for (archiveURL, positions) in positionsByArchive {
             var fileCountByGameName: [String: Int] = [:]
             var gamesByLowercasedName: [String: DATGame] = [:]
             for position in positions {
@@ -850,6 +880,14 @@ public enum ROMMatcher {
             guard qualifying.count == 1, let (topGameName, _) = qualifying.first,
                   let topGame = gamesByLowercasedName[topGameName]
             else { continue }
+            if archivesNamedAfterAGame.contains(archiveURL) {
+                let ownName = archiveURL.deletingPathExtension().lastPathComponent.lowercased()
+                // Never when the archive already legitimately holds its own game.
+                // Single-ROM games only (consoles): a multi-ROM set name (MAME)
+                // is a deliberate identity, never re-attributed from content.
+                guard topGame.roms.count == 1, topGameName != ownName, (claimedArchiveURLsByGame[topGameName] ?? []).isEmpty,
+                      !(claimedArchiveURLsByGame[ownName] ?? []).contains(archiveURL) else { continue }
+            }
             // jensyleo's own explicit rule (2026-09-30): "Asi sea
             // duplicado... los fix de nombre y cualquier otro deben
             // aplicar sin problema, nunca. Esto tambien aplica para
@@ -963,8 +1001,16 @@ public enum ROMMatcher {
             // content problem (wrong/bad dump), never a naming one, so it's
             // never worth suggesting a "match" for at all.
             guard !allGameNames.contains(localName.lowercased()) else { continue }
+            // Only names whose declared size fits this file are candidates —
+            // the best-scoring name overall may be a different-size dump of
+            // the same title (e.g. a 32 MB retail vs a 64 MB debug ROM), which
+            // would hide a perfectly good size-compatible match.
+            let sizeCompatibleNames = candidateNames.filter { name in
+                guard let candidateSize = candidateSizesByName[name.lowercased()] else { return true }
+                return abs(candidateSize - file.size) <= similarNameSuggestionSizeTolerance
+            }
             guard let suggestion = SimilarNameSuggester.bestMatch(
-                forLocalName: localName, candidateNames: candidateNames, threshold: threshold,
+                forLocalName: localName, candidateNames: sizeCompatibleNames, threshold: threshold,
                 // jensyleo's own request (2026-09-29): when more than one
                 // real DAT name is a close enough match, prefer whichever
                 // one doesn't already have a real archive present in this
@@ -1060,13 +1106,23 @@ public enum ROMMatcher {
             return file.name.hasPrefix("._") || file.effectiveEntryPath.hasPrefix("__MACOSX/") || file.name == ".DS_Store"
         }
         @Sendable func candidates(for game: DATGame) -> GameCandidates {
-            let ownArchiveIndices = Set(primaryArchiveIndices(archiveNameIndex[game.name.lowercased()] ?? [], hashedFiles: hashedFiles, isRecentlyScanned: isRecentlyScanned, game: game).filter { !isMacJunk($0) })
+            // Loose files only ever stand in for a single-ROM game's archive.
+            let singleRom = game.roms.count == 1
+            @Sendable func isEligible(_ index: Int) -> Bool {
+                if isMacJunk(index) { return false }
+                let file = hashedFiles[index].file
+                if file.url.lastPathComponent != file.name { return true }
+                // A container itself (empty/unreadable archive) is never the ROM.
+                let ext = file.url.pathExtension.lowercased()
+                return singleRom && ext != "zip" && ext != "7z"
+            }
+            let ownArchiveIndices = Set(primaryArchiveIndices((archiveNameIndex[game.name.lowercased()] ?? []).filter(isEligible), hashedFiles: hashedFiles, isRecentlyScanned: isRecentlyScanned, game: game))
             // Every archive belonging to this merged family (already
             // lowercased — see `DATGame.mergedFamilyMachineNames`'s own doc
             // comment) — empty for Split/Non-merged, where it's simply never
             // consulted (`familyNameMatchIndex` below only matters for a
             // `nodump` rom's claim logic).
-            let familyArchiveIndices = Set(game.mergedFamilyMachineNames.flatMap { primaryArchiveIndices(archiveNameIndex[$0] ?? [], hashedFiles: hashedFiles, isRecentlyScanned: isRecentlyScanned, game: game) })
+            let familyArchiveIndices = Set(game.mergedFamilyMachineNames.flatMap { primaryArchiveIndices((archiveNameIndex[$0] ?? []).filter(isEligible), hashedFiles: hashedFiles, isRecentlyScanned: isRecentlyScanned, game: game) })
             let perRom = game.roms.map { rom -> (rom: DATRom, candidates: [Int], hashVerifiedCandidates: [Int], nameMatchIndex: Int?, familyNameMatchIndex: Int?) in
                 let candidates = candidateIndices(
                     for: rom,
@@ -1117,7 +1173,7 @@ public enum ROMMatcher {
                 // genuine ambiguity — multi-rom archives are entirely
                 // unaffected by this fallback and still require each
                 // entry's own name to match, exactly as before.
-                if nameOnlyMatching, nameMatchIndex == nil, isArchiveOrganized,
+                if nameOnlyMatching, nameMatchIndex == nil,
                    game.roms.count == 1, ownArchiveIndices.count == 1 {
                     nameMatchIndex = ownArchiveIndices.first
                 }
@@ -1393,7 +1449,18 @@ public enum ROMMatcher {
         for file: HashedFile, gamesByName: [String: DATGame], romsByHash: [String: DATGame], romsByName: [String: DATGame],
         claimedArchiveURLsByGame: [String: Set<URL>], satisfiedHashesByGameName: [String: Set<String>]
     ) -> (game: DATGame, confirmedRedundant: Bool)? {
-        let fileHashes = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
+        // macOS sidecars ("._x", "__MACOSX/…", ".DS_Store") are never a game's
+        // content, however much their name resembles one — they stay plain
+        // unknown files so "Remove Useless Files…" can delete them.
+        if file.file.name.hasPrefix("._") || file.file.effectiveEntryPath.hasPrefix("__MACOSX/") || file.file.name == ".DS_Store" { return nil }
+        // Also the content's converted identity (a copier header stripped, an
+        // N64 `.n64`/`.v64` put back in `.z64` order): with "Ignore CRC/hash
+        // verification" on, such a file is never claimed by hash, but it should
+        // still be RECOGNIZED as the game it is instead of reading "unknown".
+        var fileHashes = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
+        if let converted = file.headerStripped?.hash {
+            fileHashes += [converted.crc32, converted.md5, converted.sha1].compactMap { $0 }
+        }
         let isArchiveEntry = file.file.url.lastPathComponent != file.file.name
         if isArchiveEntry {
             let ownArchiveGameName = file.file.url.deletingPathExtension().lastPathComponent.lowercased()
@@ -1526,7 +1593,10 @@ public enum ROMMatcher {
     private static func indexByArchiveName(_ hashedFiles: [HashedFile]) -> [String: [Int]] {
         var result: [String: [Int]] = [:]
         for (offset, file) in hashedFiles.enumerated() {
-            guard file.file.url.lastPathComponent != file.file.name else { continue }
+            // A loose file is indexed by its own base name too: for a
+            // single-ROM game it IS the game's "archive" (see `candidates(for:)`),
+            // so a game stored as a bare `.z64`/`.nes` is not second-class to
+            // a zipped one.
             let archiveName = file.file.url.deletingPathExtension().lastPathComponent.lowercased()
             result[archiveName, default: []].append(offset)
         }

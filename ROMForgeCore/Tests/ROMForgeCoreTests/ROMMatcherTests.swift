@@ -1486,3 +1486,193 @@ struct NameOnlyPrefersVerifiedContentTests {
         #expect(report.surplusFiles.allSatisfy { $0.similarNameSuggestion == nil })
     }
 }
+
+@Suite("Name-only matching: revision letters and language groups")
+struct NoIntroNameVariantsTests {
+    private func dat(_ names: [String]) -> DATFile {
+        let games = names.map { name in
+            DATGame(name: name, description: name, cloneOf: nil, romOf: nil, roms: [DATRom(name: "\(name).z64", size: 8, crc: "00000000", md5: nil, sha1: nil)])
+        }
+        return DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"), games: games)
+    }
+
+    private func status(zip: String, entry: String, in dat: DATFile) throws -> [AuditStatus] {
+        let file = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/\(zip).zip"), name: entry, size: 8), hash: FileHasher.hash(data: Data(repeating: 1, count: 8)))
+        let audit = try AuditReporter.generate(from: try ROMMatcher.match(dat: dat, hashedFiles: [file], nameOnlyMatching: true))
+        return audit.entries.filter { $0.status != .missing }.map(\.status)
+    }
+
+    @Test func helpers() {
+        #expect(NoIntroNameVariants.numericRevision("Zelda (USA) (Rev A)") == "Zelda (USA) (Rev 1)")
+        #expect(NoIntroNameVariants.numericRevision("Zelda (USA) (Rev 1)") == nil)
+        #expect(NoIntroNameVariants.withoutLanguageGroups("Yoshi's Story (USA) (En,Ja)") == "Yoshi's Story (USA)")
+        #expect(NoIntroNameVariants.withoutLanguageGroups("Game (Europe) (En,Fr+De) (Rev 1)") == "Game (Europe) (Rev 1)")
+    }
+
+    @Test func revisionLetterMatchesNumber() throws {
+        let d = dat(["Legend of Zelda, The - Ocarina of Time (USA)", "Legend of Zelda, The - Ocarina of Time (USA) (Rev 1)"])
+        #expect(try status(zip: "Legend of Zelda, The - Ocarina of Time (USA) (Rev A)", entry: "oot.n64", in: d) == [.correct])
+    }
+
+    @Test func missingLanguageGroupMatchesWhenUnique() throws {
+        let d = dat(["Yoshi's Story (USA) (En,Ja)", "Yoshi's Story (Europe) (En,Fr,De)", "Yoshi's Story (USA) (En,Ja) (LodgeNet)"])
+        #expect(try status(zip: "Yoshi's Story (USA)", entry: "Yoshi's Story.n64", in: d) == [.correct])
+    }
+
+    @Test func ambiguousStaysUnknown() throws {
+        let d = dat(["Game (USA) (En,Ja)", "Game (USA) (En,Fr)"])
+        #expect(try status(zip: "Game (USA)", entry: "game.n64", in: d) != [.correct])
+    }
+}
+
+@Suite("Name-only matching still recognizes converted content")
+struct NameOnlyRecognizesConvertedContentTests {
+    @Test("a little-endian .n64 named without region tags is recognized as its DAT game, not 'unknown'")
+    func n64FileIsRecognized() async throws {
+        var be = Data([0x80, 0x37, 0x12, 0x40])
+        be.append(Data((0..<4092).map { UInt8(($0 &* 5) % 256) }))
+        var le = [UInt8](be)
+        var i = 0
+        while i < le.count { le.swapAt(i, i + 3); le.swapAt(i + 1, i + 2); i += 4 }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("Super Mario 64.n64")
+        try Data(le).write(to: url)
+        let hashed = try await FileHasher.hash(files: [ScannedFile(url: url, name: url.lastPathComponent, size: Int64(le.count))])
+        let h = FileHasher.hash(data: be)
+        let game = DATGame(name: "Super Mario 64 (USA)", description: "Super Mario 64 (USA)", cloneOf: nil, romOf: nil,
+                           roms: [DATRom(name: "Super Mario 64 (USA).z64", size: Int64(be.count), crc: h.crc32, md5: h.md5, sha1: h.sha1)])
+        let dat = DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"), games: [game])
+        let audit = try AuditReporter.generate(from: try ROMMatcher.match(dat: dat, hashedFiles: hashed, nameOnlyMatching: true))
+        let entry = try #require(audit.entries.first { $0.path == url })
+        #expect(entry.status == .incorrect, "recognized (belongs to Super Mario 64 (USA)), not 'unknown'")
+        #expect(entry.requiredByGameDescription == "Super Mario 64 (USA)")
+        // A loose single-ROM file must be fixable (renamed), not only archives.
+        let match = try ROMMatcher.match(dat: dat, hashedFiles: hashed, nameOnlyMatching: true)
+        let ops = RebuildPlanner.planRepair(matchReport: match)
+        #expect(ops.contains { op in
+            if case .rename(let from, let to) = op { return from == url && to.lastPathComponent == "Super Mario 64 (USA).n64" }
+            return false
+        })
+    }
+}
+
+@Suite("Loose single-ROM files in a zip-organized collection")
+struct LooseSingleRomTests {
+    private func sample() -> (DATFile, HashedFile, HashedFile) {
+        let rom = DATRom(name: "Game A (USA).z64", size: 100, crc: "aaaaaaaa", md5: nil, sha1: "1111111111111111111111111111111111111111")
+        let romB = DATRom(name: "Game B (USA).z64", size: 100, crc: "bbbbbbbb", md5: nil, sha1: "2222222222222222222222222222222222222222")
+        let dat = DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"), games: [
+            DATGame(name: "Game A (USA)", description: "Game A (USA)", cloneOf: nil, romOf: nil, roms: [rom]),
+            DATGame(name: "Game B (USA)", description: "Game B (USA)", cloneOf: nil, romOf: nil, roms: [romB]),
+        ])
+        // Game B lives in a zip (makes the scan zip-organized); Game A is a bare file.
+        let zipped = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/Game B (USA).zip"), name: "Game B (USA).z64", size: 100),
+                                hash: FileHash(crc32: "bbbbbbbb", md5: "00000000000000000000000000000000", sha1: "2222222222222222222222222222222222222222"))
+        let loose = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/Game A (USA).n64"), name: "Game A (USA).n64", size: 100),
+                               hash: FileHash(crc32: "aaaaaaaa", md5: "00000000000000000000000000000000", sha1: "1111111111111111111111111111111111111111"))
+        return (dat, zipped, loose)
+    }
+
+    @Test("a correctly named loose file is not second-class to a zipped one (name-only)")
+    func nameOnly() throws {
+        let (dat, zipped, loose) = sample()
+        let audit = try AuditReporter.generate(from: try ROMMatcher.match(dat: dat, hashedFiles: [zipped, loose], nameOnlyMatching: true))
+        let entry = try #require(audit.entries.first { $0.path == loose.file.url })
+        #expect(entry.status == .correct)
+    }
+
+    @Test("same with hash verification")
+    func hashMode() throws {
+        let (dat, zipped, _) = sample()
+        let loose = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/Game A (USA).z64"), name: "Game A (USA).z64", size: 100),
+                               hash: FileHash(crc32: "aaaaaaaa", md5: "00000000000000000000000000000000", sha1: "1111111111111111111111111111111111111111"))
+        let audit = try AuditReporter.generate(from: try ROMMatcher.match(dat: dat, hashedFiles: [zipped, loose]))
+        let entry = try #require(audit.entries.first { $0.path == loose.file.url })
+        #expect(entry.status == .correct, "got \(entry.status)")
+    }
+
+    @Test("a loose file whose extension differs is offered a rename (hash mode)")
+    func hashModeRename() throws {
+        let (dat, zipped, loose) = sample()
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [zipped, loose])
+        let ops = RebuildPlanner.planRepair(matchReport: report)
+        #expect(ops.contains { if case .rename(let from, _) = $0 { return from == loose.file.url }; return false })
+    }
+}
+
+@Suite("Empty zip files stay visible")
+struct EmptyZipTests {
+    @Test("a zip with no entries is reported as an unknown file, never as the game it is named after")
+    func emptyZip() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("Game A (USA).zip")
+        // End-of-central-directory record only: a valid, empty zip.
+        try Data([0x50, 0x4B, 0x05, 0x06] + [UInt8](repeating: 0, count: 18)).write(to: url)
+        let scanned = ScannedFile(url: url, name: url.lastPathComponent, size: 22)
+        let hashed = try await CollectionHasher.hash(scannedFiles: [scanned])
+        #expect(hashed.count == 1)
+        let rom = DATRom(name: "Game A (USA).z64", size: 100, crc: "aaaaaaaa", md5: nil, sha1: "1111111111111111111111111111111111111111")
+        let dat = DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"),
+                          games: [DATGame(name: "Game A (USA)", description: "Game A (USA)", cloneOf: nil, romOf: nil, roms: [rom])])
+        let audit = try AuditReporter.generate(from: try ROMMatcher.match(dat: dat, hashedFiles: hashed, nameOnlyMatching: true))
+        let entry = try #require(audit.entries.first { $0.path == url })
+        #expect(entry.status != .correct)
+        let ops = RebuildPlanner.planRemoveUselessFiles(matchReport: try ROMMatcher.match(dat: dat, hashedFiles: hashed, nameOnlyMatching: true))
+        #expect(ops.contains { if case .delete(let u) = $0 { return u == url }; return false }, "Remove Useless Files must offer to delete it")
+    }
+}
+
+@Suite("Archive named after another game")
+struct WrongGameNamedArchiveTests {
+    private func dat() -> DATFile {
+        func g(_ n: String, _ crc: String, _ sha: String) -> DATGame {
+            DATGame(name: n, description: n, cloneOf: nil, romOf: nil, roms: [DATRom(name: "\(n).z64", size: 100, crc: crc, md5: nil, sha1: sha)])
+        }
+        return DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"), games: [
+            g("Castle (USA)", "aaaaaaaa", String(repeating: "1", count: 40)),
+            g("Castle (Europe)", "bbbbbbbb", String(repeating: "2", count: 40)),
+        ])
+    }
+    private func entry(_ zip: String, _ name: String, _ crc: String, _ sha: String) -> HashedFile {
+        HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/\(zip).zip"), name: name, size: 100),
+                   hash: FileHash(crc32: crc, md5: "00000000000000000000000000000000", sha1: sha))
+    }
+
+    @Test("Castle (USA).zip holding the Europe dump is renamed to Castle (Europe) by Fix")
+    func renamed() throws {
+        let file = entry("Castle (USA)", "x.z64", "bbbbbbbb", String(repeating: "2", count: 40))
+        let ops = RebuildPlanner.planRepair(matchReport: try ROMMatcher.match(dat: dat(), hashedFiles: [file]))
+        #expect(ops.contains { if case .rename(_, let to) = $0 { return to.lastPathComponent == "Castle (Europe).zip" }; return false })
+    }
+
+    @Test("never when the Europe game already has its own archive")
+    func notWhenTaken() throws {
+        let wrong = entry("Castle (USA)", "x.z64", "bbbbbbbb", String(repeating: "2", count: 40))
+        let real = entry("Castle (Europe)", "Castle (Europe).z64", "bbbbbbbb", String(repeating: "2", count: 40))
+        let ops = RebuildPlanner.planRepair(matchReport: try ROMMatcher.match(dat: dat(), hashedFiles: [wrong, real]))
+        #expect(!ops.contains { if case .rename(_, let to) = $0 { return to.lastPathComponent == "Castle (Europe).zip" }; return false })
+    }
+}
+
+@Suite("Mac junk inside a correct zip")
+struct MacJunkEntryTests {
+    @Test("a __MACOSX sidecar named like the game stays unknown and is removable from the zip")
+    func junk() throws {
+        let rom = DATRom(name: "Game A (USA).z64", size: 100, crc: "aaaaaaaa", md5: nil, sha1: String(repeating: "1", count: 40))
+        let dat = DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"),
+                          games: [DATGame(name: "Game A (USA)", description: "Game A (USA)", cloneOf: nil, romOf: nil, roms: [rom])])
+        let zip = URL(fileURLWithPath: "/tmp/Game A (USA).zip")
+        let real = HashedFile(file: ScannedFile(url: zip, name: "Game A (USA).rom", size: 100),
+                              hash: FileHash(crc32: "ffffffff", md5: "00000000000000000000000000000000", sha1: String(repeating: "9", count: 40)))
+        let junk = HashedFile(file: ScannedFile(url: zip, name: "._Game A (USA).rom", size: 163, entryPath: "__MACOSX/._Game A (USA).rom"),
+                              hash: FileHash(crc32: "eeeeeeee", md5: "00000000000000000000000000000000", sha1: String(repeating: "8", count: 40)))
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [real, junk], nameOnlyMatching: true)
+        #expect(report.surplusFiles.allSatisfy { $0.requiredByGameDescription == nil })
+        let ops = RebuildPlanner.planRemoveUselessFiles(matchReport: report)
+        #expect(ops.contains { if case .removeEntryFromZip(_, let n) = $0 { return n == "__MACOSX/._Game A (USA).rom" }; return false })
+    }
+}
