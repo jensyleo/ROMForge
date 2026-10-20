@@ -2,6 +2,39 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.6.0] - 2026-10-20
+
+### Added
+
+- Nintendo 64 support: `.n64` (little-endian) and `.v64` (byte-swapped) dumps are
+  converted to the DAT's big-endian order before matching, so they are recognized
+  as the game they are. Mupen64Plus (`brew install mupen64plus`) and ares
+  (`brew install --cask ares-emulator`) as N64 emulators.
+- "Compress Each File into Its Own .zip" (File Actions and context menu): one
+  zip per selected ROM, named after it; originals are kept.
+- "Rename File…" in File Actions and the context menu, with a proper text field.
+- Empty zips are detected and reported ("Empty zip — contains no files") instead
+  of being shown as if they held a ROM; the scan log lists them and "Remove
+  Useless Files…" deletes them.
+- "Remove Redundant Files/ROMs…" work without a selected ROM folder (whole system).
+- Fix Mismatched Files renames a single-ROM archive named after one game but
+  holding another game's dump, when the right name is free.
+- Name-only matching understands No-Intro revision numbers ("Rev A" = "Rev 1")
+  and names that omit the language list.
+- Rows with a "Possible match" rename suggestion are shown in yellow.
+
+### Fixed
+
+- A single-ROM game stored as a loose file (not in a `.zip`) is matched like a
+  zipped one, so "Fix Mismatched Files" can rename it.
+- Similarity suggestions compare the title apart from the "(Region) (Languages)"
+  groups, so "Mario Kart 64.zip" now matches "Mario Kart 64 (Europe) (En,De)" at a
+  50% threshold; candidates are filtered by size first and ties prefer the
+  plainest name.
+- macOS sidecars (`._x`, `__MACOSX/…`) are never taken for a game's content, so
+  "Remove Useless Files…" can delete them from inside a correct zip.
+- Rename failures are shown in an alert with the reason.
+
 ## [1.5.0] - 2026-10-16
 
 ### Added
