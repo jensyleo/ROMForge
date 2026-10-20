@@ -337,3 +337,19 @@ struct FolderScannerTests {
         #expect(Set(files.map(\.name)) == ["gameA.zip", "gameB.zip", looseFile.lastPathComponent])
     }
 }
+
+@Suite("Nested scan folders")
+struct NestedScanFolderTests {
+    @Test("a folder inside another configured folder does not list its files twice")
+    func nestedFolder() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let inner = root.appendingPathComponent("SELECTED", isDirectory: true)
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data([1]).write(to: root.appendingPathComponent("a.bin"))
+        try Data([2]).write(to: inner.appendingPathComponent("b.bin"))
+        let files = try FolderScanner.scan(paths: [root, inner])
+        #expect(files.count == 2)
+        #expect(Set(files.map(\.name)) == ["a.bin", "b.bin"])
+    }
+}
