@@ -123,6 +123,25 @@ public enum ZipArchiveHasher {
             }
         }
 
+        if let order = N64ByteOrder.detect(headBytes), order != .bigEndian, file.size % 4 == 0 {
+            var fullData = Data()
+            do {
+                _ = try archive.extract(entry) { chunk in
+                    guard Int64(fullData.count + chunk.count) <= limit else {
+                        throw ZipArchiveError.suspectedZipBomb(entryPath: file.entryPath, declaredSize: file.size)
+                    }
+                    fullData.append(chunk)
+                }
+            } catch let error as ZipArchiveError {
+                throw error
+            } catch {
+                throw ZipArchiveError.extractionFailed(error.localizedDescription)
+            }
+            if let converted = N64ByteOrder.toBigEndian(fullData, from: order) {
+                return (rawHash, HeaderStrippedHash(rule: .n64ByteOrder, size: Int64(converted.count), hash: FileHasher.hash(data: converted, algorithms: algorithms)))
+            }
+        }
+
         guard let (rule, headerLength) = HeaderSkipRule.detect(fileSize: file.size, headBytes: headBytes) else {
             return (rawHash, nil)
         }

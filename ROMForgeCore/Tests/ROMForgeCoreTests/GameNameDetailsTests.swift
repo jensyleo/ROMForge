@@ -140,3 +140,43 @@ struct SNESHeaderDecoderTests {
         #expect(SNESHeaderDecoder.decode(prefix: Data(count: 100), fileSize: 100) == nil)
     }
 }
+
+@Suite("N64 byte order")
+struct N64ByteOrderTests {
+    private func z64() -> Data {
+        var d = Data([0x80, 0x37, 0x12, 0x40])
+        d.append(Data((0..<4092).map { UInt8(($0 &* 7) % 256) }))
+        return d
+    }
+
+    @Test func detectsAndConvertsEveryOrder() throws {
+        let be = z64()
+        var v64 = [UInt8](be); var n64 = [UInt8](be)
+        var i = 0
+        while i < be.count { v64.swapAt(i, i + 1); v64.swapAt(i + 2, i + 3); n64.swapAt(i, i + 3); n64.swapAt(i + 1, i + 2); i += 4 }
+        #expect(N64ByteOrder.detect(be) == .bigEndian)
+        #expect(N64ByteOrder.detect(Data(v64)) == .byteSwapped)
+        #expect(N64ByteOrder.detect(Data(n64)) == .littleEndian)
+        #expect(N64ByteOrder.toBigEndian(Data(v64), from: .byteSwapped) == be)
+        #expect(N64ByteOrder.toBigEndian(Data(n64), from: .littleEndian) == be)
+        #expect(N64ByteOrder.detect(Data([1, 2, 3, 4])) == nil)
+    }
+
+    @Test("a little-endian .n64 file matches a big-endian DAT entry end-to-end") func n64FileMatchesZ64DAT() async throws {
+        let be = z64()
+        var n64 = [UInt8](be)
+        var i = 0
+        while i < be.count { n64.swapAt(i, i + 3); n64.swapAt(i + 1, i + 2); i += 4 }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("Game (USA).n64")
+        try Data(n64).write(to: url)
+        let hashed = try await FileHasher.hash(files: [ScannedFile(url: url, name: url.lastPathComponent, size: Int64(n64.count))])
+        let h = FileHasher.hash(data: be)
+        let game = DATGame(name: "Game (USA)", description: "Game (USA)", cloneOf: nil, romOf: nil, roms: [DATRom(name: "Game (USA).n64", size: Int64(be.count), crc: h.crc32, md5: h.md5, sha1: h.sha1)])
+        let dat = DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"), games: [game])
+        let audit = try AuditReporter.generate(from: try ROMMatcher.match(dat: dat, hashedFiles: hashed))
+        #expect(audit.entries.first { $0.game == "Game (USA)" }?.status == .correct)
+    }
+}

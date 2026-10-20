@@ -639,7 +639,7 @@ private extension View {
                 Button("Delete", role: .destructive, action: onRemoveUselessFiles)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("These files are recognized as nothing the current DAT declares — not needed by this game or any other. This cannot be undone.")
+                Text("These files are recognized as nothing the current DAT declares — not needed by this game or any other — plus any hidden macOS junk (\"._*\" AppleDouble files, \".DS_Store\", \"__MACOSX\" folders). This cannot be undone.")
             }
             .confirmationDialog(
                 "Repair \(repairCount) Missing ROM\(repairCount == 1 ? "" : "s") from Sibling Sets?",
@@ -2923,6 +2923,9 @@ struct LibraryDetailView: View {
     /// disagrees with what was actually just previewed.
     @State private var repairFromMaintenanceFolderScope: [URL] = []
     @State private var removeRedundantFilesCount = 0
+    @State private var pendingRenameFileURL: URL?
+    @State private var renameFileText = ""
+    @State private var showRenameFilePrompt = false
     @State private var showRemoveRedundantFilesConfirmation = false
     @State private var removeRedundantRomsCount = 0
     @State private var showRemoveRedundantRomsConfirmation = false
@@ -3521,14 +3524,14 @@ struct LibraryDetailView: View {
             ToolbarAction(
                 id: "removeRedundantFiles", title: "Remove Redundant Files…",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy
-                    && selectedRomFolder != nil && !isSelectedFolderMaintenanceSubfolder,
+                    && !isSelectedFolderMaintenanceSubfolder,
                 help: !LibraryViewModel.modificationsEnabled
                     ? "Disabled for now — enable file modifications in Settings → General first"
                     : isSelectedFolderMaintenanceSubfolder
                         ? "The Maintenance folder is a read-only donor area — nothing here is ever deleted"
                         : selectedRomFolder != nil
                             ? "Permanently delete every loose file inside \"\(selectedRomFolder!.lastPathComponent)\" that's a redundant duplicate of content the DAT recognizes elsewhere"
-                            : "Select a ROM folder first — this only ever acts on the folder currently selected"
+                            : "Permanently delete every loose file in this system that's a redundant duplicate of content the DAT recognizes elsewhere"
             ) {
                 startRemoveRedundantFiles()
             },
@@ -3538,14 +3541,14 @@ struct LibraryDetailView: View {
             ToolbarAction(
                 id: "removeRedundantRoms", title: "Remove Redundant ROMs…",
                 isEnabled: LibraryViewModel.modificationsEnabled && viewModel.auditReport != nil && !viewModel.isBusy
-                    && selectedRomFolder != nil && !isSelectedFolderMaintenanceSubfolder,
+                    && !isSelectedFolderMaintenanceSubfolder,
                 help: !LibraryViewModel.modificationsEnabled
                     ? "Disabled for now — enable file modifications in Settings → General first"
                     : isSelectedFolderMaintenanceSubfolder
                         ? "The Maintenance folder is a read-only donor area — nothing here is ever deleted"
                         : selectedRomFolder != nil
                             ? "Permanently remove every archive entry inside \"\(selectedRomFolder!.lastPathComponent)\" that's a redundant duplicate of content the DAT recognizes elsewhere"
-                            : "Select a ROM folder first — this only ever acts on the folder currently selected"
+                            : "Permanently remove every archive entry in this system that's a redundant duplicate of content the DAT recognizes elsewhere"
             ) {
                 startRemoveRedundantRoms()
             },
@@ -3716,11 +3719,25 @@ struct LibraryDetailView: View {
                 startDuplicateFiles(selectedFileURLs)
             },
             ToolbarAction(
+                id: "renameFile", title: "Rename File…", systemImage: "pencil",
+                isEnabled: LibraryViewModel.modificationsEnabled && selectedFileURLs.count == 1 && !viewModel.isBusy,
+                help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.count != 1 ? "Select exactly one File in the list first" : "Rename the selected File on disk, Finder-style"
+            ) {
+                if let url = selectedFileURLs.first { startRenameFile(url) }
+            },
+            ToolbarAction(
                 id: "compressFiles", title: selectedFileURLs.count == 1 ? "Compress File" : "Compress Files", systemImage: "archivebox",
                 isEnabled: LibraryViewModel.modificationsEnabled && !selectedFileURLs.isEmpty && !viewModel.isBusy,
                 help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.isEmpty ? "Select one or more Files in the list first" : "Pack the selected File(s) into a new .zip alongside them, Finder-style"
             ) {
                 startCompressFiles(selectedFileURLs)
+            },
+            ToolbarAction(
+                id: "compressFilesSeparately", title: "Compress Each File into Its Own .zip", systemImage: "archivebox.fill",
+                isEnabled: LibraryViewModel.modificationsEnabled && !selectedFileURLs.isEmpty && !viewModel.isBusy,
+                help: !LibraryViewModel.modificationsEnabled ? "Disabled for now — enable file modifications in Settings → General first" : selectedFileURLs.isEmpty ? "Select one or more Files in the list first" : "Pack each selected File into its own .zip named after it (one ROM per zip); the originals are kept"
+            ) {
+                startCompressFilesSeparately(selectedFileURLs)
             },
         ]
     }
@@ -4461,6 +4478,14 @@ struct LibraryDetailView: View {
             onConfirm: commitConvertToMerged
         )
         return content
+        .sheet(isPresented: $showRenameFilePrompt, onDismiss: { pendingRenameFileURL = nil }) {
+            RenameFileSheet(
+                originalName: pendingRenameFileURL?.lastPathComponent ?? "",
+                text: $renameFileText,
+                onRename: commitRenameFile,
+                onCancel: { showRenameFilePrompt = false }
+            )
+        }
         .fileActionsConfirmations(
             urlCount: pendingFileActionURLs.count,
             destination: pendingFileActionDestination,
@@ -4524,12 +4549,24 @@ struct LibraryDetailView: View {
             viewModel.logWarning("Select a ROM folder first — \"Remove Useless Files…\" only ever acts on the folder currently selected.")
             return
         }
-        removeUselessFilesCount = viewModel.planRemoveUselessFilesPreviewCount(scopeFolders: [selectedRomFolder])
-        guard removeUselessFilesCount > 0 else {
-            viewModel.logWarning("Nothing to remove — no unrecognized files inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan.")
-            return
+        let surplusCount = viewModel.planRemoveUselessFilesPreviewCount(scopeFolders: [selectedRomFolder])
+        // Hidden macOS junk ("._*", ".DS_Store", "__MACOSX") never reaches the
+        // scan, so it is counted from disk here — only when this Fix action
+        // is started, never while browsing.
+        Task {
+            let junkCount = await Task.detached(priority: .userInitiated) {
+                LibraryViewModel.macOSJunkFiles(under: [selectedRomFolder]).count
+            }.value
+            removeUselessFilesCount = surplusCount + junkCount
+            guard removeUselessFilesCount > 0 else {
+                viewModel.logWarning("Nothing to remove — no unrecognized files or macOS junk inside \"\(selectedRomFolder.lastPathComponent)\".")
+                return
+            }
+            if junkCount > 0 {
+                viewModel.log("\(junkCount) of them are macOS junk files (\"._*\", \".DS_Store\", \"__MACOSX\").")
+            }
+            showRemoveUselessFilesConfirmation = true
         }
-        showRemoveUselessFilesConfirmation = true
     }
 
     private func commitRemoveUselessFiles() {
@@ -4690,10 +4727,33 @@ struct LibraryDetailView: View {
         Task { await viewModel.duplicateFiles(system: system, urls: urls) }
     }
 
+    private func startCompressFilesSeparately(_ urls: [URL]) {
+        guard !urls.isEmpty, rejectIfUnderMaintenanceFolder(urls) else { return }
+        Task { await viewModel.compressFiles(system: system, urls: urls, separately: true) }
+    }
+
     private func startCompressFiles(_ urls: [URL]) {
         guard !urls.isEmpty, rejectIfUnderMaintenanceFolder(urls) else { return }
         Task { await viewModel.compressFiles(system: system, urls: urls) }
     }
+
+    /// Finder-style "Rename": asks for the new name (pre-filled with the
+    /// current one), then renames the File on disk.
+    private func startRenameFile(_ url: URL) {
+        guard rejectIfUnderMaintenanceFolder([url]) else { return }
+        pendingRenameFileURL = url
+        renameFileText = url.lastPathComponent
+        showRenameFilePrompt = true
+    }
+
+    private func commitRenameFile() {
+        guard let url = pendingRenameFileURL else { return }
+        let newName = renameFileText
+        pendingRenameFileURL = nil
+        showRenameFilePrompt = false
+        Task { await viewModel.renameFile(system: system, url: url, to: newName) }
+    }
+
 
     /// Previews the repair count before showing the confirmation dialog —
     /// same dry-run-before-write caution as every other Fase 2 action.
@@ -5123,13 +5183,12 @@ struct LibraryDetailView: View {
     /// Scoped to the selected ROM folder only, same as "Remove Useless
     /// Files…" — see `startRemoveUselessFiles`'s own comment for why.
     private func startRemoveRedundantFiles() {
-        guard let selectedRomFolder else {
-            viewModel.logWarning("Select a ROM folder first — \"Remove Redundant Files…\" only ever acts on the folder currently selected.")
-            return
-        }
-        removeRedundantFilesCount = viewModel.planRemoveRedundantFilesPreviewCount(scopeFolders: [selectedRomFolder])
+        // No folder selected → the whole system (every ROM folder).
+        let scopeFolders = selectedRomFolder.map { [$0] } ?? []
+        let scopeName = selectedRomFolder.map { "inside \"\($0.lastPathComponent)\"" } ?? "in this system"
+        removeRedundantFilesCount = viewModel.planRemoveRedundantFilesPreviewCount(scopeFolders: scopeFolders)
         guard removeRedundantFilesCount > 0 else {
-            viewModel.logWarning("Nothing to remove — no redundant files inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan.")
+            viewModel.logWarning("Nothing to remove — no redundant files \(scopeName) in the current scan.")
             return
         }
         showRemoveRedundantFilesConfirmation = true
@@ -5227,13 +5286,12 @@ struct LibraryDetailView: View {
     /// Scoped to the selected ROM folder only, same as "Remove Useless
     /// Files…"/"Remove Redundant Files…" above.
     private func startRemoveRedundantRoms() {
-        guard let selectedRomFolder else {
-            viewModel.logWarning("Select a ROM folder first — \"Remove Redundant ROMs…\" only ever acts on the folder currently selected.")
-            return
-        }
-        removeRedundantRomsCount = viewModel.planRemoveRedundantRomsPreviewCount(scopeFolders: [selectedRomFolder])
+        // No folder selected → the whole system (every ROM folder).
+        let scopeFolders = selectedRomFolder.map { [$0] } ?? []
+        let scopeName = selectedRomFolder.map { "inside \"\($0.lastPathComponent)\"" } ?? "in this system"
+        removeRedundantRomsCount = viewModel.planRemoveRedundantRomsPreviewCount(scopeFolders: scopeFolders)
         guard removeRedundantRomsCount > 0 else {
-            viewModel.logWarning("Nothing to remove — no redundant roms inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan.")
+            viewModel.logWarning("Nothing to remove — no redundant roms \(scopeName) in the current scan.")
             return
         }
         showRemoveRedundantRomsConfirmation = true
@@ -7646,6 +7704,8 @@ struct LibraryDetailView: View {
             startMoveFilesToFolder: startMoveFilesToFolder,
             startDuplicateFiles: startDuplicateFiles,
             startCompressFiles: startCompressFiles,
+            startCompressFilesSeparately: startCompressFilesSeparately,
+            startRenameFile: startRenameFile,
             fixMismatchedFile: fixMismatchedFile,
             startContextMenuRenameRomsInArchive: { startContextMenuRenameRomsInArchive($0) },
             startContextMenuRemoveUselessFiles: startContextMenuRemoveUselessFiles,
@@ -7938,7 +7998,17 @@ struct LibraryDetailView: View {
     /// why this is safer than just taking any entry's `path`) rather than
     /// `actualFileURL(for:)` above, which can point at a stray borrowed
     /// path for a game with no rom of its own actually present.
+    /// A `.zip` the scanner found no entries in at all is reported as a loose
+    /// file whose entry name equals the zip's own file name.
+    static func isEmptyZip(path: URL?, name: String) -> Bool {
+        guard let path else { return false }
+        return path.pathExtension.lowercased() == "zip" && path.lastPathComponent == name
+    }
+
     private func infoText(for node: GameNode) -> String {
+        if let entry = node.entries.first, node.entries.count == 1, Self.isEmptyZip(path: entry.path, name: entry.name) {
+            return "Empty zip — contains no files"
+        }
         var base = node.infoText
         if node.isSurplusBucket, let tracks = node.entries.lazy.compactMap({ viewModel.snesMSUTrackCount(forFileAt: $0.path, systemID: system.id) }).first {
             base = "MSU-1 hack · \(tracks) audio track\(tracks == 1 ? "" : "s")"
@@ -8431,7 +8501,7 @@ struct LibraryDetailView: View {
     /// still red), so the row still read as plain red at a glance despite
     /// the icon itself already being right.
     private func romCell(_ content: some View, entry: AuditEntry) -> some View {
-        let tint = ((entry.status == .missing || entry.status == .badDump) && entry.hasMaintenanceDonor) ? AuditStatus.incorrect.tint : entry.status.tint
+        let tint = (((entry.status == .missing || entry.status == .badDump) && entry.hasMaintenanceDonor) || hasSimilarSuggestion(entry)) ? AuditStatus.incorrect.tint : entry.status.tint
         return content
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
@@ -8472,10 +8542,13 @@ struct LibraryDetailView: View {
     /// called on disk (`AuditReporter` already sets `entry.name` to the
     /// real entry name for every surplus row, recognized or not).
     private func romNameText(for entry: AuditEntry) -> String {
-        entry.name
+        // An empty zip has no ROM — its own file name isn't a rom name.
+        if Self.isEmptyZip(path: entry.path, name: entry.name) { return "(empty — no ROM inside)" }
+        return entry.name
     }
 
     private func infoText(for entry: AuditEntry) -> String {
+        if Self.isEmptyZip(path: entry.path, name: entry.name) { return "Empty zip — contains no files" }
         // A DAT's own baddump/nodump flag is a claim about the reference
         // dump itself — worth surfacing regardless of what ROMForge found
         // (or didn't) locally, so it's layered on top of the match status
@@ -8493,7 +8566,7 @@ struct LibraryDetailView: View {
         // Master System/Genesis were available to test this session — the
         // exact wording here needs a real headered dump from one of those
         // systems to confirm it reads right in practice.
-        case .correct: base = entry.matchedViaHeaderStrip ? "Ok (header removed to match)" : "Ok"
+        case .correct: base = entry.matchedViaHeaderStrip ? "Ok (converted to match: copier header or N64 byte order)" : "Ok"
         // Three distinct reasons an entry reads `.incorrect`, checked in
         // order from most to least specific:
         // - `requiredByGameDescription` set: a *surplus* file (no expected
@@ -11057,7 +11130,18 @@ struct LibraryDetailView: View {
     /// yellow triangle) rather than inventing a fourth visual language —
     /// "known, fixable, just needs Find ROMs run" is exactly what
     /// `.incorrect` already means everywhere else in this app.
+    /// An unrecognized file that has a "Possible match" rename suggestion is
+    /// fixable, so it reads yellow like every other fixable row.
+    private func hasSimilarSuggestion(_ entry: AuditEntry) -> Bool {
+        (entry.status == .unknownFile || entry.status == .surplus) && entry.path.flatMap { viewModel.similarNameSuggestion(forFileAt: $0) } != nil
+    }
+
     private func romStatusIcon(for entry: AuditEntry) -> some View {
+        if hasSimilarSuggestion(entry) {
+            return Image(systemName: symbolName(for: .incorrect))
+                .foregroundStyle(AuditStatus.incorrect.tint)
+                .help("Possible match found — Fix Mismatched Files can rename it" as String)
+        }
         if (entry.status == .missing || entry.status == .badDump), entry.hasMaintenanceDonor {
             return Image(systemName: symbolName(for: .incorrect))
                 .foregroundStyle(AuditStatus.incorrect.tint)
@@ -11080,7 +11164,11 @@ struct LibraryDetailView: View {
     @ViewBuilder
     private func gameStatusIcon(for node: GameNode) -> some View {
         if let status = node.aggregateStatus {
-            if status == .missing || status == .incorrect || status == .badDump, node.entries.contains(where: { $0.hasMaintenanceDonor }) {
+            if node.entries.count == 1, let entry = node.entries.first, hasSimilarSuggestion(entry) {
+                Image(systemName: symbolName(for: .incorrect))
+                    .foregroundStyle(AuditStatus.incorrect.tint)
+                    .help("Possible match found — Fix Mismatched Files can rename it")
+            } else if status == .missing || status == .incorrect || status == .badDump, node.entries.contains(where: { $0.hasMaintenanceDonor }) {
                 Image(systemName: symbolName(for: .incorrect))
                     .foregroundStyle(AuditStatus.incorrect.tint)
                     .help("At least one missing or hash-mismatched rom has a matching donor staged in the Maintenance folder — run Fix → Find ROMs to pull it in")
@@ -11113,4 +11201,41 @@ struct LibraryDetailView: View {
         }
     }
 
+}
+
+
+/// "Rename File…" prompt. A SwiftUI sheet (not an `NSAlert` accessory field)
+/// because a native alert opened from a context menu never became key, so
+/// the text field ignored the keyboard.
+private struct RenameFileSheet: View {
+    let originalName: String
+    @Binding var text: String
+    let onRename: () -> Void
+    let onCancel: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rename File").font(.headline)
+            Text("Renames \"\(originalName)\" on disk. Keep the extension (.zip, .7z…) unless you mean to change it. An existing file is never overwritten.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("New name", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .onSubmit(onRename)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename", action: onRename)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .onAppear { focused = true }
+    }
 }

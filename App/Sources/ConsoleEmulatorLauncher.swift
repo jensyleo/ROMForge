@@ -22,6 +22,8 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     case fceux
     case snes9x
     case mgba
+    case mupen64plus
+    case ares
     case custom
 
     public var id: String { rawValue }
@@ -35,6 +37,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         case "NES": return [.nestopia, .fceux, .custom]
         case "SNES", "SNES-MSU1": return [.snes9x, .custom]
         case "GBA": return [.mgba, .custom]
+        case "N64": return [.mupen64plus, .ares, .custom]
         default: return [.custom]
         }
     }
@@ -45,6 +48,8 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         case .fceux: return "FCEUX"
         case .snes9x: return "Snes9x"
         case .mgba: return "mGBA"
+        case .mupen64plus: return "Mupen64Plus"
+        case .ares: return "ares"
         case .custom: return "Custom…"
         }
     }
@@ -63,6 +68,8 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         case .fceux: return "brew install fceux"
         case .snes9x: return "brew install --cask snes9x"
         case .mgba: return "brew install --cask mgba-app"
+        case .mupen64plus: return "brew install mupen64plus"
+        case .ares: return "brew install --cask ares-emulator"
         case .custom: return nil
         }
     }
@@ -74,7 +81,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var opensZipDirectly: Bool {
         switch self {
         case .nestopia, .fceux: return true
-        case .snes9x, .mgba, .custom: return false
+        case .snes9x, .mgba, .ares, .mupen64plus, .custom: return false
         }
     }
 
@@ -91,8 +98,8 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     /// this static property.
     var isAppBundle: Bool {
         switch self {
-        case .nestopia, .snes9x, .mgba: return true
-        case .fceux, .custom: return false
+        case .nestopia, .snes9x, .mgba, .ares: return true
+        case .fceux, .mupen64plus, .custom: return false
         }
     }
 
@@ -106,7 +113,7 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var bundleIdentifier: String? {
         switch self {
         case .nestopia: return "com.bannister.Nestopia"
-        case .fceux, .snes9x, .mgba, .custom: return nil
+        case .fceux, .snes9x, .mgba, .ares, .mupen64plus, .custom: return nil
         }
     }
 
@@ -116,7 +123,8 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
     var homebrewDefaultPath: String? {
         switch self {
         case .fceux: return "/opt/homebrew/bin/fceux"
-        case .nestopia, .snes9x, .mgba, .custom: return nil
+        case .mupen64plus: return "/opt/homebrew/bin/mupen64plus"
+        case .nestopia, .snes9x, .mgba, .ares, .mupen64plus, .custom: return nil
         }
     }
 
@@ -137,7 +145,8 @@ public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .snes9x: return "/Applications/Snes9x.app"
         case .mgba: return "/Applications/mGBA.app"
-        case .nestopia, .fceux, .custom: return nil
+        case .ares: return "/Applications/ares.app"
+        case .nestopia, .fceux, .mupen64plus, .custom: return nil
         }
     }
 }

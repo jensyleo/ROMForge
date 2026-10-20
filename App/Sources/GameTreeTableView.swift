@@ -170,6 +170,8 @@ struct GameTreeTableView: View {
     let startMoveFilesToFolder: ([URL]) -> Void
     let startDuplicateFiles: ([URL]) -> Void
     let startCompressFiles: ([URL]) -> Void
+    let startCompressFilesSeparately: ([URL]) -> Void
+    let startRenameFile: (URL) -> Void
     let fixMismatchedFile: ([URL]) -> Void
     let startContextMenuRenameRomsInArchive: ([URL]) -> Void
     let startContextMenuRemoveUselessFiles: ([URL]) -> Void
@@ -472,6 +474,22 @@ struct GameTreeTableView: View {
                             Label(fileURLs.count == 1 ? "Compress File" : "Compress \(fileURLs.count) Files", systemImage: "archivebox")
                         }
                         .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
+                        if fileURLs.count > 1 {
+                            Button {
+                                startCompressFilesSeparately(fileURLs)
+                            } label: {
+                                Label("Compress Each File into Its Own .zip", systemImage: "archivebox.fill")
+                            }
+                            .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
+                        }
+                        if fileURLs.count == 1, let url = fileURLs.first {
+                            Button {
+                                startRenameFile(url)
+                            } label: {
+                                Label("Rename File…", systemImage: "pencil")
+                            }
+                            .disabled(!LibraryViewModel.modificationsEnabled || viewModel.isBusy)
+                        }
                     } label: {
                         Label("File Actions", systemImage: "ellipsis.circle")
                     }
