@@ -149,7 +149,7 @@ public enum FolderScanner {
             let files = try scan(folder: url, onFileFound: { count in onFileFound?(alreadyFound + count) }, onSkippedTooDeep: onSkippedTooDeep)
             all.append(contentsOf: files)
         }
-        return all
+        return deduplicated(all)
     }
 
     /// A single loose file's `ScannedFile` record — same shape a folder
@@ -301,6 +301,14 @@ public enum FolderScanner {
                 throw error
             }
         }
-        return all
+        return deduplicated(all)
+    }
+
+    /// A folder nested inside another configured folder (e.g. "ROMS" and
+    /// "ROMS/SELECTED") is walked twice; the same physical file must not
+    /// enter the scan twice, or it reads as two copies of itself.
+    private static func deduplicated(_ files: [ScannedFile]) -> [ScannedFile] {
+        var seen = Set<String>()
+        return files.filter { seen.insert($0.url.standardizedFileURL.path + "|" + ($0.entryPath ?? $0.name)).inserted }
     }
 }

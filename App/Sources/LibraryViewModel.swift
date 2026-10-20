@@ -1804,9 +1804,12 @@ final class LibraryViewModel {
                 // — and therefore every claim decision — identical no
                 // matter what scope produced the scan, which is exactly
                 // the property a scoped rescan must not change.
+                // Safety net for every system: one physical entry only once, even
+                // if two configured folders overlap.
+                var seenEntries = Set<String>()
                 let hashedFiles = (freshHashedFiles + reconstructedOthers).sorted {
                     ($0.file.url.path, $0.file.name) < ($1.file.url.path, $1.file.name)
-                }
+                }.filter { seenEntries.insert($0.file.url.path + "|" + $0.file.effectiveEntryPath).inserted }
                 // CHDs come from the WALK, never from `hashedFiles` — see
                 // `chdFiles` below for why. In-scope ones are whatever the
                 // walk just found; every other folder's come from the
