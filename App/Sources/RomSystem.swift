@@ -116,6 +116,23 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
     /// platform. `nil` = the platform's default (see
     /// `ConsoleEmulatorSettings.emulator(for:)`). Unused for MAME systems.
     var emulatorRaw: String?
+    /// "Custom…" emulator for THIS system: a command-line executable or a
+    /// `.app`, from Homebrew or installed by hand. `nil` falls back to the
+    /// older, shared custom path (`ConsoleEmulatorSettings.customExecutablePath`).
+    var customEmulatorPath: String?
+    /// Arguments for a custom command-line emulator, `{rom}` standing for the
+    /// game file ("{rom}" when empty). Ignored for a `.app`.
+    var customEmulatorArguments: String?
+    /// RetroArch core (name without `_libretro.dylib`) this system plays with;
+    /// `nil` = the suggested core for the platform.
+    var retroArchCore: String?
+    /// How many levels of subfolder this system's scan enters below each ROM folder
+    /// (`0` = none, only files directly inside it); `nil` = the General default.
+    var maxSubfolderDepth: Int?
+
+    /// The depth actually used: its own value, else MAME 1 (its sets live in a game
+    /// folder) and every other system 0 (off — only files directly inside the folder).
+    var effectiveMaxSubfolderDepth: Int { maxSubfolderDepth ?? (isMAMEStyle ? 1 : 0) }
 
     init(
         id: UUID = UUID(),
@@ -129,7 +146,11 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         similarNameFixEnabled: Bool = false,
         similarNameFixThreshold: Double = 0.80,
         regionQualityHintsEnabled: Bool = false,
-        emulatorRaw: String? = nil
+        emulatorRaw: String? = nil,
+        customEmulatorPath: String? = nil,
+        customEmulatorArguments: String? = nil,
+        retroArchCore: String? = nil,
+        maxSubfolderDepth: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -143,11 +164,16 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         self.similarNameFixThreshold = similarNameFixThreshold
         self.regionQualityHintsEnabled = regionQualityHintsEnabled
         self.emulatorRaw = emulatorRaw
+        self.customEmulatorPath = customEmulatorPath
+        self.customEmulatorArguments = customEmulatorArguments
+        self.retroArchCore = retroArchCore
+        self.maxSubfolderDepth = maxSubfolderDepth
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, category, datURL, romFolderURLs, hasClones, isMAMEStyle, maintenanceFolderEnabled
         case similarNameFixEnabled, similarNameFixThreshold, regionQualityHintsEnabled, emulatorRaw
+        case customEmulatorPath, customEmulatorArguments, retroArchCore, maxSubfolderDepth
         // From earlier, since-abandoned per-system designs — kept only so
         // systems saved by those builds still decode instead of crashing;
         // the values themselves are never read anymore (merge mode is a
@@ -182,6 +208,10 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         similarNameFixThreshold = try container.decodeIfPresent(Double.self, forKey: .similarNameFixThreshold) ?? 0.80
         regionQualityHintsEnabled = try container.decodeIfPresent(Bool.self, forKey: .regionQualityHintsEnabled) ?? false
         emulatorRaw = try container.decodeIfPresent(String.self, forKey: .emulatorRaw)
+        customEmulatorPath = try container.decodeIfPresent(String.self, forKey: .customEmulatorPath)
+        customEmulatorArguments = try container.decodeIfPresent(String.self, forKey: .customEmulatorArguments)
+        retroArchCore = try container.decodeIfPresent(String.self, forKey: .retroArchCore)
+        maxSubfolderDepth = try container.decodeIfPresent(Int.self, forKey: .maxSubfolderDepth)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -198,5 +228,9 @@ struct RomSystem: Identifiable, Codable, Equatable, Hashable {
         try container.encode(similarNameFixThreshold, forKey: .similarNameFixThreshold)
         try container.encode(regionQualityHintsEnabled, forKey: .regionQualityHintsEnabled)
         try container.encodeIfPresent(emulatorRaw, forKey: .emulatorRaw)
+        try container.encodeIfPresent(customEmulatorPath, forKey: .customEmulatorPath)
+        try container.encodeIfPresent(customEmulatorArguments, forKey: .customEmulatorArguments)
+        try container.encodeIfPresent(retroArchCore, forKey: .retroArchCore)
+        try container.encodeIfPresent(maxSubfolderDepth, forKey: .maxSubfolderDepth)
     }
 }

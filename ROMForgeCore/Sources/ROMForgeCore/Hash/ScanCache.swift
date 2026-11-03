@@ -94,7 +94,7 @@ public struct ScanCache: Sendable, Codable, Equatable {
     /// derived from the containing archive rather than from a
     /// already-constructed `ScannedFile`.
     public func lookup(key: String, size: Int64, modificationDate: Date, algorithms: HashAlgorithms = .all) -> ScanCacheEntry? {
-        guard let entry = entries[key], entry.size == size, entry.modificationDate == modificationDate,
+        guard let entry = entries[key], entry.size == size, Self.sameModificationDate(entry.modificationDate, modificationDate),
               satisfies(entry.hash, algorithms)
         else {
             return nil
@@ -104,6 +104,13 @@ public struct ScanCache: Sendable, Codable, Equatable {
             return nil
         }
         return entry
+    }
+
+    /// A file's fractional-second mtime loses its last digits through the JSON
+    /// round trip, so exact equality never matched files with sub-second
+    /// timestamps and they were rehashed on every scan.
+    static func sameModificationDate(_ a: Date, _ b: Date) -> Bool {
+        abs(a.timeIntervalSince(b)) < 0.001
     }
 
     private func satisfies(_ hash: FileHash, _ algorithms: HashAlgorithms) -> Bool {
@@ -146,7 +153,7 @@ public struct ScanCache: Sendable, Codable, Equatable {
         var found: [CachedArchiveEntry] = []
         for (key, entry) in entries {
             guard key.hasPrefix(prefix) else { continue }
-            guard entry.modificationDate == modificationDate else { return nil }
+            guard Self.sameModificationDate(entry.modificationDate, modificationDate) else { return nil }
             // The key's own suffix is `ScannedFile.effectiveEntryPath` (see
             // `key(for:)`'s own doc comment below) — usually just the plain
             // entry name, but a real nested entry (e.g. a "__MACOSX/._foo"
@@ -192,7 +199,7 @@ public struct ScanCache: Sendable, Codable, Equatable {
     /// caller that did the folder walk is the only place that knows them.
     public static func build(from hashedFiles: [HashedFile], chdPaths: [URL] = []) -> ScanCache {
         var entries: [String: ScanCacheEntry] = [:]
-        for hashedFile in hashedFiles {
+        for hashedFile in hashedFiles where hashedFile.hash.crc32 != CollectionHasher.corruptMarker {
             entries[key(for: hashedFile.file)] = ScanCacheEntry(
                 size: hashedFile.file.size,
                 modificationDate: hashedFile.file.modificationDate,

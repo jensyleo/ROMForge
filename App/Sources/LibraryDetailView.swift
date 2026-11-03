@@ -2239,6 +2239,11 @@ struct LibraryDetailView: View {
         guard resultsArrowKeyMonitor == nil else { return }
         resultsArrowKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard resultsPaneIsActive else { return event }
+            // Never swallow typing meant for a text field or a sheet (the
+            // Rename prompt): while a Games row was last clicked this monitor
+            // turned every letter into type-ahead, so the keyboard "stayed on
+            // the background" and the field never received anything.
+            if let window = event.window, window.isSheet || window.firstResponder is NSText { return event }
             switch event.keyCode {
             case 125:
                 if activeResultsPane == .games { moveGameSelection(by: 1) } else { moveRomSelection(by: 1) }
@@ -4177,6 +4182,17 @@ struct LibraryDetailView: View {
         // mensaje." See `LibraryViewModel
         // .configurationRequiredAlertMessage`'s own doc comment.
         .alert(
+            "Not Playable",
+            isPresented: Binding(
+                get: { viewModel.playFailureAlertMessage != nil },
+                set: { if !$0 { viewModel.playFailureAlertMessage = nil } }
+            )
+        ) {
+            Button("OK") { viewModel.playFailureAlertMessage = nil }
+        } message: {
+            Text(viewModel.playFailureAlertMessage ?? "")
+        }
+        .alert(
             "Configuration Required",
             isPresented: Binding(
                 get: { viewModel.configurationRequiredAlertMessage != nil },
@@ -4743,7 +4759,13 @@ struct LibraryDetailView: View {
         guard rejectIfUnderMaintenanceFolder([url]) else { return }
         pendingRenameFileURL = url
         renameFileText = url.lastPathComponent
-        showRenameFilePrompt = true
+        // Presented only once the context menu that triggered this has fully
+        // closed: opened while that menu was still dismissing, the sheet never
+        // became the key window and typing went to the window behind it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            NSApp.activate(ignoringOtherApps: true)
+            showRenameFilePrompt = true
+        }
     }
 
     private func commitRenameFile() {
@@ -8010,6 +8032,7 @@ struct LibraryDetailView: View {
             return "Empty zip — contains no files"
         }
         var base = node.infoText
+        if node.entries.first?.actualCRC == CollectionHasher.corruptMarker { base = "Corrupt archive — couldn't be read" }
         if node.isSurplusBucket, let tracks = node.entries.lazy.compactMap({ viewModel.snesMSUTrackCount(forFileAt: $0.path, systemID: system.id) }).first {
             base = "MSU-1 hack · \(tracks) audio track\(tracks == 1 ? "" : "s")"
         }
@@ -8035,6 +8058,10 @@ struct LibraryDetailView: View {
            url.pathExtension.lowercased() == "zip",
            let comment = zipCommentCache.comment(forZipAt: url), !comment.isEmpty {
             base += " — Has ZIP comment"
+        }
+        if system.category == "3DS",
+           let state = node.entries.lazy.compactMap({ viewModel.ctrContentState(forFileAt: $0.path, entryName: $0.actualEntryName, systemID: system.id) }).first {
+            base += InfoTextStyling.ctrSuffix(for: state)
         }
         // jensyleo's own request (2026-10-01), per-system opt-in (Settings
         // → Systems → Consoles → "Region-quality hints") — see
@@ -8544,6 +8571,10 @@ struct LibraryDetailView: View {
     private func romNameText(for entry: AuditEntry) -> String {
         // An empty zip has no ROM — its own file name isn't a rom name.
         if Self.isEmptyZip(path: entry.path, name: entry.name) { return "(empty — no ROM inside)" }
+        // A ROM accepted by NAME ("Ignore CRC/hash verification") can sit in its
+        // zip under a different name than the DAT's — the column must report the
+        // name that is REALLY inside, not the DAT's.
+        if !system.isMAMEStyle, let actual = entry.nameTrustedActualEntryName { return actual }
         return entry.name
     }
 
@@ -8566,7 +8597,11 @@ struct LibraryDetailView: View {
         // Master System/Genesis were available to test this session — the
         // exact wording here needs a real headered dump from one of those
         // systems to confirm it reads right in practice.
-        case .correct: base = entry.matchedViaHeaderStrip ? "Ok (converted to match: copier header or N64 byte order)" : "Ok"
+        case .correct:
+            base = entry.matchedViaHeaderStrip ? "Ok (converted to match: copier header or N64 byte order)" : "Ok"
+            if entry.nameTrustedActualEntryName != nil {
+                base += " — accepted by name; the DAT calls this ROM \"\(entry.name)\" (Fix → Misnamed ROMs Inside Their Archives renames it)"
+            }
         // Three distinct reasons an entry reads `.incorrect`, checked in
         // order from most to least specific:
         // - `requiredByGameDescription` set: a *surplus* file (no expected
@@ -8645,6 +8680,11 @@ struct LibraryDetailView: View {
                 base = entry.hasMaintenanceDonor
                     ? "Available in Maintenance folder"
                     : "Available in another game (\(entry.foundElsewhereArchiveName!))"
+            } else if !system.isMAMEStyle, let actual = entry.nameTrustedActualEntryName {
+                base = "Bad name — the ROM inside is called \"\(actual)\", the DAT expects \"\(entry.name)\""
+                if entry.path?.pathExtension.lowercased() == "7z" {
+                    base += " (inside a .7z ROMForge can't rename it — recompress it as .zip)"
+                }
             } else {
                 base = "Bad name"
             }
@@ -8680,6 +8720,8 @@ struct LibraryDetailView: View {
             } else if system.category == SystemCategoryKind.snesMSU1.rawValue,
                       let label = ["pcm": "MSU-1 audio track", "msu": "MSU-1 flag file", "bml": "MSU-1 manifest"][(entry.path?.pathExtension ?? "").lowercased()] {
                 base = label
+            } else if entry.actualCRC == CollectionHasher.corruptMarker {
+                base = "Corrupt archive — couldn't be read"
             } else {
                 base = "Unrecognized"
             }
@@ -8756,6 +8798,9 @@ struct LibraryDetailView: View {
         if let path = entry.path, path.pathExtension.lowercased() == "zip",
            let comment = zipCommentCache.comment(forZipAt: path), !comment.isEmpty {
             base += " — Has ZIP comment"
+        }
+        if system.category == "3DS", let state = viewModel.ctrContentState(forFileAt: entry.path, entryName: entry.actualEntryName, systemID: system.id) {
+            base += InfoTextStyling.ctrSuffix(for: state)
         }
         // See `infoText(for node:)`'s own doc comment — same region-quality
         // suffix, keyed off this entry's own game name instead of a
@@ -10419,7 +10464,7 @@ struct LibraryDetailView: View {
     /// each needed its own re-verified-on-every-call check rather than
     /// trusting a cached path string.
     private var isEmulatorInstalled: Bool {
-        system.isMAMEStyle ? MAMELaunchSettings.isInstalled : (SystemCategoryKind(rawValue: system.category)?.canPlay ?? true) && ConsoleEmulatorSettings.isInstalled(ConsoleEmulatorSettings.emulator(for: system))
+        system.isMAMEStyle ? MAMELaunchSettings.isInstalled : (SystemCategoryKind(rawValue: system.category)?.canPlay ?? true) && ConsoleEmulatorSettings.isInstalled(for: system)
     }
 
     /// Real gap found live by jensyleo (2026-09-23): "las opciones de Play
@@ -10505,15 +10550,15 @@ struct LibraryDetailView: View {
         }
         let emulatorLabel = emulatorName
         do {
-            try ConsoleEmulatorLauncher.launch(romFileURL: fileURL, emulator: ConsoleEmulatorSettings.emulator(for: system)) { reason in
+            try ConsoleEmulatorLauncher.launch(romFileURL: fileURL, emulator: ConsoleEmulatorSettings.emulator(for: system), system: system) { reason in
                 Task { @MainActor in
-                    viewModel.logError("\(emulatorLabel) couldn't open \(node.gameName):\n\n\(reason)")
+                    viewModel.logPlayFailure("\(emulatorLabel) couldn't open \(node.gameName):\n\n\(reason)")
                 }
             }
         } catch let error as ConsoleEmulatorLauncher.LaunchError {
-            viewModel.logError(error.description)
+            viewModel.logPlayFailure(error.description)
         } catch {
-            viewModel.logError("Failed to launch \(emulatorLabel): \(error.localizedDescription)")
+            viewModel.logPlayFailure("Failed to launch \(emulatorLabel): \(error.localizedDescription)")
         }
     }
 
@@ -10988,7 +11033,7 @@ struct LibraryDetailView: View {
                 // gray every purely descriptive field here keeps.
                 HStack(spacing: 0) {
                     Text("Info: ")
-                    Text(infoText(for: entry)).foregroundStyle(entry.status.tint)
+                    Text(InfoTextStyling.attributed(infoText(for: entry))).foregroundStyle(entry.status.tint)
                 }
                 regionQualityDetailRow(forGameName: entry.gameDescription ?? entry.game ?? "")
             }
@@ -11236,6 +11281,25 @@ private struct RenameFileSheet: View {
         }
         .padding(20)
         .frame(width: 460)
-        .onAppear { focused = true }
+        .onAppear {
+            // Make the sheet's own window key first, then focus the field.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NSApp.windows.first { $0.isSheet }?.makeKey()
+                focused = true
+            }
+        }
+    }
+}
+
+
+extension AuditEntry {
+    /// For a ROM inside an archive (Correct, or Incorrect for a bad name) whose real entry name differs from the
+    /// DAT's rom name beyond letter case and extension: the real name. `nil`
+    /// when the names agree (the normal, hash-verified case).
+    var nameTrustedActualEntryName: String? {
+        guard status == .correct || (status == .incorrect && requiredByGameDescription == nil && foundElsewhereArchiveName == nil),
+              let actual = actualEntryName, let path, path.lastPathComponent != actual else { return nil }
+        func base(_ text: String) -> String { ((text as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased() }
+        return base(actual) == base(name) ? nil : actual
     }
 }

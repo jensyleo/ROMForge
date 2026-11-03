@@ -23,7 +23,7 @@ category/serial/SHA-256/iNES-header fields where the DAT declares them) and
 MAME `-listxml` parsing (BIOS sets, `device_ref`, disks, parent/clone);
 scanning loose files, ZIP archives, 7z archives (via a bundled copy of the
 official 7-Zip engine, falling back to a system install if the bundled one
-is ever missing) and CHD v5 headers;
+is ever missing) and CHD v5 headers. Supported formats are `.zip`, `.7z`, `.chd` and the formats consoles use (cartridge ROMs, disc images); other archive formats such as `.rar` or `.arj` are deliberately not read — a scan skips them and says so;
 CRC32/MD5/SHA1 hashing; matching by size and hash — never by filename
 alone, except for an explicit, opt-in "trust file names" mode for
 console/computer systems only (Settings → General → "Matching" — never

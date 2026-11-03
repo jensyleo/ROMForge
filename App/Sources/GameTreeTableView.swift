@@ -233,7 +233,7 @@ struct GameTreeTableView: View {
             TableColumn("File name") { node in Text(node.actualFileName ?? node.name) }
                 .customizationID("fileName")
             TableColumn("Info") { node in
-                Text(infoText(node)).help(zipCommentHelpText(node))
+                Text(InfoTextStyling.attributed(infoText(node))).help(zipCommentHelpText(node))
             }
                 .customizationID("info")
             TableColumn("Expected file name") { node in Text(node.expectedFileName ?? "") }
@@ -668,5 +668,26 @@ struct GameTreeTableView: View {
                 .labelStyle(.titleAndIcon)
             }
         }
+    }
+}
+
+
+/// Marks the 3DS content problems of a dump in red inside an Info cell.
+enum InfoTextStyling {
+    static let encryptedSuffix = " — Encrypted"
+
+    /// Nothing for a dump an emulator accepts.
+    static func ctrSuffix(for state: NintendoCTRHeader.ContentState) -> String {
+        switch state {
+        // Emulators trust the header flag, so a dump without it is as unplayable as an encrypted one.
+        case .encrypted, .decryptedFlagMissing: return encryptedSuffix
+        case .decrypted: return ""
+        }
+    }
+
+    static func attributed(_ text: String) -> AttributedString {
+        var result = AttributedString(text)
+        if let range = result.range(of: encryptedSuffix) { result[range].foregroundColor = .red }
+        return result
     }
 }

@@ -430,6 +430,8 @@ final class LibraryViewModel {
     /// `snesHeaderRevision`.
     @ObservationIgnored private var snesHeaderCache: [UUID: [String: SNESHeaderCacheEntry]] = [:]
     private(set) var snesHeaderRevision = 0
+    /// 3DS encryption flag per system, keyed by file path — same lifecycle as `snesHeaderCache`.
+    @ObservationIgnored private var ctrEncryptionCache: [UUID: [String: CTREncryptionCacheEntry]] = [:]
     private var matchedZipArchiveURLsCache: Set<URL>?
 
     private func matchedZipArchiveURLs(for matchReport: MatchReport) -> Set<URL> {
@@ -628,6 +630,16 @@ final class LibraryViewModel {
     /// unless the Log panel happened to already be in view. Set alongside
     /// that same log line, never instead of it.
     var configurationRequiredAlertMessage: String?
+
+    /// Non-nil while the "Not Playable" alert should be showing: a game that
+    /// failed to launch (encrypted 3DS dump, missing core, emulator error).
+    /// Set alongside the same Log line, never instead of it.
+    var playFailureAlertMessage: String?
+
+    func logPlayFailure(_ message: String) {
+        logError(message)
+        playFailureAlertMessage = message
+    }
 
     /// Sets both the Log line and the visible alert together, for the
     /// "you tried a Fix action but its own required Settings toggle/folder
@@ -1649,6 +1661,15 @@ final class LibraryViewModel {
             // comment for why this cache exists at all.
             let cachedMaintenanceDonor = cachedMaintenanceDonorFiles
             let isMSU1System = system.category == SystemCategoryKind.snesMSU1.rawValue
+            let systemMaxDepth = system.effectiveMaxSubfolderDepth
+            let msu1Extensions = Self.msu1ROMExtensions
+            let msu1SkipHashing: (@Sendable (ScannedFile) -> Bool)? = isMSU1System
+                ? { @Sendable (file: ScannedFile) -> Bool in !msu1Extensions.contains(file.url.pathExtension.lowercased()) }
+                : nil
+            let isCTRSystem = system.category == "3DS"
+            let ctrSummaryLogHandler: @Sendable (String) -> Void = { [weak self] message in
+                Task { @MainActor in self?.log(message) }
+            }
             let detached = Task.detached(priority: .userInitiated) {
                 // Auto-detects Logiqx/ClrMamePro XML vs. MAME -listxml. A
                 // large MAME DAT is tens/hundreds of MB of XML, and parsing
@@ -1716,7 +1737,7 @@ final class LibraryViewModel {
                 // instead of silently skipped or fatal to the whole run.
                 var failedFolders: [(url: URL, name: String, message: String)] = []
                 let scannedFiles = try FolderScanner.scan(
-                    paths: pathsToWalk, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler,
+                    paths: pathsToWalk, maxDepth: systemMaxDepth, onFileFound: folderProgressHandler, onSkippedTooDeep: skippedTooDeepHandler,
                     onFolderStarted: folderStartedHandler,
                     onFolderFailed: { url, error in
                         failedFolders.append((url, url.lastPathComponent, error.localizedDescription))
@@ -1737,14 +1758,21 @@ final class LibraryViewModel {
                 // Loose files are hashed directly; .zip archives are expanded
                 // and their entries hashed individually, since that's where
                 // most ROM sets actually keep each game.
-                let rarCount = scannedFiles.filter { CollectionHasher.isRARVolume($0.url.pathExtension.lowercased()) }.count
-                if rarCount > 0 {
-                    await MainActor.run { [weak self] in self?.logWarning("Skipped \(rarCount) RAR file(s) — RAR archives can't be read, so they're never hashed or matched.") }
+                let unsupported = scannedFiles.filter { CollectionHasher.isUnsupportedArchive($0.url.pathExtension.lowercased()) }
+                if !unsupported.isEmpty {
+                    let kinds = Set(unsupported.map { "." + $0.url.pathExtension.lowercased() }).sorted().prefix(6).joined(separator: ", ")
+                    await MainActor.run { [weak self] in self?.logWarning("Skipped \(unsupported.count) file(s) in formats ROMForge doesn't read (\(kinds)) — it supports .zip, .7z and console formats only. Extract them (or recompress as .zip/.7z) to have them audited.") }
                 }
-                let freshHashedFiles = try await CollectionHasher.hash(scannedFiles: scannedFiles, cache: scopedCache, algorithms: hashAlgorithms, onProgress: progressHandler, onArchiveListed: archiveListedHandler)
+                let freshHashedFiles = try await CollectionHasher.hash(scannedFiles: scannedFiles, cache: scopedCache, algorithms: hashAlgorithms, onProgress: progressHandler, onArchiveListed: archiveListedHandler, skipHashing: msu1SkipHashing)
                 // A zip with no entries at all is reported as a loose file
                 // named like the zip itself — surface it so it isn't mistaken
                 // for a game with content.
+                let corruptArchives = freshHashedFiles.filter { $0.hash.crc32 == CollectionHasher.corruptMarker }
+                if !corruptArchives.isEmpty {
+                    let names = corruptArchives.prefix(5).map { "\"\($0.file.name)\"" }.joined(separator: ", ")
+                    let more = corruptArchives.count > 5 ? " and \(corruptArchives.count - 5) more" : ""
+                    await MainActor.run { [weak self] in self?.logWarning("Found \(corruptArchives.count) corrupt archive(s) that couldn't be read: \(names)\(more). They are listed as corrupt and left untouched.") }
+                }
                 let emptyZips = freshHashedFiles.filter { LibraryDetailView.isEmptyZip(path: $0.file.url, name: $0.file.name) }
                 if !emptyZips.isEmpty {
                     let names = emptyZips.prefix(5).map { "\"\($0.file.name)\"" }.joined(separator: ", ")
@@ -1853,6 +1881,21 @@ final class LibraryViewModel {
                         !system.isMAMEStyle && system.similarNameFixEnabled && MatchingPreferencesSettings.nameOnlyMatchingEnabled
                     ) ? system.similarNameFixThreshold : nil
                 )
+                if isCTRSystem {
+                    let headers = hashedFiles.compactMap { file -> NintendoCTRHeader? in
+                        guard NintendoCTRHeader.isCartridgeDump(URL(fileURLWithPath: file.file.name)) else { return nil }
+                        let isEntry = file.file.url.lastPathComponent != file.file.name
+                        return NintendoCTRHeader.read(url: file.file.url, entryName: isEntry ? (file.file.entryPath ?? file.file.name) : nil)
+                    }
+                    let encrypted = headers.filter { $0.state == .encrypted }.count
+                    let unflagged = headers.filter { $0.state == .decryptedFlagMissing }.count
+                    if encrypted > 0 {
+                        ctrSummaryLogHandler("3DS: \(encrypted) of \(headers.count) dump(s) are encrypted — RetroArch's Azahar core only plays decrypted ones.")
+                    }
+                    if unflagged > 0 {
+                        ctrSummaryLogHandler("3DS: \(unflagged) of \(headers.count) dump(s) hold decrypted content, but their header doesn't say so — Azahar rejects them.")
+                    }
+                }
                 postMatchPhaseHandler("Generating the report…")
                 var auditReport = try AuditReporter.generate(from: matchReport)
                 // CHDs never go through `ROMMatcher` at all (a disk isn't a
@@ -2167,6 +2210,10 @@ final class LibraryViewModel {
             lastScanScope = Self.mergedScanScope(lastScanScope, withNewScan: folders)
             auditReport = displayedAudit
             Self.sharedAuditReportCache[system.id] = auditReport
+            if system.category == "3DS" {
+                let ctrEntries = audit.entries
+                Task { await self.updateCTREncryption(system: system, entries: ctrEntries) }
+            }
             if system.category.hasPrefix("SNES") {
                 let snesEntries = audit.entries
                 Task { await self.updateSNESHeaders(system: system, entries: snesEntries) }
@@ -2860,8 +2907,10 @@ final class LibraryViewModel {
             return
         }
 
-        if enabledActionIDs.contains("fixMisnamed") { await fix(system: system) }
+        // Entries first, then the archive names: an archive renamed first would
+        // make its entries read as exact again and they would never be fixed.
         if enabledActionIDs.contains("renameRomsInArchive") { await renameRomsInArchive(system: system) }
+        if enabledActionIDs.contains("fixMisnamed") { await fix(system: system) }
 
         if system.isMAMEStyle {
             switch MAMEMergeModeSettings.current {
@@ -2930,6 +2979,10 @@ final class LibraryViewModel {
         return found
     }
 
+    /// SNES ROM extensions: in an MSU-1 system every OTHER loose file (`.pcm` tracks,
+    /// `.msu`, `.bml`…) is never hashed.
+    nonisolated static let msu1ROMExtensions: Set<String> = ["sfc", "smc", "swc", "fig", "gd3", "gd7", "dx2", "bs", "st"]
+
     func removeUselessFiles(system: RomSystem, scopeFolders: [URL]) async {
         guard Self.modificationsEnabled else {
             logError("Removing files is disabled — enable file modifications in Settings → General first.")
@@ -2955,6 +3008,14 @@ final class LibraryViewModel {
         let keptForeign = Self.restrictToScope(ForeignProgramFiles.protectedSurplus(matchReport: matchReport).map { RebuildOperation.delete($0) }, scopeFolders: scopeFolders).count
         if keptForeign > 0 {
             log("Kept \(keptForeign) file(s) that belong to another program (gamelist.xml, images, videos, manuals…) — they are never removed as \"useless\".")
+        }
+        let keptArchives = RebuildPlanner.archivesKeptBecauseRemovalWouldEmptyThem(matchReport: matchReport).filter { archive in
+            scopeFolders.isEmpty || scopeFolders.contains { archive.path.hasPrefix($0.path) }
+        }
+        if !keptArchives.isEmpty {
+            let names = keptArchives.prefix(5).map { "\"\($0.lastPathComponent)\"" }.joined(separator: ", ")
+            let more = keptArchives.count > 5 ? " and \(keptArchives.count - 5) more" : ""
+            logWarning("Kept \(keptArchives.count) archive(s) whose only file(s) the DAT doesn't recognize — deleting them would leave an empty zip: \(names)\(more). They may be valid ROMs the DAT doesn't list (hacks, translations); delete the whole file yourself if you really don't want it.")
         }
         let junkRoots = scopeFolders.isEmpty ? system.romFolderURLs : scopeFolders
         let (succeeded, failed, failureLines) = await Task.detached(priority: .userInitiated) {
@@ -5237,6 +5298,73 @@ struct SNESHeaderCacheEntry: Codable, Sendable {
     /// MSU-1 audio tracks found next to this ROM (SNES-MSU1 systems only);
     /// `nil` when the ROM has no `.msu` file beside it.
     let msuTracks: Int?
+}
+
+/// Whether a 3DS cartridge dump is encrypted, with the size/mtime it was read at.
+struct CTREncryptionCacheEntry: Codable, Sendable {
+    let size: Int64
+    let modified: Double
+    let state: NintendoCTRHeader.ContentState
+}
+
+extension LibraryViewModel {
+    private static func ctrCacheURL(for systemID: UUID) -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ROMForge/CTRHeaders", isDirectory: true)
+            .appendingPathComponent("\(systemID.uuidString).json")
+    }
+
+    private func loadedCTRCache(for systemID: UUID) -> [String: CTREncryptionCacheEntry] {
+        if let cached = ctrEncryptionCache[systemID] { return cached }
+        let loaded = (try? Data(contentsOf: Self.ctrCacheURL(for: systemID)))
+            .flatMap { try? JSONDecoder().decode([String: CTREncryptionCacheEntry].self, from: $0) } ?? [:]
+        ctrEncryptionCache[systemID] = loaded
+        return loaded
+    }
+
+    /// What a 3DS dump really contains, from the last scan; `nil` if unknown.
+    func ctrContentState(forFileAt url: URL?, entryName: String?, systemID: UUID) -> NintendoCTRHeader.ContentState? {
+        _ = snesHeaderRevision
+        guard let url else { return nil }
+        return loadedCTRCache(for: systemID)[Self.snesHeaderKey(url: url, entryName: entryName)]?.state
+    }
+
+    /// Reads the header of every 3DS dump of the last scan that isn't cached yet (or changed).
+    func updateCTREncryption(system: RomSystem, entries: [AuditEntry]) async {
+        let existing = loadedCTRCache(for: system.id)
+        var seen = Set<String>()
+        var candidates: [(key: String, url: URL, entryName: String?, size: Int64)] = []
+        for entry in entries {
+            guard let url = entry.path else { continue }
+            let name = entry.actualEntryName ?? url.lastPathComponent
+            let key = Self.snesHeaderKey(url: url, entryName: entry.actualEntryName)
+            guard NintendoCTRHeader.isCartridgeDump(URL(fileURLWithPath: name)), seen.insert(key).inserted else { continue }
+            candidates.append((key, url, entry.actualEntryName, entry.actualSize ?? 0))
+        }
+        let toRead = candidates.filter { candidate in
+            guard let cached = existing[candidate.key] else { return true }
+            let modified = (try? FileManager.default.attributesOfItem(atPath: candidate.url.path)[.modificationDate] as? Date)?.timeIntervalSince1970
+            return cached.size != candidate.size || cached.modified != modified
+        }
+        guard !toRead.isEmpty else { return }
+        let results: [String: CTREncryptionCacheEntry] = await Task.detached(priority: .utility) {
+            var results: [String: CTREncryptionCacheEntry] = [:]
+            for candidate in toRead {
+                if Task.isCancelled { break }
+                let modified = ((try? FileManager.default.attributesOfItem(atPath: candidate.url.path)[.modificationDate]) as? Date)?.timeIntervalSince1970 ?? 0
+                guard let header = NintendoCTRHeader.read(url: candidate.url, entryName: candidate.entryName) else { continue }
+                results[candidate.key] = CTREncryptionCacheEntry(size: candidate.size, modified: modified, state: header.state)
+            }
+            return results
+        }.value
+        var merged = existing
+        merged.merge(results) { _, new in new }
+        ctrEncryptionCache[system.id] = merged
+        snesHeaderRevision += 1
+        let cacheURL = Self.ctrCacheURL(for: system.id)
+        try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(merged) { try? data.write(to: cacheURL, options: .atomic) }
+    }
 }
 
 extension LibraryViewModel {

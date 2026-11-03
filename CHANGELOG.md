@@ -2,6 +2,44 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [1.7.0] - 2026-11-03
+
+### Added
+
+- Roughly 80 more platforms (Nintendo handhelds and consoles, Sega, Sony, Atari,
+  NEC, SNK, computers and more), each with a hint for where its DATs come from.
+- RetroArch as the emulator for every non-MAME platform, with the core picked per
+  system from the ones installed, plus "Custom…" for any other emulator.
+- Per-system maximum subfolder depth (MAME 1, every other system off by default).
+- Nintendo 3DS: the Info column marks encrypted dumps (and decrypted ones whose
+  header flag is missing) in red, Play explains why such a dump isn't playable,
+  and a trimmed dump is matched to its DAT game by the product code in its header.
+  Works for loose files and for `.zip`.
+- Region-quality hints for 56 more platform notes; on by default for new systems,
+  which also start with name-similarity renames on at 50%.
+- "Not Playable" alert when a game fails to launch, with the emulator's own reason.
+- Help: supported file formats, where to download DATs (clickable links), subfolder
+  depth, 3DS encryption and zipped ROMs.
+
+### Changed
+
+- A corrupt `.zip` no longer stops a scan: it is listed as "Corrupt archive" and
+  never deleted automatically.
+- Scans read only the selected checksums, now also for `.7z` entries.
+
+### Fixed
+
+- Files with fractional-second timestamps were rehashed on every scan, because the
+  scan cache compared times exactly.
+- A 512-byte copier-header check forced a second full read of large images (3DS,
+  Wii); it now applies only to files up to 64 MB.
+- An extra file next to the ROM inside a single-ROM archive (a readme) was treated
+  as a duplicate of that game, so it couldn't be removed.
+- Renaming a ROM inside a `.7z`, Remove Useless Files emptying archives that held a
+  single unknown ROM, and a scan hang on large SNES-MSU1 folders.
+- RetroArch exiting with a non-zero status after a normal session no longer shows
+  a failure alert.
+
 ## [1.6.1] - 2026-10-20
 
 ### Fixed

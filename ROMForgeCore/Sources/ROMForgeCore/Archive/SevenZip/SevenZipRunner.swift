@@ -76,13 +76,19 @@ enum SevenZipRunner {
         // happens-before relationship before it's ever read. 2026-08-13
         // performance/cleanup pass — no behavior change, silences a real
         // compiler warning (fixed at the audit's own "Ciclo A" step).
-        let errorDrain = DispatchGroup()
+        // A dedicated `Thread`, never a GCD/Swift-concurrency pool thread:
+        // callers run on the cooperative pool and block below waiting for this
+        // drain; with every pool thread blocked, a pool-scheduled drain could
+        // never start and the whole scan froze (found live 2026-10-26 hashing
+        // many `.7z` entries at once).
+        let errorDrain = DispatchSemaphore(value: 0)
         let errorBox = SendableBox(Data())
-        errorDrain.enter()
-        DispatchQueue.global(qos: .utility).async {
+        let errorThread = Thread {
             errorBox.value = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            errorDrain.leave()
+            errorDrain.signal()
         }
+        errorThread.stackSize = 1 << 20
+        errorThread.start()
 
         do {
             try process.run()

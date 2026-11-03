@@ -210,6 +210,12 @@ public enum RebuildExecutor {
         guard fileManager.fileExists(atPath: archiveURL.path) else {
             throw RebuildError.sourceMissing(archiveURL)
         }
+        // `.7z`: the paired rename already moved the entry, so there is nothing to remove.
+        if archiveURL.pathExtension.lowercased() == "7z" {
+            let remaining = (try? SevenZipArchiveScanner.scan(archive: archiveURL).map(\.name)) ?? []
+            if !remaining.contains(entryName) { return }
+            throw RebuildError.underlying("Removing an entry from a .7z is not supported (\(archiveURL.lastPathComponent))")
+        }
         let sourceArchive: Archive
         do {
             sourceArchive = try Archive(url: archiveURL, accessMode: .read)
@@ -252,6 +258,23 @@ public enum RebuildExecutor {
 
     /// Adds one entry to an EXISTING `.zip`, leaving every other entry in it
     /// untouched — see `RebuildOperation.addEntryToZip`'s own doc comment.
+    /// Renames one entry inside a `.7z` with 7-Zip's own `rn` command; refuses to
+    /// overwrite an existing entry.
+    private static func renameEntryInSevenZip(archive: URL, from oldName: String, to newName: String) throws {
+        let existing: [String]
+        do { existing = try SevenZipArchiveScanner.scan(archive: archive).map(\.name) } catch {
+            throw RebuildError.underlying("Could not read \(archive.lastPathComponent): \(error.localizedDescription)")
+        }
+        guard existing.contains(oldName) else { throw RebuildError.sourceMissing(archive.appendingPathComponent(oldName)) }
+        guard !existing.contains(newName) else { throw RebuildError.destinationExists(archive.appendingPathComponent(newName)) }
+        do {
+            let binary = try SevenZipLocator.locate()
+            _ = try SevenZipRunner.run(executableURL: binary, arguments: ["rn", archive.path, oldName, newName])
+        } catch {
+            throw RebuildError.underlying("7-Zip could not rename inside \(archive.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
     private static func addEntryToZip(
         targetArchive: URL,
         entryName: String,
@@ -260,6 +283,15 @@ public enum RebuildExecutor {
     ) throws {
         guard fileManager.fileExists(atPath: targetArchive.path) else {
             throw RebuildError.sourceMissing(targetArchive)
+        }
+        // A `.7z` cannot be appended to here, but 7-Zip renames an entry in place
+        // (`rn`): the add-then-remove pair becomes "rename" + "nothing left to remove".
+        if targetArchive.pathExtension.lowercased() == "7z" {
+            guard let oldName = source.sourceArchiveEntryName else {
+                throw RebuildError.underlying("Cannot rename inside \(targetArchive.lastPathComponent): the entry's current name is unknown")
+            }
+            try renameEntryInSevenZip(archive: targetArchive, from: oldName, to: entryName)
+            return
         }
         let data = try readEntryData(source)
         let archive: Archive

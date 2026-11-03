@@ -6,6 +6,7 @@
 
 import AppKit
 import Foundation
+import ROMForgeCore
 
 /// "Play in <emulator>" for a console/computer system — the counterpart to
 /// `MAMELauncher`/`MAMELaunchSettings`, but configurable, unlike MAME.
@@ -18,135 +19,46 @@ import Foundation
 /// `.custom` is his own explicit escape hatch for whoever wants an
 /// emulator not on this list at all.
 public enum KnownConsoleEmulator: String, CaseIterable, Identifiable, Sendable {
-    case nestopia
-    case fceux
-    case snes9x
-    case mgba
-    case mupen64plus
-    case ares
+    case retroarch
     case custom
 
     public var id: String { rawValue }
 
-    /// Emulators that can actually run a given `RomSystem.category`
-    /// ("NES", "SNES"…). `.custom` runs anything; a platform with no known
-    /// emulator yet only offers `.custom`.
+    /// Emulators that can run a given `RomSystem.category`: RetroArch (one frontend
+    /// with a libretro core per platform) for every platform with a known core, and
+    /// `.custom` for any other emulator — from Homebrew or installed by hand.
     static func options(forCategory category: String) -> [KnownConsoleEmulator] {
         guard SystemCategoryKind(rawValue: category)?.canPlay ?? true else { return [] }
-        switch category {
-        case "NES": return [.nestopia, .fceux, .custom]
-        case "SNES", "SNES-MSU1": return [.snes9x, .custom]
-        case "GBA": return [.mgba, .custom]
-        case "N64": return [.mupen64plus, .ares, .custom]
-        default: return [.custom]
-        }
+        return (RetroArchCores.defaultCore(forCategory: category) != nil ? [.retroarch] : []) + [.custom]
     }
 
     var displayName: String {
         switch self {
-        case .nestopia: return "Nestopia"
-        case .fceux: return "FCEUX"
-        case .snes9x: return "Snes9x"
-        case .mgba: return "mGBA"
-        case .mupen64plus: return "Mupen64Plus"
-        case .ares: return "ares"
+        case .retroarch: return "RetroArch"
         case .custom: return "Custom…"
         }
     }
 
-    /// The Homebrew command that installs it — shown directly in Settings
-    /// so there's never a guessing game about how to get each option.
-    /// Both confirmed real and currently installable (2026-09-29): OpenEmu
-    /// was considered too (probably the most POPULAR multi-system option)
-    /// but its own Homebrew cask is currently disabled upstream
-    /// ("fails_gatekeeper_check", also `requires_rosetta`) — genuinely not
-    /// installable via `brew` right now, so it's deliberately left off
-    /// this list rather than offered as a choice that would just fail.
+    /// How to get it, shown in Settings. `retroarch` (no suffix) is the Intel build.
     var installCommand: String? {
         switch self {
-        case .nestopia: return "brew install --cask nestopia"
-        case .fceux: return "brew install fceux"
-        case .snes9x: return "brew install --cask snes9x"
-        case .mgba: return "brew install --cask mgba-app"
-        case .mupen64plus: return "brew install mupen64plus"
-        case .ares: return "brew install --cask ares-emulator"
+        case .retroarch: return "brew install --cask retroarch-metal"
         case .custom: return nil
         }
     }
 
-    /// Whether the emulator opens a `.zip` ROM by itself. Snes9x's macOS
-    /// app declares only .sfc/.smc/.swc/.fig/.gd3/.jma as openable
-    /// documents, so a zipped ROM is extracted to a temporary file first.
-    /// `.custom` is unknown, so it gets the same safe treatment.
-    var opensZipDirectly: Bool {
-        switch self {
-        case .nestopia, .fceux: return true
-        case .snes9x, .mgba, .ares, .mupen64plus, .custom: return false
-        }
-    }
+    /// RetroArch's own binary is launched as a process with `-L <core> <rom>`;
+    /// it opens zip/7z content itself.
+    var opensZipDirectly: Bool { self == .retroarch }
 
-    /// `true` for a Homebrew **cask** (a `.app` bundle, opened via
-    /// `NSWorkspace` by bundle identifier) vs. a **formula** (a plain CLI
-    /// binary, run directly via `Process` — the same mechanism
-    /// `MAMELauncher` already uses for MAME's own formula). Determines
-    /// which half of `ConsoleEmulatorLauncher.launch` actually runs.
-    ///
-    /// `.custom` has no fixed answer — the user can point "Locate…" at
-    /// either kind (`SystemSettingsView.locateCustomEmulator()`'s own doc
-    /// comment) — so `ConsoleEmulatorSettings` decides that ONE case for
-    /// itself, from the actual path's own `.app` extension, rather than
-    /// this static property.
-    var isAppBundle: Bool {
-        switch self {
-        case .nestopia, .snes9x, .mgba, .ares: return true
-        case .fceux, .mupen64plus, .custom: return false
-        }
-    }
+    /// `true` for a `.app` opened via `NSWorkspace`; RetroArch runs as a process, and
+    /// `.custom` is decided from the chosen path's own extension.
+    var isAppBundle: Bool { false }
 
-    /// Nestopia's own bundle identifier — confirmed live (2026-09-29) via
-    /// `mdls -name kMDItemCFBundleIdentifier` against a real `brew install
-    /// --cask nestopia`. The capital "N" matters: bundle-id lookup is
-    /// exact-match, and an initial guess inferred from the cask's own
-    /// `zap` stanza (lowercase `nestopia`) turned out wrong once actually
-    /// tested against the real installed app — `nil` for anything not
-    /// resolved by bundle id.
-    var bundleIdentifier: String? {
-        switch self {
-        case .nestopia: return "com.bannister.Nestopia"
-        case .fceux, .snes9x, .mgba, .ares, .mupen64plus, .custom: return nil
-        }
-    }
-
-    /// The conventional Homebrew formula install location on Apple
-    /// Silicon — same reasoning as `MAMELaunchSettings.homebrewDefaultPath`.
-    /// `nil` for anything not resolved by a fixed path.
     var homebrewDefaultPath: String? {
         switch self {
-        case .fceux: return "/opt/homebrew/bin/fceux"
-        case .mupen64plus: return "/opt/homebrew/bin/mupen64plus"
-        case .nestopia, .snes9x, .mgba, .ares, .mupen64plus, .custom: return nil
-        }
-    }
-
-    /// The fixed, deterministic location `brew install --cask snes9x`
-    /// always installs to — used INSTEAD of `bundleIdentifier` for this one
-    /// emulator. Honest gap, not an oversight: every other app-bundle
-    /// emulator here (Nestopia) has its bundle id confirmed live via `mdls
-    /// -name kMDItemCFBundleIdentifier` against a real install (see
-    /// `bundleIdentifier`'s own doc comment) — Snes9x's own real identifier
-    /// was never confirmed that same way (no real install available to
-    /// check against when this was added), so rather than guess one and
-    /// risk it being silently wrong the way Nestopia's own first guess was,
-    /// `resolvedAppURL` below falls back to checking this fixed path
-    /// directly on disk when `bundleIdentifier` is `nil` for a known
-    /// (non-custom) emulator — exactly as reliable, since a Homebrew cask's
-    /// own install location is itself fixed and documented.
-    var homebrewCaskAppPath: String? {
-        switch self {
-        case .snes9x: return "/Applications/Snes9x.app"
-        case .mgba: return "/Applications/mGBA.app"
-        case .ares: return "/Applications/ares.app"
-        case .nestopia, .fceux, .mupen64plus, .custom: return nil
+        case .retroarch: return RetroArchCores.executablePath
+        case .custom: return nil
         }
     }
 }
@@ -194,8 +106,14 @@ enum ConsoleEmulatorSettings {
         customExecutablePath.lowercased().hasSuffix(".app")
     }
 
-    private static func resolvedIsAppBundle(_ emulator: KnownConsoleEmulator) -> Bool {
-        emulator == .custom ? customPathIsAppBundle : emulator.isAppBundle
+    /// The custom emulator for `system`: its own path, else the older shared one.
+    static func customPath(for system: RomSystem) -> String {
+        if let own = system.customEmulatorPath, !own.isEmpty { return own }
+        return customExecutablePath
+    }
+
+    private static func resolvedIsAppBundle(_ emulator: KnownConsoleEmulator, customPath: String?) -> Bool {
+        emulator == .custom ? (customPath ?? customExecutablePath).lowercased().hasSuffix(".app") : emulator.isAppBundle
     }
 
     /// The resolved location to actually launch — an app bundle's own
@@ -204,30 +122,21 @@ enum ConsoleEmulatorSettings {
     /// every call, never cached — same "verified against the real file
     /// system, never assumed" reasoning `MAMELaunchSettings.executablePath`
     /// uses, so an uninstall/reinstall is picked up immediately.
-    static func resolvedAppURL(for emulator: KnownConsoleEmulator) -> URL? {
-        guard resolvedIsAppBundle(emulator) else { return nil }
+    static func resolvedAppURL(for emulator: KnownConsoleEmulator, customPath: String? = nil) -> URL? {
+        guard resolvedIsAppBundle(emulator, customPath: customPath) else { return nil }
         if emulator == .custom {
-            let path = customExecutablePath
+            let path = customPath ?? customExecutablePath
             return path.isEmpty ? nil : URL(fileURLWithPath: path)
-        }
-        if let bundleIdentifier = emulator.bundleIdentifier {
-            return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
-        }
-        // See `KnownConsoleEmulator.homebrewCaskAppPath`'s own doc comment
-        // — a fixed-path fallback for an app-bundle emulator whose real
-        // bundle id was never confirmed live.
-        if let path = emulator.homebrewCaskAppPath, FileManager.default.fileExists(atPath: path) {
-            return URL(fileURLWithPath: path)
         }
         return nil
     }
 
     /// The resolved plain executable path — set only when
     /// `resolvedIsAppBundle` is `false`.
-    static func resolvedExecutablePath(for emulator: KnownConsoleEmulator) -> String? {
-        guard !resolvedIsAppBundle(emulator) else { return nil }
+    static func resolvedExecutablePath(for emulator: KnownConsoleEmulator, customPath: String? = nil) -> String? {
+        guard !resolvedIsAppBundle(emulator, customPath: customPath) else { return nil }
         if emulator == .custom {
-            let path = customExecutablePath
+            let path = customPath ?? customExecutablePath
             return path.isEmpty ? nil : path
         }
         return emulator.homebrewDefaultPath
@@ -239,12 +148,18 @@ enum ConsoleEmulatorSettings {
     /// installed, never just because some setting happens to be
     /// non-empty. Same reasoning as `MAMELaunchSettings.isInstalled`'s own
     /// doc comment.
-    static func isInstalled(_ emulator: KnownConsoleEmulator) -> Bool {
-        if resolvedIsAppBundle(emulator) {
-            return resolvedAppURL(for: emulator) != nil
+    static func isInstalled(_ emulator: KnownConsoleEmulator, customPath: String? = nil) -> Bool {
+        if resolvedIsAppBundle(emulator, customPath: customPath) {
+            return resolvedAppURL(for: emulator, customPath: customPath) != nil
         }
-        guard let path = resolvedExecutablePath(for: emulator) else { return false }
+        guard let path = resolvedExecutablePath(for: emulator, customPath: customPath) else { return false }
         return FileManager.default.isExecutableFile(atPath: path)
+    }
+
+    /// `isInstalled` for the emulator `system` is set to, with its own custom path.
+    static func isInstalled(for system: RomSystem) -> Bool {
+        let chosen = emulator(for: system)
+        return isInstalled(chosen, customPath: chosen == .custom ? customPath(for: system) : nil)
     }
 }
 
@@ -259,6 +174,9 @@ enum ConsoleEmulatorLauncher {
         case notInstalled(emulator: KnownConsoleEmulator)
         case romNotFound(path: String)
         case extractionFailed(String)
+        case coreMissing(core: String)
+        case encryptedROM
+        case unflaggedDecryptedROM
 
         var description: String {
             switch self {
@@ -266,6 +184,12 @@ enum ConsoleEmulatorLauncher {
                 return "The ROM file isn't reachable (\(path)) — if it lives on a network volume, make sure the volume is mounted."
             case .extractionFailed(let reason):
                 return "Couldn't extract the zipped ROM to play it: \(reason)"
+            case .unflaggedDecryptedROM:
+                return "Not playable — Reason: this 3DS dump is decrypted, but its header doesn't carry the decrypted flag, and RetroArch's Azahar core trusts that flag and rejects it."
+            case .encryptedROM:
+                return "Not playable — Reason: this 3DS dump is Encrypted, and RetroArch's Azahar core only loads Decrypted dumps."
+            case .coreMissing(let core):
+                return "RetroArch needs the \"\(core)\" core for this platform. Install it from RetroArch's own Online Updater → Core Downloader (or pick another installed core in Settings → Systems → Consoles)."
             case .notInstalled(let emulator):
                 if let installCommand = emulator.installCommand {
                     return "\(emulator.displayName) isn't installed — run `\(installCommand)`, then try again."
@@ -287,18 +211,37 @@ enum ConsoleEmulatorLauncher {
     /// directly via `Process` with the rom file as its sole argument,
     /// capturing stderr — same mechanism, and same real-failure-reason
     /// reporting, as `MAMELauncher.launch`'s own MAME process.
-    static func launch(romFileURL requestedURL: URL, emulator: KnownConsoleEmulator, onFailure: @escaping @Sendable (String) -> Void) throws {
+    /// The core's own explanation (`SET_MESSAGE` lines) plus RetroArch's
+    /// `[ERROR]` lines, instead of the whole verbose log.
+    static func retroArchFailureSummary(_ output: String) -> String {
+        var lines: [String] = []
+        for line in output.split(separator: "\n") {
+            var text = String(line)
+            if let range = text.range(of: "SET_MESSAGE: ") { text = String(text[range.upperBound...]) }
+            else if !text.hasPrefix("[ERROR]") { continue }
+            if !lines.contains(text) { lines.append(text) }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func launch(romFileURL requestedURL: URL, emulator: KnownConsoleEmulator, system: RomSystem, onFailure: @escaping @Sendable (String) -> Void) throws {
+        let customPath: String? = emulator == .custom ? ConsoleEmulatorSettings.customPath(for: system) : nil
         guard FileManager.default.fileExists(atPath: requestedURL.path) else {
             throw LaunchError.romNotFound(path: requestedURL.path)
         }
         let romFileURL = try playableURL(for: requestedURL, emulator: emulator)
+        if emulator == .retroarch, system.category == "3DS", let state = (romFileURL.pathExtension.lowercased() == "zip"
+                ? NintendoCTRHeader.readFirstCartridge(inZip: romFileURL) : NintendoCTRHeader.read(url: romFileURL))?.state {
+            if state == .encrypted { throw LaunchError.encryptedROM }
+            if state == .decryptedFlagMissing { throw LaunchError.unflaggedDecryptedROM }
+        }
         // Checks the ACTUAL resolved kind (`ConsoleEmulatorSettings`'s own
         // `resolvedIsAppBundle`, via which resolved property comes back
         // non-nil), not `emulator.isAppBundle` — for `.custom` that static
         // property has no real answer at all (`SystemSettingsView
         // .locateCustomEmulator()`'s own doc comment: either kind of path
         // is accepted there).
-        if let appURL = ConsoleEmulatorSettings.resolvedAppURL(for: emulator) {
+        if let appURL = ConsoleEmulatorSettings.resolvedAppURL(for: emulator, customPath: customPath) {
             // Real bug found live (2026-10-04, Snes9x): a ROM handed to an
             // app that is NOT running yet is lost — the window opens empty
             // (even `open -a` does it); the same call works once the app
@@ -330,24 +273,41 @@ enum ConsoleEmulatorLauncher {
             }
             return
         }
-        guard let executablePath = ConsoleEmulatorSettings.resolvedExecutablePath(for: emulator),
+        guard let executablePath = ConsoleEmulatorSettings.resolvedExecutablePath(for: emulator, customPath: customPath),
               FileManager.default.isExecutableFile(atPath: executablePath) else {
             throw LaunchError.notInstalled(emulator: emulator)
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = [romFileURL.path]
+        if emulator == .retroarch {
+            guard let core = RetroArchCores.core(for: system) else { throw LaunchError.coreMissing(core: system.category) }
+            guard RetroArchCores.isInstalled(core) else { throw LaunchError.coreMissing(core: core) }
+            // --verbose makes the core's own messages (e.g. "ROM is encrypted") reach
+            // stderr, so a failed launch can say why instead of just "failed".
+            process.arguments = ["--verbose", "-L", RetroArchCores.coreURL(core).path, romFileURL.path]
+        } else if emulator == .custom {
+            process.arguments = ArgumentTemplate.expand(system.customEmulatorArguments, rom: romFileURL.path)
+        } else {
+            process.arguments = [romFileURL.path]
+        }
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
         let stderrData = SendableBox(Data())
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            stderrData.value.append(handle.availableData)
+            let data = handle.availableData
+            // Verbose output of a long session must not grow without bound.
+            if stderrData.value.count < 262_144 { stderrData.value.append(data) }
         }
         process.terminationHandler = { finished in
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             guard finished.terminationStatus != 0 else { return }
-            let message = String(data: stderrData.value, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            onFailure(message?.isEmpty == false ? message! : "\(emulator.displayName) exited with status \(finished.terminationStatus) and no further output.")
+            let output = String(data: stderrData.value, encoding: .utf8) ?? ""
+            // RetroArch can exit non-zero after a perfectly good session (quitting a
+            // running core, a late shutdown error). Only a game that never started is a failure.
+            if emulator == .retroarch,
+               !output.contains("Failed to load content"), !output.contains("Failed to open libretro core") { return }
+            let message = emulator == .retroarch ? retroArchFailureSummary(output) : output.trimmingCharacters(in: .whitespacesAndNewlines)
+            onFailure(!message.isEmpty ? message : "\(emulator.displayName) exited with status \(finished.terminationStatus) and no further output.")
         }
         try process.run()
     }
@@ -426,5 +386,146 @@ enum ConsoleEmulatorLauncher {
             get { lock.withLock { _value } }
             set { lock.withLock { _value = newValue } }
         }
+    }
+}
+
+
+/// RetroArch's per-platform libretro cores. One frontend plays every console;
+/// the core is what emulates the platform. Defaults are the widely used,
+/// maintained cores that exist for Apple Silicon on libretro's own build server.
+enum RetroArchCores {
+    /// RetroArch's executable, from Homebrew's cask or a hand-installed copy
+    /// in /Applications or ~/Applications.
+    static var executablePath: String {
+        let candidates = ["/Applications/RetroArch.app/Contents/MacOS/RetroArch",
+                          NSHomeDirectory() + "/Applications/RetroArch.app/Contents/MacOS/RetroArch"]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? candidates[0]
+    }
+
+    /// Where the Homebrew/`.dmg` RetroArch keeps its cores.
+    static var coresDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/RetroArch/cores", isDirectory: true)
+    }
+
+    /// Core name without the `_libretro.dylib` suffix, per `RomSystem.category`.
+    static func defaultCore(forCategory category: String) -> String? {
+        switch category {
+        case "NES", "Famicom Disk System": return "fceumm"
+        case "SNES", "SNES-MSU1": return "snes9x"
+        case "N64": return "mupen64plus_next"
+        case "Game Boy", "Game Boy Color": return "gambatte"
+        case "GBA": return "mgba"
+        case "NDS": return "melonds"
+        case "DSi": return "melondsds"
+        case "3DS": return "azahar"
+        case "Wii U": return "cemu"
+        case "Virtual Boy": return "mednafen_vb"
+        case "Pokemon Mini": return "pokemini"
+        case "Atari 2600": return "stella"
+        case "Atari 5200": return "a5200"
+        case "Atari 7800": return "prosystem"
+        case "Atari Jaguar": return "virtualjaguar"
+        case "Atari Lynx": return "handy"
+        case "Atari ST": return "hatari"
+        case "Atari 8-bit": return "atari800"
+        case "PC Engine": return "mednafen_pce_fast"
+        case "PC Engine CD": return "mednafen_pce"
+        case "SuperGrafx": return "mednafen_supergrafx"
+        case "PC-FX": return "mednafen_pcfx"
+        case "PC-98": return "np2kai"
+        case "Neo Geo Pocket": return "mednafen_ngp"
+        case "Neo Geo Pocket Color": return "mednafen_ngp"
+        case "Neo Geo CD": return "neocd"
+        case "WonderSwan": return "mednafen_wswan"
+        case "WonderSwan Color": return "mednafen_wswan"
+        case "ColecoVision": return "gearcoleco"
+        case "Intellivision": return "freeintv"
+        case "Vectrex": return "vecx"
+        case "Magnavox Odyssey 2": return "o2em"
+        case "Fairchild Channel F": return "freechaf"
+        case "Watara Supervision": return "potator"
+        case "Mega Duck": return "sameduck"
+        case "Game & Watch": return "gw"
+        case "Epoch Super Cassette Vision": return "emuscv"
+        case "3DO": return "opera"
+        case "Philips CD-i": return "same_cdi"
+        case "Commodore 64": return "vice_x64"
+        case "Commodore Amiga": return "puae"
+        case "Commodore VIC-20": return "vice_xvic"
+        case "Commodore Plus/4": return "vice_xplus4"
+        case "Commodore 128": return "vice_x128"
+        case "Commodore PET": return "vice_xpet"
+        case "ZX Spectrum": return "fuse"
+        case "ZX81": return "81"
+        case "Amstrad CPC": return "cap32"
+        case "MSX": return "bluemsx"
+        case "MSX2": return "bluemsx"
+        case "Apple II": return "applewin"
+        case "Apple Macintosh": return "minivmac"
+        case "DOS": return "dosbox_pure"
+        case "Sharp X68000": return "px68k"
+        case "Sharp X1": return "x1"
+        case "FM Towns": return "geartowns"
+        case "Thomson MO/TO": return "theodore"
+        case "ScummVM": return "scummvm"
+        case "GameCube", "Wii": return "dolphin"
+        case "SEGA SG-1000", "SEGA Master System", "SEGA Game Gear", "SEGA Genesis", "SEGA CD": return "genesis_plus_gx"
+        case "SEGA 32X": return "picodrive"
+        case "SEGA Saturn": return "mednafen_saturn"
+        case "SEGA Dreamcast": return "flycast"
+        case "Sony PlayStation": return "pcsx_rearmed"
+        case "Sony PlayStation 2": return "pcsx2"
+        case "Sony PSP": return "ppsspp"
+        default: return nil
+        }
+    }
+
+    static func coreURL(_ core: String) -> URL {
+        coresDirectory.appendingPathComponent("\(core)_libretro.dylib")
+    }
+
+    static func isInstalled(_ core: String) -> Bool {
+        FileManager.default.fileExists(atPath: coreURL(core).path)
+    }
+
+    /// The core `system` plays with: its own choice when that core is
+    /// installed, else the platform's suggested one (installed or not).
+    static func core(for system: RomSystem) -> String? {
+        if let own = system.retroArchCore, !own.isEmpty, isInstalled(own) { return own }
+        return defaultCore(forCategory: system.category)
+    }
+
+    /// Every core the user has installed, names without the suffix.
+    static func installedCores() -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: coresDirectory.path)) ?? []
+        return names.filter { $0.hasSuffix("_libretro.dylib") }
+            .map { String($0.dropLast("_libretro.dylib".count)) }
+            .sorted()
+    }
+}
+
+/// Splits a user-written argument template for a custom emulator ("-f {rom}")
+/// into arguments, honouring double quotes; `{rom}` becomes the game file. An
+/// empty template means just the game file.
+enum ArgumentTemplate {
+    static func expand(_ template: String?, rom: String) -> [String] {
+        let text = (template ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return [rom] }
+        var arguments: [String] = []
+        var current = ""
+        var inQuotes = false
+        var hasToken = false
+        for character in text {
+            if character == "\"" { inQuotes.toggle(); hasToken = true; continue }
+            if character == " ", !inQuotes {
+                if hasToken { arguments.append(current); current = ""; hasToken = false }
+                continue
+            }
+            current.append(character)
+            hasToken = true
+        }
+        if hasToken { arguments.append(current) }
+        let expanded = arguments.map { $0.replacingOccurrences(of: "{rom}", with: rom) }
+        return expanded.contains(where: { $0.contains(rom) }) ? expanded : expanded + [rom]
     }
 }

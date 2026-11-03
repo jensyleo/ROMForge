@@ -67,8 +67,26 @@ public enum SevenZipLocator {
         "/usr/local/bin/7z",
     ]
 
+    /// The engine found by the last successful lookup. Validating a candidate
+    /// launches it, so doing that for every archive entry of a large scan was
+    /// both slow and the trigger of a thread-pool stall.
+    private static let cachedLocation = LockedBox<URL?>(nil)
+
     public static func locate(fileManager: FileManager = .default) throws -> URL {
-        try locate(checker: fileManager, validator: RealSevenZipBinaryValidator(), bundleLocator: RealBundledSevenZipLocator())
+        if let cached = cachedLocation.value, fileManager.isExecutableFile(atPath: cached.path) { return cached }
+        let url = try locate(checker: fileManager, validator: RealSevenZipBinaryValidator(), bundleLocator: RealBundledSevenZipLocator())
+        cachedLocation.value = url
+        return url
+    }
+
+    private final class LockedBox<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Value
+        init(_ value: Value) { stored = value }
+        var value: Value {
+            get { lock.withLock { stored } }
+            set { lock.withLock { stored = newValue } }
+        }
     }
 
     static func locate(checker: ExecutableFileChecking, validator: SevenZipBinaryValidating, bundleLocator: BundledSevenZipLocating = RealBundledSevenZipLocator()) throws -> URL {

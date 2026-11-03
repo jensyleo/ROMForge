@@ -122,3 +122,27 @@ struct SimilarNameSuggesterTagTests {
         #expect(s.suggestedName == "Mario Kart 64 (Europe) (En,De)")
     }
 }
+
+@Suite("SimilarNameSuggester special releases")
+struct SimilarNameSuggesterSpecialReleaseTests {
+    private let names = ["Zelda (USA)", "Zelda (USA) (Beta)", "Zelda (USA) (Debug)", "Zelda (Europe) (Proto)"]
+
+    @Test("a Beta is not suggested even when the plain release is already taken")
+    func skipsBeta() throws {
+        let s = try #require(SimilarNameSuggester.bestMatch(forLocalName: "Zelda.zip", candidateNames: names, threshold: 0.5,
+                                                            isAvailable: { $0 != "Zelda (USA)" }))
+        #expect(s.suggestedName == "Zelda (USA)")
+    }
+
+    @Test("a file that says Debug may be matched to the Debug release")
+    func keepsRequestedTag() throws {
+        let s = try #require(SimilarNameSuggester.bestMatch(forLocalName: "Zelda (USA) (Debug).zip", candidateNames: names, threshold: 0.5))
+        #expect(s.suggestedName == "Zelda (USA) (Debug)")
+    }
+
+    @Test("when only special releases exist, one is still suggested")
+    func onlySpecial() throws {
+        let s = try #require(SimilarNameSuggester.bestMatch(forLocalName: "Zelda.zip", candidateNames: ["Zelda (USA) (Beta)"], threshold: 0.5))
+        #expect(s.suggestedName == "Zelda (USA) (Beta)")
+    }
+}

@@ -1351,9 +1351,11 @@ struct ROMMatcherTests {
 
         let report = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameOnlyMatching: true)
 
+        // Recognized as the game (never "Unknown"), but the ROM inside carries a wrong
+        // name, so it is reported as misnamed and Fix can rename it.
         let match = try #require(report.games.first?.matches.first)
-        guard case .correct = match.status else {
-            Issue.record("expected .correct, got \(match.status)")
+        guard case .misnamed = match.status else {
+            Issue.record("expected .misnamed, got \(match.status)")
             return
         }
     }
@@ -1401,8 +1403,8 @@ struct ROMMatcherTests {
 
         let report = try ROMMatcher.match(dat: dat, hashedFiles: [noIntroCopy, selectedCopy], nameOnlyMatching: true)
 
-        guard case .correct(let claimed, _) = report.games.first?.matches.first?.status else {
-            Issue.record("expected the game to be .correct via one of the two copies")
+        guard case .misnamed(let claimed, _) = report.games.first?.matches.first?.status else {
+            Issue.record("expected the game to be claimed (as misnamed) via one of the two copies")
             return
         }
         let loserURL = claimed.file.url.path.contains("NO_INTRO") ? selectedCopy.file.url : noIntroCopy.file.url
@@ -1472,7 +1474,7 @@ struct NameOnlyPrefersVerifiedContentTests {
         let report = try ROMMatcher.match(dat: dat(rom, h), hashedFiles: [junk, real], nameOnlyMatching: true)
         let audit = try AuditReporter.generate(from: report)
         let entry = try #require(audit.entries.first { $0.game == "Metroid Fusion (USA)" })
-        #expect(entry.status == .correct)
+        #expect(entry.status == .incorrect, "the real ROM is recognized, under a wrong ROM name")
         #expect(entry.actualSize == Int64(rom.count))
     }
 
@@ -1511,12 +1513,22 @@ struct NoIntroNameVariantsTests {
 
     @Test func revisionLetterMatchesNumber() throws {
         let d = dat(["Legend of Zelda, The - Ocarina of Time (USA)", "Legend of Zelda, The - Ocarina of Time (USA) (Rev 1)"])
-        #expect(try status(zip: "Legend of Zelda, The - Ocarina of Time (USA) (Rev A)", entry: "oot.n64", in: d) == [.correct])
+        #expect(try status(zip: "Legend of Zelda, The - Ocarina of Time (USA) (Rev A)", entry: "oot.n64", in: d) == [.incorrect], "recognized, but the name needs a rename (Fix)")
     }
 
     @Test func missingLanguageGroupMatchesWhenUnique() throws {
         let d = dat(["Yoshi's Story (USA) (En,Ja)", "Yoshi's Story (Europe) (En,Fr,De)", "Yoshi's Story (USA) (En,Ja) (LodgeNet)"])
-        #expect(try status(zip: "Yoshi's Story (USA)", entry: "Yoshi's Story.n64", in: d) == [.correct])
+        #expect(try status(zip: "Yoshi's Story (USA)", entry: "Yoshi's Story.n64", in: d) == [.incorrect], "recognized, but the name lacks the language list")
+    }
+
+    @Test func incompleteNameIsOfferedARename() throws {
+        let d = dat(["Metal Slug 7 (Europe) (En,Fr,De,Es,It)", "Metal Slug 7 (USA)"])
+        let file = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/Metal Slug 7 (Europe).zip"), name: "Metal Slug 7.nds", size: 8), hash: FileHasher.hash(data: Data(repeating: 1, count: 8)))
+        let report = try ROMMatcher.match(dat: d, hashedFiles: [file], nameOnlyMatching: true)
+        let ops = RebuildPlanner.planRepair(matchReport: report)
+        #expect(ops.contains { if case .rename(_, let to) = $0 { return to.lastPathComponent == "Metal Slug 7 (Europe) (En,Fr,De,Es,It).zip" }; return false })
+        let entryOps = RebuildPlanner.planRenameRomsInArchive(matchReport: report)
+        #expect(entryOps.contains { if case .addEntryToZip(_, let name, _) = $0 { return name == "Metal Slug 7 (Europe) (En,Fr,De,Es,It).z64" }; return false })
     }
 
     @Test func ambiguousStaysUnknown() throws {
@@ -1674,5 +1686,125 @@ struct MacJunkEntryTests {
         #expect(report.surplusFiles.allSatisfy { $0.requiredByGameDescription == nil })
         let ops = RebuildPlanner.planRemoveUselessFiles(matchReport: report)
         #expect(ops.contains { if case .removeEntryFromZip(_, let n) = $0 { return n == "__MACOSX/._Game A (USA).rom" }; return false })
+    }
+}
+
+@Suite("Remove Useless Files never empties an archive")
+struct RemoveUselessKeepsLastFileTests {
+    private func dat() -> DATFile {
+        let rom = DATRom(name: "Game A (USA).nds", size: 100, crc: "aaaaaaaa", md5: nil, sha1: String(repeating: "1", count: 40))
+        return DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"),
+                       games: [DATGame(name: "Game A (USA)", description: "Game A (USA)", cloneOf: nil, romOf: nil, roms: [rom])])
+    }
+    private func entry(_ zip: String, _ name: String, crc: String, entryPath: String? = nil, size: Int64 = 100) -> HashedFile {
+        HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/\(zip).zip"), name: name, size: size, entryPath: entryPath),
+                   hash: FileHash(crc32: crc, md5: "00000000000000000000000000000000", sha1: String(repeating: crc, count: 5)))
+    }
+    private func removedEntries(_ files: [HashedFile], nameOnly: Bool = true) throws -> [String] {
+        let report = try ROMMatcher.match(dat: dat(), hashedFiles: files, nameOnlyMatching: nameOnly)
+        return RebuildPlanner.planRemoveUselessFiles(matchReport: report).compactMap {
+            if case .removeEntryFromZip(_, let name) = $0 { return name }
+            return nil
+        }
+    }
+
+    @Test("a zip whose only real file is an unknown ROM (hack, translation) is left alone")
+    func soleUnknownRom() throws {
+        #expect(try removedEntries([entry("Metal Slug 7.nds", "Metal Slug 7.nds", crc: "11111111")]).isEmpty)
+    }
+
+    @Test("an unknown file next to a recognized ROM is still removed")
+    func extraFileNextToRealRom() throws {
+        let real = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/Game A (USA).zip"), name: "Game A (USA).nds", size: 100),
+                              hash: FileHash(crc32: "aaaaaaaa", md5: "00000000000000000000000000000000", sha1: String(repeating: "1", count: 40)))
+        let removed = try removedEntries([real, entry("Game A (USA)", "readme.txt", crc: "22222222")], nameOnly: false)
+        #expect(removed == ["readme.txt"])
+    }
+
+    @Test("macOS junk is removed from a zip but its ROM stays")
+    func junkOnly() throws {
+        let removed = try removedEntries([entry("Hack", "Hack.nds", crc: "33333333"),
+                                          entry("Hack", "._Hack.nds", crc: "44444444", entryPath: "__MACOSX/._Hack.nds", size: 163)])
+        #expect(removed == ["__MACOSX/._Hack.nds"])
+    }
+}
+
+
+@Suite("Inner entry names are fixed in every system")
+struct InnerEntryRenameTests {
+    private func dat(_ rom: String, game: String) -> DATFile {
+        DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"),
+                games: [DATGame(name: game, description: game, cloneOf: nil, romOf: nil, roms: [DATRom(name: rom, size: 8, crc: "00000000", md5: nil, sha1: nil)])])
+    }
+    private func file(_ zip: String, _ entry: String) -> HashedFile {
+        HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/\(zip).zip"), name: entry, size: 8), hash: FileHasher.hash(data: Data(repeating: 3, count: 8)))
+    }
+    private func renamed(_ report: MatchReport) -> [String] {
+        RebuildPlanner.planRenameRomsInArchive(matchReport: report).compactMap { if case .addEntryToZip(_, let name, _) = $0 { return name }; return nil }
+    }
+
+    @Test("an entry accepted by name but named differently inside its zip reads Bad name and is renamed")
+    func trustedEntryIsRenamed() throws {
+        let d = dat("Metal Slug 7 (Europe) (En,Fr,De,Es,It).nds", game: "Metal Slug 7 (Europe) (En,Fr,De,Es,It)")
+        let report = try ROMMatcher.match(dat: d, hashedFiles: [file("Metal Slug 7 (Europe) (En,Fr,De,Es,It)", "Metal Slug 7.nds")], nameOnlyMatching: true)
+        let audit = try AuditReporter.generate(from: report)
+        #expect(audit.entries.first { $0.status != .missing }?.status == .incorrect, "wrong ROM name inside the zip must not read OK")
+        #expect(renamed(report) == ["Metal Slug 7 (Europe) (En,Fr,De,Es,It).nds"])
+    }
+
+    @Test("an entry that only differs by letter case or extension is left alone")
+    func caseAndExtensionOnly() throws {
+        let d = dat("Game A (USA).z64", game: "Game A (USA)")
+        let report = try ROMMatcher.match(dat: d, hashedFiles: [file("Game A (USA)", "game a (usa).n64")], nameOnlyMatching: true)
+        #expect(renamed(report).isEmpty)
+    }
+
+    @Test("an already exact entry produces no rename")
+    func exactEntry() throws {
+        let d = dat("Game A (USA).nds", game: "Game A (USA)")
+        let report = try ROMMatcher.match(dat: d, hashedFiles: [file("Game A (USA)", "Game A (USA).nds")], nameOnlyMatching: true)
+        #expect(renamed(report).isEmpty)
+    }
+}
+
+@Suite("Entry renames keep the N64 byte-order extension")
+struct N64EntryExtensionTests {
+    @Test("a .v64 entry renamed to the DAT name stays .v64, never .z64")
+    func keepsV64() throws {
+        let d = DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"),
+                        games: [DATGame(name: "Game A (USA)", description: "Game A (USA)", cloneOf: nil, romOf: nil, roms: [DATRom(name: "Game A (USA).z64", size: 8, crc: "00000000", md5: nil, sha1: nil)])])
+        let f = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/Game A (USA).zip"), name: "Game A.v64", size: 8), hash: FileHasher.hash(data: Data(repeating: 3, count: 8)))
+        let report = try ROMMatcher.match(dat: d, hashedFiles: [f], nameOnlyMatching: true)
+        let names = RebuildPlanner.planRenameRomsInArchive(matchReport: report).compactMap { op -> String? in if case .addEntryToZip(_, let n, _) = op { return n }; return nil }
+        #expect(names == ["Game A (USA).v64"])
+    }
+}
+
+@Suite("Fix renames the ROM inside a .7z")
+struct SevenZipEntryRenameTests {
+    @Test("a scene-named entry inside a .7z is renamed in place to the DAT's name")
+    func renamesInsideSevenZip() async throws {
+        guard let bin = try? SevenZipLocator.locate() else { return }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rom = root.appendingPathComponent("0061 - Bomberman (U)(Lube).nds")
+        try Data((0..<4096).map { UInt8($0 % 251) }).write(to: rom)
+        let archive = root.appendingPathComponent("Bomberman (USA).7z")
+        let process = Process()
+        process.executableURL = bin
+        process.arguments = ["a", "-bso0", "-bsp0", archive.path, rom.path]
+        try process.run()
+        process.waitUntilExit()
+        try FileManager.default.removeItem(at: rom)
+        let game = DATGame(name: "Bomberman (USA)", description: "x", cloneOf: nil, romOf: nil, roms: [DATRom(name: "Bomberman (USA).nds", size: 4096, crc: "11111111", md5: nil, sha1: nil)])
+        let dat = DATFile(header: DATHeader(name: "T", description: "T", version: "1", author: "t"), games: [game])
+        let hashed = try await CollectionHasher.hash(scannedFiles: try FolderScanner.scan(paths: [root]))
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: hashed, nameOnlyMatching: true)
+        let operations = RebuildPlanner.planRenameRomsInArchive(matchReport: report)
+        #expect(operations.count == 2)
+        try RebuildExecutor.execute(operations)
+        let names = try SevenZipArchiveScanner.scan(archive: archive).map(\.name)
+        #expect(names == ["Bomberman (USA).nds"])
     }
 }

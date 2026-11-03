@@ -114,6 +114,8 @@ public enum ROMMatcher {
         // scan (no archive concept at all) keeps the original unrestricted
         // pooling, since there's nothing to scope by.
         var archiveNameIndex = indexByArchiveName(hashedFiles)
+        // File indices whose archive name matched its game only approximately (see below).
+        var approximateNameIndices = Set<Int>()
         let isArchiveOrganized = hashedFiles.contains { $0.file.url.lastPathComponent != $0.file.name }
         // Every hashed file's own entry name, regardless of hash — the only
         // way to detect a genuine "Bad" (`RomMatchStatus.hashMismatch`):
@@ -172,12 +174,19 @@ public enum ROMMatcher {
             }
             for (rawKey, indices) in archiveNameIndex where !allGameNames.contains(rawKey) {
                 var candidates = [rawKey] + GoodToolsNameTranslator.candidateNames(forLocalName: rawKey)
+                let plainCandidateCount = candidates.count
                 candidates += candidates.compactMap(NoIntroNameVariants.numericRevision)
-                for candidate in candidates {
+                for (position, candidate) in candidates.enumerated() {
                     let key = GoodToolsNameTranslator.normalizedKey(candidate)
-                    let match = normalizedGameNames[key] ?? (withoutLanguages[GoodToolsNameTranslator.normalizedKey(NoIntroNameVariants.withoutLanguageGroups(candidate))] ?? nil)
+                    let direct = normalizedGameNames[key]
+                    let match = direct ?? (withoutLanguages[GoodToolsNameTranslator.normalizedKey(NoIntroNameVariants.withoutLanguageGroups(candidate))] ?? nil)
                     if let match, match.lowercased() != rawKey {
                         archiveNameIndex[match.lowercased(), default: []].append(contentsOf: indices)
+                        // Matched only by dropping the language list or through a
+                        // revision spelling ("Rev A" = "Rev 1"): the right game under
+                        // an INCOMPLETE name — reported as needing a rename, not "Ok".
+                        // (A GoodTools translation keeps being trusted as before.)
+                        if direct == nil || position >= plainCandidateCount { approximateNameIndices.formUnion(indices) }
                         break
                     }
                 }
@@ -347,7 +356,22 @@ public enum ROMMatcher {
                         if hashedFile.file.url.lastPathComponent != hashedFile.file.name {
                             claimedArchiveURLsByGame[game.name.lowercased(), default: []].insert(hashedFile.file.url)
                         }
-                        resolvedStatuses[index] = .correct(hashedFile, viaHeaderStrip: false)
+                        // Trusting NAMES must not hide a wrong ROM name: for a console the
+                        // ROM inside an archive carries the same name as the archive/game
+                        // (only the extension differs). An entry whose name differs beyond
+                        // letter case and extension is the right game under the wrong ROM
+                        // name — reported as misnamed so it reads "Bad name" and the
+                        // "Fix Misnamed ROMs Inside Their Archives…" action can rename it.
+                        let isArchiveEntry = hashedFile.file.url.lastPathComponent != hashedFile.file.name
+                        // A GoodTools-style name that translates to the DAT's rom name stays trusted.
+                        let romKey = GoodToolsNameTranslator.normalizedKey(rom.name)
+                        let isGoodToolsEquivalent = GoodToolsNameTranslator.candidateFileNames(forRawFileName: hashedFile.file.name)
+                            .contains { GoodToolsNameTranslator.normalizedKey($0) == romKey }
+                        let entryNameDiffers = isArchiveEntry && !isGoodToolsEquivalent
+                            && Self.nameWithoutExtension(hashedFile.file.name).lowercased() != Self.nameWithoutExtension(rom.name).lowercased()
+                        resolvedStatuses[index] = (approximateNameIndices.contains(nameMatchIndex) || entryNameDiffers)
+                            ? .misnamed(hashedFile, viaHeaderStrip: false)
+                            : .correct(hashedFile, viaHeaderStrip: false)
                         claimedAnyFile = true
                     } else {
                         resolvedStatuses[index] = .missing
@@ -716,6 +740,7 @@ public enum ROMMatcher {
             unclaimedIndices: unclaimedForSurplus,
             allGameNames: allGameNames, claimedArchiveURLsByGame: claimedArchiveURLsByGame
         )
+        annotateCTRSerialSuggestions(&surplusFiles, dat: dat, allGameNames: allGameNames)
         if let nameSimilarityThreshold {
             // Real, display-cased names (`dat.games`), never
             // `allGameNames` (already lowercased, and the wrong casing to
@@ -963,13 +988,52 @@ public enum ROMMatcher {
     /// hundred bytes off from the right one).
     private static let similarNameSuggestionSizeTolerance: Int64 = 512
 
+    /// A trimmed 3DS dump hashes differently from the DAT's full-size image, so
+    /// it can never match by content; its header's product code still names the
+    /// game exactly. Suggests the DAT game carrying that serial, narrowed by the
+    /// declared image size, and only when that leaves one unambiguous
+    /// candidate (or exactly one plain, non-revision/demo release).
+    private static func annotateCTRSerialSuggestions(_ surplusFiles: inout [SurplusFile], dat: DATFile, allGameNames: Set<String>) {
+        var gamesBySerial: [String: [DATGame]] = [:]
+        for game in dat.games {
+            if let serial = game.roms.first?.serial, serial.hasPrefix("CTR-") { gamesBySerial[serial, default: []].append(game) }
+        }
+        guard !gamesBySerial.isEmpty else { return }
+        for (position, existing) in surplusFiles.enumerated() {
+            guard existing.requiredByGameDescription == nil, existing.misnamedArchiveForGameName == nil, existing.similarNameSuggestion == nil else { continue }
+            let url = existing.file.file.url
+            guard NintendoCTRHeader.isCartridgeDump(url), url.lastPathComponent == existing.file.file.name,
+                  !allGameNames.contains(url.deletingPathExtension().lastPathComponent.lowercased()),
+                  let header = NintendoCTRHeader.read(url: url), var candidates = gamesBySerial[header.productCode] else { continue }
+            let sameImage = candidates.filter { $0.roms.reduce(0) { $0 + $1.size } == header.imageSize }
+            if !sameImage.isEmpty { candidates = sameImage }
+            if candidates.count > 1 {
+                let plain = candidates.filter { game in !["(rev", "(demo", "(kiosk", "(beta", "(proto"].contains { game.name.lowercased().contains($0) } }
+                guard plain.count == 1 else { continue }
+                candidates = plain
+            }
+            guard let game = candidates.first, candidates.count == 1 else { continue }
+            surplusFiles[position] = SurplusFile(
+                file: existing.file,
+                requiredByGameDescription: existing.requiredByGameDescription,
+                requiredByGameMachineName: existing.requiredByGameMachineName,
+                requiredByGameConfirmedRedundant: existing.requiredByGameConfirmedRedundant,
+                requiredByGameOwnerSatisfiedElsewhere: existing.requiredByGameOwnerSatisfiedElsewhere,
+                matchesNodumpRomName: existing.matchesNodumpRomName,
+                isInKnownArchive: existing.isInKnownArchive,
+                misnamedArchiveForGameName: existing.misnamedArchiveForGameName,
+                similarNameSuggestion: SimilarNameSuggestion(suggestedName: game.name, confidence: 1.0)
+            )
+        }
+    }
+
     private static func annotateSimilarNameSurplusFiles(
         _ surplusFiles: inout [SurplusFile], candidateNames: [String], threshold: Double,
         claimedArchiveURLsByGame: [String: Set<URL>], candidateSizesByName: [String: Int64],
         allGameNames: Set<String>
     ) {
         for (position, existing) in surplusFiles.enumerated() {
-            guard existing.requiredByGameDescription == nil, existing.misnamedArchiveForGameName == nil else { continue }
+            guard existing.requiredByGameDescription == nil, existing.misnamedArchiveForGameName == nil, existing.similarNameSuggestion == nil else { continue }
             let file = existing.file.file
             // Never suggest renaming a macOS AppleDouble sidecar ("._Game.gba")
             // to a game's name — real incident (2026-10-13, GBA): accepting
@@ -1530,7 +1594,11 @@ public enum ROMMatcher {
         // parameter through just for this one extra check.
         if !romsByName.isEmpty, isArchiveEntry,
            let game = gamesByName[file.file.url.deletingPathExtension().lastPathComponent.lowercased()],
-           game.roms.count == 1 {
+           game.roms.count == 1,
+           // A SECOND copy of the archive only: another entry (a readme, a
+           // sidecar) inside the very archive that game already claimed is
+           // junk in the real copy, not a duplicate of it.
+           claimedArchiveURLsByGame[game.name.lowercased()]?.contains(file.file.url) != true {
             let confirmedRedundant = claimedArchiveURLsByGame[game.name.lowercased()]?.isEmpty == false
             return (game, confirmedRedundant)
         }
@@ -1590,6 +1658,10 @@ public enum ROMMatcher {
     /// (without extension, lowercased) — a loose file (`url` *is* the file
     /// itself, not a container) has no archive identity and is excluded, so
     /// it never wrongly satisfies another game's archive-scoped lookup.
+    private static func nameWithoutExtension(_ name: String) -> String {
+        (name as NSString).deletingPathExtension
+    }
+
     private static func indexByArchiveName(_ hashedFiles: [HashedFile]) -> [String: [Int]] {
         var result: [String: [Int]] = [:]
         for (offset, file) in hashedFiles.enumerated() {

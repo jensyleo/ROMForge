@@ -353,3 +353,34 @@ struct NestedScanFolderTests {
         #expect(Set(files.map(\.name)) == ["a.bin", "b.bin"])
     }
 }
+
+@Suite("Per-system subfolder depth and unhashed files")
+struct SubfolderDepthTests {
+    private func makeTree() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let game = root.appendingPathComponent("Game", isDirectory: true)
+        try FileManager.default.createDirectory(at: game, withIntermediateDirectories: true)
+        try Data([1]).write(to: root.appendingPathComponent("top.bin"))
+        try Data([2]).write(to: game.appendingPathComponent("inner.bin"))
+        return root
+    }
+
+    @Test("depth 0 scans only the files directly inside the folder; 1 also enters its subfolders")
+    func depthZero() throws {
+        let root = try makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(Set(try FolderScanner.scan(paths: [root], maxDepth: 0).map(\.name)) == ["top.bin"])
+        #expect(Set(try FolderScanner.scan(paths: [root], maxDepth: 1).map(\.name)) == ["top.bin", "inner.bin"])
+    }
+
+    @Test("a file the caller marks as skipped is reported without being read")
+    func skippedFileIsNotHashed() async throws {
+        let root = try makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scanned = try FolderScanner.scan(paths: [root], maxDepth: 1)
+        let hashed = try await CollectionHasher.hash(scannedFiles: scanned, skipHashing: { $0.name == "inner.bin" })
+        #expect(hashed.count == 2)
+        #expect(hashed.first { $0.file.name == "inner.bin" }?.hash.crc32 == "skipped")
+        #expect(hashed.first { $0.file.name == "top.bin" }?.hash.crc32 != "skipped")
+    }
+}

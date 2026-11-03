@@ -50,13 +50,7 @@ struct ROMForgeApp: App {
     // same configured systems rather than a second, disconnected store.
     @State private var store = SystemLibraryStore()
 
-    // Applies whatever "Maximum subfolder depth" (Settings → General) was
-    // last persisted to `FolderScanner.maxSubfolderDepth` — a scan can run
-    // before Settings is ever opened this session, so the compiled-in
-    // default (1) would otherwise silently win over an earlier session's
-    // own configured value until the user happened to reopen that panel.
     init() {
-        MaxSubfolderDepthSettings.applyPersistedValue()
         // jensyleo's own request (2026-09-24), right after the app's own
         // uninstall flow wiped it along with everything else: "Eso debe
         // quedar siempre. No debe desaparecer." See

@@ -46,7 +46,19 @@ enum SystemCategoryKind: String, CaseIterable, Identifiable {
     /// uses the same No-Intro SNES DAT to name the base game.
     case snesMSU1 = "SNES-MSU1"
     case n64 = "N64"
+    case gb = "Game Boy"
+    case gbc = "Game Boy Color"
     case gba = "GBA"
+    case virtualBoy = "Virtual Boy"
+    case pokemonMini = "Pokemon Mini"
+    case fds = "Famicom Disk System"
+    case nds = "NDS"
+    case dsi = "DSi"
+    case n3ds = "3DS"
+    case gamecube = "GameCube"
+    case wii = "Wii"
+    case wiiU = "Wii U"
+    case switchConsole = "Switch"
     case segaSG1000 = "SEGA SG-1000"
     case segaMasterSystem = "SEGA Master System"
     case segaGameGear = "SEGA Game Gear"
@@ -63,6 +75,53 @@ enum SystemCategoryKind: String, CaseIterable, Identifiable {
     case xbox = "Microsoft Xbox"
     case xbox360 = "Microsoft Xbox 360"
     case xboxOne = "Microsoft Xbox One"
+    case atari2600 = "Atari 2600"
+    case atari5200 = "Atari 5200"
+    case atari7800 = "Atari 7800"
+    case atariJaguar = "Atari Jaguar"
+    case atariLynx = "Atari Lynx"
+    case atariST = "Atari ST"
+    case atari8bit = "Atari 8-bit"
+    case pcEngine = "PC Engine"
+    case pcEngineCD = "PC Engine CD"
+    case superGrafx = "SuperGrafx"
+    case pcfx = "PC-FX"
+    case pc98 = "PC-98"
+    case ngp = "Neo Geo Pocket"
+    case ngpc = "Neo Geo Pocket Color"
+    case neoGeoCD = "Neo Geo CD"
+    case wonderSwan = "WonderSwan"
+    case wonderSwanColor = "WonderSwan Color"
+    case colecoVision = "ColecoVision"
+    case intellivision = "Intellivision"
+    case vectrex = "Vectrex"
+    case odyssey2 = "Magnavox Odyssey 2"
+    case channelF = "Fairchild Channel F"
+    case supervision = "Watara Supervision"
+    case megaDuck = "Mega Duck"
+    case gameAndWatch = "Game & Watch"
+    case scv = "Epoch Super Cassette Vision"
+    case threeDO = "3DO"
+    case cdi = "Philips CD-i"
+    case c64 = "Commodore 64"
+    case amiga = "Commodore Amiga"
+    case vic20 = "Commodore VIC-20"
+    case plus4 = "Commodore Plus/4"
+    case c128 = "Commodore 128"
+    case cbmPET = "Commodore PET"
+    case zxSpectrum = "ZX Spectrum"
+    case zx81 = "ZX81"
+    case amstradCPC = "Amstrad CPC"
+    case msx = "MSX"
+    case msx2 = "MSX2"
+    case appleII = "Apple II"
+    case macintosh = "Apple Macintosh"
+    case dos = "DOS"
+    case x68000 = "Sharp X68000"
+    case sharpX1 = "Sharp X1"
+    case fmTowns = "FM Towns"
+    case thomson = "Thomson MO/TO"
+    case scummvm = "ScummVM"
     case mame = "MAME"
     case other = "Otros"
     var id: String { rawValue }
@@ -73,13 +132,15 @@ enum SystemCategoryKind: String, CaseIterable, Identifiable {
     /// (.cue + .bin) and are not verified end to end yet, and "catalog
     /// only" platforms (huge images, no usable macOS emulator) can be
     /// audited against a DAT but never launched.
-    enum Media { case cartridge, disc, catalogOnly, arcade, unknown }
+    enum Media { case cartridge, disc, computer, catalogOnly, arcade, unknown }
 
     var media: Media {
         switch self {
-        case .nes, .snes, .snesMSU1, .n64, .gba, .segaSG1000, .segaMasterSystem, .segaGameGear, .segaGenesis, .sega32X: return .cartridge
-        case .segaCD, .segaSaturn, .segaDreamcast, .sonyPS1, .sonyPS2, .sonyPSP, .xbox: return .disc
-        case .sonyPS3, .sonyPS4, .xbox360, .xboxOne: return .catalogOnly
+        case .nes, .snes, .snesMSU1, .n64, .gb, .gbc, .gba, .virtualBoy, .pokemonMini, .fds, .nds, .dsi, .n3ds,
+             .segaSG1000, .segaMasterSystem, .segaGameGear, .segaGenesis, .sega32X, .atari2600, .atari5200, .atari7800, .atariJaguar, .atariLynx, .pcEngine, .superGrafx, .ngp, .ngpc, .wonderSwan, .wonderSwanColor, .colecoVision, .intellivision, .vectrex, .odyssey2, .channelF, .supervision, .megaDuck, .gameAndWatch, .scv: return .cartridge
+        case .segaCD, .segaSaturn, .segaDreamcast, .sonyPS1, .sonyPS2, .sonyPSP, .xbox, .gamecube, .wii, .wiiU, .pcEngineCD, .pcfx, .neoGeoCD, .threeDO, .cdi: return .disc
+        case .sonyPS3, .sonyPS4, .xbox360, .xboxOne, .switchConsole: return .catalogOnly
+        case .atariST, .atari8bit, .pc98, .c64, .amiga, .vic20, .plus4, .c128, .cbmPET, .zxSpectrum, .zx81, .amstradCPC, .msx, .msx2, .appleII, .macintosh, .dos, .x68000, .sharpX1, .fmTowns, .thomson, .scummvm: return .computer
         case .mame: return .arcade
         case .other: return .unknown
         }
@@ -88,10 +149,16 @@ enum SystemCategoryKind: String, CaseIterable, Identifiable {
     /// Picker section title.
     var group: String {
         switch self {
-        case .nes, .snes, .snesMSU1, .n64, .gba: return "Nintendo"
+        case .nes, .snes, .snesMSU1, .n64, .gb, .gbc, .gba, .virtualBoy, .pokemonMini, .fds, .nds, .dsi, .n3ds, .gamecube, .wii, .wiiU, .switchConsole: return "Nintendo"
         case .segaSG1000, .segaMasterSystem, .segaGameGear, .segaGenesis, .sega32X, .segaCD, .segaSaturn, .segaDreamcast: return "SEGA"
         case .sonyPS1, .sonyPS2, .sonyPSP, .sonyPS3, .sonyPS4: return "Sony"
         case .xbox, .xbox360, .xboxOne: return "Microsoft"
+        case .atari2600, .atari5200, .atari7800, .atariJaguar, .atariLynx, .atariST, .atari8bit: return "Atari"
+        case .pcEngine, .pcEngineCD, .superGrafx, .pcfx, .pc98: return "NEC"
+        case .ngp, .ngpc, .neoGeoCD: return "SNK"
+        case .wonderSwan, .wonderSwanColor: return "Bandai"
+        case .colecoVision, .intellivision, .vectrex, .odyssey2, .channelF, .supervision, .megaDuck, .gameAndWatch, .scv, .threeDO, .cdi: return "Other consoles"
+        case .c64, .amiga, .vic20, .plus4, .c128, .cbmPET, .zxSpectrum, .zx81, .amstradCPC, .msx, .msx2, .appleII, .macintosh, .dos, .x68000, .sharpX1, .fmTowns, .thomson, .scummvm: return "Computers"
         case .mame: return "Arcade"
         case .other: return "Other"
         }
@@ -104,10 +171,14 @@ enum SystemCategoryKind: String, CaseIterable, Identifiable {
     /// Which DAT family normally covers this platform, plus any honest
     /// caveat — shown under the platform picker in "Add System".
     var datHint: String? {
+        if self == .switchConsole {
+            return "Catalog only — there is no emulator ROMForge can launch and no Redump DAT for Switch; look for a DAT on Dat-o-Matic (datomatic.no-intro.org). Images are very large."
+        }
         switch media {
-        case .cartridge: return "Cartridge platform — use a No-Intro DAT."
-        case .disc: return "Disc platform — use a Redump DAT. Games made of several files (.cue + .bin) and large images are not verified end to end yet; scanning can be slow on a network volume."
-        case .catalogOnly: return "Catalog only — you can audit and organize against a Redump DAT, but there is no emulator to play these on macOS and the images are very large (scans can take a long time)."
+        case .cartridge: return "Cartridge platform — use a No-Intro DAT (Dat-o-Matic, datomatic.no-intro.org)."
+        case .disc: return "Disc platform — use a Redump DAT (redump.org, Downloads page). Games made of several files (.cue + .bin) and large images are not verified end to end yet; scanning can be slow on a network volume."
+        case .catalogOnly: return "Catalog only — you can audit and organize against a Redump DAT (redump.org), but there is no emulator to play these on macOS and the images are very large (scans can take a long time)."
+        case .computer: return "Computer platform — No-Intro covers some of these, otherwise TOSEC (tosecdev.org). Games are often disk or tape images, sometimes several files; ROMForge matches best when each game is one file."
         case .arcade, .unknown: return nil
         }
     }
@@ -142,7 +213,7 @@ struct AddSystemSheet: View {
                 .textFieldStyle(.roundedBorder)
 
             Picker("Platform", selection: $category) {
-                ForEach(["Nintendo", "SEGA", "Sony", "Microsoft", "Arcade", "Other"], id: \.self) { group in
+                ForEach(["Nintendo", "SEGA", "Sony", "Microsoft", "Atari", "NEC", "SNK", "Bandai", "Other consoles", "Computers", "Arcade", "Other"], id: \.self) { group in
                     Section(group) {
                         ForEach(SystemCategoryKind.allCases.filter { $0.group == group }) { kind in
                             Text(kind.rawValue).tag(kind)
@@ -313,7 +384,13 @@ struct AddSystemSheet: View {
                 category: category.rawValue,
                 datURL: datURL,
                 romFolderURLs: romFolderURLs,
-                isMAMEStyle: category == .mame
+                isMAMEStyle: category == .mame,
+                // The settings every console system had to be switched to by hand
+                // after being added (rename suggestions at 50%, region hints).
+                // MAME-style systems ignore both, so they keep the plain defaults.
+                similarNameFixEnabled: category != .mame,
+                similarNameFixThreshold: category == .mame ? 0.80 : 0.50,
+                regionQualityHintsEnabled: category != .mame
             )
         )
         dismiss()

@@ -180,3 +180,34 @@ struct N64ByteOrderTests {
         #expect(audit.entries.first { $0.game == "Game (USA)" }?.status == .correct)
     }
 }
+
+@Suite("RegionQualityPlatformNotes")
+struct RegionQualityPlatformNotesTests {
+    @Test("every built-in note is well formed and unique per platform")
+    func wellFormed() {
+        var seen = Set<String>()
+        for note in RegionQualityNotes.seed {
+            #expect(note.platform != nil, "\(note.gameFamily) needs a platform")
+            #expect(note.sourceURL.hasPrefix("http"), "\(note.gameFamily) needs a web source")
+            #expect(note.reason.count >= 20, "\(note.gameFamily) needs a reason")
+            #expect(!note.recommendedRegion.isEmpty)
+            #expect(seen.insert("\(note.platform ?? "")|\(note.gameFamily.lowercased())").inserted, "duplicate \(note.gameFamily)")
+        }
+    }
+
+    @Test("a new-platform note is found by platform and not shown for another platform")
+    func lookup() {
+        #expect(RegionQualityNotes.note(forGameName: "Resident Evil (USA)", platform: "Sony PlayStation")?.recommendedRegion == "Japan")
+        #expect(RegionQualityNotes.note(forGameName: "Resident Evil (USA)", platform: "SEGA Dreamcast") == nil)
+        #expect(RegionQualityNotes.note(forGameName: "Biohazard (Japan)", platform: "Sony PlayStation") != nil)
+    }
+}
+
+@Suite("Unsupported archive formats")
+struct UnsupportedArchiveFormatTests {
+    @Test("rar, arj and friends are unsupported; zip, 7z and console formats are not")
+    func classification() {
+        for ext in ["rar", "r00", "arj", "ace", "lzh", "cab", "tar", "gz", "xz", "zipx"] { #expect(CollectionHasher.isUnsupportedArchive(ext), "\(ext)") }
+        for ext in ["zip", "7z", "chd", "iso", "cue", "bin", "nds", "gba", "sfc", "z64", "rvz", "gdi", "nes"] { #expect(!CollectionHasher.isUnsupportedArchive(ext), "\(ext)") }
+    }
+}

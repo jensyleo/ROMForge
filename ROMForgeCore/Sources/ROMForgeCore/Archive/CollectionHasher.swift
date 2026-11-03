@@ -57,7 +57,18 @@ public enum CollectionHasher {
             && lowercasedExtension.dropFirst().allSatisfy(\.isNumber)
     }
 
-    public static func hash(scannedFiles: [ScannedFile], cache: ScanCache = ScanCache(), algorithms: HashAlgorithms = .all, onProgress: (@Sendable (ScanProgress) -> Void)? = nil, onArchiveListed: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [HashedFile] {
+    /// Archive and compression formats ROMForge deliberately does NOT read: it
+    /// supports `.zip`, `.7z` and the files consoles themselves use (ROMs, disc
+    /// images, `.chd`…). Such a file is skipped — never hashed — and reported.
+    public static let unsupportedArchiveExtensions: Set<String> = [
+        "arj", "ace", "lzh", "lha", "cab", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "zst", "z", "zipx", "cpio", "sit", "sitx", "zoo", "arc", "rz", "lz", "lzma",
+    ]
+
+    public static func isUnsupportedArchive(_ lowercasedExtension: String) -> Bool {
+        isRARVolume(lowercasedExtension) || unsupportedArchiveExtensions.contains(lowercasedExtension)
+    }
+
+    public static func hash(scannedFiles: [ScannedFile], cache: ScanCache = ScanCache(), algorithms: HashAlgorithms = .all, onProgress: (@Sendable (ScanProgress) -> Void)? = nil, onArchiveListed: (@Sendable (Int, Int) -> Void)? = nil, skipHashing: (@Sendable (ScannedFile) -> Bool)? = nil) async throws -> [HashedFile] {
         let zipFiles = scannedFiles.filter { $0.url.pathExtension.lowercased() == "zip" }
         let sevenZipFiles = scannedFiles.filter { $0.url.pathExtension.lowercased() == "7z" }
         // `.chd` files are excluded here, not just from "surplus" reporting
@@ -71,9 +82,20 @@ public enum CollectionHasher {
         // is often several GB per part — real case (2026-10-04): 15+ 2 GB
         // `.rar` parts in one SNES folder made "Scan All Folders" hash tens
         // of GB over the NAS for nothing.
-        let looseFiles = scannedFiles.filter {
+        var looseFiles = scannedFiles.filter {
             let ext = $0.url.pathExtension.lowercased()
-            return ext != "zip" && ext != "chd" && ext != "7z" && !isRARVolume(ext)
+            return ext != "zip" && ext != "chd" && ext != "7z" && !isUnsupportedArchive(ext)
+        }
+        // Files the caller says are never worth reading (an MSU-1 game's `.pcm`
+        // audio tracks are hundreds of MB each and no DAT lists them): reported with a
+        // placeholder hash that can never match anything, and never opened.
+        var unhashedFiles: [HashedFile] = []
+        if let skipHashing {
+            let skipped = looseFiles.filter(skipHashing)
+            if !skipped.isEmpty {
+                looseFiles = looseFiles.filter { !skipHashing($0) }
+                unhashedFiles = skipped.map { HashedFile(file: $0, hash: FileHash(crc32: "skipped", md5: nil, sha1: nil)) }
+            }
         }
 
         // Scanning each archive's own listing (central directory for a
@@ -100,7 +122,19 @@ public enum CollectionHasher {
                 onArchiveListed?(archivesRead, totalArchives)
                 continue
             }
-            let entries = try ZipArchiveScanner.scan(archive: zipFile.url)
+            let entries: [ArchivedFile]
+            do {
+                entries = try ZipArchiveScanner.scan(archive: zipFile.url)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // A zip whose directory can't be read is a finding about that one file,
+                // never a reason to stop scanning the rest.
+                hashedFiles.append(corruptPlaceholder(for: zipFile))
+                archivesRead += 1
+                onArchiveListed?(archivesRead, totalArchives)
+                continue
+            }
             archivesRead += 1
             onArchiveListed?(archivesRead, totalArchives)
             // A zip with no entries at all still exists on disk — it must
@@ -173,9 +207,11 @@ public enum CollectionHasher {
         for _ in 0..<(zipEntryCount - pendingZip.count) { progress?.increment() }
         for _ in 0..<(sevenZipEntryCount - pendingSevenZip.count) { progress?.increment() }
 
+        hashedFiles.append(contentsOf: unhashedFiles)
         hashedFiles.append(contentsOf: try await FileHasher.hash(files: allLooseFiles, cache: cache, algorithms: algorithms, progress: progress))
         hashedFiles.append(contentsOf: try await hashPending(pendingZip, algorithms: algorithms, progress: progress))
-        hashedFiles.append(contentsOf: try await hashPendingSevenZip(pendingSevenZip, progress: progress))
+        hashedFiles = collapsingCorruptArchives(hashedFiles)
+        hashedFiles.append(contentsOf: try await hashPendingSevenZip(pendingSevenZip, algorithms: algorithms, progress: progress))
         return hashedFiles
     }
 
@@ -208,13 +244,46 @@ public enum CollectionHasher {
     /// `ZipArchiveHasher.hash` call reopens its own `Archive` handle, so
     /// entries are safe to decompress in parallel just like loose files
     /// already are in `FileHasher`.
+    /// Placeholder CRC for an archive that could not be read; it can never match a DAT.
+    public static let corruptMarker = "corrupt"
+
+    /// The archive itself, reported as one unreadable file named like the zip.
+    private static func corruptPlaceholder(for archive: ScannedFile) -> HashedFile {
+        HashedFile(file: archive, hash: FileHash(crc32: corruptMarker, md5: nil, sha1: nil))
+    }
+
+    private static func hashedZipEntry(_ item: PendingZipEntry, algorithms: HashAlgorithms) -> HashedFile {
+        do {
+            let (hash, headerStripped) = try ZipArchiveHasher.hash(item.archivedFile, algorithms: algorithms)
+            return HashedFile(file: item.entryFile, hash: hash, headerStripped: headerStripped)
+        } catch {
+            return HashedFile(file: item.entryFile, hash: FileHash(crc32: corruptMarker, md5: nil, sha1: nil))
+        }
+    }
+
+    /// One corrupt entry makes the whole archive corrupt: its entries are replaced by a single
+    /// placeholder for the archive.
+    private static func collapsingCorruptArchives(_ files: [HashedFile]) -> [HashedFile] {
+        let corruptURLs = Set(files.filter { $0.hash.crc32 == corruptMarker && $0.file.url.lastPathComponent != $0.file.name }.map(\.file.url))
+        guard !corruptURLs.isEmpty else { return files }
+        var emitted = Set<URL>()
+        var result: [HashedFile] = []
+        for file in files {
+            guard corruptURLs.contains(file.file.url), file.file.url.lastPathComponent != file.file.name else { result.append(file); continue }
+            if emitted.insert(file.file.url).inserted {
+                let archive = ScannedFile(url: file.file.url, name: file.file.url.lastPathComponent, size: 0, modificationDate: file.file.modificationDate)
+                result.append(corruptPlaceholder(for: archive))
+            }
+        }
+        return result
+    }
+
     private static func hashPending(_ pending: [PendingZipEntry], algorithms: HashAlgorithms, progress: ScanProgressCounter?) async throws -> [HashedFile] {
         guard pending.count > 1 else {
             return try pending.map { item in
                 try Task.checkCancellation()
-                let (hash, headerStripped) = try ZipArchiveHasher.hash(item.archivedFile, algorithms: algorithms)
                 progress?.increment()
-                return HashedFile(file: item.entryFile, hash: hash, headerStripped: headerStripped)
+                return hashedZipEntry(item, algorithms: algorithms)
             }
         }
 
@@ -228,8 +297,7 @@ public enum CollectionHasher {
                     hashed.reserveCapacity(chunk.count)
                     for item in chunk {
                         try Task.checkCancellation()
-                        let (hash, headerStripped) = try ZipArchiveHasher.hash(item.archivedFile, algorithms: algorithms)
-                        hashed.append(HashedFile(file: item.entryFile, hash: hash, headerStripped: headerStripped))
+                        hashed.append(hashedZipEntry(item, algorithms: algorithms))
                         progress?.increment()
                     }
                     return (index, hashed)
@@ -251,11 +319,11 @@ public enum CollectionHasher {
     /// (`SevenZipArchiveHasher.hash` always computes every checksum and
     /// never attempts a header-stripped match) — a real, documented gap,
     /// not an oversight, left for a future pass.
-    private static func hashPendingSevenZip(_ pending: [PendingSevenZipEntry], progress: ScanProgressCounter?) async throws -> [HashedFile] {
+    private static func hashPendingSevenZip(_ pending: [PendingSevenZipEntry], algorithms: HashAlgorithms, progress: ScanProgressCounter?) async throws -> [HashedFile] {
         guard pending.count > 1 else {
             return try pending.map { item in
                 try Task.checkCancellation()
-                let hash = try SevenZipArchiveHasher.hash(item.archivedFile)
+                let hash = try SevenZipArchiveHasher.hash(item.archivedFile, algorithms: algorithms)
                 progress?.increment()
                 return HashedFile(file: item.entryFile, hash: hash, headerStripped: nil)
             }
@@ -271,7 +339,7 @@ public enum CollectionHasher {
                     hashed.reserveCapacity(chunk.count)
                     for item in chunk {
                         try Task.checkCancellation()
-                        let hash = try SevenZipArchiveHasher.hash(item.archivedFile)
+                        let hash = try SevenZipArchiveHasher.hash(item.archivedFile, algorithms: algorithms)
                         hashed.append(HashedFile(file: item.entryFile, hash: hash, headerStripped: nil))
                         progress?.increment()
                     }

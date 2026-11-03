@@ -60,7 +60,10 @@ public enum FolderScanner {
     ///   `maxSubfolderDepth`), not a guess at which ancestor is "the real
     ///   extra one" — depth alone can't tell that when more than one
     ///   folder is nested between the scan root and it.
-    public static func scan(folder url: URL, onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil) throws -> [ScannedFile] {
+    /// - Parameter maxDepth: this scan's own subfolder limit (`0` = don't enter subfolders at
+    ///   all); `nil` uses the global `maxSubfolderDepth`.
+    public static func scan(folder url: URL, maxDepth: Int? = nil, onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil) throws -> [ScannedFile] {
+        let depthLimit = max(0, maxDepth ?? maxSubfolderDepth)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw ScannerError.folderNotFound(url)
@@ -114,7 +117,7 @@ public enum FolderScanner {
             // would be one level too deep — skipped here, before ever
             // descending into it, rather than filtering out each of
             // possibly many files inside it one at a time afterward.
-            if values.isDirectory == true, depth == maxSubfolderDepth {
+            if values.isDirectory == true, depth == depthLimit {
                 onSkippedTooDeep?(itemURL)
                 enumerator.skipDescendants()
                 continue
@@ -142,11 +145,11 @@ public enum FolderScanner {
     /// collection split across multiple folders (different drives, region
     /// subfolders, etc.) is common. `onFileFound` reports one continuous
     /// running count across all folders, not one that resets per folder.
-    public static func scan(folders urls: [URL], onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil) throws -> [ScannedFile] {
+    public static func scan(folders urls: [URL], maxDepth: Int? = nil, onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil) throws -> [ScannedFile] {
         var all: [ScannedFile] = []
         for url in urls {
             let alreadyFound = all.count
-            let files = try scan(folder: url, onFileFound: { count in onFileFound?(alreadyFound + count) }, onSkippedTooDeep: onSkippedTooDeep)
+            let files = try scan(folder: url, maxDepth: maxDepth, onFileFound: { count in onFileFound?(alreadyFound + count) }, onSkippedTooDeep: onSkippedTooDeep)
             all.append(contentsOf: files)
         }
         return deduplicated(all)
@@ -262,7 +265,7 @@ public enum FolderScanner {
     ///   the original all-or-nothing throwing behavior for every existing
     ///   caller that doesn't pass this.
     public static func scan(
-        paths urls: [URL], onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil,
+        paths urls: [URL], maxDepth: Int? = nil, onFileFound: (@Sendable (Int) -> Void)? = nil, onSkippedTooDeep: (@Sendable (URL) -> Void)? = nil,
         onFolderStarted: (@Sendable (URL) -> Void)? = nil, onFolderFailed: ((URL, Error) -> Void)? = nil
     ) throws -> [ScannedFile] {
         var all: [ScannedFile] = []
@@ -287,7 +290,7 @@ public enum FolderScanner {
             do {
                 if isDirectory.boolValue {
                     let alreadyFound = all.count
-                    let files = try scan(folder: url, onFileFound: { count in onFileFound?(alreadyFound + count) }, onSkippedTooDeep: onSkippedTooDeep)
+                    let files = try scan(folder: url, maxDepth: maxDepth, onFileFound: { count in onFileFound?(alreadyFound + count) }, onSkippedTooDeep: onSkippedTooDeep)
                     all.append(contentsOf: files)
                 } else {
                     all.append(try scanSingleFile(url, directoryCache: directoryCache))
