@@ -76,6 +76,12 @@ public enum RebuildPlanner {
         isArchivedEntry(file) && isZipPath(file.url)
     }
 
+    /// An entry inside a `.7z`: it cannot be added to or removed from, but 7-Zip can
+    /// rename it in place (see `RebuildExecutor`), so an entry RENAME may target it.
+    private static func isRenameableEntry(_ file: ScannedFile) -> Bool {
+        isArchivedEntry(file) && (isZipPath(file.url) || file.url.pathExtension.lowercased() == "7z")
+    }
+
     /// This rom's bytes live inside an archive whose entries ROMForge has
     /// no rewrite support for (`.7z` — `SevenZipRunner` exposes no entry
     /// add/remove). Such a rom is always skipped rather than approximated
@@ -232,6 +238,24 @@ public enum RebuildPlanner {
                 guard pathKey(destination) == pathKey(hashedFile.file.url) || !occupiedPaths.contains(pathKey(destination)) else { continue }
                 operations.append(.rename(from: hashedFile.file.url, to: destination))
                 occupiedPaths.remove(pathKey(hashedFile.file.url))
+                occupiedPaths.insert(pathKey(destination))
+            }
+        }
+        // A single-ROM game whose archive carries an INCOMPLETE name ("Metal Slug 7
+        // (Europe).zip" for "Metal Slug 7 (Europe) (En,Fr,De,Es,It)", matched only by
+        // name): the container itself is renamed to the game's exact name.
+        for gameResult in matchReport.games where gameResult.game.roms.count == 1 {
+            for romMatch in gameResult.matches {
+                guard case .misnamed(let hashedFile, _) = romMatch.status, isArchivedEntry(hashedFile.file) else { continue }
+                let archiveURL = hashedFile.file.url
+                let archiveBase = archiveURL.deletingPathExtension().lastPathComponent
+                guard archiveBase.lowercased() != gameResult.game.name.lowercased() else { continue }
+                let ext = archiveURL.pathExtension
+                let declaredName = ext.isEmpty ? gameResult.game.name : "\(gameResult.game.name).\(ext)"
+                let destination = archiveURL.deletingLastPathComponent().appendingPathComponent(mismatchFixName(declaredName: declaredName, policy: filesCasePolicy))
+                guard pathKey(destination) == pathKey(archiveURL) || !occupiedPaths.contains(pathKey(destination)) else { continue }
+                operations.append(.rename(from: archiveURL, to: destination))
+                occupiedPaths.remove(pathKey(archiveURL))
                 occupiedPaths.insert(pathKey(destination))
             }
         }
@@ -527,20 +551,63 @@ public enum RebuildPlanner {
     /// while the old entry still exists), then remove the stale old-named
     /// entry — so the rom's own content is never briefly absent from the
     /// archive mid-operation if the add step fails.
+    /// An N64 `.n64`/`.v64` dump keeps its own extension when the DAT's rom is the
+    /// BigEndian `.z64`: only `.z64` is a byte-for-byte match, so renaming the
+    /// file to it would mislabel the byte order.
+    private static func keepingN64ByteOrderExtension(declared: String, current: String) -> String {
+        let currentExtension = (current as NSString).pathExtension.lowercased()
+        guard (declared as NSString).pathExtension.lowercased() == "z64", currentExtension == "n64" || currentExtension == "v64" else { return declared }
+        return (declared as NSString).deletingPathExtension + "." + currentExtension
+    }
+
     public static func planRenameRomsInArchive(matchReport: MatchReport, romsCasePolicy: FileCasePolicy = .datafileCase) -> [RebuildOperation] {
         var operations: [RebuildOperation] = []
         for gameResult in matchReport.games {
             for romMatch in gameResult.matches {
                 guard case .misnamed(let hashedFile, _) = romMatch.status else { continue }
-                guard isZipEntry(hashedFile.file) else { continue }
+                guard isRenameableEntry(hashedFile.file) else { continue }
                 // Real bug found live by jensyleo (2026-09-23): `.name`
                 // alone (just the last path component) is wrong for an
                 // entry nested inside a real subfolder in the zip (e.g. a
                 // "__MACOSX/._foo" AppleDouble sidecar) — see
                 // `ScannedFile.effectiveEntryPath`'s own doc comment.
                 let currentEntryName = hashedFile.file.effectiveEntryPath
-                let expectedEntryName = mismatchFixName(declaredName: romMatch.rom.name, policy: romsCasePolicy)
+                // N64 `.n64`/`.v64` dumps keep their own extension: only the DAT's
+                // BigEndian `.z64` is a byte-for-byte match, so renaming them to
+                // it would mislabel the byte order.
+                let declaredEntryName = keepingN64ByteOrderExtension(declared: romMatch.rom.name, current: hashedFile.file.name)
+                let expectedEntryName = mismatchFixName(declaredName: declaredEntryName, policy: romsCasePolicy)
                 guard currentEntryName != expectedEntryName else { continue }
+                let zipURL = hashedFile.file.url
+                operations.append(.addEntryToZip(
+                    targetArchive: zipURL,
+                    entryName: expectedEntryName,
+                    source: ArchiveEntrySource(source: zipURL, entryName: expectedEntryName, sourceArchiveEntryName: currentEntryName)
+                ))
+                operations.append(.removeEntryFromZip(archive: zipURL, entryName: currentEntryName))
+            }
+        }
+        // Entries the matcher TRUSTED by name (single-ROM archives, "Ignore CRC/hash
+        // verification") keep reading Correct, but their inner name can still differ
+        // from the DAT's ("3311 - Ben 10….nds", "Metal Slug 7.nds"): this action
+        // renames those too, so the fix reaches every system, not only the ones
+        // matched by hash. Case-only and extension-only differences are left alone.
+        var alreadyPlanned = Set<String>()
+        for operation in operations {
+            if case .removeEntryFromZip(let archive, let entry) = operation { alreadyPlanned.insert("\(archive.path)|\(entry)") }
+        }
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                guard case .correct(let hashedFile, _) = romMatch.status, isRenameableEntry(hashedFile.file) else { continue }
+                let currentEntryName = hashedFile.file.effectiveEntryPath
+                let currentBase = ((currentEntryName as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
+                let expectedBase = (romMatch.rom.name as NSString).deletingPathExtension.lowercased()
+                guard currentBase != expectedBase, !currentBase.hasPrefix("._") else { continue }
+                let declaredEntryName = keepingN64ByteOrderExtension(declared: romMatch.rom.name, current: hashedFile.file.name)
+                let expectedEntryName = mismatchFixName(declaredName: declaredEntryName, policy: romsCasePolicy)
+                guard currentEntryName != expectedEntryName, !alreadyPlanned.contains("\(hashedFile.file.url.path)|\(currentEntryName)") else { continue }
+                // Never rename onto a name another entry of the same archive already uses.
+                guard !matchReport.surplusFiles.contains(where: { $0.file.file.url == hashedFile.file.url && $0.file.file.effectiveEntryPath.lowercased() == expectedEntryName.lowercased() }) else { continue }
                 let zipURL = hashedFile.file.url
                 operations.append(.addEntryToZip(
                     targetArchive: zipURL,
@@ -711,11 +778,19 @@ public enum RebuildPlanner {
     /// else. A `.7z`-sourced surplus entry is still excluded entirely — no
     /// 7z-entry removal support (`SevenZipRunner` doesn't expose one).
     public static func planRemoveUselessFiles(matchReport: MatchReport) -> [RebuildOperation] {
-        matchReport.surplusFiles
+        let kept = archivesKeptBecauseRemovalWouldEmptyThem(matchReport: matchReport)
+        return matchReport.surplusFiles
             .filter { $0.requiredByGameDescription == nil && !$0.matchesNodumpRomName }
+            // A corrupt archive may still be recoverable: it is reported, never deleted automatically.
+            .filter { $0.file.hash.crc32 != CollectionHasher.corruptMarker }
             // Never delete a front-end's own files (gamelist.xml, images,
             // videos, manuals…) — see `ForeignProgramFiles`.
             .filter { isArchivedEntry($0.file.file) || !ForeignProgramFiles.isProtected($0.file.file.url) }
+            // Real incident (2026-10-26): two zips each holding ONE ROM the DAT
+            // doesn't know (a hack, a translation) were left empty. An archive's
+            // last real file is never removed — see
+            // `archivesKeptBecauseRemovalWouldEmptyThem`.
+            .filter { !(isArchivedEntry($0.file.file) && !isMacJunkEntry($0.file.file) && kept.contains($0.file.file.url)) }
             .compactMap { surplus in
                 let file = surplus.file.file
                 let url = file.url
@@ -746,6 +821,37 @@ public enum RebuildPlanner {
                 // `ScannedFile.effectiveEntryPath`'s own doc comment.
                 return .removeEntryFromZip(archive: url, entryName: file.effectiveEntryPath)
             }
+    }
+
+    private static func isMacJunkEntry(_ file: ScannedFile) -> Bool {
+        file.name.hasPrefix("._") || file.effectiveEntryPath.hasPrefix("__MACOSX/") || file.name == ".DS_Store"
+    }
+
+    /// Archives in which "Remove Useless Files" would delete EVERY real file —
+    /// every non-junk entry is unrecognized and none belongs to a game. Those
+    /// entries are usually valid ROMs the DAT simply doesn't list (hacks,
+    /// translations, non-No-Intro dumps); deleting them leaves an empty zip, so
+    /// they are kept and reported instead.
+    public static func archivesKeptBecauseRemovalWouldEmptyThem(matchReport: MatchReport) -> [URL] {
+        var claimed = Set<URL>()
+        for gameResult in matchReport.games {
+            for romMatch in gameResult.matches {
+                switch romMatch.status {
+                case .correct(let file, _), .misnamed(let file, _), .foundElsewhere(let file), .hashMismatch(let file), .nodump(let file):
+                    if isArchivedEntry(file.file), !isMacJunkEntry(file.file) { claimed.insert(file.file.url) }
+                case .missing:
+                    break
+                }
+            }
+        }
+        var realEntries: [URL: Int] = [:]
+        var removableEntries: [URL: Int] = [:]
+        for surplus in matchReport.surplusFiles where isArchivedEntry(surplus.file.file) && !isMacJunkEntry(surplus.file.file) {
+            let url = surplus.file.file.url
+            realEntries[url, default: 0] += 1
+            if surplus.requiredByGameDescription == nil && !surplus.matchesNodumpRomName { removableEntries[url, default: 0] += 1 }
+        }
+        return realEntries.keys.filter { !claimed.contains($0) && removableEntries[$0] == realEntries[$0] }.sorted { $0.path < $1.path }
     }
 
     /// Deletes a redundant, LOOSE (non-archive) duplicate copy of content

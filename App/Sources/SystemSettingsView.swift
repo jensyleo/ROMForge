@@ -679,6 +679,13 @@ private struct MAMEMergeSettingsForm: View {
                     .font(.callout)
                     .foregroundStyle(.orange)
             }
+            if !mameSystems.isEmpty {
+                Section("Subfolder depth") {
+                    ForEach(mameSystems) { system in
+                        SystemSubfolderDepthPicker(store: store, system: system)
+                    }
+                }
+            }
             Section("Update Database") {
                 HStack {
                     Button("Choose DAT File…") { chooseNewDAT() }
@@ -1462,6 +1469,7 @@ private struct ConsoleSettingsForm: View {
                 Button("Choose DAT…") { chooseNewDAT(for: system) }
                     .disabled(isUpdatingDAT)
             }
+            SystemSubfolderDepthPicker(store: store, system: system)
             if options.isEmpty {
                 Text("Catalog only — there is no emulator to play this platform on macOS, so Play is not offered.")
                     .font(.caption)
@@ -1482,23 +1490,44 @@ private struct ConsoleSettingsForm: View {
             }
             .pickerStyle(.menu)
             if chosen == .custom {
+                let path = ConsoleEmulatorSettings.customPath(for: system)
                 HStack {
-                    Text(customEmulatorPath.isEmpty ? "Not configured" : customEmulatorPath)
+                    Text(path.isEmpty ? "Not configured" : path)
                         .font(.caption)
-                        .foregroundStyle(customEmulatorPath.isEmpty ? .secondary : .primary)
+                        .foregroundStyle(path.isEmpty ? .secondary : .primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    Button("Locate…") { locateCustomEmulator() }
-                    if !customEmulatorPath.isEmpty {
-                        Button("Clear") { customEmulatorPath = "" }
+                    Button("Locate…") { locateCustomEmulator(for: system) }
+                    if !path.isEmpty {
+                        Button("Clear") {
+                            var updated = system
+                            updated.customEmulatorPath = ""
+                            store.update(updated)
+                            customEmulatorPath = ""
+                        }
                     }
                 }
-                Text("Pick either a plain command-line emulator executable or a GUI `.app`. This custom emulator is shared by every system set to \"Custom…\".")
+                if !path.lowercased().hasSuffix(".app") {
+                    TextField("Arguments (use {rom} for the game file)", text: Binding(
+                        get: { system.customEmulatorArguments ?? "" },
+                        set: { newValue in
+                            var updated = system
+                            updated.customEmulatorArguments = newValue
+                            store.update(updated)
+                        }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                }
+                Text("Any emulator works — a command-line executable (Homebrew or your own build) or a `.app` installed by hand. Each system keeps its own. Without arguments the game file is passed as the only argument.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            let installed = ConsoleEmulatorSettings.isInstalled(chosen)
+            if chosen == .retroarch {
+                RetroArchCoreRow(store: store, system: system)
+            }
+            let installed = ConsoleEmulatorSettings.isInstalled(for: system)
             HStack {
                 Image(systemName: installed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .foregroundStyle(installed ? .green : .orange)
@@ -1519,14 +1548,16 @@ private struct ConsoleSettingsForm: View {
     /// = false` still lets an `.app` package through, since macOS treats
     /// it as a file, not a directory, from an `NSOpenPanel`'s own
     /// perspective).
-    private func locateCustomEmulator() {
+    private func locateCustomEmulator(for system: RomSystem) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        panel.message = "Select the emulator to use for console/computer systems — a command-line executable or a .app"
+        panel.message = "Select the emulator for \(system.name) — a command-line executable or a .app"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        customEmulatorPath = url.path
+        var updated = system
+        updated.customEmulatorPath = url.path
+        store.update(updated)
     }
 
     private func applyDATUpdate(to newDATURL: URL, system: RomSystem) {
@@ -1634,5 +1665,91 @@ enum ComplementaryChipsFolderSettings {
     static var folderURL: URL? {
         guard isEnabled, let path = UserDefaults.standard.string(forKey: pathKey), !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path)
+    }
+}
+
+
+/// RetroArch's libretro core for one platform. The user installs cores
+/// (RetroArch's own Online Updater → Core Downloader, or copying a
+/// `*_libretro.dylib` into its cores folder); ROMForge only lists what is
+/// there and lets each system pick one.
+private struct RetroArchCoreRow: View {
+    let store: SystemLibraryStore
+    let system: RomSystem
+    @State private var refresh = 0
+
+    var body: some View {
+        let suggested = RetroArchCores.defaultCore(forCategory: system.category)
+        let installed = RetroArchCores.installedCores()
+        let chosen = RetroArchCores.core(for: system)
+        VStack(alignment: .leading, spacing: 4) {
+            if installed.isEmpty {
+                Text("No cores installed yet. Install one with RetroArch → Online Updater → Core Downloader\(suggested.map { " (suggested for this platform: \"\($0)\")" } ?? "").")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Picker("Core", selection: Binding(
+                    get: { chosen ?? "" },
+                    set: { newValue in
+                        var updated = system
+                        updated.retroArchCore = newValue
+                        store.update(updated)
+                    }
+                )) {
+                    ForEach(installed, id: \.self) { core in
+                        Text(core == suggested ? "\(core) (suggested)" : core).tag(core)
+                    }
+                    if let chosen, !installed.contains(chosen) {
+                        Text("\(chosen) (not installed)").tag(chosen)
+                    }
+                }
+                .pickerStyle(.menu)
+                if let chosen, !RetroArchCores.isInstalled(chosen) {
+                    Text("The suggested core \"\(chosen)\" is not installed — install it from RetroArch's Core Downloader or pick another one above.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            HStack {
+                Button("Open RetroArch") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/RetroArch.app"))
+                }
+                Button("Reveal cores folder") {
+                    try? FileManager.default.createDirectory(at: RetroArchCores.coresDirectory, withIntermediateDirectories: true)
+                    NSWorkspace.shared.activateFileViewerSelecting([RetroArchCores.coresDirectory])
+                }
+                Button("Refresh") { refresh += 1 }
+            }
+            .controlSize(.small)
+            Text("Cores are installed by you; ROMForge only launches RetroArch with the one chosen here.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .id(refresh)
+    }
+}
+
+
+/// "Maximum subfolder depth" for ONE system: how many levels of subfolder its scan enters
+/// below each ROM folder. Each system keeps its own value; "0 (off)" scans only files
+/// directly inside the folder, never a subfolder.
+private struct SystemSubfolderDepthPicker: View {
+    let store: SystemLibraryStore
+    let system: RomSystem
+
+    var body: some View {
+        Picker("Maximum subfolder depth — \(system.name)", selection: Binding<Int>(
+            get: { system.effectiveMaxSubfolderDepth },
+            set: { newValue in
+                var updated = system
+                updated.maxSubfolderDepth = newValue
+                store.update(updated)
+            }
+        )) {
+            Text("0 (off — no subfolders)").tag(0)
+            ForEach(1...5, id: \.self) { Text("\($0)").tag($0) }
+        }
+        .pickerStyle(.menu)
+        .help("How many levels of subfolder a scan of this system enters below each ROM folder. 0 never enters a subfolder. Each system has its own value.")
     }
 }

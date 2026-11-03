@@ -43,6 +43,8 @@ public enum HeaderSkipRule: String, CaseIterable, Sendable, Codable {
     /// reordering, not a header, so it never reports a header length.
     case n64ByteOrder
 
+    private static let copier512MaximumFileSize: Int64 = 64 * 1_048_576
+
     /// Bytes to skip from the start of the file when hashing, or 0 if this
     /// rule's signature doesn't match. Takes the total file size (needed
     /// for `copier512`'s size-based check) and just the leading bytes
@@ -57,7 +59,11 @@ public enum HeaderSkipRule: String, CaseIterable, Sendable, Codable {
             guard fileSize > 64, headBytes.count >= 4 else { return 0 }
             return headBytes.prefix(4).elementsEqual(Array("LYNX".utf8)) ? 64 : 0
         case .copier512:
-            guard fileSize > 512 else { return 0 }
+            // Copier headers only ever existed on cartridge dumps of a few MB;
+            // disc/cart images of hundreds of MB (3DS, Wii...) are 512-byte
+            // aligned by design, and "detecting" a header there only costs a
+            // second full read of a multi-GB file.
+            guard fileSize > 512, fileSize <= Self.copier512MaximumFileSize else { return 0 }
             return fileSize % 1024 == 512 ? 512 : 0
         case .genesisSMD, .n64ByteOrder:
             return 0

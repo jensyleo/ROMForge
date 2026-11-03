@@ -16,7 +16,7 @@ public enum SevenZipArchiveHasher {
     /// tiny declared sizes) is treated as a suspected decompression bomb.
     private static let maxOverDeclaredSizeFactor: Int64 = 10
 
-    public static func hash(_ file: ArchivedFile, fileManager: FileManager = .default) throws -> FileHash {
+    public static func hash(_ file: ArchivedFile, algorithms: HashAlgorithms = .all, fileManager: FileManager = .default) throws -> FileHash {
         let executable = try SevenZipLocator.locate(fileManager: fileManager)
         let limit = max(1_048_576, file.size * maxOverDeclaredSizeFactor)
         let data: Data
@@ -39,6 +39,6 @@ public enum SevenZipArchiveHasher {
         } catch is SevenZipRunner.OutputExceededLimit {
             throw SevenZipError.suspectedDecompressionBomb(entryPath: file.entryPath, declaredSize: file.size)
         }
-        return FileHasher.hash(data: data)
+        return FileHasher.hash(data: data, algorithms: algorithms)
     }
 }

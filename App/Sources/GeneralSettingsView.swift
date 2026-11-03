@@ -18,7 +18,6 @@ struct GeneralSettingsView: View {
     @AppStorage(HashAlgorithmSettings.sha1Key) private var computeSHA1 = true
     @AppStorage(MatchingPreferencesSettings.nameOnlyMatchingKey) private var nameOnlyMatchingForConsoles = MatchingPreferencesSettings.nameOnlyMatchingDefault
     @AppStorage("ROMForge.scan.autoScanOnAdd") private var autoScanOnAdd = false
-    @AppStorage(MaxSubfolderDepthSettings.storageKey) private var maxSubfolderDepth = MaxSubfolderDepthSettings.defaultValue
     @AppStorage(ModificationsEnabledSettings.storageKey) private var modificationsEnabled = false
     @AppStorage(HashingConcurrencySettings.numberOfThreadsKey) private var numberOfThreads = HashingConcurrencySettings.numberOfThreadsDefault
     @AppStorage(FixResultPopupSettings.storageKey) private var showFixResultPopups = true
@@ -58,11 +57,7 @@ struct GeneralSettingsView: View {
                 Text("Automatically begins scanning a newly-added ROM folder immediately after adding it, rather than waiting for a manual \"Scan Folder\" click.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Stepper("Maximum subfolder depth: \(maxSubfolderDepth)", value: $maxSubfolderDepth, in: 1...5)
-                    .onChange(of: maxSubfolderDepth) { _, newValue in
-                        FolderScanner.maxSubfolderDepth = newValue
-                    }
-                Text("How many levels of subfolder a scan will descend into below a configured ROM folder — \"1\" covers the common \\(system)/\\(game)/\\(file) layout. Raise this if your folders nest deeper (e.g. an extra \"BATOCERA\"-style folder above the game level: \\(system)/BATOCERA/\\(game)/\\(file) needs \"2\"). A folder nested past this limit is skipped, not scanned — logged as \"Skipped (nested too deep, not scanned)\" rather than silently missed. Kept deliberately capped (never \"unlimited\") so pointing this at something far too broad, like an entire drive, can't silently try to enumerate everything underneath it.")
+                Text("Subfolder depth is set per system — Settings → Systems (consoles and MAME each have their own \"Maximum subfolder depth\"; 0 never enters a subfolder).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -508,31 +503,5 @@ enum MaintenanceFolderSettings {
     static func deleteSubfolder(for system: RomSystem) throws {
         guard let subfolder = subfolderURL(for: system), FileManager.default.fileExists(atPath: subfolder.path) else { return }
         try FileManager.default.removeItem(at: subfolder)
-    }
-}
-
-/// How many levels of subfolder a scan descends into below a configured
-/// ROM folder before treating a deeper one as "too deep, skip it" —
-/// backs `FolderScanner.maxSubfolderDepth` (a mutable `var`, not a
-/// compile-time constant, specifically so this setting can drive it).
-/// jensyleo's own report (2026-09-10): a real BATOCERA-exported folder
-/// nested two extra levels above the game folder, past the safe default
-/// of 1, silently skipping every file in every one of those games with
-/// no way to reach them short of physically reorganizing the folder —
-/// this Settings → General control is that way out. Default stays `1`
-/// (unchanged from before this setting existed) rather than jumping to
-/// something more permissive by default — the whole POINT of the cap is
-/// staying conservative until a real folder layout actually needs more.
-enum MaxSubfolderDepthSettings {
-    static let storageKey = "ROMForge.scan.maxSubfolderDepth"
-    static let defaultValue = 1
-
-    /// Applies the persisted value to `FolderScanner.maxSubfolderDepth` —
-    /// call once at app launch so a scan that runs before Settings is
-    /// ever opened this session still honors whatever was configured in
-    /// an earlier one, not the compiled-in default.
-    static func applyPersistedValue() {
-        let stored = UserDefaults.standard.object(forKey: storageKey) as? Int ?? defaultValue
-        FolderScanner.maxSubfolderDepth = stored
     }
 }

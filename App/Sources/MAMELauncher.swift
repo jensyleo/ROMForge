@@ -73,8 +73,7 @@ enum MAMELaunchSettings {
     /// field shows it too ("Not configured" would otherwise keep reading
     /// that way even while every feature gated on `executablePath` already
     /// works, which read as its own kind of "it disappeared"). Called once
-    /// at launch (`ROMForgeApp.init()`), same convention as
-    /// `MaxSubfolderDepthSettings.applyPersistedValue()`. A no-op whenever
+    /// at launch (`ROMForgeApp.init()`). A no-op whenever
     /// something is already configured — never overwrites an explicit,
     /// different path someone chose via "Locate…". Re-fills a genuinely
     /// empty value on every launch by design, including right after a

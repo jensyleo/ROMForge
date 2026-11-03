@@ -117,7 +117,10 @@ public enum RegionQualityNotes {
     /// is real, ongoing research work (see ROADMAP.md's own cost analysis)
     /// — this seed exists to make the feature real and testable, not to be
     /// comprehensive.
-    public static let seed: [RegionQualityNote] = [
+    public static let seed: [RegionQualityNote] = coreSeed + platformSeed
+
+    /// NES and SNES notes (the first curated set).
+    static let coreSeed: [RegionQualityNote] = [
         RegionQualityNote(
             gameFamily: "Contra",
             platform: "NES",
@@ -314,10 +317,16 @@ public enum RegionQualityNotes {
     /// single title isn't enough) — checking `overrides` (user-provided,
     /// Application Support) before `seed`, a user's own override always
     /// winning on a match.
+    private static let platformAliases: [String: String] = [
+        "snes-msu1": "SNES", "famicom disk system": "NES", "dsi": "NDS", "game boy": "Game Boy Color",
+    ]
+
     public static func note(forGameName name: String, platform: String? = nil, overrides: [RegionQualityNote] = []) -> RegionQualityNote? {
         let title = baseTitle(for: name).lowercased()
+        // A variant system shares its parent's library, so it reads the parent's notes.
+        let notesPlatform = platform.flatMap { platformAliases[$0.lowercased()] } ?? platform
         func matches(_ note: RegionQualityNote) -> Bool {
-            (note.platform == nil || note.platform?.lowercased() == platform?.lowercased())
+            (note.platform == nil || note.platform?.lowercased() == notesPlatform?.lowercased())
                 && (note.gameFamily.lowercased() == title || note.alternateTitles.contains { $0.lowercased() == title })
         }
         if let override = overrides.first(where: matches) { return override.disabled ? nil : override }

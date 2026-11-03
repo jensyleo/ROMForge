@@ -335,7 +335,10 @@ struct RebuildExecutorTests {
         try makeZip(at: zipURL, entries: [("junk.bin", "junk-content"), ("needed.bin", "needed-content")])
 
         let surplusInZip = SurplusFile(file: HashedFile(file: ScannedFile(url: zipURL, name: "junk.bin", size: 1), hash: FileHash(crc32: "aaaaaaaa", md5: "0", sha1: "0")))
-        let matchReport = MatchReport(games: [], surplusFiles: [surplusInZip])
+        // The zip also holds a recognized ROM ("needed.bin" belongs to a game), so removing the
+        // unrecognized one never empties the archive.
+        let neededInZip = SurplusFile(file: HashedFile(file: ScannedFile(url: zipURL, name: "needed.bin", size: 1), hash: FileHash(crc32: "bbbbbbbb", md5: "0", sha1: "0")), requiredByGameDescription: "Some Game")
+        let matchReport = MatchReport(games: [], surplusFiles: [surplusInZip, neededInZip])
 
         let operations = RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport)
         #expect(operations == [.removeEntryFromZip(archive: zipURL, entryName: "junk.bin")])

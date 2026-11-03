@@ -99,7 +99,7 @@ private struct TopicPage: View {
                         }
 
                         ForEach(Array(section.paragraphs.enumerated()), id: \.offset) { _, paragraph in
-                            Text(paragraph)
+                            Text(HelpLinks.attributed(paragraph))
                                 .font(.body)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -142,12 +142,65 @@ private struct TermRow: View {
                         .background(.quaternary, in: .capsule)
                 }
             }
-            Text(row.detail)
+            Text(HelpLinks.attributed(row.detail))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+
+/// Makes every web address in Help text clickable, without interpreting any other
+/// markup (the help text uses `*` and backticks literally).
+enum HelpLinks {
+    /// Dat-o-Matic's download page, not its home page: that site's front page answers a
+    /// request without a page parameter with a block of the visitor's address.
+    static let datomaticDownloadPage = "https://datomatic.no-intro.org/index.php?page=download&s=64"
+
+    private static let domainTargets: [(text: String, url: String)] = [
+        ("datomatic.no-intro.org", datomaticDownloadPage),
+        ("redump.org", "https://redump.org/downloads/"),
+        ("tosecdev.org", "https://www.tosecdev.org/"),
+    ]
+
+    private static let urlPattern = try? NSRegularExpression(pattern: #"https?://[^\s)\]"`]+"#)
+
+    static func attributed(_ text: String) -> AttributedString {
+        var result = AttributedString(text)
+        let nsText = text as NSString
+        var linked: [NSRange] = []
+        // Full addresses first (trailing punctuation is not part of the link).
+        for match in urlPattern?.matches(in: text, range: NSRange(location: 0, length: nsText.length)) ?? [] {
+            var range = match.range
+            while range.length > 1, ".,;:".contains(nsText.substring(with: NSRange(location: range.location + range.length - 1, length: 1))) {
+                range.length -= 1
+            }
+            apply(nsText.substring(with: range), range, in: text, to: &result, linked: &linked)
+        }
+        // Then well-known sites written without a scheme.
+        for (domain, url) in domainTargets {
+            var searchRange = NSRange(location: 0, length: nsText.length)
+            while true {
+                let found = nsText.range(of: domain, options: .caseInsensitive, range: searchRange)
+                if found.location == NSNotFound { break }
+                if !linked.contains(where: { NSIntersectionRange($0, found).length > 0 }) {
+                    apply(url, found, in: text, to: &result, linked: &linked)
+                }
+                let next = found.location + found.length
+                searchRange = NSRange(location: next, length: nsText.length - next)
+            }
+        }
+        return result
+    }
+
+    private static func apply(_ target: String, _ range: NSRange, in text: String, to result: inout AttributedString, linked: inout [NSRange]) {
+        guard let url = URL(string: target), let swiftRange = Range(range, in: text),
+              let lower = AttributedString.Index(swiftRange.lowerBound, within: result),
+              let upper = AttributedString.Index(swiftRange.upperBound, within: result) else { return }
+        result[lower..<upper].link = url
+        linked.append(range)
     }
 }

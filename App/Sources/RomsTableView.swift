@@ -131,7 +131,7 @@ struct RomsTableView: View {
                 }
                 .customizationID("romName")
                 TableColumn("Info") { row in
-                    romCell(AnyView(Text(infoText(row.entry)).help(zipCommentHelpText(row.entry))), row.entry)
+                    romCell(AnyView(Text(InfoTextStyling.attributed(infoText(row.entry))).help(zipCommentHelpText(row.entry))), row.entry)
                 }
                 .customizationID("info")
                 TableColumn("Size") { row in

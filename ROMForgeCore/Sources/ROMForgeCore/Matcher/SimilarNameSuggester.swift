@@ -86,8 +86,7 @@ public enum SimilarNameSuggester {
         base = base.trimmingCharacters(in: .whitespaces)
         guard !base.isEmpty else { return nil }
         let baseParts = split(base)
-        var bestAvailable: (name: String, score: Double)?
-        var bestOverall: (name: String, score: Double)?
+        var scored: [(name: String, score: Double)] = []
         for candidate in candidateNames {
             // Titles and "(region)(languages)(revision)" groups are compared
             // separately: a local name that simply omits the groups
@@ -116,12 +115,23 @@ public enum SimilarNameSuggester {
                 score = max(score, titleScore * 0.9 + tagScore * 0.1)
             }
             guard score >= threshold else { continue }
-            if bestOverall == nil || score > bestOverall!.score + 1e-9 || (abs(score - bestOverall!.score) <= 1e-9 && candidate.count < bestOverall!.name.count) {
-                bestOverall = (candidate, score)
-            }
-            if isAvailable(candidate), bestAvailable == nil || score > bestAvailable!.score + 1e-9 || (abs(score - bestAvailable!.score) <= 1e-9 && candidate.count < bestAvailable!.name.count) {
-                bestAvailable = (candidate, score)
-            }
+            scored.append((candidate, score))
+        }
+        guard let topScore = scored.map(\.score).max() else { return nil }
+        // A Beta/Proto/Demo/Debug/… release is never suggested for a file that
+        // doesn't say it is one — unless every near-best candidate is.
+        var pool = scored.filter { $0.score >= topScore - tieBreakTolerance }
+        let plain = pool.filter { unrequestedSpecialTags(in: $0.name, localName: base) == 0 }
+        if !plain.isEmpty { pool = plain }
+        func better(_ a: (name: String, score: Double), than b: (name: String, score: Double)?) -> Bool {
+            guard let b else { return true }
+            return a.score > b.score + 1e-9 || (abs(a.score - b.score) <= 1e-9 && a.name.count < b.name.count)
+        }
+        var bestAvailable: (name: String, score: Double)?
+        var bestOverall: (name: String, score: Double)?
+        for entry in pool {
+            if better(entry, than: bestOverall) { bestOverall = entry }
+            if isAvailable(entry.name), better(entry, than: bestAvailable) { bestAvailable = entry }
         }
         guard let bestOverall else { return nil }
         // Use the available candidate only when it's a genuine near-tie
@@ -131,6 +141,24 @@ public enum SimilarNameSuggester {
         // an already-satisfied game", not a rename target at all).
         let winner = (bestAvailable?.score ?? -1) >= bestOverall.score - tieBreakTolerance ? (bestAvailable ?? bestOverall) : bestOverall
         return SimilarNameSuggestion(suggestedName: winner.name, confidence: winner.score)
+    }
+
+    private static let specialTagWords = [
+        "beta", "proto", "demo", "debug", "sample", "kiosk", "unl", "pirate", "alpha", "test program", "lodgenet",
+        "gamecube", "virtual console", "switch online", "limited run", "aftermarket", "promo", "rerelease",
+    ]
+
+    /// How many of `name`'s special release tags the local name does not itself mention.
+    private static func unrequestedSpecialTags(in name: String, localName: String) -> Int {
+        let local = localName.lowercased()
+        var count = 0
+        var rest = Substring(name)
+        while let open = rest.firstIndex(of: "("), let close = rest[open...].firstIndex(of: ")") {
+            let group = rest[rest.index(after: open)..<close].lowercased()
+            if let word = specialTagWords.first(where: { group.contains($0) }), !local.contains(word) { count += 1 }
+            rest = rest[rest.index(after: close)...]
+        }
+        return count
     }
 
     /// "Title (USA) (En)" → ("Title", "(USA) (En)").
