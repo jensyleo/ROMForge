@@ -114,6 +114,7 @@ public struct ScanCache: Sendable, Codable, Equatable {
     }
 
     private func satisfies(_ hash: FileHash, _ algorithms: HashAlgorithms) -> Bool {
+        if hash.crc32 == CollectionHasher.skippedMarker || hash.crc32 == CollectionHasher.corruptMarker { return false }
         if algorithms.contains(.crc32), hash.crc32 == nil { return false }
         if algorithms.contains(.md5), hash.md5 == nil { return false }
         if algorithms.contains(.sha1), hash.sha1 == nil { return false }
@@ -199,7 +200,7 @@ public struct ScanCache: Sendable, Codable, Equatable {
     /// caller that did the folder walk is the only place that knows them.
     public static func build(from hashedFiles: [HashedFile], chdPaths: [URL] = []) -> ScanCache {
         var entries: [String: ScanCacheEntry] = [:]
-        for hashedFile in hashedFiles where hashedFile.hash.crc32 != CollectionHasher.corruptMarker {
+        for hashedFile in hashedFiles where hashedFile.hash.crc32 != CollectionHasher.corruptMarker && hashedFile.hash.crc32 != CollectionHasher.skippedMarker {
             entries[key(for: hashedFile.file)] = ScanCacheEntry(
                 size: hashedFile.file.size,
                 modificationDate: hashedFile.file.modificationDate,
@@ -292,14 +293,18 @@ public struct ScanCache: Sendable, Codable, Equatable {
         entries.sorted { $0.key < $1.key }.compactMap { key, entry in
             let url: URL
             let name: String
+            var entryPath: String?
             if let separatorRange = key.range(of: "::") {
                 url = URL(fileURLWithPath: String(key[key.startIndex..<separatorRange.lowerBound]))
-                name = String(key[separatorRange.upperBound...])
+                // A fresh scan reports a nested entry as short name + full inner path.
+                let inner = String(key[separatorRange.upperBound...])
+                name = (inner as NSString).lastPathComponent
+                entryPath = inner
             } else {
                 url = URL(fileURLWithPath: key)
                 name = url.lastPathComponent
             }
-            let file = ScannedFile(url: url, name: name, size: entry.size, modificationDate: entry.modificationDate)
+            let file = ScannedFile(url: url, name: name, size: entry.size, modificationDate: entry.modificationDate, entryPath: entryPath)
             return HashedFile(file: file, hash: entry.hash, headerStripped: entry.headerStripped)
         }
     }

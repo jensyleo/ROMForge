@@ -5,26 +5,31 @@
 // or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
 
 import Foundation
+import zlib
 
 /// Streaming CRC32 (the standard zlib/ISO-3309 variant used by DAT tools).
 public enum CRC32 {
-    private static let table: [UInt32] = (0..<256).map { i -> UInt32 in
-        var c = UInt32(i)
-        for _ in 0..<8 {
-            c = (c & 1 != 0) ? (0xEDB8_8320 ^ (c >> 1)) : (c >> 1)
-        }
-        return c
-    }
-
     /// The running state to feed successive chunks into via `update(_:with:)`.
     public static let initial: UInt32 = 0xFFFF_FFFF
 
+    /// Uses zlib's `crc32` (hardware-accelerated on Apple Silicon, ~100x the
+    /// old byte-at-a-time table loop — multi-GB console images were
+    /// dominated by this). zlib works on the *finalized* form of the
+    /// checksum, while this type's running state is the pre-finalize one,
+    /// hence the complement on the way in and out.
     public static func update(_ crc: UInt32, with data: Data) -> UInt32 {
-        var c = crc
-        for byte in data {
-            c = table[Int((c ^ UInt32(byte)) & 0xFF)] ^ (c >> 8)
+        data.withUnsafeBytes { raw -> UInt32 in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress, !raw.isEmpty else { return crc }
+            var state = ~crc
+            var offset = 0
+            // zlib's length parameter is a 32-bit `uInt`.
+            while offset < raw.count {
+                let step = min(raw.count - offset, Int(UInt32.max) / 2)
+                state = UInt32(truncatingIfNeeded: zlib.crc32(UInt(state), base + offset, uInt(step)))
+                offset += step
+            }
+            return ~state
         }
-        return c
     }
 
     /// Converts the running state into the final published CRC32 value.

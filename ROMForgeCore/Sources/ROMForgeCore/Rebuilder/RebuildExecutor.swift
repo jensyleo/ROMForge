@@ -122,6 +122,7 @@ public enum RebuildExecutor {
         }
     }
 
+
     /// Strips a `.zip`'s own trailing comment field, in place — see
     /// `RebuildOperation.clearZipComment`'s own doc comment. Locates the
     /// End-Of-Central-Directory record's fixed 22-byte header by scanning
@@ -293,7 +294,10 @@ public enum RebuildExecutor {
             try renameEntryInSevenZip(archive: targetArchive, from: oldName, to: entryName)
             return
         }
-        let data = try readEntryData(source)
+        // Streamed from a file (a temp copy for an archive-sourced entry) so a
+        // multi-GB disc image is never held in memory.
+        let staged = try stageEntry(source, fileManager: fileManager)
+        defer { staged.cleanup() }
         let archive: Archive
         do {
             archive = try Archive(url: targetArchive, accessMode: .update)
@@ -304,12 +308,24 @@ public enum RebuildExecutor {
             throw RebuildError.destinationExists(targetArchive.appendingPathComponent(entryName))
         }
         do {
-            try archive.addEntry(with: entryName, type: .file, uncompressedSize: Int64(data.count), compressionMethod: .deflate) { position, size in
-                data.subdata(in: Int(position)..<Int(position) + size)
-            }
+            try archive.addEntry(with: entryName, fileURL: staged.url, compressionMethod: .deflate)
         } catch {
             throw RebuildError.underlying(error.localizedDescription)
         }
+    }
+
+    /// Returns a file holding the entry's bytes: the loose source itself, or a
+    /// temporary extraction of an archive-sourced entry (zip-bomb limited).
+    private static func stageEntry(_ entry: ArchiveEntrySource, fileManager: FileManager) throws -> (url: URL, cleanup: () -> Void) {
+        guard let innerEntryName = entry.sourceArchiveEntryName else { return (entry.source, {}) }
+        let temp = fileManager.temporaryDirectory.appendingPathComponent("romforge-stage-\(UUID().uuidString)")
+        do {
+            try extractZipEntry(archive: entry.source, entryName: innerEntryName, to: temp, fileManager: fileManager)
+        } catch {
+            try? fileManager.removeItem(at: temp)
+            throw error
+        }
+        return (temp, { try? fileManager.removeItem(at: temp) })
     }
 
     /// Pulls one named entry out of a `.zip` onto disk as its own standalone
@@ -427,14 +443,9 @@ public enum RebuildExecutor {
         }
         do {
             for entry in entries {
-                if entry.sourceArchiveEntryName != nil {
-                    let data = try readEntryData(entry)
-                    try archive.addEntry(with: entry.entryName, type: .file, uncompressedSize: Int64(data.count), compressionMethod: .deflate) { position, size in
-                        data.subdata(in: Int(position)..<Int(position) + size)
-                    }
-                } else {
-                    try archive.addEntry(with: entry.entryName, fileURL: entry.source, compressionMethod: .deflate)
-                }
+                let staged = try stageEntry(entry, fileManager: fileManager)
+                defer { staged.cleanup() }
+                try archive.addEntry(with: entry.entryName, fileURL: staged.url, compressionMethod: .deflate)
             }
         } catch {
             throw RebuildError.underlying(error.localizedDescription)

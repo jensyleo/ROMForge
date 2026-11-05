@@ -146,7 +146,7 @@ struct RomsTableView: View {
                 // Settings. Split into two real columns, matching the
                 // existing MD5 column's own pattern exactly.
                 TableColumn("CRC") { row in
-                    romCell(AnyView(Text(row.entry.actualCRC ?? row.entry.expectedCRC ?? "")), row.entry)
+                    romCell(AnyView(Text(row.entry.actualCRC.flatMap { $0 == CollectionHasher.skippedMarker ? nil : $0 } ?? row.entry.expectedCRC ?? "")), row.entry)
                 }
                 .customizationID("crc")
                 TableColumn("SHA-1") { row in

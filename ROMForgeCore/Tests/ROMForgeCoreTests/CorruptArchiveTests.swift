@@ -18,4 +18,17 @@ struct CorruptArchiveTests {
         #expect(hashed.contains { $0.file.name == "broken.zip" && $0.hash.crc32 == CollectionHasher.corruptMarker })
         #expect(hashed.contains { $0.file.name == "good.nes" && $0.hash.crc32 != CollectionHasher.corruptMarker })
     }
+
+    @Test("a zero-byte zip is reported as corrupt and the rest still hashes")
+    func zeroByteZipDoesNotAbort() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data().write(to: dir.appendingPathComponent("empty.zip"))
+        try Data([1, 2, 3, 4]).write(to: dir.appendingPathComponent("good.nes"))
+        let scanned = try FolderScanner.scan(paths: [dir])
+        let hashed = try await CollectionHasher.hash(scannedFiles: scanned)
+        #expect(hashed.contains { $0.file.name == "empty.zip" && $0.hash.crc32 == CollectionHasher.corruptMarker })
+        #expect(hashed.contains { $0.file.name == "good.nes" })
+    }
 }

@@ -1191,10 +1191,16 @@ final class LibraryViewModel {
     /// warn visibly if not; see `LibraryDetailView
     /// .warnIfSpecialFolderEmpty(_:kind:)`'s own doc comment.
     func startScan(system: RomSystem, folders: [URL]? = nil, onComplete: (() -> Void)? = nil) {
-        runningTask?.cancel()
+        // A previous scan must be fully stopped before this one starts: its `defer`
+        // (isBusy = false, progress reset) would otherwise run in the middle of this scan.
+        let previous = runningTask
+        if isBusy { cancelCurrentOperation() } else { previous?.cancel() }
         runningTask = Task {
+            await previous?.value
+            guard !Task.isCancelled else { return }
             await scan(system: system, folders: folders)
-            onComplete?()
+            // A cancelled scan must not report "folder is empty" etc.
+            if !Task.isCancelled { onComplete?() }
         }
     }
 
@@ -1663,9 +1669,14 @@ final class LibraryViewModel {
             let isMSU1System = system.category == SystemCategoryKind.snesMSU1.rawValue
             let systemMaxDepth = system.effectiveMaxSubfolderDepth
             let msu1Extensions = Self.msu1ROMExtensions
+            // Name-only matching (console systems) never reads a hash: the
+            // matcher trusts the expected name outright, so reading every
+            // multi-GB loose image (.iso/.3ds/.nds) just to compute a CRC the
+            // scan then ignores was the bulk of a Wii scan's time and I/O.
+            let skipsLooseHashing = !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyMatchingEnabled
             let msu1SkipHashing: (@Sendable (ScannedFile) -> Bool)? = isMSU1System
                 ? { @Sendable (file: ScannedFile) -> Bool in !msu1Extensions.contains(file.url.pathExtension.lowercased()) }
-                : nil
+                : (skipsLooseHashing ? { @Sendable (_: ScannedFile) -> Bool in true } : nil)
             let isCTRSystem = system.category == "3DS"
             let ctrSummaryLogHandler: @Sendable (String) -> Void = { [weak self] message in
                 Task { @MainActor in self?.log(message) }
@@ -1868,6 +1879,7 @@ final class LibraryViewModel {
                     dat: dat, hashedFiles: hashedFiles, onProgress: matchProgressHandler, cancellationFlag: cancellationFlag,
                     recentlyScannedPaths: forcedRescanPaths,
                     nameOnlyMatching: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyMatchingEnabled,
+                    nameOnlyRequireSize: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyCheckSizeEnabled,
                     // Same MAME-never-eligible scoping as `nameOnlyMatching`
                     // just above, and for the same reason — see
                     // `RomSystem.similarNameFixEnabled`'s own doc comment.
@@ -1941,7 +1953,7 @@ final class LibraryViewModel {
                 // not needed here" (yellow) flag for the exact same game
                 // (found live during today's own duplicate-handling audit).
                 postMatchPhaseHandler("Detecting duplicate sets…")
-                auditReport = try AuditReporter.addingDuplicateSets(to: auditReport, rootFolders: Self.effectiveScanFolders(for: system), recentlyScannedPaths: forcedRescanPaths)
+                auditReport = try AuditReporter.addingDuplicateSets(to: auditReport, rootFolders: Self.effectiveScanFolders(for: system), recentlyScannedPaths: forcedRescanPaths, includeSameSystemCopies: !system.isMAMEStyle)
                 // Real hang found live (2026-10-01) — see
                 // `redundantArchiveEntryCountsCache`'s own doc comment: this
                 // same real disk/NAS read (opening every distinct
@@ -2208,6 +2220,11 @@ final class LibraryViewModel {
             // whatever was already tracked, never replacing broader
             // coverage that's still genuinely valid.
             lastScanScope = Self.mergedScanScope(lastScanScope, withNewScan: folders)
+            // Every configured ROM folder already covered means the whole system was scanned.
+            if case .paths(let scanned) = lastScanScope, !system.romFolderURLs.isEmpty,
+               system.romFolderURLs.allSatisfy({ Self.urlIsInScope($0, scopeFolders: scanned) }) {
+                lastScanScope = .wholeSystem
+            }
             auditReport = displayedAudit
             Self.sharedAuditReportCache[system.id] = auditReport
             if system.category == "3DS" {
@@ -3010,7 +3027,7 @@ final class LibraryViewModel {
             log("Kept \(keptForeign) file(s) that belong to another program (gamelist.xml, images, videos, manuals…) — they are never removed as \"useless\".")
         }
         let keptArchives = RebuildPlanner.archivesKeptBecauseRemovalWouldEmptyThem(matchReport: matchReport).filter { archive in
-            scopeFolders.isEmpty || scopeFolders.contains { archive.path.hasPrefix($0.path) }
+            scopeFolders.isEmpty || scopeFolders.contains { archive.path == $0.path || archive.path.hasPrefix($0.path + "/") }
         }
         if !keptArchives.isEmpty {
             let names = keptArchives.prefix(5).map { "\"\($0.lastPathComponent)\"" }.joined(separator: ", ")
@@ -3648,6 +3665,46 @@ final class LibraryViewModel {
     /// even reaches here) — that area is documented, deliberately read-only
     /// donor storage.
 
+    /// Removes just the rows of files that were deleted from disk, with no rescan — only when every
+    /// affected row is unrecognized content, so no game's status can change. Returns false when a
+    /// recognized row is involved and a real rescan is needed.
+    private func dropDeletedFilesFromReport(system: RomSystem, urls: [URL]) -> Bool {
+        guard let previous = auditReport else { return false }
+        let deleted = Set(urls.map(\.path))
+        let affected = previous.entries.filter { entry in entry.path.map { deleted.contains($0.path) } ?? false }
+        let unrecognized: Set<AuditStatus> = [.surplus, .surplusInArchive, .unknownFile]
+        guard affected.allSatisfy({ unrecognized.contains($0.status) }) else { return false }
+        guard !affected.isEmpty else { return true }
+        let kept = previous.entries.filter { entry in !(entry.path.map { deleted.contains($0.path) } ?? false) }
+        var correct = 0, incorrect = 0, badDump = 0, missing = 0, surplus = 0, unverifiable = 0, duplicateSets = 0
+        for entry in kept {
+            switch entry.status {
+            case .correct: correct += 1
+            case .incorrect: incorrect += 1
+            case .badDump: badDump += 1
+            case .missing: missing += 1
+            case .surplus, .surplusInArchive, .unknownFile: surplus += 1
+            case .unverifiable: unverifiable += 1
+            case .duplicateSet: duplicateSets += 1
+            }
+        }
+        auditReport = AuditReport(entries: kept, correct: correct, incorrect: incorrect, badDump: badDump, missing: missing, surplus: surplus, unverifiable: unverifiable, duplicateSets: duplicateSets)
+        Self.sharedAuditReportCache[system.id] = auditReport
+        if let report = matchReport {
+            matchReport = MatchReport(games: report.games, surplusFiles: report.surplusFiles.filter { !deleted.contains($0.file.file.url.path) })
+        }
+        let systemID = system.id.uuidString
+        let paths = Array(deleted)
+        Task.detached(priority: .utility) { [weak self] in
+            do {
+                try AuditDatabaseLocation.open().removeEntries(systemID: systemID, exactPaths: paths)
+            } catch {
+                Task { @MainActor in self?.logWarning("Couldn't persist the removal: \(error)") }
+            }
+        }
+        return true
+    }
+
     /// Moves `urls` to the Trash (`NSWorkspace.recycle`, real Finder Trash —
     /// recoverable, unlike `deleteFilesPermanently`). Rescans afterward
     /// since this removes files from the scanned collection.
@@ -3677,7 +3734,9 @@ final class LibraryViewModel {
         defer { isBusy = false }
         do {
             let trashedURLs = try await NSWorkspace.shared.recycle(urls)
-            await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+            if !dropDeletedFilesFromReport(system: system, urls: urls) {
+                await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+            }
             logSuccess("Moved \(trashedURLs.count) file(s) to the Trash.")
             postFixResultPopup(action: "Move to Trash", succeeded: trashedURLs.count, failed: 0)
         } catch {
@@ -3720,7 +3779,10 @@ final class LibraryViewModel {
             }
             return (succeeded, failed, failureLines)
         }.value
-        await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        let deletedURLs = urls.filter { !FileManager.default.fileExists(atPath: $0.path) }
+        if failed > 0 || !dropDeletedFilesFromReport(system: system, urls: deletedURLs) {
+            await scan(system: system, folders: scopeFolders.isEmpty ? nil : scopeFolders)
+        }
         for line in failureLines { logWarning(line) }
         if failed > 0 {
             logWarning("Permanently deleted \(succeeded) file(s); \(failed) failed (see the lines just above for which).")
@@ -3777,15 +3839,30 @@ final class LibraryViewModel {
             var succeeded = 0
             var failed = 0
             var failureLines: [String] = []
+            var claimedNames = Set<String>()
             for url in urls {
                 let target = destination.appendingPathComponent(url.lastPathComponent)
+                var displaced: URL?
                 do {
-                    if replacingFilenames.contains(url.lastPathComponent) {
-                        try? FileManager.default.removeItem(at: target)
+                    // Never delete the file being copied/moved: the destination may be the source's own folder,
+                    // or two selected files may share a name (the second would delete the first).
+                    if target.standardizedFileURL.path == url.standardizedFileURL.path {
+                        throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey: "Source and destination are the same file."])
+                    }
+                    if replacingFilenames.contains(url.lastPathComponent), FileManager.default.fileExists(atPath: target.path) {
+                        if !claimedNames.insert(url.lastPathComponent).inserted {
+                            throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey: "Another selected file has the same name; not replaced."])
+                        }
+                        // Set the old file aside and only drop it once the new one is in place.
+                        let aside = destination.appendingPathComponent(".romforge-replaced-\(UUID().uuidString)")
+                        try FileManager.default.moveItem(at: target, to: aside)
+                        displaced = aside
                     }
                     try RebuildExecutor.execute([.copy(from: url, to: target)])
+                    if let displaced { try? FileManager.default.removeItem(at: displaced) }
                     succeeded += 1
                 } catch {
+                    if let displaced, !FileManager.default.fileExists(atPath: target.path) { try? FileManager.default.moveItem(at: displaced, to: target) }
                     failed += 1
                     failureLines.append("\(url.lastPathComponent): \(error.localizedDescription)")
                 }
@@ -3822,15 +3899,30 @@ final class LibraryViewModel {
             var succeeded = 0
             var failed = 0
             var failureLines: [String] = []
+            var claimedNames = Set<String>()
             for url in urls {
                 let target = destination.appendingPathComponent(url.lastPathComponent)
+                var displaced: URL?
                 do {
-                    if replacingFilenames.contains(url.lastPathComponent) {
-                        try? FileManager.default.removeItem(at: target)
+                    // Never delete the file being copied/moved: the destination may be the source's own folder,
+                    // or two selected files may share a name (the second would delete the first).
+                    if target.standardizedFileURL.path == url.standardizedFileURL.path {
+                        throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey: "Source and destination are the same file."])
+                    }
+                    if replacingFilenames.contains(url.lastPathComponent), FileManager.default.fileExists(atPath: target.path) {
+                        if !claimedNames.insert(url.lastPathComponent).inserted {
+                            throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey: "Another selected file has the same name; not replaced."])
+                        }
+                        // Set the old file aside and only drop it once the new one is in place.
+                        let aside = destination.appendingPathComponent(".romforge-replaced-\(UUID().uuidString)")
+                        try FileManager.default.moveItem(at: target, to: aside)
+                        displaced = aside
                     }
                     try RebuildExecutor.execute([.move(from: url, to: target)])
+                    if let displaced { try? FileManager.default.removeItem(at: displaced) }
                     succeeded += 1
                 } catch {
+                    if let displaced, !FileManager.default.fileExists(atPath: target.path) { try? FileManager.default.moveItem(at: displaced, to: target) }
                     failed += 1
                     failureLines.append("\(url.lastPathComponent): \(error.localizedDescription)")
                 }
@@ -5173,7 +5265,7 @@ final class LibraryViewModel {
     private nonisolated static func romFolders(containing urls: [URL], in system: RomSystem) -> [URL] {
         var result: [URL] = []
         for url in urls {
-            guard let folder = system.romFolderURLs.first(where: { url.path.hasPrefix($0.path) }), !result.contains(folder) else { continue }
+            guard let folder = system.romFolderURLs.first(where: { url.path == $0.path || url.path.hasPrefix($0.path + "/") }), !result.contains(folder) else { continue }
             result.append(folder)
         }
         return result
@@ -5341,22 +5433,21 @@ extension LibraryViewModel {
             guard NintendoCTRHeader.isCartridgeDump(URL(fileURLWithPath: name)), seen.insert(key).inserted else { continue }
             candidates.append((key, url, entry.actualEntryName, entry.actualSize ?? 0))
         }
-        let toRead = candidates.filter { candidate in
-            guard let cached = existing[candidate.key] else { return true }
-            let modified = (try? FileManager.default.attributesOfItem(atPath: candidate.url.path)[.modificationDate] as? Date)?.timeIntervalSince1970
-            return cached.size != candidate.size || cached.modified != modified
-        }
-        guard !toRead.isEmpty else { return }
+        guard !candidates.isEmpty else { return }
+        // The mtime check stats every file, so it runs off the main actor (a NAS made it freeze the UI).
+        let toCheck = candidates
         let results: [String: CTREncryptionCacheEntry] = await Task.detached(priority: .utility) {
             var results: [String: CTREncryptionCacheEntry] = [:]
-            for candidate in toRead {
+            for candidate in toCheck {
                 if Task.isCancelled { break }
-                let modified = ((try? FileManager.default.attributesOfItem(atPath: candidate.url.path)[.modificationDate]) as? Date)?.timeIntervalSince1970 ?? 0
+                let modified = ((try? FileManager.default.attributesOfItem(atPath: candidate.url.path)[.modificationDate]) as? Date)?.timeIntervalSince1970
+                if let cached = existing[candidate.key], cached.size == candidate.size, cached.modified == modified { continue }
                 guard let header = NintendoCTRHeader.read(url: candidate.url, entryName: candidate.entryName) else { continue }
-                results[candidate.key] = CTREncryptionCacheEntry(size: candidate.size, modified: modified, state: header.state)
+                results[candidate.key] = CTREncryptionCacheEntry(size: candidate.size, modified: modified ?? 0, state: header.state)
             }
             return results
         }.value
+        guard !results.isEmpty else { return }
         var merged = existing
         merged.merge(results) { _, new in new }
         ctrEncryptionCache[system.id] = merged

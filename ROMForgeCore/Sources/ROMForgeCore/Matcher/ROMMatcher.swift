@@ -73,9 +73,14 @@ public enum ROMMatcher {
     /// further down and never touches it, so the default (`false`, every
     /// existing scan — MAME and console alike) is provably byte-for-byte
     /// unchanged.
+    /// `nameOnlyRequireSize` — only read together with `nameOnlyMatching`:
+    /// the right-named file must also have the size the DAT declares (a
+    /// leading copier header of 16 or 512 bytes is tolerated), otherwise it
+    /// is reported "Bad" (`.hashMismatch`). Needs no file read — catches
+    /// truncated or half-downloaded images without hashing anything.
     public static func match(
         dat: DATFile, hashedFiles: [HashedFile], onProgress: (@Sendable (Int, Int) -> Void)? = nil, cancellationFlag: CancellationFlag? = nil,
-        recentlyScannedPaths: [URL] = [], nameOnlyMatching: Bool = false, nameSimilarityThreshold: Double? = nil
+        recentlyScannedPaths: [URL] = [], nameOnlyMatching: Bool = false, nameOnlyRequireSize: Bool = false, nameSimilarityThreshold: Double? = nil
     ) throws -> MatchReport {
         try Task.checkCancellation()
         let recentlyScannedPrefixes = recentlyScannedPaths.map(\.path)
@@ -343,7 +348,12 @@ public enum ROMMatcher {
                 // total no-op (`nameOnlyMatching` defaults to `false`) for
                 // every scan that doesn't explicitly opt in.
                 if nameOnlyMatching {
-                    if let nameMatchIndex = candidate.nameMatchIndex, !consumed[nameMatchIndex] {
+                    if nameOnlyRequireSize, let nameMatchIndex = candidate.nameMatchIndex, !consumed[nameMatchIndex],
+                       rom.size > 0, Self.isSizeComparable(hashedFiles[nameMatchIndex].file), ![0, 16, 64, 128, 512].contains(hashedFiles[nameMatchIndex].file.size - rom.size) {
+                        // Right name, wrong size: a truncated/partial or different file.
+                        resolvedStatuses[index] = .hashMismatch(hashedFiles[nameMatchIndex])
+                        reportedAsHashMismatch.insert(nameMatchIndex)
+                    } else if let nameMatchIndex = candidate.nameMatchIndex, !consumed[nameMatchIndex] {
                         consumed[nameMatchIndex] = true
                         let hashedFile = hashedFiles[nameMatchIndex]
                         // Same bookkeeping as the hash-verified branch below
@@ -680,7 +690,8 @@ public enum ROMMatcher {
         var duplicateAmongSurplusIndices = Set<Int>()
         for index in unclaimedForSurplus {
             let file = hashedFiles[index]
-            let keys = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }
+            // Placeholder CRCs (hash skipped / corrupt archive) are not content: never a duplicate key.
+            let keys = [file.hash.crc32, file.hash.md5, file.hash.sha1].compactMap { $0 }.filter { $0 != CollectionHasher.skippedMarker && $0 != CollectionHasher.corruptMarker }
             guard !keys.isEmpty else { continue }
             if let firstIndex = keys.compactMap({ firstUnclaimedIndexByHash[$0] }).first, hashedFiles[firstIndex].file.url != file.file.url {
                 duplicateAmongSurplusIndices.insert(index)
@@ -988,6 +999,18 @@ public enum ROMMatcher {
     /// hundred bytes off from the right one).
     private static let similarNameSuggestionSizeTolerance: Int64 = 512
 
+    /// Disc-image containers that store a game compressed or sparsely, so their
+    /// size can never equal the full-disc size a Redump DAT declares (a `.wbfs`
+    /// of a 4.7 GB Wii disc is a different size by design). Size comparisons
+    /// against the DAT are meaningless for these and are skipped.
+    static let sizeIncomparableExtensions: Set<String> = ["wbfs", "rvz", "wia", "ciso", "gcz", "nkit", "nfs", "cso", "zso", "nsz", "xcz"]
+
+    private static func isSizeComparable(_ file: ScannedFile) -> Bool {
+        // "Game.nkit.iso" / "Game.nkit.gcz" carry the container marker before the last extension.
+        let parts = file.name.lowercased().split(separator: ".").dropFirst().map(String.init)
+        return !parts.contains { sizeIncomparableExtensions.contains($0) }
+    }
+
     /// A trimmed 3DS dump hashes differently from the DAT's full-size image, so
     /// it can never match by content; its header's product code still names the
     /// game exactly. Suggests the DAT game carrying that serial, narrowed by the
@@ -1070,6 +1093,7 @@ public enum ROMMatcher {
             // the same title (e.g. a 32 MB retail vs a 64 MB debug ROM), which
             // would hide a perfectly good size-compatible match.
             let sizeCompatibleNames = candidateNames.filter { name in
+                guard isSizeComparable(file) else { return true }
                 guard let candidateSize = candidateSizesByName[name.lowercased()] else { return true }
                 return abs(candidateSize - file.size) <= similarNameSuggestionSizeTolerance
             }
@@ -1094,7 +1118,7 @@ public enum ROMMatcher {
             // header's worth of slack) rejects a wrong-game guess
             // regardless of how textually close its name happened to be —
             // independent of, and in addition to, the confidence threshold.
-            if let candidateSize = candidateSizesByName[suggestion.suggestedName.lowercased()],
+            if isSizeComparable(file), let candidateSize = candidateSizesByName[suggestion.suggestedName.lowercased()],
                abs(candidateSize - file.size) > similarNameSuggestionSizeTolerance {
                 continue
             }
@@ -1571,6 +1595,7 @@ public enum ROMMatcher {
         // closest available signal.
         if let game = romsByName[file.file.name.lowercased()] {
             let confirmedRedundant = claimedArchiveURLsByGame[game.name.lowercased()]?.isEmpty == false
+                && Self.sizeMatchesDeclaredRom(file.file, game: game)
             return (game, confirmedRedundant)
         }
         // jensyleo's own report (2026-09-30): a SECOND, physically
@@ -1600,9 +1625,21 @@ public enum ROMMatcher {
            // junk in the real copy, not a duplicate of it.
            claimedArchiveURLsByGame[game.name.lowercased()]?.contains(file.file.url) != true {
             let confirmedRedundant = claimedArchiveURLsByGame[game.name.lowercased()]?.isEmpty == false
+                && Self.sizeMatchesDeclaredRom(file.file, game: game)
             return (game, confirmedRedundant)
         }
         return nil
+    }
+
+    /// Name-only redundancy is only "confirmed" when the file's size equals a
+    /// size the DAT declares for that game (±copier header). A different file
+    /// that merely shares the name (a hack, a translation) must never be
+    /// deletable as a spare copy. Size-incomparable containers never qualify.
+    private static func sizeMatchesDeclaredRom(_ file: ScannedFile, game: DATGame) -> Bool {
+        guard isSizeComparable(file) else { return false }
+        return game.roms.contains { rom in
+            rom.size > 0 && [0, 16, 64, 128, 512].contains(file.size - rom.size)
+        }
     }
 
     /// Deduplicated AND sorted ascending — the sort is what makes "the first

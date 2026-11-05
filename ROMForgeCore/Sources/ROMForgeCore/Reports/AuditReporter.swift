@@ -270,9 +270,16 @@ public enum AuditReporter {
     /// from "two files inside the same one." A single-folder system (the
     /// common case) short-circuits inside `DuplicateSetDetector.detect`
     /// itself and returns `report` unchanged.
-    public static func addingDuplicateSets(to report: AuditReport, rootFolders: [URL], recentlyScannedPaths: [URL] = []) throws -> AuditReport {
+    public static func addingDuplicateSets(to report: AuditReport, rootFolders: [URL], recentlyScannedPaths: [URL] = [], includeSameSystemCopies: Bool = false) throws -> AuditReport {
         try Task.checkCancellation()
-        let duplicateEntries = DuplicateSetDetector.detect(in: report, rootFolders: rootFolders, recentlyScannedPaths: recentlyScannedPaths)
+        var duplicateEntries = DuplicateSetDetector.detect(in: report, rootFolders: rootFolders, recentlyScannedPaths: recentlyScannedPaths)
+        if includeSameSystemCopies {
+            let withCrossFolder = duplicateEntries.isEmpty ? report : AuditReport(
+                entries: report.entries + duplicateEntries, correct: report.correct, incorrect: report.incorrect, badDump: report.badDump,
+                missing: report.missing, surplus: report.surplus, unverifiable: report.unverifiable, duplicateSets: report.duplicateSets
+            )
+            duplicateEntries += DuplicateSetDetector.detectSameSystemCopies(in: withCrossFolder)
+        }
         guard !duplicateEntries.isEmpty else { return report }
         return AuditReport(
             entries: report.entries + duplicateEntries, correct: report.correct, incorrect: report.incorrect, badDump: report.badDump,

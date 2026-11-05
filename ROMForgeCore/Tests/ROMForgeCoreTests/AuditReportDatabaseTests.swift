@@ -341,6 +341,25 @@ struct AuditReportDatabaseTests {
         #expect(reloadedRom.isDisk == false)
     }
 
+    @Test("re-saving a report keeps a duplicateSet row and several surplus entries of one container as separate rows")
+    func resaveKeepsCollidingKeysSeparate() throws {
+        let db = try AuditReportDatabase(path: tempDBPath())
+        let zip = URL(fileURLWithPath: "/roms/bundle.zip")
+        let primary = AuditEntry(status: .correct, game: "G", name: "g.3ds", path: URL(fileURLWithPath: "/roms/g.3ds"))
+        let copy = AuditEntry(status: .duplicateSet, game: "G", duplicateSetPrimaryPath: primary.path, name: "g.3ds", path: URL(fileURLWithPath: "/roms/g.zip"))
+        let junkA = AuditEntry(status: .unknownFile, game: nil, name: "a.txt", actualEntryName: "a.txt", path: zip)
+        let junkB = AuditEntry(status: .unknownFile, game: nil, name: "b.txt", actualEntryName: "b.txt", path: zip)
+        let report = AuditReport(entries: [primary, copy, junkA, junkB], correct: 1, incorrect: 0, missing: 0, surplus: 2, duplicateSets: 1)
+
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        try db.saveReport(report, systemID: "sys-1", datName: "v1", datVersion: "1.0", scannedAt: Date())
+        let loaded = try #require(try db.loadReport(systemID: "sys-1"))
+
+        #expect(loaded.entries.count == 4)
+        #expect(loaded.surplus == 2)
+        #expect(loaded.duplicateSets == 1)
+    }
+
     /// Regression test for the exact same class of bug as `isDisk` above,
     /// one schema version later (v5, 2026-08-04):
     /// `foundElsewhereArchiveName` wasn't persisted either. That field is

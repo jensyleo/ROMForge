@@ -94,7 +94,7 @@ public enum CollectionHasher {
             let skipped = looseFiles.filter(skipHashing)
             if !skipped.isEmpty {
                 looseFiles = looseFiles.filter { !skipHashing($0) }
-                unhashedFiles = skipped.map { HashedFile(file: $0, hash: FileHash(crc32: "skipped", md5: nil, sha1: nil)) }
+                unhashedFiles = skipped.map { HashedFile(file: $0, hash: FileHash(crc32: skippedMarker, md5: nil, sha1: nil)) }
             }
         }
 
@@ -189,7 +189,7 @@ public enum CollectionHasher {
             onArchiveListed?(archivesRead, totalArchives)
             for entry in entries {
                 sevenZipEntryCount += 1
-                let entryFile = ScannedFile(url: sevenZipFile.url, name: entry.name, size: entry.size, modificationDate: sevenZipFile.modificationDate)
+                let entryFile = ScannedFile(url: sevenZipFile.url, name: entry.name, size: entry.size, modificationDate: sevenZipFile.modificationDate, entryPath: entry.entryPath)
                 if let cached = cache.lookup(for: entryFile, algorithms: algorithms) {
                     hashedFiles.append(cached)
                     continue
@@ -246,6 +246,8 @@ public enum CollectionHasher {
     /// already are in `FileHasher`.
     /// Placeholder CRC for an archive that could not be read; it can never match a DAT.
     public static let corruptMarker = "corrupt"
+    /// Placeholder CRC of a file deliberately never read (see `skipHashing`) — not a real checksum.
+    public static let skippedMarker = "skipped"
 
     /// The archive itself, reported as one unreadable file named like the zip.
     private static func corruptPlaceholder(for archive: ScannedFile) -> HashedFile {
@@ -319,11 +321,24 @@ public enum CollectionHasher {
     /// (`SevenZipArchiveHasher.hash` always computes every checksum and
     /// never attempts a header-stripped match) — a real, documented gap,
     /// not an oversight, left for a future pass.
+    /// One unreadable or oversized 7z entry must not abort the whole scan (zip entries already
+    /// degrade to the corrupt placeholder the same way); only cancellation propagates.
+    private static func hashSevenZipItem(_ item: PendingSevenZipEntry, algorithms: HashAlgorithms) throws -> FileHash {
+        do {
+            return try SevenZipArchiveHasher.hash(item.archivedFile, algorithms: algorithms)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            return FileHash(crc32: corruptMarker, md5: nil, sha1: nil)
+        }
+    }
+
     private static func hashPendingSevenZip(_ pending: [PendingSevenZipEntry], algorithms: HashAlgorithms, progress: ScanProgressCounter?) async throws -> [HashedFile] {
         guard pending.count > 1 else {
             return try pending.map { item in
                 try Task.checkCancellation()
-                let hash = try SevenZipArchiveHasher.hash(item.archivedFile, algorithms: algorithms)
+                let hash = try hashSevenZipItem(item, algorithms: algorithms)
                 progress?.increment()
                 return HashedFile(file: item.entryFile, hash: hash, headerStripped: nil)
             }
@@ -339,7 +354,7 @@ public enum CollectionHasher {
                     hashed.reserveCapacity(chunk.count)
                     for item in chunk {
                         try Task.checkCancellation()
-                        let hash = try SevenZipArchiveHasher.hash(item.archivedFile, algorithms: algorithms)
+                        let hash = try hashSevenZipItem(item, algorithms: algorithms)
                         hashed.append(HashedFile(file: item.entryFile, hash: hash, headerStripped: nil))
                         progress?.increment()
                     }
