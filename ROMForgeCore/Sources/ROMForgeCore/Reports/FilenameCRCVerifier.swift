@@ -20,6 +20,7 @@ public enum FilenameCRCVerifier {
         var changed = false
         let mappedEntries: [AuditEntry] = report.entries.map { entry in
             guard let path = entry.path, let actualCRC = entry.actualCRC,
+                  actualCRC != CollectionHasher.skippedMarker, actualCRC != CollectionHasher.corruptMarker,
                   let embedded = FilenameEmbeddedCRC.embeddedCRC32(inFileName: path.lastPathComponent),
                   embedded != actualCRC.lowercased() else { return entry }
             changed = true

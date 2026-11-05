@@ -231,7 +231,7 @@ public enum RebuildPlanner {
                 guard isLooseFile(hashedFile.file) else { continue }
                 let destination = hashedFile.file.url
                     .deletingLastPathComponent()
-                    .appendingPathComponent(mismatchFixName(declaredName: romMatch.rom.name, policy: filesCasePolicy))
+                    .appendingPathComponent(mismatchFixName(declaredName: destinationName(declared: romMatch.rom.name, currentURL: hashedFile.file.url), policy: filesCasePolicy))
                 // A pure case-change (e.g. "AWBIOS.zip" → "awbios.zip") is
                 // never a real collision with itself — only a DIFFERENT
                 // occupied key blocks the rename.
@@ -556,8 +556,18 @@ public enum RebuildPlanner {
     /// file to it would mislabel the byte order.
     private static func keepingN64ByteOrderExtension(declared: String, current: String) -> String {
         let currentExtension = (current as NSString).pathExtension.lowercased()
-        guard (declared as NSString).pathExtension.lowercased() == "z64", currentExtension == "n64" || currentExtension == "v64" else { return declared }
+        let declaredExtension = (declared as NSString).pathExtension.lowercased()
+        // Compressed/container disc formats (.wbfs, .rvz, .ciso…) are never the
+        // DAT's raw `.iso`: renaming one to it would mislabel the real format.
+        let keepsRealFormat = ROMMatcher.sizeIncomparableExtensions.contains(currentExtension)
+            || (declaredExtension == "z64" && (currentExtension == "n64" || currentExtension == "v64"))
+        guard keepsRealFormat, declaredExtension != currentExtension else { return declared }
         return (declared as NSString).deletingPathExtension + "." + currentExtension
+    }
+
+    /// Same rule for a loose file renamed to the DAT's rom name.
+    private static func destinationName(declared: String, currentURL: URL) -> String {
+        keepingN64ByteOrderExtension(declared: declared, current: currentURL.lastPathComponent)
     }
 
     public static func planRenameRomsInArchive(matchReport: MatchReport, romsCasePolicy: FileCasePolicy = .datafileCase) -> [RebuildOperation] {
@@ -781,6 +791,9 @@ public enum RebuildPlanner {
         let kept = archivesKeptBecauseRemovalWouldEmptyThem(matchReport: matchReport)
         return matchReport.surplusFiles
             .filter { $0.requiredByGameDescription == nil && !$0.matchesNodumpRomName }
+            // A file with a similar-name suggestion is a probable misnamed dump of a known game
+            // (offered "Rename to…"), never useless.
+            .filter { $0.similarNameSuggestion == nil }
             // A corrupt archive may still be recoverable: it is reported, never deleted automatically.
             .filter { $0.file.hash.crc32 != CollectionHasher.corruptMarker }
             // Never delete a front-end's own files (gamelist.xml, images,
@@ -1376,12 +1389,17 @@ public enum RebuildPlanner {
                     ))
                 } else if isLooseFile(badFile.file) {
                     let destination = badFile.file.url
-                    operations.append(.delete(destination))
+                    // Set the bad file aside, bring the donor in, and only then
+                    // delete the set-aside copy: if the copy fails the original
+                    // is still on disk under the `.romforge-replaced` name.
+                    let aside = destination.appendingPathExtension("romforge-replaced")
+                    operations.append(.rename(from: destination, to: aside))
                     if isZipEntry(donor.file) {
                         operations.append(.extractZipEntry(archive: donor.file.url, entryName: donor.file.name, to: destination))
                     } else {
                         operations.append(.copy(from: donor.file.url, to: destination))
                     }
+                    operations.append(.delete(aside))
                 }
             }
         }
@@ -2134,6 +2152,10 @@ public enum ForeignProgramFiles {
         "gamelist.xml", "gamelist.xml.old", "gamelist.xml.bak", "_info.txt", "metadata.txt",
         "systeminfo.txt", "es_systems.cfg", "es_settings.cfg",
     ]
+    private static let protectedExtensions: Set<String> = [
+        "srm", "sav", "sa1", "eep", "fla", "mcr", "mc", "m3u", "sbi", "cfg", "cht", "ips", "ups", "bps", "ppf",
+        "png", "jpg", "jpeg", "wbfs", "rvz", "wia", "ciso", "gcz", "nkit", "nfs",
+    ]
     private static let folderNames: Set<String> = [
         "images", "videos", "manuals", "media", "downloaded_images", "downloaded_videos",
         "downloaded_media", "screenshots", "marquees", "covers", "boxart", "snaps",
@@ -2150,6 +2172,9 @@ public enum ForeignProgramFiles {
         if AuditReporter.msu1CompanionExtensions.contains(ext) { return true }
         if ["sfc", "smc", "swc", "fig"].contains(ext),
            FileManager.default.fileExists(atPath: url.deletingPathExtension().appendingPathExtension("msu").path) { return true }
+        // Emulator saves, playlists, patches and artwork living beside ROMs, and compressed disc
+        // containers that merely differ from a DAT's full-image hash, are never junk.
+        if protectedExtensions.contains(ext) || ext.hasPrefix("state") { return true }
         let parent = url.deletingLastPathComponent()
         if folderNames.contains(parent.lastPathComponent.lowercased()) { return true }
         return folderNames.contains(parent.deletingLastPathComponent().lastPathComponent.lowercased())

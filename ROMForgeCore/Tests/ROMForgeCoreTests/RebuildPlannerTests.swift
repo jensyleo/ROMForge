@@ -17,6 +17,19 @@ struct RebuildPlannerTests {
         )
     }
 
+    @Test("a misnamed .wbfs is renamed to the DAT name but keeps its real .wbfs extension")
+    func renameKeepsRealContainerExtension() {
+        let folder = URL(fileURLWithPath: "/roms")
+        let rom = DATRom(name: "Expected Game.iso", size: 5, crc: nil, md5: nil, sha1: nil)
+        let game = DATGame(name: "Expected Game", description: "Game", cloneOf: nil, romOf: nil, roms: [rom])
+        let report = MatchReport(
+            games: [GameMatchResult(game: game, matches: [RomMatch(rom: rom, status: .misnamed(hashedFile(name: "Wrong.wbfs", in: folder)))])],
+            surplusFiles: []
+        )
+        let plan = RebuildPlanner.planRepair(matchReport: report)
+        #expect(plan == [.rename(from: folder.appendingPathComponent("Wrong.wbfs"), to: folder.appendingPathComponent("Expected Game.wbfs"))])
+    }
+
     @Test("plans a rename for misnamed roms only, in the same folder")
     func plansRenameForMisnamedOnly() {
         let folder = URL(fileURLWithPath: "/roms")

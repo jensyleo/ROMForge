@@ -1164,6 +1164,23 @@ struct ROMMatcherTests {
         #expect(result.matches[0].status == .correct(wrongContent))
     }
 
+    @Test("nameOnlyMatching + nameOnlyRequireSize: right name with the wrong size is Bad, right name with the right size stays Correct")
+    func nameOnlyRequireSizeFlagsWrongSize() throws {
+        let game = DATGame(
+            name: "console_game", description: "Console Game", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "rom.bin", size: 999, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        let truncated = zipEntryHashedFile(archiveName: "console_game", entryName: "rom.bin", size: 500, crc: "00000000", sha1: "0000000000000000000000000000000000000a")
+        let intact = zipEntryHashedFile(archiveName: "console_game", entryName: "rom.bin", size: 999, crc: "00000000", sha1: "0000000000000000000000000000000000000a")
+
+        let bad = try ROMMatcher.match(dat: dat, hashedFiles: [truncated], nameOnlyMatching: true, nameOnlyRequireSize: true)
+        let good = try ROMMatcher.match(dat: dat, hashedFiles: [intact], nameOnlyMatching: true, nameOnlyRequireSize: true)
+
+        #expect(bad.games.first { $0.game.name == "console_game" }!.matches[0].status == .hashMismatch(truncated))
+        #expect(good.games.first { $0.game.name == "console_game" }!.matches[0].status == .correct(intact))
+    }
+
     @Test("nameOnlyMatching: no file at all in the expected slot is still Missing, not silently Correct")
     func nameOnlyMatchingStillReportsMissingWhenNothingIsThere() throws {
         let game = DATGame(
@@ -1196,11 +1213,11 @@ struct ROMMatcherTests {
         )
         let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
         let primaryCopy = HashedFile(
-            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/NO_INTRO/console_game.zip"), name: "rom.bin", size: 1),
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/NO_INTRO/console_game.zip"), name: "rom.bin", size: 999),
             hash: FileHash(crc32: "00000000", md5: "00000000000000000000000000000000", sha1: "0000000000000000000000000000000000000a")
         )
         let duplicateCopy = HashedFile(
-            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/SELECTED/console_game.zip"), name: "rom.bin", size: 1),
+            file: ScannedFile(url: URL(fileURLWithPath: "/tmp/SELECTED/console_game.zip"), name: "rom.bin", size: 999),
             hash: FileHash(crc32: "00000000", md5: "00000000000000000000000000000000", sha1: "0000000000000000000000000000000000000a")
         )
 
@@ -1223,6 +1240,23 @@ struct ROMMatcherTests {
         // is the field the UI branches on for that exact wording — see its
         // own doc comment on `SurplusFile`).
         #expect(report.surplusFiles.first?.requiredByGameOwnerSatisfiedElsewhere == true)
+    }
+
+    @Test("nameOnlyMatching: a same-named duplicate with a DIFFERENT size is never confirmed redundant (a hack sharing the ROM name must not be deletable)")
+    func nameOnlyDuplicateWithDifferentSizeIsNotConfirmedRedundant() throws {
+        let game = DATGame(
+            name: "console_game", description: "Console Game", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "rom.bin", size: 999, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        func copy(_ folder: String, size: Int64) -> HashedFile {
+            HashedFile(
+                file: ScannedFile(url: URL(fileURLWithPath: "/tmp/\(folder)/console_game.zip"), name: "rom.bin", size: size),
+                hash: FileHash(crc32: "00000000", md5: "00000000000000000000000000000000", sha1: "0000000000000000000000000000000000000a")
+            )
+        }
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [copy("A", size: 999), copy("B", size: 4242)], nameOnlyMatching: true)
+        #expect(report.surplusFiles.first?.requiredByGameConfirmedRedundant != true)
     }
 
     @Test("nameOnlyMatching defaults to false — every existing, hash-verified scan (this whole suite) is provably unaffected by its mere existence as a parameter")
@@ -1311,6 +1345,20 @@ struct ROMMatcherTests {
         let report = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameSimilarityThreshold: 0.50)
 
         #expect(report.surplusFiles.first?.similarNameSuggestion == nil)
+    }
+
+    @Test("a compressed disc container (.wbfs) still gets a rename suggestion although its size can never equal the DAT's full-disc size")
+    func nameSimilaritySkipsSizeCheckForCompressedDiscContainers() throws {
+        let game = DATGame(
+            name: "Wii Sports + Wii Sports Resort (USA) (En,Fr,Es)", description: "Wii Sports + Wii Sports Resort (USA) (En,Fr,Es)", cloneOf: nil, romOf: nil,
+            roms: [DATRom(name: "Wii Sports + Wii Sports Resort (USA) (En,Fr,Es).iso", size: 4_699_979_776, crc: "deadbeef", md5: nil, sha1: nil)]
+        )
+        let dat = DATFile(header: DATHeader(name: "Test", description: "Test", version: "1", author: "ROMForge"), games: [game])
+        let file = hashedFile(name: "Wii Sports + Wii Sports Resorts.wbfs", size: 1_753_219_072, crc: "00000000", sha1: "0000000000000000000000000000000000000a")
+
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [file], nameOnlyMatching: true, nameSimilarityThreshold: 0.50)
+
+        #expect(report.surplusFiles.first?.similarNameSuggestion?.suggestedName == "Wii Sports + Wii Sports Resort (USA) (En,Fr,Es)")
     }
 
     @Test("a similarNameSuggestion is never surfaced for an archive whose own name is ALREADY exactly a real DAT game name — real bug found live (2026-09-30) against a genuine NES collection: \"Bump 'n' Jump (USA).zip\" (already correctly named, but a bad/different dump inside) got a self-match \"Possible match: Bump 'n' Jump (USA) (100%)\" suggestion — Fix correctly reported \"Nothing to fix\" (there's no rename to make), but the Info column kept advertising a match as if something were actionable")

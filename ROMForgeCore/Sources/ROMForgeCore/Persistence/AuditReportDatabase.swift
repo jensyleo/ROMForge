@@ -325,10 +325,14 @@ public final class AuditReportDatabase {
     /// genuinely found on disk (see `SurplusFile`'s own doc comment), so
     /// path is always present there.
     private static func entryIdentityKey(_ entry: AuditEntry) -> String {
+        // A `.duplicateSet` row copies its primary's game and name, so it needs its own
+        // path in the key — otherwise the two collapse into one row on the next save.
         if let game = entry.game {
+            if entry.status == .duplicateSet { return "d\u{0}\(game)\u{0}\(entry.name)\u{0}\(entry.path?.path ?? "")" }
             return "g\u{0}\(game)\u{0}\(entry.name)"
         }
-        return "p\u{0}\(entry.path?.path ?? entry.name)"
+        // Several surplus entries can live inside ONE container, which they all share as `path`.
+        return "p\u{0}\(entry.path?.path ?? entry.name)\u{0}\(entry.actualEntryName ?? entry.name)"
     }
 
     /// Writes `entries` for `systemID` as only the additions, removals and
@@ -490,10 +494,9 @@ public final class AuditReportDatabase {
             case .incorrect: incorrect += 1
             case .badDump: badDump += 1
             case .missing: missing += 1
-            case .surplus: surplus += 1
+            case .surplus, .surplusInArchive, .unknownFile: surplus += 1
             case .unverifiable: unverifiable += 1
             case .duplicateSet: duplicateSets += 1
-            case .surplusInArchive, .unknownFile: break
             }
         }
         return AuditReport(
@@ -813,6 +816,21 @@ public final class AuditReportDatabase {
         defer { sqlite3_close(db) }
         try Self.bindAndExec(db, "DELETE FROM audit_entries WHERE system_id = ?;", [.text(systemID)])
         try Self.bindAndExec(db, "DELETE FROM scans WHERE system_id = ?;", [.text(systemID)])
+    }
+
+    /// Deletes the rows for exactly these file paths — used when a file is removed from
+    /// disk and its row should just disappear, with no rescan.
+    @discardableResult
+    public func removeEntries(systemID: String, exactPaths: [String]) throws -> Int {
+        guard !exactPaths.isEmpty else { return 0 }
+        let db = try Self.open(path)
+        defer { sqlite3_close(db) }
+        var removed = 0
+        for exactPath in exactPaths {
+            try Self.bindAndExec(db, "DELETE FROM audit_entries WHERE system_id = ? AND path = ?;", [.text(systemID), .text(exactPath)])
+            removed += Int(sqlite3_changes(db))
+        }
+        return removed
     }
 
     /// Deletes only the rows whose `path` falls under `pathPrefix`, for one

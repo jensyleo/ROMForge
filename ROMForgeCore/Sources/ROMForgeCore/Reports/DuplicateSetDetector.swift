@@ -103,4 +103,48 @@ public enum DuplicateSetDetector {
         }
         return duplicates
     }
+
+    /// Console-style systems only (a game is one image, never a split set):
+    /// a second physical copy of an already-claimed game — a `.zip` next to
+    /// the same game's loose `.3ds`/`.iso`, a `.7z` beside a `.nds` — that
+    /// `ROMMatcher` leaves over as a "Not needed here (required by X)"
+    /// surplus row (`.incorrect`, no `game`), invisible from the game's own
+    /// view. Emits one `.duplicateSet` row per such copy, carrying the game
+    /// and its own path/extension, pointing at the copy that was claimed.
+    /// Never used for MAME-style systems: a game there legitimately spans
+    /// its own archive plus its parent's, so a "leftover" rom is not a copy.
+    public static func detectSameSystemCopies(in report: AuditReport) -> [AuditEntry] {
+        var primaryByGame: [String: AuditEntry] = [:]
+        var alreadyListedPaths = Set<String>()
+        for entry in report.entries {
+            if entry.status == .duplicateSet, let path = entry.path?.path { alreadyListedPaths.insert(path) }
+            guard !entry.isDisk, let game = entry.game, entry.path != nil else { continue }
+            switch entry.status {
+            case .correct, .incorrect, .badDump: break
+            default: continue
+            }
+            let key = game.lowercased()
+            if primaryByGame[key] == nil || (primaryByGame[key]?.status != .correct && entry.status == .correct) {
+                primaryByGame[key] = entry
+            }
+        }
+        var copies: [AuditEntry] = []
+        for entry in report.entries {
+            guard entry.status == .incorrect, entry.game == nil, !entry.isDisk,
+                  let owner = entry.requiredByGameMachineName, let path = entry.path,
+                  let primary = primaryByGame[owner.lowercased()], let primaryPath = primary.path,
+                  primaryPath != path, !alreadyListedPaths.contains(path.path) else { continue }
+            alreadyListedPaths.insert(path.path)
+            copies.append(
+                AuditEntry(
+                    status: .duplicateSet, game: primary.game, gameDescription: primary.gameDescription,
+                    cloneOf: primary.cloneOf, isBios: primary.isBios,
+                    duplicateSetPrimaryPath: primaryPath,
+                    name: entry.name, actualEntryName: entry.actualEntryName, path: path,
+                    actualSize: entry.actualSize, actualCRC: entry.actualCRC, actualMD5: entry.actualMD5, actualSHA1: entry.actualSHA1
+                )
+            )
+        }
+        return copies
+    }
 }

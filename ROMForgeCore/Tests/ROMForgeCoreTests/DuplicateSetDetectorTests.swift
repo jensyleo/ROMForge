@@ -208,4 +208,36 @@ struct DuplicateSetDetectorTests {
         #expect(duplicate.duplicateSetPrimaryPath == URL(fileURLWithPath: "/roms/folderB/sf2.zip"))
         #expect(duplicate.path == URL(fileURLWithPath: "/roms/folderA/sf2.zip"))
     }
+
+    @Test("a second copy of a console game (.zip next to its .3ds) becomes a visible duplicate row under that game")
+    func flagsSameFolderCopyOfConsoleGame() throws {
+        let claimed = AuditEntry(status: .correct, game: "Star Fox 64 3D", gameDescription: "Star Fox 64 3D", name: "Star Fox 64 3D.3ds", path: URL(fileURLWithPath: "/roms/Star Fox 64 3D.3ds"))
+        let leftover = AuditEntry(
+            status: .incorrect, game: nil, requiredByGameDescription: "Star Fox 64 3D", requiredByGameMachineName: "Star Fox 64 3D",
+            name: "Star Fox 64 3D.3ds", actualEntryName: "Star Fox 64 3D.3ds", path: URL(fileURLWithPath: "/roms/Star Fox 64 3D.zip")
+        )
+        let report = AuditReport(entries: [claimed, leftover], correct: 1, incorrect: 1, missing: 0, surplus: 0)
+
+        let copies = DuplicateSetDetector.detectSameSystemCopies(in: report)
+
+        #expect(copies.count == 1)
+        #expect(copies.first?.status == .duplicateSet)
+        #expect(copies.first?.game == "Star Fox 64 3D")
+        #expect(copies.first?.path?.lastPathComponent == "Star Fox 64 3D.zip")
+        #expect(copies.first?.duplicateSetPrimaryPath?.lastPathComponent == "Star Fox 64 3D.3ds")
+    }
+
+    @Test("same-system copies are opt-in: MAME-style callers never get them")
+    func sameSystemCopiesAreOptIn() throws {
+        let claimed = AuditEntry(status: .correct, game: "g", gameDescription: "g", name: "a.bin", path: URL(fileURLWithPath: "/roms/g.zip"))
+        let leftover = AuditEntry(status: .incorrect, game: nil, requiredByGameDescription: "g", requiredByGameMachineName: "g", name: "a.bin", path: URL(fileURLWithPath: "/roms/parent.zip"))
+        let report = AuditReport(entries: [claimed, leftover], correct: 1, incorrect: 1, missing: 0, surplus: 0)
+
+        let off = try AuditReporter.addingDuplicateSets(to: report, rootFolders: [URL(fileURLWithPath: "/roms")])
+        let on = try AuditReporter.addingDuplicateSets(to: report, rootFolders: [URL(fileURLWithPath: "/roms")], includeSameSystemCopies: true)
+
+        #expect(off.entries.count == 2)
+        #expect(on.entries.count == 3)
+        #expect(on.duplicateSets == 1)
+    }
 }
