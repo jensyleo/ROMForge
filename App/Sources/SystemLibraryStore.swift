@@ -104,7 +104,15 @@ final class SystemLibraryStore {
 
     private func load() {
         guard let data = try? Data(contentsOf: storageURL) else { return }
-        systems = (try? JSONDecoder().decode([RomSystem].self, from: data)) ?? []
+        if let decoded = try? JSONDecoder().decode([RomSystem].self, from: data) {
+            systems = decoded
+        } else {
+            // Unreadable (a damaged entry, or a file from a newer build): keep a copy
+            // before any later save() could overwrite it with an empty list.
+            let backup = storageURL.deletingLastPathComponent().appendingPathComponent("systems.json.unreadable-backup")
+            if !FileManager.default.fileExists(atPath: backup.path) { try? data.write(to: backup) }
+            systems = []
+        }
         // One-time migration — jensyleo's own report (2026-10-01): a system
         // saved before `AddSystemSheet`'s category picker existed has
         // `category == ""`, which the sidebar (`ContentView.groupedSystems`)

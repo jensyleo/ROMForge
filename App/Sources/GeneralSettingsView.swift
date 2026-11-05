@@ -17,6 +17,7 @@ struct GeneralSettingsView: View {
     @AppStorage(HashAlgorithmSettings.md5Key) private var computeMD5 = true
     @AppStorage(HashAlgorithmSettings.sha1Key) private var computeSHA1 = true
     @AppStorage(MatchingPreferencesSettings.nameOnlyMatchingKey) private var nameOnlyMatchingForConsoles = MatchingPreferencesSettings.nameOnlyMatchingDefault
+    @AppStorage(MatchingPreferencesSettings.nameOnlyCheckSizeKey) private var nameOnlyCheckSize = false
     @AppStorage("ROMForge.scan.autoScanOnAdd") private var autoScanOnAdd = false
     @AppStorage(ModificationsEnabledSettings.storageKey) private var modificationsEnabled = false
     @AppStorage(HashingConcurrencySettings.numberOfThreadsKey) private var numberOfThreads = HashingConcurrencySettings.numberOfThreadsDefault
@@ -114,6 +115,15 @@ struct GeneralSettingsView: View {
             // user-facing label text only.
             Section("Ignore CRC/Hash Verification") {
                 Toggle("Ignore CRC/hash verification for console/computer systems", isOn: $nameOnlyMatchingForConsoles)
+                Picker("Instead, verify", selection: $nameOnlyCheckSize) {
+                    Text("Names only").tag(false)
+                    Text("Names and file size").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .disabled(!nameOnlyMatchingForConsoles)
+                Text("While this is ON, files are never read to compute CRC/MD5/SHA1. \"Names and file size\" also flags a correctly-named file whose size differs from the DAT (truncated or partial copies) as Bad.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Label("Never applies to Arcade/MAME systems — those always verify CRC/hash, regardless of this toggle.", systemImage: "checkmark.shield")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -288,6 +298,13 @@ enum MatchingPreferencesSettings {
     static let nameOnlyMatchingKey = "ROMForge.matching.nameOnlyForConsoles"
     static let nameOnlyMatchingDefault = false
 
+    /// Only meaningful while `nameOnlyMatchingEnabled`: also require the
+    /// DAT's file size (no file read needed). Off = names only.
+    static let nameOnlyCheckSizeKey = "ROMForge.matching.nameOnlyCheckSize"
+    static var nameOnlyCheckSizeEnabled: Bool {
+        nameOnlyMatchingEnabled && UserDefaults.standard.bool(forKey: nameOnlyCheckSizeKey)
+    }
+
     static var nameOnlyMatchingEnabled: Bool {
         UserDefaults.standard.object(forKey: nameOnlyMatchingKey) == nil
             ? nameOnlyMatchingDefault
@@ -427,9 +444,10 @@ enum MaintenanceFolderSettings {
     static let subfolderDidDelete = Notification.Name("ROMForge.maintenanceFolder.subfolderDidDelete")
 
     /// `nil` when unset (default) or when the stored path is empty.
+    // `isDirectory: true` spares `URL(fileURLWithPath:)` an lstat per read: these getters run from view bodies, and on a busy network volume that stat blocked the main thread (hang found while hashing large Wii images).
     static var folderURL: URL? {
         guard let path = UserDefaults.standard.string(forKey: storageKey), !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path)
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     /// Reduces a system's own (user-typed, not DAT-declared) name to a

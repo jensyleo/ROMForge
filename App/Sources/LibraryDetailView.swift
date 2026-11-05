@@ -1370,7 +1370,7 @@ struct LibraryDetailView: View {
                 if let filter = DatabaseFilter(rawValue: name) { return (filter, nil) }
             } else if raw.hasPrefix("romfolder:") {
                 let path = String(raw.dropFirst("romfolder:".count))
-                let url = URL(fileURLWithPath: path)
+                let url = URL(fileURLWithPath: path, isDirectory: true)
                 // Only trusted if this folder is still actually configured
                 // on this system — one removed since the last launch
                 // shouldn't silently resurrect itself as the selection.
@@ -1790,7 +1790,8 @@ struct LibraryDetailView: View {
                 // hash match to preview as usable, even with the toggle on.
                 if let matchReport = try? ROMMatcher.match(
                     dat: dat, hashedFiles: hashed, onProgress: matchProgressHandler,
-                    nameOnlyMatching: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyMatchingEnabled
+                    nameOnlyMatching: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyMatchingEnabled,
+                    nameOnlyRequireSize: !system.isMAMEStyle && MatchingPreferencesSettings.nameOnlyCheckSizeEnabled
                 ),
                    let auditReport = try? AuditReporter.generate(from: matchReport)
                 {
@@ -7321,7 +7322,13 @@ struct LibraryDetailView: View {
             selectedDatabaseFilter = nil
             // Auto-scan on add if enabled globally (new setting, 2026-07-30)
             if UserDefaults.standard.bool(forKey: "ROMForge.scan.autoScanOnAdd") {
-                viewModel.startScan(system: system, folders: [lastAdded])
+                // `system` here is still the pre-add snapshot (the store
+                // update above only reaches this view on the next render), so
+                // a scan started with it never sees the new folder. Scan with
+                // a copy that already includes it.
+                var updatedSystem = system
+                updatedSystem.romFolderURLs = folders
+                viewModel.startScan(system: updatedSystem, folders: [lastAdded])
             }
         }
     }
@@ -11044,7 +11051,7 @@ struct LibraryDetailView: View {
                 Text("Folder: \(entry.path?.deletingLastPathComponent().lastPathComponent ?? "")")
                     .foregroundStyle(.secondary)
             }
-            if showDetailRomCRC { hashLine(label: "CRC", expected: entry.expectedCRC, actual: entry.actualCRC) }
+            if showDetailRomCRC { hashLine(label: "CRC", expected: entry.expectedCRC, actual: entry.actualCRC == CollectionHasher.skippedMarker ? nil : entry.actualCRC) }
             if showDetailRomSHA1 { hashLine(label: "SHA-1", expected: entry.expectedSHA1, actual: entry.actualSHA1) }
             if showDetailRomMD5 { hashLine(label: "MD5", expected: entry.expectedMD5, actual: entry.actualMD5) }
             if showDetailRomDumpStatus { dumpStatusDetailRow(entry) }

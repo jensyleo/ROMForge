@@ -1593,9 +1593,10 @@ enum SamplesFolderSettings {
     }
 
     /// `nil` when disabled, or enabled with no folder chosen yet.
+    // `isDirectory: true` spares `URL(fileURLWithPath:)` an lstat per read: these getters run from view bodies, and on a busy network volume that stat blocked the main thread (hang found while hashing large Wii images).
     static var folderURL: URL? {
         guard isEnabled, let path = UserDefaults.standard.string(forKey: pathKey), !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path)
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     /// True when `url` sits inside the Samples folder — jensyleo's own
@@ -1638,9 +1639,10 @@ enum BIOSFolderSettings {
     }
 
     /// `nil` when disabled, or enabled with no folder chosen yet.
+    // `isDirectory: true` spares `URL(fileURLWithPath:)` an lstat per read: these getters run from view bodies, and on a busy network volume that stat blocked the main thread (hang found while hashing large Wii images).
     static var folderURL: URL? {
         guard isEnabled, let path = UserDefaults.standard.string(forKey: pathKey), !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path)
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 }
 
@@ -1662,9 +1664,10 @@ enum ComplementaryChipsFolderSettings {
     }
 
     /// `nil` when disabled, or enabled with no folder chosen yet.
+    // `isDirectory: true` spares `URL(fileURLWithPath:)` an lstat per read: these getters run from view bodies, and on a busy network volume that stat blocked the main thread (hang found while hashing large Wii images).
     static var folderURL: URL? {
         guard isEnabled, let path = UserDefaults.standard.string(forKey: pathKey), !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path)
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 }
 
