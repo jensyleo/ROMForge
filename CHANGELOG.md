@@ -2,6 +2,42 @@
 
 All notable changes to ROMForge are documented in this file.
 
+## [Unreleased]
+
+## [1.8.0] - 2026-11-05
+
+### Added
+- "Ignore CRC/Hash Verification" now offers **Names only** or **Names and file size**. With the size option, a correctly named file whose size differs from the DAT (a truncated or partial copy) is reported as Bad, without reading the file. A leading 16- or 512-byte copier header is tolerated.
+
+- Documented the Nintendo 3DS policy: only decrypted ROMs are supported. New Help
+  section ("Nintendo 3DS — decrypted ROMs only") and README section explain how
+  encryption is detected, what the red "Encrypted" label and the "Not Playable"
+  alert mean, and which DAT to use.
+
+### Fixed
+- "Replace Corrupted ROMs" no longer deletes the bad file before the replacement is in place: it is set aside first and removed only after the donor copy succeeds.
+- Adding or rebuilding zip entries streams from disk (or a temporary file for archive-sourced entries) instead of loading multi-GB files into memory.
+- With "Ignore CRC/hash verification", a same-named file is only treated as a confirmed redundant spare (deletable by "Remove Redundant") when its size also matches a size the DAT declares; a hack or translation sharing a ROM name is no longer at risk.
+- Renaming a file or archive entry to the DAT's name now keeps its real container extension (`.wbfs`, `.rvz`, `.ciso`, `.n64`/`.v64`…) instead of relabeling it as `.iso`/`.z64`.
+- Copy/Move to Folder with "Replace" could delete the source file (same folder, or two selected files sharing a name); the old file is now set aside and restored if the copy fails.
+- Remove Useless Files no longer treats emulator saves, playlists, patches, artwork or compressed disc images (`.wbfs`, `.rvz`, …) as junk.
+- Scan cache: files whose hash was skipped are no longer cached as if hashed (turning name-only mode off, or scanning one folder, left them "missing/Bad"), and cached nested zip/7z entries keep their inner path in scoped rescans.
+- With name-only matching, unclaimed loose files were all treated as duplicates of each other ("confirmed redundant") because they shared the skipped-hash placeholder.
+- One unreadable 7z entry no longer aborts the whole scan, and 7z entries in different subfolders with the same name no longer collapse into one.
+- Saved reports: a duplicate row and the primary row (or several unrecognised entries of one archive) no longer overwrite each other on re-save, and the surplus count is correct after a relaunch.
+- A scan started while another is running now waits for it to stop; cancelling a BIOS/Chips/Samples scan no longer logs "folder is empty"; 3DS header checks no longer stat files on the main thread; folder-scope checks no longer match sibling folders sharing a name prefix.
+- An unreadable `systems.json` is backed up before anything can overwrite it.
+- Compressed disc containers (`.wbfs`, `.rvz`, `.wia`, `.ciso`, `.gcz`, `.nkit`, `.nfs`) now get "Rename to…" suggestions and are never flagged for size: their size can never equal the full-disc size a Redump DAT declares, which silently discarded every suggestion for them.
+- Window freeze during scans of large images: folder-path settings (BIOS, chips, samples, Maintenance) no longer touch the disk on every redraw, which blocked the main thread while a busy volume was being hashed.
+- Scans are much faster: CRC32 now uses zlib's hardware-accelerated routine (about 100x faster than the previous byte loop), and console systems using name-only matching no longer read loose images (`.iso`, `.3ds`, `.nds`) just to compute hashes the scan ignores.
+- A console game present in two forms in the same system (a `.zip` beside its `.3ds`, a `.7z` beside a `.nds`/`.iso`) now shows every copy under the game, the extra ones as duplicate rows with their own file and extension. Previously only one was visible and the other was hidden in the surplus list. MAME-style systems are unchanged.
+
+- "Remove Useless Files…" no longer offers to delete a file that has a similar-name
+  suggestion for a known game.
+- Deleting unrecognized files from File Actions removes their rows without a rescan.
+- Fix All no longer asks for a rescan when the last scan covered every ROM folder of the system.
+- A zero-byte or unreadable zip is reported as corrupt without stopping the scan (test added).
+
 ## [1.7.0] - 2026-11-03
 
 ### Added
@@ -2580,7 +2616,7 @@ All four reported directly by the user, one testing session:
     native macOS radio group with labels like "Merged (BIOS in parent)" /
     "Split (BIOS in separate file)" / "Un-merged (BIOS in parent and
     clones)". Verified live via the Accessibility tree (screenshots kept
-    catching unrelated windows/other Claude Code sessions on this
+    catching unrelated windows on this
     machine, entirely by coincidence of shared screen regions — deleted
     each without reading further) that both radio groups render with the
     correct 3 options each, and that their selection state correctly
@@ -3686,7 +3722,7 @@ implemented:
 - Added [TESTING.md](TESTING.md): a manual testing checklist for real ROM
   collections. Every automated test uses synthetic fixtures — nothing has
   been run against a real ROM/BIOS/CHD collection yet, since that requires
-  ROM files Claude cannot legally source.
+  ROM files that cannot be legally sourced.
 - App icon: `Scripts/make-appicon.sh` generates `AppIcon.appiconset` from a
   1024×1024 source PNG, built from the icon provided in
   `Icons/App/rom_manager_icon_1024.png`. Verified it renders correctly on

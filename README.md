@@ -42,6 +42,15 @@ split/non-merged/merged); resolving MAME BIOS/parent-clone dependency
 chains; verifying CHD content against a MAME DAT's `<disk sha1="...">`
 without decompressing hunks; and locating/installing the official 7-Zip.
 
+### Nintendo 3DS: decrypted ROMs only
+
+ROMForge supports only decrypted 3DS dumps. Encryption is read from the dump's own
+header (loose `.3ds`/`.cci` or inside a `.zip`): an encrypted dump is shown with a red
+"— Encrypted" in the Info column, a decrypted one carries no label, and Play refuses to
+launch an encrypted dump with a "Not Playable" alert that gives the reason. Use the
+No-Intro "Decrypted" 3DS DAT; a trimmed or renamed dump can still be matched to its game
+by the product code in its header. ROMForge does not decrypt dumps or provide keys.
+
 **The SwiftUI app implements real, opt-in write access on top of all of
 that.** A multi-system sidebar (Arcade/MAME and console/computer systems
 alike, each with its own name, one or more ROM folders, and a DAT —
