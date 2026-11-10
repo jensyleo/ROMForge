@@ -1,0 +1,185 @@
+// ROMForge — a native ROM collection manager for macOS.
+// Copyright (C) 2026 Jensy Leonardo Martínez Cruz
+//
+// This program is free software under the GNU General Public License v3.0
+// or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
+
+import Foundation
+
+/// Official title names and latest published versions, keyed by Title ID —
+/// the two files DBI itself reads (`US.en.json` and `versions.txt`).
+public struct SwitchTitleDB: Sendable {
+    public static let namesURL = URL(string: "https://raw.githubusercontent.com/blawar/titledb/master/US.en.json")!
+    public static let versionsURL = URL(string: "https://raw.githubusercontent.com/blawar/titledb/master/versions.txt")!
+
+    public let names: [String: String]
+    public let latestVersions: [String: Int]
+
+    public init(names: [String: String], latestVersions: [String: Int]) {
+        self.names = names
+        self.latestVersions = latestVersions
+    }
+
+    public init(namesJSON: Data, versionsText: String) throws {
+        var names: [String: String] = [:]
+        if let root = try JSONSerialization.jsonObject(with: namesJSON) as? [String: Any] {
+            for case let title as [String: Any] in root.values {
+                guard let id = title["id"] as? String, let name = title["name"] as? String, !name.isEmpty else { continue }
+                names[id.uppercased()] = name
+            }
+        }
+        var latest: [String: Int] = [:]
+        for line in versionsText.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false)
+            guard parts.count == 3, let version = Int(parts[2]) else { continue }
+            latest[parts[0].uppercased()] = version
+        }
+        self.init(names: names, latestVersions: latest)
+    }
+}
+
+/// Builds a names-only DAT for a Switch collection: one game per title, holding
+/// the files that exist on disk (base, update, DLC) under their current names,
+/// plus the newest published update when the collection does not have it.
+public enum SwitchDATGenerator {
+    public struct File: Equatable, Sendable {
+        public let fileName: String
+        public let size: Int64
+        /// Read from inside the file when the name carries no Title ID.
+        public let embeddedTitleID: String?
+
+        public init(fileName: String, size: Int64, embeddedTitleID: String? = nil) {
+            self.fileName = fileName
+            self.size = size
+            self.embeddedTitleID = embeddedTitleID
+        }
+    }
+
+    public struct Result: Equatable, Sendable {
+        public let dat: DATFile
+        public let availableUpdates: [String]
+        public let unidentifiedFiles: [String]
+    }
+
+    public static func generate(files: [File], titleDB: SwitchTitleDB, version: String) -> Result {
+        var groups: [String: [(file: File, titleID: String)]] = [:]
+        var unidentified: [String] = []
+        for file in files {
+            guard let titleID = SwitchTitleKind.titleID(in: file.fileName) ?? file.embeddedTitleID?.uppercased() else {
+                unidentified.append(file.fileName)
+                continue
+            }
+            groups[baseTitleID(of: titleID), default: []].append((file, titleID))
+        }
+
+        var games: [DATGame] = []
+        var availableUpdates: [String] = []
+        var usedNames = Set<String>()
+        for baseID in groups.keys.sorted() {
+            let members = groups[baseID]!.sorted { rank($0.titleID) != rank($1.titleID) ? rank($0.titleID) < rank($1.titleID) : $0.file.fileName < $1.file.fileName }
+            var name = titleDB.names[baseID].map(cleanName) ?? cleanName(fallbackName(from: members[0].file.fileName))
+            if name.isEmpty { name = baseID }
+            if !usedNames.insert(name.lowercased()).inserted { name += " [\(baseID)]" }
+
+            var roms = members.map { DATRom(name: $0.file.fileName, size: $0.file.size, crc: nil, md5: nil, sha1: nil) }
+            let updateID = String(baseID.prefix(13)) + "800"
+            let ownedVersions = members.filter { $0.titleID == updateID }.map { SwitchTitleKind.version(in: $0.file.fileName, excluding: updateID) ?? 0 }
+            if let newest = titleDB.latestVersions[updateID], newest > 0, newest > (ownedVersions.max() ?? -1) {
+                roms.append(DATRom(name: "\(name) [\(updateID)][v\(newest)].nsp", size: 0, crc: nil, md5: nil, sha1: nil))
+                availableUpdates.append(name)
+            }
+            games.append(DATGame(name: name, description: name, cloneOf: nil, romOf: nil, roms: roms))
+        }
+        games.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let header = DATHeader(
+            name: "Nintendo - Nintendo Switch (TitleDB)", description: "Nintendo - Nintendo Switch (TitleDB names, grouped by game, no hashes)",
+            version: version, author: "Generated by ROMForge from blawar/titledb"
+        )
+        return Result(dat: DATFile(header: header, games: games), availableUpdates: availableUpdates.sorted(), unidentifiedFiles: unidentified.sorted())
+    }
+
+    /// Logiqx XML for `dat`: names and sizes only.
+    public static func xml(for dat: DATFile) -> String {
+        var out = "<?xml version=\"1.0\"?>\n<datafile>\n\t<header>\n"
+        out += "\t\t<name>\(escape(dat.header.name))</name>\n\t\t<description>\(escape(dat.header.description))</description>\n"
+        out += "\t\t<version>\(escape(dat.header.version))</version>\n\t\t<author>\(escape(dat.header.author))</author>\n\t</header>\n"
+        for game in dat.games {
+            out += "\t<game name=\"\(escape(game.name))\">\n\t\t<description>\(escape(game.description))</description>\n"
+            for rom in game.roms { out += "\t\t<rom name=\"\(escape(rom.name))\" size=\"\(rom.size)\"/>\n" }
+            out += "\t</game>\n"
+        }
+        return out + "</datafile>\n"
+    }
+
+    /// The base game's Title ID for a base, update or add-on content ID.
+    public static func baseTitleID(of titleID: String) -> String {
+        let id = titleID.uppercased()
+        if id.hasSuffix("000") || id.hasSuffix("800") { return String(id.prefix(13)) + "000" }
+        guard let value = UInt64(id, radix: 16) else { return id }
+        let base = (value &- 0x1000) & ~UInt64(0xFFF)
+        let hex = String(base, radix: 16, uppercase: true)
+        return String(repeating: "0", count: max(0, 16 - hex.count)) + hex
+    }
+
+    /// An official title turned into a safe folder/file name: no trademark
+    /// signs, no bundle suffixes, no characters a NAS share rejects.
+    public static func cleanName(_ raw: String) -> String {
+        var name = raw
+        for symbol in ["™", "®", "©"] { name = name.replacingOccurrences(of: symbol, with: "") }
+        for pattern in [#"\s+[–-]\s+Nintendo Switch\s*2 Edition.*$"#, #"\s+\+\s+Nintendo Switch Online Bundle.*$"#, #"\s+-\s+Anniversary Edition$"#] {
+            name = name.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        name = name.replacingOccurrences(of: "’", with: "'").replacingOccurrences(of: "–", with: "-").replacingOccurrences(of: "—", with: "-")
+        name = name.replacingOccurrences(of: #"\s*:\s*"#, with: " - ", options: .regularExpression)
+        name = name.replacingOccurrences(of: #"[\\/]"#, with: "-", options: .regularExpression)
+        name = name.replacingOccurrences(of: #"[?*"<>|]"#, with: "", options: .regularExpression)
+        name = name.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return name.trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+    }
+
+    private static func rank(_ titleID: String) -> Int {
+        titleID.hasSuffix("000") ? 0 : titleID.hasSuffix("800") ? 1 : 2
+    }
+
+    /// The text before the first bracket of a file name, for a title the database does not know.
+    private static func fallbackName(from fileName: String) -> String {
+        let head = fileName.prefix { $0 != "[" && $0 != "(" }
+        return head.replacingOccurrences(of: #"\s+v\d+(\.\d+)+\s*$"#, with: "", options: .regularExpression)
+    }
+
+    private static func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+    }
+}
+
+/// Lists the Switch game files under a system's ROM folders, reading the Title
+/// ID from inside a `.nsp` only when its name does not carry one.
+public enum SwitchCollectionScanner {
+    public static let gameExtensions: Set<String> = ["nsp", "nsz", "xci", "xcz"]
+
+    /// `maxDepth` counts folder levels below each ROM folder, like a system's
+    /// own subfolder depth (2 reaches `Game/ROMS/file.nsp`).
+    public static func files(in folders: [URL], maxDepth: Int, fileManager: FileManager = .default) -> [SwitchDATGenerator.File] {
+        var result: [SwitchDATGenerator.File] = []
+        var seen = Set<String>()
+        func walk(_ directory: URL, depth: Int) {
+            guard let children = try? fileManager.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey], options: [.skipsHiddenFiles]
+            ) else { return }
+            for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+                if values?.isDirectory == true {
+                    if depth < maxDepth { walk(child, depth: depth + 1) }
+                    continue
+                }
+                let name = child.lastPathComponent
+                guard gameExtensions.contains(child.pathExtension.lowercased()), seen.insert(name.lowercased()).inserted else { continue }
+                let embedded = SwitchTitleKind.titleID(in: name) == nil ? SwitchNSPReader.info(ofFileAt: child)?.titleID : nil
+                result.append(SwitchDATGenerator.File(fileName: name, size: Int64(values?.fileSize ?? 0), embeddedTitleID: embedded))
+            }
+        }
+        for folder in folders { walk(folder, depth: 0) }
+        return result
+    }
+}
