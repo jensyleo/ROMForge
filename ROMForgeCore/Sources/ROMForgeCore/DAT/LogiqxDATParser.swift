@@ -158,7 +158,12 @@ private final class DATXMLParserDelegate: NSObject, XMLParserDelegate {
                 thrownError = .missingRomAttribute(game: currentGameName, attribute: "name")
                 break
             }
-            guard let sizeString = attributeDict["size"], let size = Int64(sizeString) else {
+            // No-Intro leaves `size` empty on roms it lists as missing
+            // (`mia="yes"`, e.g. Wii U "cetk" entries). Their hashes still
+            // identify them, so an empty size is kept as "unknown" (0) instead
+            // of rejecting the whole DAT.
+            guard let sizeString = attributeDict["size"],
+                  let size: Int64 = sizeString.isEmpty ? 0 : Int64(sizeString) else {
                 thrownError = .missingRomAttribute(game: currentGameName, attribute: "size")
                 break
             }

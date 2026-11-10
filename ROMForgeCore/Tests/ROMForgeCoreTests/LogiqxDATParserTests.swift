@@ -10,6 +10,26 @@ import Testing
 
 @Suite("LogiqxDATParser")
 struct LogiqxDATParserTests {
+    @Test("an empty rom size (No-Intro 'mia' entry) is kept as unknown (0) instead of rejecting the whole DAT")
+    func emptySizeIsUnknownNotFatal() throws {
+        let xml = """
+        <?xml version="1.0"?>
+        <datafile>
+            <header><name>Test</name><version>1</version></header>
+            <game name="Game A">
+                <rom name="cetk" size="" crc="29f1cdd4" md5="e79e03967fbc70a66ab6c67070b928d7" sha1="09ce1d5745d815b5d8aefbf1206ac012680db573" status="verified" mia="yes"/>
+                <rom name="game.bin" size="4096" crc="ABCD1234"/>
+            </game>
+        </datafile>
+        """
+        let dat = try LogiqxDATParser.parse(data: Data(xml.utf8))
+        let roms = dat.games[0].roms
+        #expect(roms.count == 2)
+        #expect(roms[0].size == 0)
+        #expect(roms[0].crc == "29f1cdd4")
+        #expect(roms[1].size == 4096)
+    }
+
     @Test("parses header and games from a well-formed Logiqx DAT")
     func parsesWellFormedDAT() throws {
         let xml = """
