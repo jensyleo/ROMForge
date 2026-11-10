@@ -1344,6 +1344,9 @@ private struct ConsoleSettingsForm: View {
     @State private var isUpdatingDAT = false
     @State private var didUpdateDAT = false
     @State private var updatedSystemCount = 0
+    /// Set while "Generate from TitleDB…" downloads and builds a Switch DAT.
+    @State private var generatingSwitchDATSystemID: UUID?
+    @State private var switchDATError: String?
 
     /// "Play in <emulator>" — jensyleo's own request (2026-09-29): unlike
     /// MAME (one canonical emulator), a console system's emulator "no es
@@ -1438,6 +1441,45 @@ private struct ConsoleSettingsForm: View {
         } message: {
             Text("Re-pointed \(updatedSystemCount) system\(updatedSystemCount == 1 ? "" : "s") at the new DAT and cleared their last scan results. Run Scan Folder/Scan All Folders on each to re-audit against it.")
         }
+        .alert("Could Not Generate the Switch DAT", isPresented: Binding(get: { switchDATError != nil }, set: { if !$0 { switchDATError = nil } })) {
+            Button("OK") {}
+        } message: {
+            Text(switchDATError ?? "")
+        }
+    }
+
+    /// Builds a Switch DAT from the system's own ROM folders and the public
+    /// title database, then hands it to the same confirmation "Choose DAT…"
+    /// uses. There is no hash DAT for whole `.nsp` files, so this one matches
+    /// by name and groups each game's base, update and DLC.
+    private func generateSwitchDAT(for system: RomSystem) {
+        generatingSwitchDATSystemID = system.id
+        let folders = system.romFolderURLs
+        let depth = max(system.effectiveMaxSubfolderDepth, 0)
+        Task {
+            defer { generatingSwitchDATSystemID = nil }
+            do {
+                let generated = try await Task.detached(priority: .userInitiated) {
+                    let (namesJSON, versionsData) = try await SwitchTitleDBCache.load()
+                    let titleDB = try SwitchTitleDB(namesJSON: namesJSON, versionsText: String(decoding: versionsData, as: UTF8.self))
+                    let files = SwitchCollectionScanner.files(in: folders, maxDepth: depth)
+                    guard !files.isEmpty else { throw SwitchDATGenerationError.noGameFiles }
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "yyyyMMdd-HHmmss"
+                    let result = SwitchDATGenerator.generate(files: files, titleDB: titleDB, version: formatter.string(from: Date()))
+                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("romforge-switch-dat-\(UUID().uuidString)", isDirectory: true)
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    let url = folder.appendingPathComponent("Nintendo - Nintendo Switch (TitleDB).dat")
+                    try SwitchDATGenerator.xml(for: result.dat).write(to: url, atomically: true, encoding: .utf8)
+                    return url
+                }.value
+                defer { try? FileManager.default.removeItem(at: generated.deletingLastPathComponent()) }
+                datTargetSystemID = system.id
+                pendingDATUpdateURL = DATStorageLocation.copy(from: generated)
+            } catch {
+                switchDATError = error.localizedDescription
+            }
+        }
     }
 
     private func chooseNewDAT(for system: RomSystem) {
@@ -1466,8 +1508,16 @@ private struct ConsoleSettingsForm: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
+                if system.category == SystemCategoryKind.switchConsole.rawValue {
+                    if generatingSwitchDATSystemID == system.id {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button("Generate from TitleDB…") { generateSwitchDAT(for: system) }
+                        .disabled(isUpdatingDAT || generatingSwitchDATSystemID != nil)
+                        .help("Downloads the title names and latest versions DBI uses, reads this system's ROM folders and builds a DAT that groups each game's base, update and DLC.")
+                }
                 Button("Choose DAT…") { chooseNewDAT(for: system) }
-                    .disabled(isUpdatingDAT)
+                    .disabled(isUpdatingDAT || generatingSwitchDATSystemID != nil)
             }
             SystemSubfolderDepthPicker(store: store, system: system)
             if options.isEmpty {
@@ -1754,5 +1804,51 @@ private struct SystemSubfolderDepthPicker: View {
         }
         .pickerStyle(.menu)
         .help("How many levels of subfolder a scan of this system enters below each ROM folder. 0 never enters a subfolder. Each system has its own value.")
+    }
+}
+
+enum SwitchDATGenerationError: LocalizedError {
+    case noGameFiles
+    case downloadFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noGameFiles:
+            return "No .nsp, .nsz, .xci or .xcz files were found in this system's ROM folders at its configured subfolder depth."
+        case .downloadFailed(let reason):
+            return "The title database could not be downloaded and no earlier copy is stored: \(reason)"
+        }
+    }
+}
+
+/// The two title database files, downloaded fresh on every generation and kept
+/// in Application Support so a later run still works offline.
+enum SwitchTitleDBCache {
+    private static var directory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("ROMForge", isDirectory: true).appendingPathComponent("SwitchTitleDB", isDirectory: true)
+    }
+
+    static func load() async throws -> (names: Data, versions: Data) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        async let names = fetch(SwitchTitleDB.namesURL, cachedAs: "US.en.json")
+        async let versions = fetch(SwitchTitleDB.versionsURL, cachedAs: "versions.txt")
+        return try await (names, versions)
+    }
+
+    private static func fetch(_ url: URL, cachedAs fileName: String) async throws -> Data {
+        let cached = directory.appendingPathComponent(fileName)
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200, !data.isEmpty else {
+                throw SwitchDATGenerationError.downloadFailed("the server answered with an error for \(url.lastPathComponent)")
+            }
+            try? data.write(to: cached, options: .atomic)
+            return data
+        } catch {
+            if let data = try? Data(contentsOf: cached), !data.isEmpty { return data }
+            if let generationError = error as? SwitchDATGenerationError { throw generationError }
+            throw SwitchDATGenerationError.downloadFailed(error.localizedDescription)
+        }
     }
 }
