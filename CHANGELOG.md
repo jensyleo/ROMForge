@@ -4,6 +4,14 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-10
+
+### Added
+- Nintendo Switch: "Generate from TitleDB…" in Settings → Systems → Consoles builds a DAT for a Switch system from its own ROM folders and the public title database (official names and latest versions). There is no hash DAT for whole `.nsp` files, so this one matches by name; it groups each game's base, update and DLC under one game and lists the newest published update as missing when the collection does not have it.
+- Nintendo Switch: the Roms panel's Info column says whether each file is the Base, an Update (with its update number) or DLC (with the add-on's name), read from the Title ID in its name, and lists them in that order.
+- Nintendo Switch: the Games table's Info column adds each game's update state ("Update 6", or "Update 11 available (have 6)") and how many DLC files it has.
+- Nintendo Switch: a `.nsp` whose name carries no Title ID is identified by the one inside the file (read from its file table, never the game data).
+
 ## [1.8.1] - 2026-11-10
 
 ### Fixed

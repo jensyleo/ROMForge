@@ -51,6 +51,17 @@ launch an encrypted dump with a "Not Playable" alert that gives the reason. Use 
 No-Intro "Decrypted" 3DS DAT; a trimmed or renamed dump can still be matched to its game
 by the product code in its header. ROMForge does not decrypt dumps or provide keys.
 
+### Nintendo Switch: names from TitleDB
+
+No hash DAT exists for whole Switch `.nsp` files, so ROMForge builds one itself: in
+Settings → Systems → Consoles, a system of category "Switch" offers "Generate from
+TitleDB…". It reads the system's ROM folders, takes each file's Title ID from its name
+(or from inside the `.nsp` when the name has none), downloads the public title database
+for official names and latest versions, and writes a names-only DAT that groups each
+game's base, update and DLC. Use it with "Ignore CRC/Hash Verification". The Games table
+then shows each game once, with its update state and DLC count, and the Roms panel
+labels every file as Base, Update or DLC. Run it again after adding files.
+
 **The SwiftUI app implements real, opt-in write access on top of all of
 that.** A multi-system sidebar (Arcade/MAME and console/computer systems
 alike, each with its own name, one or more ROM folders, and a DAT —
