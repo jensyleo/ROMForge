@@ -59,9 +59,19 @@ enum DATStorageLocation {
     /// fallback to external reference rather than a silent no-op, so
     /// "Add"/"Choose DAT File…" still works even in that rare case.
     static func copy(from source: URL) -> URL {
+        // A DAT downloaded as a `.zip` (No-Intro, Redump…) is unpacked first:
+        // the parser only reads the `.dat`/`.xml` inside, never the archive.
+        if source.pathExtension.lowercased() == "zip", let inner = extractDAT(fromZip: source) {
+            defer { try? FileManager.default.removeItem(at: inner.deletingLastPathComponent()) }
+            return copyFile(inner, extension: inner.pathExtension)
+        }
+        return copyFile(source, extension: source.pathExtension)
+    }
+
+    private static func copyFile(_ source: URL, extension ext: String) -> URL {
         let directory = directory()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let ext = source.pathExtension.isEmpty ? "dat" : source.pathExtension
+        let ext = ext.isEmpty ? "dat" : ext
         let destination = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext)
         do {
             try FileManager.default.copyItem(at: source, to: destination)
@@ -69,6 +79,36 @@ enum DATStorageLocation {
         } catch {
             return source
         }
+    }
+
+    /// Extracts the first `.dat`/`.xml` file of a DAT zip into a fresh temporary
+    /// folder (nil if the zip is unreadable or holds no DAT). The caller removes
+    /// the folder of the returned file.
+    private static func extractDAT(fromZip zip: URL) -> URL? {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("romforge-dat-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch { return nil }
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        unzip.arguments = ["-q", "-o", zip.path, "-d", folder.path]
+        do {
+            try unzip.run()
+            unzip.waitUntilExit()
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            return nil
+        }
+        guard unzip.terminationStatus == 0,
+              let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey]) else {
+            try? FileManager.default.removeItem(at: folder)
+            return nil
+        }
+        for case let url as URL in enumerator where !url.path.contains("/__MACOSX/") {
+            if ["dat", "xml"].contains(url.pathExtension.lowercased()) { return url }
+        }
+        try? FileManager.default.removeItem(at: folder)
+        return nil
     }
 
     /// Deletes `url` if — and only if — it's genuinely one of ROMForge's
