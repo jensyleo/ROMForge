@@ -85,7 +85,7 @@ public enum GameNodeBuilder {
         var orphanedIdentifiedArchiveCount = 0
         for (archiveKey, surplus) in surplusByArchive {
             let matchingGame = (SurplusArchiveKey.displayName(forKey: archiveKey) as NSString).deletingPathExtension
-            if gamesByName[matchingGame] != nil {
+            if (gamesByName[matchingGame] ?? gamesByName[matchingGame.lowercased()]) != nil {
                 entriesByGame[matchingGame, default: []].append(contentsOf: surplus)
             } else if surplus.contains(where: { $0.requiredByGameDescription != nil || $0.status == .unverifiable }) {
                 orphanedIdentifiedArchiveCount += 1
@@ -290,7 +290,7 @@ public enum GameNodeBuilder {
             // deliberately rom-only now) since the whole point here is to
             // reproduce how it used to look, mixed status and all.
             if combineRomAndCHD {
-                return [GameNode(id: "game-\(name)", name: name, entries: entries, aggregateStatus: GameStatusRollup.gameCategory(for: entries), sourceGame: gamesByName[name])]
+                return [GameNode(id: "game-\(name)", name: name, entries: entries, aggregateStatus: GameStatusRollup.gameCategory(for: entries), sourceGame: gamesByName[name] ?? gamesByName[name.lowercased()])]
             }
 
             // Split into up to two independent rows — a game's rom and
@@ -330,10 +330,10 @@ public enum GameNodeBuilder {
                 let trueStatus = isFolderScoped
                     ? GameStatusRollup.gameCategory(for: romEntries)
                     : gameAggregateStatusByName[name] ?? GameStatusRollup.gameCategory(for: romEntries)
-                nodes.append(GameNode(id: "game-\(name)", name: name, entries: romEntries, aggregateStatus: trueStatus, sourceGame: gamesByName[name]))
+                nodes.append(GameNode(id: "game-\(name)", name: name, entries: romEntries, aggregateStatus: trueStatus, sourceGame: gamesByName[name] ?? gamesByName[name.lowercased()]))
             }
             if let diskStatus {
-                nodes.append(GameNode(id: "game-\(name)-chd", name: name, entries: diskEntries, aggregateStatus: diskStatus, isDiskRow: true, sourceGame: gamesByName[name]))
+                nodes.append(GameNode(id: "game-\(name)-chd", name: name, entries: diskEntries, aggregateStatus: diskStatus, isDiskRow: true, sourceGame: gamesByName[name] ?? gamesByName[name.lowercased()]))
             }
             return nodes
         }

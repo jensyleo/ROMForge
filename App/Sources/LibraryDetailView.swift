@@ -9477,7 +9477,14 @@ struct LibraryDetailView: View {
             // newer one that's the only result anyone will ever see. This
             // is the pipeline that runs after EVERY real scan, so it's the
             // most consequential place to check.
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                // A cancelled run never reaches the flag reset below; clear the
+                // overlay here unless a newer run has already taken over.
+                await MainActor.run {
+                    if generation == folderRecomputeGeneration { isPreloadingZipComments = false }
+                }
+                return
+            }
             let gamesInFolder = Self.recomputeGamesInFolder(entries: entries, selectedFolder: folder)
             let t4 = Date()
             let scoped = Self.scoped(entries, databaseFilter: databaseFilter, romFolder: folder, gamesInFolder: gamesInFolder)
@@ -9489,7 +9496,14 @@ struct LibraryDetailView: View {
                 precomputedScoped: scoped
             )
             let t6 = Date()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                // A cancelled run never reaches the flag reset below; clear the
+                // overlay here unless a newer run has already taken over.
+                await MainActor.run {
+                    if generation == folderRecomputeGeneration { isPreloadingZipComments = false }
+                }
+                return
+            }
             let nodes = Self.computeGameNodes(
                 baseNodes: baseNodes, gameAggregateStatusByName: aggStatus, showUnknownArchives: showUnknown,
                 activeStatusFilters: statusFilters, hiddenOneGameOneROMNames: show1G1R ? oneGameOneROMSummary.hiddenWhenFilteredNames : []

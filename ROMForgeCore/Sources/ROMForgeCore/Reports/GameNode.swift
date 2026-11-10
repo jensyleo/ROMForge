@@ -160,7 +160,14 @@ public struct GameNode: Identifiable, Sendable {
     /// the synthetic "Surplus files"/unrecognized-archive bucket, which
     /// has no real DAT game behind it at all).
     public var gameName: String {
-        firstNonEmpty(\.gameDescription) ?? nonEmpty(sourceGame?.description) ?? name
+        let description = firstNonEmpty(\.gameDescription) ?? nonEmpty(sourceGame?.description)
+        // Redump's Wii U (WUX) DAT stores the disc ID and CRC ("Game ID:
+        // WUP-P-…, Disc CRC: …") as each game's description. Those titles
+        // are WUP-prefixed Wii U serials, so the DAT's own game name is shown.
+        if let description, description.hasPrefix("Game ID: WUP-"), let sourceName = nonEmpty(sourceGame?.name) {
+            return sourceName
+        }
+        return description ?? name
     }
 
     /// The archive name the DAT implies for this game — the ".zip per

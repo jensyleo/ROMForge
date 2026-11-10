@@ -4,6 +4,15 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-11-10
+
+### Fixed
+- The "Reading ZIP comments…" overlay could stay on screen indefinitely when a zip-comment read was cancelled (for example, when a newer scan replaced it); it now clears in every case.
+- Game rows in the table were not linked to their DAT game when the name differed in letter case, so DAT fields (year, manufacturer, "Clone of"…) could be blank for any system. Lookups now ignore case.
+- Wii U (WUX) DAT: the Game name column showed the disc ID and CRC; it now shows the game's own name.
+- A DAT with a rom whose size is empty (No-Intro lists missing files that way, e.g. Wii U) was rejected as a whole; such roms are now kept as unknown size and matched by hash.
+- A DAT picked as a `.zip` (as No-Intro and Redump deliver them) is unpacked on import; before, the app could not read it.
+
 ## [1.8.0] - 2026-11-05
 
 ### Added
