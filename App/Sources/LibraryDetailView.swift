@@ -7713,7 +7713,7 @@ struct LibraryDetailView: View {
                 lastGamesClickID = selectedGameID
             },
             gameStatusIcon: { AnyView(gameStatusIcon(for: $0)) },
-            infoText: { infoText(for: $0) },
+            infoText: { infoText(for: $0) + switchGameSummarySuffix(for: $0) },
             zipCommentHelpText: { zipCommentHelpText(for: $0) },
             totalSizeText: { totalSizeText(for: $0) },
             gameDescription: { gameDescription(forMachineName: $0) },
@@ -8442,7 +8442,7 @@ struct LibraryDetailView: View {
             romCell: { content, entry in AnyView(romCell(content, entry: entry)) },
             romStatusIcon: { AnyView(romStatusIcon(for: $0)) },
             romNameText: { romNameText(for: $0) },
-            infoText: { infoText(for: $0) },
+            infoText: { switchKindPrefix(for: $0) + infoText(for: $0) },
             zipCommentHelpText: { zipCommentHelpText(for: $0) },
             sizeText: { sizeText(for: $0) },
             dumpStatusText: { dumpStatusText(for: $0) },
@@ -10661,9 +10661,34 @@ struct LibraryDetailView: View {
     }
 
     private var selectedRomRows: [RomRow] {
-        (selectedGameNode?.entries ?? []).map { entry in
+        var entries = selectedGameNode?.entries ?? []
+        // A Switch game lists its base first, then the update, then its DLC.
+        if system.category == SystemCategoryKind.switchConsole.rawValue {
+            entries = entries.enumerated().sorted { lhs, rhs in
+                let lhsRank = SwitchTitleKind(fileName: lhs.element.name)?.sortRank ?? 3
+                let rhsRank = SwitchTitleKind(fileName: rhs.element.name)?.sortRank ?? 3
+                return lhsRank != rhsRank ? lhsRank < rhsRank : lhs.offset < rhs.offset
+            }.map(\.element)
+        }
+        return entries.map { entry in
             RomRow(id: "rom-\(entry.path?.path ?? "")-\(entry.name)-\(entry.game ?? "")", entry: entry)
         }
+    }
+
+    /// " — Update 6 · 2 DLC" for a Switch game in the Games table; empty for
+    /// every other system and for a game with only its base.
+    private func switchGameSummarySuffix(for node: GameNode) -> String {
+        guard system.category == SystemCategoryKind.switchConsole.rawValue, !node.isSurplusBucket,
+              let summary = SwitchGameSummary.text(files: node.entries.map { ($0.name, $0.status != .missing) }) else { return "" }
+        return " — " + summary
+    }
+
+    /// "Base — ", "Update 6 — " or "DLC — " for a Switch file, read from the
+    /// Title ID in its name; empty for every other system.
+    private func switchKindPrefix(for entry: AuditEntry) -> String {
+        guard system.category == SystemCategoryKind.switchConsole.rawValue,
+              let kind = SwitchTitleKind(fileName: entry.name) else { return "" }
+        return kind.label + " — "
     }
 
     private var selectedEntry: AuditEntry? {
