@@ -4546,7 +4546,7 @@ struct LibraryDetailView: View {
         rebuildDestination = destination
         rebuildOperationCount = viewModel.planRebuildPreviewCount(destination: destination, move: false)
         guard rebuildOperationCount > 0 else {
-            viewModel.logWarning("Nothing to rebuild — no matched ROMs in the current scan.")
+            viewModel.log("Nothing to rebuild — no matched ROMs in the current scan.")
             rebuildDestination = nil
             return
         }
@@ -4576,7 +4576,7 @@ struct LibraryDetailView: View {
             }.value
             removeUselessFilesCount = surplusCount + junkCount
             guard removeUselessFilesCount > 0 else {
-                viewModel.logWarning("Nothing to remove — no unrecognized files or macOS junk inside \"\(selectedRomFolder.lastPathComponent)\".")
+                viewModel.logSuccess("Nothing to remove — no unrecognized files or macOS junk inside \"\(selectedRomFolder.lastPathComponent)\".")
                 return
             }
             if junkCount > 0 {
@@ -4788,7 +4788,7 @@ struct LibraryDetailView: View {
         Task {
             fixAllCount = await viewModel.planFixAllPreviewCount(system: system, enabledActionIDs: Self.fixActionsEnabledForTesting)
             guard fixAllCount > 0 else {
-                viewModel.logWarning("Nothing to fix — every automatic Fix action already has nothing to do.")
+                viewModel.logSuccess("Nothing to fix — every automatic Fix action already has nothing to do.")
                 return
             }
             showFixAllConfirmation = true
@@ -4814,7 +4814,7 @@ struct LibraryDetailView: View {
     private func startRepairFromSiblingSets() {
         repairFromSiblingSetsCount = viewModel.planRepairFromSiblingSetsPreviewCount()
         guard repairFromSiblingSetsCount > 0 else {
-            viewModel.logWarning("Nothing to repair from sibling sets — no missing rom has a matching donor in this scan.")
+            viewModel.log("Nothing to repair from sibling sets — no missing rom has a matching donor in this scan.")
             return
         }
         showRepairFromSiblingSetsConfirmation = true
@@ -4829,7 +4829,7 @@ struct LibraryDetailView: View {
     private func startCreateDummyRoms() {
         createDummyRomsCount = viewModel.planCreateDummyRomsPreviewCount()
         guard createDummyRomsCount > 0 else {
-            viewModel.logWarning("Nothing to create — no missing nodump rom found in this scan.")
+            viewModel.logSuccess("Nothing to create — no missing nodump rom found in this scan.")
             return
         }
         showCreateDummyRomsConfirmation = true
@@ -4856,7 +4856,7 @@ struct LibraryDetailView: View {
         }
         removeZipCommentsCount = viewModel.planRemoveZipCommentsPreviewCount(scopeFolders: [selectedRomFolder])
         guard removeZipCommentsCount > 0 else {
-            viewModel.logWarning("Nothing to remove — no matched archive inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan has a comment.")
+            viewModel.logSuccess("Nothing to remove — no matched archive inside \"\(selectedRomFolder.lastPathComponent)\" in the current scan has a comment.")
             return
         }
         showRemoveZipCommentsConfirmation = true
@@ -4887,7 +4887,7 @@ struct LibraryDetailView: View {
         guard !fileURLs.isEmpty else { return }
         contextMenuRemoveZipCommentsCount = viewModel.planRemoveZipCommentsPreviewCount(scopeFolders: fileURLs)
         guard contextMenuRemoveZipCommentsCount > 0 else {
-            viewModel.logWarning("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no matched archive here has a comment.")
+            viewModel.logSuccess("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no matched archive here has a comment.")
             return
         }
         contextMenuRemoveZipCommentsURLs = fileURLs
@@ -4916,7 +4916,7 @@ struct LibraryDetailView: View {
             let count = await viewModel.planCollectSamplesPreviewCount(system: system)
             collectSamplesCount = count
             guard count > 0 else {
-                viewModel.logWarning("Nothing to collect — no matching sample zip found in this system's own ROM folders.")
+                viewModel.log("Nothing to collect — no matching sample zip found in this system's own ROM folders.")
                 return
             }
             showCollectSamplesConfirmation = true
@@ -4932,7 +4932,7 @@ struct LibraryDetailView: View {
     private func startMakeSelfContained() {
         makeSelfContainedCount = viewModel.planMakeSelfContainedPreviewCount()
         guard makeSelfContainedCount > 0 else {
-            viewModel.logWarning("Nothing to copy — every game in this scan is already self-contained.")
+            viewModel.logSuccess("Nothing to copy — every game in this scan is already self-contained.")
             return
         }
         showMakeSelfContainedConfirmation = true
@@ -4947,7 +4947,7 @@ struct LibraryDetailView: View {
     private func startRenameRomsInArchive() {
         renameRomsInArchiveCount = viewModel.planRenameRomsInArchivePreviewCount(scopeFolders: selectedRomFolder.map { [$0] } ?? [])
         guard renameRomsInArchiveCount > 0 else {
-            viewModel.logWarning("Nothing to fix — every rom entry already matches the DAT, styled exactly per \"Roms case\" in Settings → Fix.")
+            viewModel.logSuccess("Nothing to fix — every rom entry already matches the DAT, styled exactly per \"Roms case\" in Settings → Fix.")
             return
         }
         // jensyleo's own request (2026-09-10): the confirmation exists to
@@ -4976,7 +4976,7 @@ struct LibraryDetailView: View {
     private func startFixMismatchedFiles() {
         fixMismatchedFilesCount = viewModel.planFixPreviewCount(scopeFolders: selectedRomFolder.map { [$0] } ?? [])
         guard fixMismatchedFilesCount > 0 else {
-            viewModel.logWarning("Nothing to fix\(selectedRomFolder.map { " inside \"\($0.lastPathComponent)\"" } ?? "") — every File name already matches the DAT, styled exactly per \"Sets case\" in Settings → Fix.")
+            viewModel.logSuccess("Nothing to fix\(selectedRomFolder.map { " inside \"\($0.lastPathComponent)\"" } ?? "") — every File name already matches the DAT, styled exactly per \"Sets case\" in Settings → Fix.")
             return
         }
         guard currentSetsCasePolicyRisksCaseMismatch() else {
@@ -5007,7 +5007,7 @@ struct LibraryDetailView: View {
         guard !fileURLs.isEmpty else { return }
         contextMenuFixMismatchedFilesCount = viewModel.planFixPreviewCount(scopeFolders: fileURLs)
         guard contextMenuFixMismatchedFilesCount > 0 else {
-            viewModel.logWarning("Nothing to fix\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — every File name already matches the DAT, styled exactly per \"Sets case\" in Settings → Fix.")
+            viewModel.logSuccess("Nothing to fix\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — every File name already matches the DAT, styled exactly per \"Sets case\" in Settings → Fix.")
             return
         }
         contextMenuFixMismatchedFileURLs = fileURLs
@@ -5037,7 +5037,7 @@ struct LibraryDetailView: View {
         guard !fileURLs.isEmpty else { return }
         contextMenuRenameRomsInArchiveCount = viewModel.planRenameRomsInArchivePreviewCount(scopeFolders: fileURLs, entryKeys: entryKeys)
         guard contextMenuRenameRomsInArchiveCount > 0 else {
-            viewModel.logWarning("Nothing to fix\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — every rom entry already matches the DAT, styled exactly per \"Roms case\" in Settings → Fix.")
+            viewModel.logSuccess("Nothing to fix\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — every rom entry already matches the DAT, styled exactly per \"Roms case\" in Settings → Fix.")
             return
         }
         contextMenuFixFileURLs = fileURLs
@@ -5072,7 +5072,7 @@ struct LibraryDetailView: View {
         guard !fileURLs.isEmpty else { return }
         contextMenuRemoveUselessFilesCount = viewModel.planRemoveUselessFilesPreviewCount(scopeFolders: fileURLs)
         guard contextMenuRemoveUselessFilesCount > 0 else {
-            viewModel.logWarning("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no unrecognized files here.")
+            viewModel.logSuccess("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no unrecognized files here.")
             return
         }
         contextMenuRemoveUselessFilesURLs = fileURLs
@@ -5094,7 +5094,7 @@ struct LibraryDetailView: View {
         guard !fileURLs.isEmpty else { return }
         contextMenuRemoveRedundantFilesCount = viewModel.planRemoveRedundantFilesPreviewCount(scopeFolders: fileURLs)
         guard contextMenuRemoveRedundantFilesCount > 0 else {
-            viewModel.logWarning("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no redundant files here.")
+            viewModel.logSuccess("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no redundant files here.")
             return
         }
         contextMenuRemoveRedundantFilesURLs = fileURLs
@@ -5110,7 +5110,7 @@ struct LibraryDetailView: View {
         guard !fileURLs.isEmpty else { return }
         contextMenuRemoveRedundantRomsCount = viewModel.planRemoveRedundantRomsPreviewCount(scopeFolders: fileURLs)
         guard contextMenuRemoveRedundantRomsCount > 0 else {
-            viewModel.logWarning("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no redundant roms here.")
+            viewModel.logSuccess("Nothing to remove\(LibraryViewModel.scopeSuffixForLog(fileURLs)) — no redundant roms here.")
             return
         }
         contextMenuRemoveRedundantRomsURLs = fileURLs
@@ -5127,7 +5127,7 @@ struct LibraryDetailView: View {
     private func startConvertToSplit() {
         convertToSplitCount = viewModel.planConvertToSplitPreviewCount()
         guard convertToSplitCount > 0 else {
-            viewModel.logWarning("Nothing to strip — no clone in this scan has a rom already, exactly, in its parent's own archive.")
+            viewModel.logSuccess("Nothing to strip — no clone in this scan has a rom already, exactly, in its parent's own archive.")
             return
         }
         showConvertToSplitConfirmation = true
@@ -5172,7 +5172,7 @@ struct LibraryDetailView: View {
                 // `GameTreeTableView`'s own `hasMaintenanceDonor` gate),
                 // but the toolbar's unscoped entry has no such cheap
                 // pre-check, so it still needs this explicit log line.
-                viewModel.logWarning("Nothing to repair from the Maintenance folder\(LibraryViewModel.scopeSuffixForLog(scopeFolders)).")
+                viewModel.log("Nothing to repair from the Maintenance folder\(LibraryViewModel.scopeSuffixForLog(scopeFolders)).")
                 // jensyleo's own report (2026-09-22): the donor-scan
                 // overlay gave no visible sign of when it finished, and
                 // this "nothing found" outcome previously lived ONLY in
@@ -5211,7 +5211,7 @@ struct LibraryDetailView: View {
         let scopeName = selectedRomFolder.map { "inside \"\($0.lastPathComponent)\"" } ?? "in this system"
         removeRedundantFilesCount = viewModel.planRemoveRedundantFilesPreviewCount(scopeFolders: scopeFolders)
         guard removeRedundantFilesCount > 0 else {
-            viewModel.logWarning("Nothing to remove — no redundant files \(scopeName) in the current scan.")
+            viewModel.logSuccess("Nothing to remove — no redundant files \(scopeName) in the current scan.")
             return
         }
         showRemoveRedundantFilesConfirmation = true
@@ -5273,7 +5273,7 @@ struct LibraryDetailView: View {
         }
         organizeBIOSFilesCount = viewModel.planOrganizeBIOSFilesPreviewCount()
         guard organizeBIOSFilesCount > 0 else {
-            viewModel.logWarning("Nothing to organize — no BIOS files found outside the configured BIOS folder in the current scan.")
+            viewModel.logSuccess("Nothing to organize — no BIOS files found outside the configured BIOS folder in the current scan.")
             return
         }
         organizeBIOSFilesLines = viewModel.planOrganizeBIOSFilesPreviewLines()
@@ -5295,7 +5295,7 @@ struct LibraryDetailView: View {
         }
         organizeComplementaryChipsCount = viewModel.planOrganizeComplementaryChipsPreviewCount()
         guard organizeComplementaryChipsCount > 0 else {
-            viewModel.logWarning("Nothing to organize — no complementary chip files found outside the configured Complementary Chips folder in the current scan.")
+            viewModel.logSuccess("Nothing to organize — no complementary chip files found outside the configured Complementary Chips folder in the current scan.")
             return
         }
         organizeComplementaryChipsLines = viewModel.planOrganizeComplementaryChipsPreviewLines()
@@ -5314,7 +5314,7 @@ struct LibraryDetailView: View {
         let scopeName = selectedRomFolder.map { "inside \"\($0.lastPathComponent)\"" } ?? "in this system"
         removeRedundantRomsCount = viewModel.planRemoveRedundantRomsPreviewCount(scopeFolders: scopeFolders)
         guard removeRedundantRomsCount > 0 else {
-            viewModel.logWarning("Nothing to remove — no redundant roms \(scopeName) in the current scan.")
+            viewModel.logSuccess("Nothing to remove — no redundant roms \(scopeName) in the current scan.")
             return
         }
         showRemoveRedundantRomsConfirmation = true
@@ -5379,7 +5379,7 @@ struct LibraryDetailView: View {
     private func startHandleCorruptedFiles() {
         handleCorruptedFilesCount = viewModel.planCorruptedFilesPolicyPreviewCount()
         guard handleCorruptedFilesCount > 0 else {
-            viewModel.logWarning("Nothing to handle — no internally-corrupt rom found, or the configured policy has nothing to do.")
+            viewModel.logSuccess("Nothing to handle — no internally-corrupt rom found, or the configured policy has nothing to do.")
             return
         }
         showHandleCorruptedFilesConfirmation = true
@@ -5394,7 +5394,7 @@ struct LibraryDetailView: View {
     private func startConvertToMerged() {
         convertToMergedCount = viewModel.planConvertToMergedPreviewCount()
         guard convertToMergedCount > 0 else {
-            viewModel.logWarning("Nothing to merge — no clone in this scan qualifies (see the toolbar action's own help text for what disqualifies one).")
+            viewModel.log("Nothing to merge — no clone in this scan qualifies (see the toolbar action's own help text for what disqualifies one).")
             return
         }
         showConvertToMergedConfirmation = true
