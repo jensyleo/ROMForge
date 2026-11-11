@@ -4,6 +4,12 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-11-11
+
+### Fixed
+- Nintendo Switch: the scan's "Done" line in the Log turned amber when the only missing entries were newer published updates (listed by the TitleDB DAT as available); it is green now, and still amber when anything else is missing.
+- Log colors: "Nothing to …" messages that mean the collection is already clean (every name already matches, no redundant or unrecognized files, no comments, no BIOS or chips to organize…) are green instead of orange; neutral ones (no donor, no samples found, nothing to merge) use the normal color. Orange is kept for real problems and actions the user must take.
+
 ## [1.9.0] - 2026-11-10
 
 ### Added
