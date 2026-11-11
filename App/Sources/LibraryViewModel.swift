@@ -2274,7 +2274,10 @@ final class LibraryViewModel {
                 // A green "Done" when the scan actually found problems would
                 // read as "everything's fine" when it isn't — success only
                 // when nothing needs the user's attention.
-                kind: (summary.incorrect > 0 || summary.missing > 0) ? .warning : .success
+                // A Switch DAT lists the newest published update as a
+                // size-0 placeholder when the collection lacks it: that is
+                // news ("update available"), not a broken set.
+                kind: (summary.incorrect > 0 || summary.missing > Self.availableSwitchUpdateCount(in: summary)) ? .warning : .success
             )
             let scanFinishedAt = Date()
             lastScanDate = scanFinishedAt
@@ -2689,7 +2692,7 @@ final class LibraryViewModel {
             // "Sets case" would re-style — see `mismatchOperations`/
             // `caseOnlyOperations` above. Nothing planned means nothing
             // for either half to do, uppercase or not.
-            logWarning("Nothing to fix\(scopeSuffix) — every File name already matches the DAT, styled exactly per \"Sets case\" (\(FixPreferencesSettings.currentSetsCasePolicy().rawValue)).")
+            logSuccess("Nothing to fix\(scopeSuffix) — every File name already matches the DAT, styled exactly per \"Sets case\" (\(FixPreferencesSettings.currentSetsCasePolicy().rawValue)).")
         }
         postFixResultPopup(action: "Fix Mismatched Files", succeeded: succeeded, failed: failed, failureLines: outcome.failureLines)
     }
@@ -3087,7 +3090,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Removed \(succeeded) useless file(s).")
         } else {
-            logWarning("Nothing to remove — no unrecognized files in the current scan.")
+            logSuccess("Nothing to remove — no unrecognized files in the current scan.")
         }
         postFixResultPopup(action: "Remove Useless Files", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -3200,7 +3203,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Removed \(succeeded) redundant file(s).")
         } else {
-            logWarning("Nothing to remove — no redundant files in the current scan.")
+            logSuccess("Nothing to remove — no redundant files in the current scan.")
         }
         postFixResultPopup(action: "Remove Redundant Files", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -3304,7 +3307,7 @@ final class LibraryViewModel {
                 logSuccess("  \(line)")
             }
         } else {
-            logWarning("Nothing to organize — no BIOS files found outside \"\(biosFolder.lastPathComponent)\" in the current scan.")
+            logSuccess("Nothing to organize — no BIOS files found outside \"\(biosFolder.lastPathComponent)\" in the current scan.")
         }
         postFixResultPopup(action: "Organize BIOS Files", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -3389,7 +3392,7 @@ final class LibraryViewModel {
                 logSuccess("  \(line)")
             }
         } else {
-            logWarning("Nothing to organize — no complementary chip files found outside \"\(chipsFolder.lastPathComponent)\" in the current scan.")
+            logSuccess("Nothing to organize — no complementary chip files found outside \"\(chipsFolder.lastPathComponent)\" in the current scan.")
         }
         postFixResultPopup(action: "Organize Complementary Chips", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -3468,7 +3471,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Removed \(succeeded) redundant rom(s).")
         } else {
-            logWarning("Nothing to remove — no redundant roms in the current scan.")
+            logSuccess("Nothing to remove — no redundant roms in the current scan.")
         }
         postFixResultPopup(action: "Remove Redundant ROMs", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -4261,7 +4264,7 @@ final class LibraryViewModel {
         }
         let neededSetNames = Set(preloadedGames.filter(\.hasSamples).map { $0.sampleOf ?? $0.name })
         guard !neededSetNames.isEmpty else {
-            logWarning("Nothing to collect — the loaded DAT declares no samples.")
+            log("Nothing to collect — the loaded DAT declares no samples.")
             return
         }
         isBusy = true
@@ -4294,7 +4297,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Collected \(succeeded) sample zip(s) into the Samples folder.")
         } else {
-            logWarning("Nothing to collect — no matching sample zip found in this system's own ROM folders.")
+            log("Nothing to collect — no matching sample zip found in this system's own ROM folders.")
         }
         postFixResultPopup(action: "Fix Samples", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -4345,7 +4348,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Repaired \(succeeded) rom(s) from sibling sets.")
         } else {
-            logWarning("Nothing to repair from sibling sets — no missing rom has a matching donor in this scan.")
+            log("Nothing to repair from sibling sets — no missing rom has a matching donor in this scan.")
         }
         postFixResultPopup(action: "Repair from Sibling Sets", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -4395,7 +4398,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Created \(succeeded) dummy rom(s) for nodump entries.")
         } else {
-            logWarning("Nothing to create — no missing nodump rom found in this scan.")
+            logSuccess("Nothing to create — no missing nodump rom found in this scan.")
         }
         postFixResultPopup(action: "Create Dummy ROMs", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -4445,7 +4448,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Removed comments from \(succeeded) archive(s).")
         } else {
-            logWarning("Nothing to remove — no matched archive in this scan has a comment.")
+            logSuccess("Nothing to remove — no matched archive in this scan has a comment.")
         }
         postFixResultPopup(action: "Remove Zip Comments", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -4655,7 +4658,7 @@ final class LibraryViewModel {
         pendingMaintenanceFolderOperations = []
         pendingMaintenanceFolderReplaceOperations = []
         guard !fillOperations.isEmpty || !replaceOperations.isEmpty else {
-            logWarning("Nothing to repair from the Maintenance folder.")
+            log("Nothing to repair from the Maintenance folder.")
             return
         }
         isBusy = true
@@ -4786,7 +4789,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Copied \(succeeded) inherited rom(s) into their own archives.")
         } else {
-            logWarning("Nothing to copy — every game in this scan is already self-contained.")
+            logSuccess("Nothing to copy — every game in this scan is already self-contained.")
         }
         postFixResultPopup(action: "Make Self-Contained", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -4947,7 +4950,7 @@ final class LibraryViewModel {
             let where_ = scopeFolders.count == 1 ? scopeFolders[0].lastPathComponent : "the selected folder/File(s)"
             logWarning("Every one of the \(outcome.plannedCount) misnamed rom(s) this scan found lives OUTSIDE \(where_) — select the folder/File they're actually in (or \"Database\" for the whole system) and run this again.")
         } else {
-            logWarning("Nothing to fix\(scopeSuffix) — every rom entry already matches the DAT, styled exactly per \"Roms case\" (\(FixPreferencesSettings.currentRomsCasePolicy().rawValue)).")
+            logSuccess("Nothing to fix\(scopeSuffix) — every rom entry already matches the DAT, styled exactly per \"Roms case\" (\(FixPreferencesSettings.currentRomsCasePolicy().rawValue)).")
         }
         postFixResultPopup(action: "Fix Misnamed ROMs Inside Archives", succeeded: succeeded, failed: failed, failureLines: outcome.failureLines)
     }
@@ -5011,7 +5014,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Stripped \(succeeded) redundant rom(s) from clone archives.")
         } else {
-            logWarning("Nothing to strip — no clone in this scan has a rom already, exactly, in its parent's own archive.")
+            logSuccess("Nothing to strip — no clone in this scan has a rom already, exactly, in its parent's own archive.")
         }
         postFixResultPopup(action: "Strip Redundant ROMs (Split)", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -5091,7 +5094,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Handled \(succeeded) corrupted file(s).")
         } else {
-            logWarning("Nothing to handle — no internally-corrupt rom found, or the configured policy has nothing to do.")
+            logSuccess("Nothing to handle — no internally-corrupt rom found, or the configured policy has nothing to do.")
         }
         postFixResultPopup(action: "Handle Corrupted Files", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -5161,7 +5164,7 @@ final class LibraryViewModel {
         } else if succeeded > 0 {
             logSuccess("Merged \(succeeded) clone(s) into their parent.")
         } else {
-            logWarning("Nothing to merge — no clone in this scan qualifies (see the toolbar action's own help text for what disqualifies one).")
+            log("Nothing to merge — no clone in this scan qualifies (see the toolbar action's own help text for what disqualifies one).")
         }
         postFixResultPopup(action: "Merge Clones (Merged)", succeeded: succeeded, failed: failed, failureLines: failureLines)
     }
@@ -5567,5 +5570,13 @@ extension LibraryViewModel {
         if let data = try? JSONEncoder().encode(merged) { try? data.write(to: cacheURL, options: .atomic) }
         let withChip = results.values.filter { $0.info?.expansionChip != nil }.count
         log(String(format: "Read %d SNES header(s) in %.1fs (%d with an expansion chip).", results.count, Date().timeIntervalSince(started), withChip))
+    }
+
+    /// Missing rows that are only a newer Switch update the DAT advertises.
+    static func availableSwitchUpdateCount(in report: AuditReport) -> Int {
+        report.entries.filter { entry in
+            guard entry.status == .missing, entry.expectedSize == 0, case .update? = SwitchTitleKind(fileName: entry.name) else { return false }
+            return true
+        }.count
     }
 }
