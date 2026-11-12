@@ -1838,6 +1838,13 @@ enum SwitchTitleDBCache {
 
     private static func fetch(_ url: URL, cachedAs fileName: String) async throws -> Data {
         let cached = directory.appendingPathComponent(fileName)
+        // The title database is ~90 MB; reuse a copy younger than a day
+        // instead of downloading it again on every click.
+        if let modified = (try? cached.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+           Date().timeIntervalSince(modified) < 24 * 3600,
+           let data = try? Data(contentsOf: cached, options: .mappedIfSafe), !data.isEmpty {
+            return data
+        }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard (response as? HTTPURLResponse)?.statusCode == 200, !data.isEmpty else {
