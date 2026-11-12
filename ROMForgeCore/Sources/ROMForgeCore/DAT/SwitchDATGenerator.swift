@@ -21,12 +21,13 @@ public struct SwitchTitleDB: Sendable {
     }
 
     public init(namesJSON: Data, versionsText: String) throws {
+        // Decode only `id` and `name`: building the whole ~90 MB document as
+        // Foundation objects took gigabytes of memory.
+        struct Title: Decodable { let id: String?; let name: String? }
         var names: [String: String] = [:]
-        if let root = try JSONSerialization.jsonObject(with: namesJSON) as? [String: Any] {
-            for case let title as [String: Any] in root.values {
-                guard let id = title["id"] as? String, let name = title["name"] as? String, !name.isEmpty else { continue }
-                names[id.uppercased()] = name
-            }
+        for title in try JSONDecoder().decode([String: Title].self, from: namesJSON).values {
+            guard let id = title.id, let name = title.name, !name.isEmpty else { continue }
+            names[id.uppercased()] = name
         }
         var latest: [String: Int] = [:]
         for line in versionsText.split(whereSeparator: \.isNewline) {

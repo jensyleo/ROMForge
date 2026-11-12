@@ -4,6 +4,7 @@
 // This program is free software under the GNU General Public License v3.0
 // or later. It comes with ABSOLUTELY NO WARRANTY. See the LICENSE file.
 
+import AppKit
 import SwiftUI
 
 /// "ROMForge Help" window (`CommandGroup(replacing: .help)` in
@@ -99,10 +100,7 @@ private struct TopicPage: View {
                         }
 
                         ForEach(Array(section.paragraphs.enumerated()), id: \.offset) { _, paragraph in
-                            Text(HelpLinks.attributed(paragraph))
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            HelpText(paragraph, font: .body, nsFont: .systemFont(ofSize: NSFont.systemFontSize))
                         }
 
                         if !section.rows.isEmpty {
@@ -142,10 +140,7 @@ private struct TermRow: View {
                         .background(.quaternary, in: .capsule)
                 }
             }
-            Text(HelpLinks.attributed(row.detail))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HelpText(row.detail, font: .callout, nsFont: .preferredFont(forTextStyle: .callout))
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -202,5 +197,107 @@ enum HelpLinks {
               let upper = AttributedString.Index(swiftRange.upperBound, within: result) else { return }
         result[lower..<upper].link = url
         linked.append(range)
+    }
+}
+
+/// Secondary help text. A paragraph with a link is drawn by AppKit, which shows
+/// the pointing-hand cursor over the link (SwiftUI's `Text` keeps the arrow).
+private struct HelpText: View {
+    let text: String
+    let font: Font
+    let nsFont: NSFont
+
+    init(_ text: String, font: Font, nsFont: NSFont) {
+        self.text = text
+        self.font = font
+        self.nsFont = nsFont
+    }
+
+    var body: some View {
+        let attributed = HelpLinks.attributed(text)
+        if attributed.runs.contains(where: { $0.link != nil }) {
+            LinkLabel(text: attributed, font: nsFont)
+        } else {
+            Text(attributed)
+                .font(font)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct LinkLabel: NSViewRepresentable {
+    let text: AttributedString
+    let font: NSFont
+
+    func makeNSView(context: Context) -> LinkTextView {
+        let view = LinkTextView()
+        view.isEditable = false
+        view.isSelectable = false
+        view.drawsBackground = false
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        return view
+    }
+
+    func updateNSView(_ view: LinkTextView, context: Context) {
+        let string = NSMutableAttributedString(text)
+        let whole = NSRange(location: 0, length: string.length)
+        string.addAttribute(.font, value: font, range: whole)
+        string.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: whole)
+        string.enumerateAttribute(.link, in: whole) { value, range, _ in
+            guard value != nil else { return }
+            string.addAttributes([.foregroundColor: NSColor.linkColor, .underlineStyle: 0], range: range)
+        }
+        view.textStorage?.setAttributedString(string)
+        view.window?.invalidateCursorRects(for: view)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView view: LinkTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 480
+        guard let container = view.textContainer, let layout = view.layoutManager else { return nil }
+        container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        layout.ensureLayout(for: container)
+        return CGSize(width: width, height: ceil(layout.usedRect(for: container).height))
+    }
+}
+
+/// Non-selectable text whose links show the pointing hand and open on click.
+final class LinkTextView: NSTextView {
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func resetCursorRects() {}
+    override func cursorUpdate(with event: NSEvent) { updateCursor(event) }
+    override func mouseMoved(with event: NSEvent) { updateCursor(event) }
+    override func mouseEntered(with event: NSEvent) { updateCursor(event) }
+    override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
+
+    private func updateCursor(_ event: NSEvent) {
+        (link(at: event) != nil ? NSCursor.pointingHand : NSCursor.arrow).set()
+    }
+
+    private func link(at event: NSEvent) -> URL? {
+        guard let layout = layoutManager, let container = textContainer, let storage = textStorage, storage.length > 0 else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let glyph = layout.glyphIndex(for: point, in: container)
+        guard layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).contains(point) else { return nil }
+        switch storage.attribute(.link, at: layout.characterIndexForGlyph(at: glyph), effectiveRange: nil) {
+        case let url as URL: return url
+        case let text as String: return URL(string: text)
+        default: return nil
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let url = link(at: event) { NSWorkspace.shared.open(url) }
     }
 }

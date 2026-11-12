@@ -4,6 +4,12 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-11-11
+
+### Fixed
+- Nintendo Switch: "Generate from TitleDB…" downloaded the ~90 MB title database on every click and parsed it in a way that used several gigabytes of memory, slowing the network and the whole Mac. A copy younger than a day is reused now, and only each title's ID and name are decoded (about 180 MB, under a second).
+- Help: links now show the pointing-hand cursor and open on click.
+
 ## [1.9.1] - 2026-11-11
 
 ### Fixed
