@@ -9,7 +9,7 @@ import Testing
 @testable import ROMForgeCore
 
 /// No real, legally-obtainable CHD file was available in this environment
-/// (same restriction as sourcing ROMs — see TESTING.md). This test instead
+/// (same restriction as sourcing ROMs — see DEVELOPER-NOTES.txt). This test instead
 /// hand-assembles a complete, byte-accurate synthetic CHD v5 file — real
 /// 124-byte header, real 16-byte map header, a real Huffman-compressed map
 /// (same uniform-tree construction verified in `CHDV5MapReaderTests`), and
@@ -19,7 +19,7 @@ import Testing
 /// `CHDZlibDecompressor`) end to end through `CHDHunkReader`. This proves
 /// the pieces work together on a self-consistent file; it does not
 /// substitute for validating against an authentic chdman-produced CHD,
-/// which remains explicitly flagged as not yet done (see ROADMAP.md).
+/// which remains explicitly flagged as not yet done (see DEVELOPER-NOTES.txt).
 @Suite("CHDHunkReader")
 struct CHDHunkReaderTests {
     private struct BitPacker {

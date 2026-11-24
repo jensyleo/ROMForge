@@ -9,7 +9,7 @@ import Foundation
 /// A persisted (size, modification date) → hash mapping, keyed by file
 /// path — re-scanning a collection only needs to rehash a file whose size
 /// or mtime disagree with what's cached, not every file every time. This
-/// mirrors RomVault's own documented approach (see ROADMAP.md's research
+/// mirrors RomVault's own documented approach (see DEVELOPER-NOTES.txt's research
 /// notes): "only rehash if new or timestamps changed."
 ///
 /// Keying: a loose file's key is its own path. A zip-entry-shaped

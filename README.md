@@ -82,7 +82,7 @@ dependency resolution are wired into the app's own scan pipeline, not just
 Exercised against real collections, not only synthetic fixtures — both a
 full arcade MAME romset and a multi-folder NES collection (No-Intro,
 GoodTools-style, and a hand-picked subset) have been scanned, audited, and
-repaired through the running app. See [TESTING.md](TESTING.md) for the
+repaired through the running app. See `DEVELOPER-NOTES.txt` (Part 4) for the
 manual checklist.
 
 ## Using the app
@@ -172,7 +172,7 @@ source you trust. Known-good places to get one:
 
 Not usable for verifying ROMs against — these are game info/artwork
 databases, relevant only to the not-yet-built "Metadata scraping" feature
-(see `ROADMAP.md`)/`TODO.md`'s v2.0+ item:
+(see `DEVELOPER-NOTES.txt`)/`TODO.md`'s v2.0+ item:
 
 - [Arcade Database (adb.arcadeitalia.net)](https://adb.arcadeitalia.net) —
   arcade-specific metadata/artwork.
@@ -195,7 +195,7 @@ databases, relevant only to the not-yet-built "Metadata scraping" feature
 Not sources for *your* DAT/ROM files — these are the technical references
 consulted while building ROMForge itself (file formats, real-tool
 behavior, known bugs to avoid repeating). Full context and specific
-citations for each are in [ROADMAP.md](ROADMAP.md); this is the
+citations for each are in `DEVELOPER-NOTES.txt` (Part 5); this is the
 consolidated list of sites/projects behind that research:
 
 - [MAME's own source](https://github.com/mamedev/mame) — `-listxml`/
@@ -401,7 +401,7 @@ include path directly (Xcode's own build doesn't reliably pick up
 `brew install flac` is also required at build time (`CFLAC` module,
 `ROMForgeCore/Sources/CFLAC/`) even though no code calls into it yet — it
 was wired in ahead of implementing CHD's "cdfl" (CD+FLAC) codec, which
-remains unimplemented (see ROADMAP.md). Safe to leave installed; nothing
+remains unimplemented (see DEVELOPER-NOTES.txt). Safe to leave installed; nothing
 regresses if it's ever dropped once cdfl support lands or is abandoned.
 
 ### Bundled 7-Zip engine

@@ -12,7 +12,7 @@ import ROMForgeCore
 /// other `*Settings` enum in this app (e.g. `ModificationsEnabledSettings`,
 /// `RegionOrderSettings`). Deliberately holds keys for items not wired to
 /// any real action yet (see each key's own doc comment for status) — the
-/// plan (ROADMAP.md, "ClrMamePro's own 'Fix' preferences panel") calls for
+/// plan (DEVELOPER-NOTES.txt, "ClrMamePro's own 'Fix' preferences panel") calls for
 /// building this shell first so every toggle exists and persists, then
 /// wiring each one to its real action as that gets built, one at a time,
 /// rather than adding UI and behavior together per-item.

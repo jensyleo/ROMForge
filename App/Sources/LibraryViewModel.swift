@@ -1483,7 +1483,7 @@ final class LibraryViewModel {
         // folders cannot know that `ghouls.zip` also sits in one of them,
         // so it claimed whichever copy it was shown and the merge step
         // had to decide, blind, what to keep — producing the
-        // game-vanishes-from-the-other-folder flip-flop (TESTING.md §9.2
+        // game-vanishes-from-the-other-folder flip-flop (DEVELOPER-NOTES.txt §9.2
         // scenario #4) and three earlier live-found bugs before it. The
         // fix at the time: make EVERY scan walk and match EVERY folder,
         // always, regardless of what was actually asked for — scope would

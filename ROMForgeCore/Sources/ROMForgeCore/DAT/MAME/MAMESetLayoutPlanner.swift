@@ -21,7 +21,7 @@
 /// `mode`) — this replaces that.
 ///
 /// Additional edge cases below come from real bugs documented in
-/// ClrMamePro's/RomCenter's own forums (see ROADMAP.md's merge-mode
+/// ClrMamePro's/RomCenter's own forums (see DEVELOPER-NOTES.txt's merge-mode
 /// research notes) — deliberately handled as explicit rules here instead of
 /// being rediscovered the hard way once rebuild ships:
 /// - a **merged-set hash collision** (same rom filename, different content,

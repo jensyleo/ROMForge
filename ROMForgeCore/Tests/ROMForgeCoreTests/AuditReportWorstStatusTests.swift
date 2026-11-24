@@ -38,7 +38,7 @@ struct AuditReportWorstStatusTests {
         #expect(empty.worstStatus == nil)
     }
 
-    /// jensyleo's own report (2026-07-30, see ROADMAP.md "CHD/ROM
+    /// jensyleo's own report (2026-07-30, see DEVELOPER-NOTES.txt "CHD/ROM
     /// independence"): a missing CHD disk anywhere in a large MAME DAT
     /// (the common case — nobody has every arcade CD/hard-disk image)
     /// used to permanently pin this whole-system badge to "Bad" even when

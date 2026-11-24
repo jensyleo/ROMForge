@@ -21,7 +21,7 @@ public enum CHDHunkReaderError: Error, Equatable {
 /// this environment can decompress; a real CHD may use LZMA/Huffman/FLAC/CD
 /// composite at that same index depending on how it was created, which
 /// this cannot distinguish without a real file to confirm against — see
-/// ROADMAP.md), `compressionNone`, and `compressionSelf` are resolvable
+/// DEVELOPER-NOTES.txt), `compressionNone`, and `compressionSelf` are resolvable
 /// without external dependencies this environment doesn't have.
 /// `compressionParent` requires the parent CHD's own reader.
 public final class CHDHunkReader {
@@ -150,7 +150,7 @@ public final class CHDHunkReader {
             // framing for CD hunks (`chd_cd_flac_decompressor`) isn't a
             // standard container libFLAC's public API can read directly,
             // and no real CHD sample using this slot was available to
-            // validate a port against (see ROADMAP.md). None of a real
+            // validate a port against (see DEVELOPER-NOTES.txt). None of a real
             // CPS3 CHD's 2849 hunks used this slot in practice (only
             // `cdlz`/`cdzl` did) — reported clearly rather than
             // guessed at.
