@@ -192,7 +192,15 @@ public enum GameNodeBuilder {
         var surplusEntries: [AuditEntry] = []
 
         for entry in entries {
-            guard let game = entry.game else {
+            // A `.duplicateSet` entry lives in a SECOND, separate archive
+            // (e.g. "VAmazing Spider-Man….zip" next to the real
+            // "Amazing Spider-Man….zip"). Grouping it under its game's row
+            // folded that whole other archive into the real game's row —
+            // one combined row, the real set painted yellow, the duplicate
+            // file never visible on its own. It goes with the other
+            // per-archive buckets instead, so each physical file is its
+            // own row.
+            guard let game = entry.game, entry.status != .duplicateSet else {
                 surplusEntries.append(entry)
                 continue
             }

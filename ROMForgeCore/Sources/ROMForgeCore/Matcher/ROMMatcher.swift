@@ -1261,9 +1261,15 @@ public enum ROMMatcher {
                 // genuine ambiguity — multi-rom archives are entirely
                 // unaffected by this fallback and still require each
                 // entry's own name to match, exactly as before.
+                // A save/patch/artwork file named after the game (`Game.srm`
+                // beside `Game.sfc`) is never the ROM: with the ROM absent it
+                // would otherwise read as the game's one correct file.
                 if nameOnlyMatching, nameMatchIndex == nil,
-                   game.roms.count == 1, ownArchiveIndices.count == 1 {
-                    nameMatchIndex = ownArchiveIndices.first
+                   game.roms.count == 1, ownArchiveIndices.count == 1,
+                   let only = ownArchiveIndices.first,
+                   !(ForeignProgramFiles.isCompanionExtension((hashedFiles[only].file.name as NSString).pathExtension)
+                     && (hashedFiles[only].file.name as NSString).pathExtension.lowercased() != (rom.name as NSString).pathExtension.lowercased()) {
+                    nameMatchIndex = only
                 }
                 // "Ignore hash verification" trusts NAMES, but when this game's
                 // own archive holds a file whose content ALSO verifies, that

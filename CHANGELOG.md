@@ -4,6 +4,23 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-11-23
+
+### Added
+- Systems can be renamed from the sidebar's context menu ("Rename…"); the system's Maintenance subfolder follows the new name.
+- Nintendo Switch: every scan rebuilds a generated TitleDB DAT from the files on disk, so updates and DLC added later are recognized without regenerating it by hand. The Log says when it was rebuilt.
+- Nintendo Switch: "Generate from TitleDB…" still refreshes the title database when the ROM folders are not reachable (NAS disconnected) and says the DAT will be rebuilt on the next scan.
+
+### Fixed
+- A second copy of an archive under another name (for example `VAmazing….zip` next to `Amazing….zip`) is listed as its own row. Before, both were folded into one row that painted the real game amber and hid the duplicate.
+- Delete, Move to Trash, Copy and Move in File Actions now act on every file of a game made of several loose files (a Switch base, update and DLC; a disc's `.cue` and tracks) instead of one file per click.
+- "Fix Mismatched File" is no longer offered when the file already has the right name, and a rename to an identical name is never planned.
+- Adding a system with "scan after adding" enabled now scans it right away.
+- A save, patch, playlist or artwork file named after a game (`Game.srm`) is never taken for the game's ROM under name-only matching.
+- Right-clicking a game could freeze the app for about a second on large systems; the planning behind the menu's counts is now cached until the next scan.
+- Switching systems was slow after each launch because every ZIP comment was read again over the network; they are kept on disk between launches.
+- RetroArch is opened as a normal app instead of a child process, which made macOS list ROMForge under Login Items & Extensions → Allow in the Background. A failed RetroArch launch is now reported by RetroArch itself.
+
 ## [1.9.2] - 2026-11-11
 
 ### Fixed

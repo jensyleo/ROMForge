@@ -53,6 +53,8 @@ struct ContentView: View {
     // separately-destructive choice for the Maintenance subfolder — never
     // deleted silently as a side effect of the first choice.
     @State private var pendingSystemRemoval: RomSystem?
+    @State private var pendingSystemRename: RomSystem?
+    @State private var renameText = ""
 
     var body: some View {
         Group {
@@ -161,6 +163,19 @@ struct ContentView: View {
         } message: { dependency in
             Text(dependencyAlertMessage(for: dependency))
         }
+        .alert(
+            "Rename System",
+            isPresented: Binding(
+                get: { pendingSystemRename != nil },
+                set: { if !$0 { pendingSystemRename = nil } }
+            )
+        ) {
+            TextField("Name", text: $renameText)
+            Button("Rename") { renamePendingSystem() }
+            Button("Cancel", role: .cancel) { pendingSystemRename = nil }
+        } message: {
+            Text("The new name shows in the sidebar. A Maintenance subfolder named after the system is renamed with it.")
+        }
         .confirmationDialog(
             "Remove \"\(pendingSystemRemoval?.name ?? "")\"?",
             isPresented: Binding(
@@ -189,6 +204,25 @@ struct ContentView: View {
         }
     }
 
+    /// Renames the system and moves its Maintenance subfolder (named after
+    /// the system) along, unless a folder with the new name already exists.
+    private func renamePendingSystem() {
+        defer { pendingSystemRename = nil }
+        guard let system = pendingSystemRename else { return }
+        let newName = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, newName != system.name else { return }
+        var updated = system
+        updated.name = newName
+        if let oldFolder = MaintenanceFolderSettings.subfolderURL(for: system),
+           let newFolder = MaintenanceFolderSettings.subfolderURL(for: updated),
+           oldFolder != newFolder,
+           FileManager.default.fileExists(atPath: oldFolder.path),
+           !FileManager.default.fileExists(atPath: newFolder.path) {
+            try? FileManager.default.moveItem(at: oldFolder, to: newFolder)
+        }
+        store.update(updated)
+    }
+
     private var sidebarList: some View {
         List(selection: $store.selectedSystemID) {
             ForEach(groupedSystems, id: \.category) { group in
@@ -201,6 +235,12 @@ struct ContentView: View {
                         Text(system.name)
                         .tag(system.id)
                         .contextMenu {
+                            Button {
+                                renameText = system.name
+                                pendingSystemRename = system
+                            } label: {
+                                Label("Rename…", systemImage: "pencil")
+                            }
                             Button(role: .destructive) {
                                 pendingSystemRemoval = system
                             } label: {

@@ -235,6 +235,10 @@ public enum RebuildPlanner {
                 // A pure case-change (e.g. "AWBIOS.zip" → "awbios.zip") is
                 // never a real collision with itself — only a DIFFERENT
                 // occupied key blocks the rename.
+                // A name that is already right (after the same file-name
+                // cleanup) is not a rename: offering one sent the user to
+                // "Fix Mismatched File" for a problem inside the archive.
+                guard destination.lastPathComponent != hashedFile.file.url.lastPathComponent else { continue }
                 guard pathKey(destination) == pathKey(hashedFile.file.url) || !occupiedPaths.contains(pathKey(destination)) else { continue }
                 operations.append(.rename(from: hashedFile.file.url, to: destination))
                 occupiedPaths.remove(pathKey(hashedFile.file.url))
@@ -253,6 +257,7 @@ public enum RebuildPlanner {
                 let ext = archiveURL.pathExtension
                 let declaredName = ext.isEmpty ? gameResult.game.name : "\(gameResult.game.name).\(ext)"
                 let destination = archiveURL.deletingLastPathComponent().appendingPathComponent(mismatchFixName(declaredName: declaredName, policy: filesCasePolicy))
+                guard destination.lastPathComponent != archiveURL.lastPathComponent else { continue }
                 guard pathKey(destination) == pathKey(archiveURL) || !occupiedPaths.contains(pathKey(destination)) else { continue }
                 operations.append(.rename(from: archiveURL, to: destination))
                 occupiedPaths.remove(pathKey(archiveURL))
@@ -290,6 +295,7 @@ public enum RebuildPlanner {
             // destination; the second would fail at execution with
             // "Refusing to overwrite existing file" against the FIRST
             // one's freshly-renamed result.
+            guard destination.lastPathComponent != currentURL.lastPathComponent else { continue }
             guard pathKey(destination) == pathKey(currentURL) || !occupiedPaths.contains(pathKey(destination)) else { continue }
             operations.append(.rename(from: currentURL, to: destination))
             occupiedPaths.remove(pathKey(currentURL))
@@ -2161,6 +2167,13 @@ public enum ForeignProgramFiles {
         "downloaded_media", "screenshots", "marquees", "covers", "boxart", "snaps",
         "thumbnails", "wheel", "fanart", "titles",
     ]
+
+    /// `true` for a save, patch, playlist or artwork extension — a file that
+    /// sits beside a ROM under the game's name but is never the ROM itself.
+    public static func isCompanionExtension(_ pathExtension: String) -> Bool {
+        let ext = pathExtension.lowercased()
+        return protectedExtensions.contains(ext) || ext.hasPrefix("state")
+    }
 
     /// `true` when `url` is a known front-end file, or sits directly inside
     /// (or one level below) a known front-end media folder.

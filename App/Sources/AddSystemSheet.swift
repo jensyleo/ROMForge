@@ -378,8 +378,7 @@ struct AddSystemSheet: View {
 
     private func add() {
         guard let datURL, !romFolderURLs.isEmpty else { return }
-        onAdd(
-            RomSystem(
+        let system = RomSystem(
                 name: name.trimmingCharacters(in: .whitespaces),
                 category: category.rawValue,
                 datURL: datURL,
@@ -392,7 +391,12 @@ struct AddSystemSheet: View {
                 similarNameFixThreshold: category == .mame ? 0.80 : 0.50,
                 regionQualityHintsEnabled: category != .mame
             )
-        )
+        // "Auto-scan when adding a folder" covers the folders a new system
+        // is created with too; the scan starts when its view first appears.
+        if UserDefaults.standard.bool(forKey: "ROMForge.scan.autoScanOnAdd") {
+            PendingAutoScan.systemIDs.insert(system.id)
+        }
+        onAdd(system)
         dismiss()
     }
 }
@@ -492,4 +496,11 @@ enum RegionQualityOverrideStore {
         try RegionQualityOverrides.encode(notes: RegionQualityNotes.seed).write(to: url, options: .atomic)
         return url
     }
+}
+
+/// Systems created with "Auto-scan when adding a folder" on, waiting for
+/// their detail view to appear and start the scan.
+@MainActor
+enum PendingAutoScan {
+    static var systemIDs: Set<UUID> = []
 }

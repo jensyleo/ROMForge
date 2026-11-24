@@ -332,7 +332,30 @@ final class LibraryViewModel {
             unscopedFixOperationsCache = nil
             unscopedRenameRomsOperationsCache = nil
             redundantArchiveEntryCountsCache = nil
+            removeUselessOperationsCache = nil
+            removeRedundantFilesOperationsCache = nil
         }
+    }
+
+    /// The context menu asks for these counts every time it opens; planning
+    /// them over a whole collection on each right-click froze the app for
+    /// about a second on large systems (Switch). Reset with `matchReport`.
+    private var removeUselessOperationsCache: [RebuildOperation]?
+    private var removeRedundantFilesOperationsCache: [RebuildOperation]?
+
+    private func cachedRemoveUselessOperations(_ matchReport: MatchReport) -> [RebuildOperation] {
+        if let cached = removeUselessOperationsCache { return cached }
+        let operations = RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport)
+        removeUselessOperationsCache = operations
+        return operations
+    }
+
+    private func cachedRemoveRedundantFilesOperations(_ matchReport: MatchReport) -> [RebuildOperation] {
+        if let cached = removeRedundantFilesOperationsCache { return cached }
+        let operations = RebuildPlanner.planRemoveRedundantFiles(matchReport: matchReport)
+            + RebuildPlanner.planRemoveRedundantDisks(auditEntries: auditReport?.entries ?? [])
+        removeRedundantFilesOperationsCache = operations
+        return operations
     }
 
     /// `SimilarNameSuggester`'s own live suggestion for the file at `url`,
@@ -1427,6 +1450,7 @@ final class LibraryViewModel {
     func scan(system: RomSystem, folders: [URL]? = nil) async {
         lastScanFolders = folders
         isBusy = true
+        let refreshedSwitchDAT = await refreshGeneratedSwitchDATIfNeeded(system: system)
         // A cache hit skips the whole "Loading DAT" phase outright — there's
         // nothing to show progress for, and no point pretending otherwise.
         let datCacheKey = DATCacheKey(url: system.datURL, mergeMode: MAMEMergeModeSettings.current, biosMergeMode: MAMEMergeModeSettings.currentBios)
@@ -1448,6 +1472,7 @@ final class LibraryViewModel {
         matchCancellationFlag = cancellationFlag
         logLines.removeAll()
         defer { isBusy = false }
+        if refreshedSwitchDAT { log("Switch DAT rebuilt from the files on disk (new updates and DLC included).") }
 
         let scanStart = Date()
         // ─── History (kept for whoever touches this next) ──────────────
@@ -2783,7 +2808,7 @@ final class LibraryViewModel {
         // comment: also read from `GameTreeTableView`'s context-menu
         // construction closure, where a modal alert would fire spuriously.
         guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
-        return Self.restrictToScope(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport), scopeFolders: scopeFolders).count
+        return Self.restrictToScope(cachedRemoveUselessOperations(matchReport), scopeFolders: scopeFolders).count
     }
 
     /// Which of "File(s)"/"ROM(s)" the context menu's own "Remove Useless…"
@@ -2802,7 +2827,7 @@ final class LibraryViewModel {
     enum UselessRemovalKind { case files, roms, mixed }
     func planRemoveUselessFilesPreviewKind(scopeFolders: [URL]) -> UselessRemovalKind {
         guard let matchReport = requireMatchReport() else { return .files }
-        let operations = Self.restrictToScope(RebuildPlanner.planRemoveUselessFiles(matchReport: matchReport), scopeFolders: scopeFolders)
+        let operations = Self.restrictToScope(cachedRemoveUselessOperations(matchReport), scopeFolders: scopeFolders)
         let hasLooseFile = operations.contains { if case .delete = $0 { return true }; return false }
         let hasRomEntry = operations.contains { if case .removeEntryFromZip = $0 { return true }; return false }
         if hasLooseFile && hasRomEntry { return .mixed }
@@ -3104,12 +3129,10 @@ final class LibraryViewModel {
         // Silent on scope mismatch — see `planFixPreviewCount`'s own doc
         // comment: also read from the context-menu construction closure.
         guard scopeCoveredByLastScan(scopeFolders) else { return 0 }
-        let fileOperations = RebuildPlanner.planRemoveRedundantFiles(matchReport: matchReport)
-        let diskOperations = RebuildPlanner.planRemoveRedundantDisks(auditEntries: auditReport?.entries ?? [])
         let wholeArchiveOperations = RebuildPlanner.planRemoveRedundantWholeArchives(
             matchReport: matchReport, entryCounts: redundantArchiveEntryCounts(for: matchReport)
         )
-        return Self.restrictToScope(fileOperations + diskOperations + wholeArchiveOperations, scopeFolders: scopeFolders).count
+        return Self.restrictToScope(cachedRemoveRedundantFilesOperations(matchReport) + wholeArchiveOperations, scopeFolders: scopeFolders).count
     }
 
     /// Lists (never decompresses — both `SevenZipArchiveScanner.scan` and
@@ -5573,6 +5596,49 @@ extension LibraryViewModel {
     }
 
     /// Missing rows that are only a newer Switch update the DAT advertises.
+    /// A Switch DAT made by "Generate from TitleDB…" lists the files that
+    /// existed when it was made, so an update or DLC added later read as an
+    /// unknown file. Every scan rebuilds it from the files on disk (the title
+    /// database comes from its local copy, refreshed at most once a day) and
+    /// replaces it only when something changed. Returns true when replaced.
+    private func refreshGeneratedSwitchDATIfNeeded(system: RomSystem) async -> Bool {
+        let datURL = system.datURL
+        guard Self.isGeneratedSwitchDAT(at: datURL) else { return false }
+        let folders = system.romFolderURLs
+        guard folders.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) else { return false }
+        let depth = max(system.effectiveMaxSubfolderDepth, 0)
+        let replaced = (try? await Task.detached(priority: .userInitiated) { () -> Bool in
+            let (names, versions) = try await SwitchTitleDBCache.load()
+            let titleDB = try SwitchTitleDB(namesJSON: names, versionsText: String(decoding: versions, as: UTF8.self))
+            let files = SwitchCollectionScanner.files(in: folders, maxDepth: depth)
+            guard !files.isEmpty else { return false }
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyyMMdd-HHmmss"
+            let xml = SwitchDATGenerator.xml(for: SwitchDATGenerator.generate(files: files, titleDB: titleDB, version: formatter.string(from: Date())).dat)
+            let old = (try? String(contentsOf: datURL, encoding: .utf8)) ?? ""
+            func withoutVersion(_ text: String) -> String {
+                text.split(separator: "\n").filter { !$0.contains("<version>") }.joined(separator: "\n")
+            }
+            guard withoutVersion(old) != withoutVersion(xml) else { return false }
+            try xml.write(to: datURL, atomically: true, encoding: .utf8)
+            return true
+        }.value) ?? false
+        if replaced {
+            cachedDATKey = nil
+            cachedDATFile = nil
+            Self.sharedDATCache[system.id] = nil
+            Self.sharedRawDatasetCache[system.id] = nil
+        }
+        return replaced
+    }
+
+    nonisolated static func isGeneratedSwitchDAT(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let head = String(decoding: (try? handle.read(upToCount: 1024)) ?? Data(), as: UTF8.self)
+        return head.contains("<name>Nintendo - Nintendo Switch (TitleDB)</name>")
+    }
+
     static func availableSwitchUpdateCount(in report: AuditReport) -> Int {
         report.entries.filter { entry in
             guard entry.status == .missing, entry.expectedSize == 0, case .update? = SwitchTitleKind(fileName: entry.name) else { return false }
