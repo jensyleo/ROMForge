@@ -4,6 +4,9 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `test-dats/`: sample No-Intro and Redump DAT files (metadata only, stored unmodified) for trying the app, with a README that states their sources, ownership and terms, and a manifest with each file's SHA-256.
+
 ## [1.9.3] - 2026-11-23
 
 ### Added
