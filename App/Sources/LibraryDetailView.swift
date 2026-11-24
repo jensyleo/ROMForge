@@ -37,7 +37,7 @@ typealias GameNode = ROMForgeCore.GameNode
 /// are presence-only (does the DAT declare a disk/sample for this game),
 /// not verification — ROMForge doesn't check a `.chd` file's contents or a
 /// sample's presence on disk yet, that's still its own future milestone
-/// (see ROADMAP.md). "Games with bad dumps" reflects the DAT's own
+/// (see DEVELOPER-NOTES.txt). "Games with bad dumps" reflects the DAT's own
 /// `status="baddump"/"nodump"` claim about the reference dump, independent
 /// of what's found locally.
 /// Not `private` — `DatabaseFilterVisibilitySettings` (in
@@ -131,7 +131,7 @@ enum DatabaseFilter: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     /// Placeholder SF Symbols, one per category, standing in for real
-    /// custom icon designs — see ROADMAP.md's "Custom icon set" pending
+    /// custom icon designs — see DEVELOPER-NOTES.txt's "Custom icon set" pending
     /// item. Picked for a distinct silhouette per category rather than
     /// literal accuracy (there's no "verified" symbol shaped like the
     /// others, for instance), so at a glance each row still reads as a

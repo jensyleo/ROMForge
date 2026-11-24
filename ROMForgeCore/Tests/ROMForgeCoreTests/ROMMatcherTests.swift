@@ -137,7 +137,7 @@ struct ROMMatcherTests {
         // Left unconsumed in `consumed[]` (so a coincidental hash match by
         // some OTHER rom can still claim it normally), but must NOT also
         // reappear a second time in `surplusFiles` — real bug found live by
-        // jensyleo (2026-08-10, TESTING.md §9.2 scenario #8: corrupting one
+        // jensyleo (2026-08-10, DEVELOPER-NOTES.txt §9.2 scenario #8: corrupting one
         // real rom's byte in its own archive): the same physical file showed
         // up twice, once correctly as orange "Bad (hash mismatch)" and once
         // as a confusing, duplicate gray "Unrecognized" ghost row for the

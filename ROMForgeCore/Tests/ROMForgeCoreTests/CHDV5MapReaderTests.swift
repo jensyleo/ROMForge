@@ -8,7 +8,7 @@ import Testing
 @testable import ROMForgeCore
 
 /// No real CHD file was available to test against in this environment (the
-/// same restriction that applies to sourcing ROMs — see TESTING.md). These
+/// same restriction that applies to sourcing ROMs — see DEVELOPER-NOTES.txt). These
 /// tests instead hand-construct valid bitstreams per the exact algorithm
 /// ported from MAME's `chd_file::decompress_v5_map()`, verified by manual
 /// trace of `assign_canonical_codes` for the simplest non-trivial case: 16

@@ -9,7 +9,7 @@ import ROMForgeCore
 import SwiftUI
 
 /// Settings → "Fix" tab — Fase 2 Step 5. Parallels ClrMamePro's own
-/// Preferences → Fix tab (see ROADMAP.md's own screenshot review of it,
+/// Preferences → Fix tab (see DEVELOPER-NOTES.txt's own screenshot review of it,
 /// 2026-08-20): every policy that governs what the "Fix" action actually
 /// does, gathered in one place rather than folded into "General". Built as
 /// a shell first: every toggle here exists and persists (`FixPreferences
@@ -226,13 +226,13 @@ struct FixSettingsView: View {
             // own one-at-a-time manual-testing policy. "Unzip and rezip
             // every archive" was built the same way, then removed outright
             // the same day (jensyleo: "elimina eso, no lo vamos a usar, no
-            // tiene sentido para esta app") — see ROADMAP.md's own note for
+            // tiene sentido para esta app") — see DEVELOPER-NOTES.txt's own note for
             // the reasoning and for a future implementer's exact starting
             // point if that decision is ever revisited.
             // jensyleo's own decision (2026-09-11): "Allow multiple rom
             // formats" removed from the UI outright rather than kept as a
             // disabled toggle — this one is never going to be implemented
-            // (see ROADMAP.md's own note on it for the reasoning, and for a
+            // (see DEVELOPER-NOTES.txt's own note on it for the reasoning, and for a
             // future implementer's exact starting point if that changes).
             // "Find missing roms in scavenging folders" removed the same
             // day, same reasoning (jensyleo: "la idea es que solo busque
@@ -242,7 +242,7 @@ struct FixSettingsView: View {
             // design, and "Find ROMs…" already covers exactly the two
             // sources this should ever search (the Maintenance subfolder
             // and the system's own already-configured ROM folders) — see
-            // ROADMAP.md's own note for the full reasoning.
+            // DEVELOPER-NOTES.txt's own note for the full reasoning.
             // "Fix samples" implemented 2026-09-11 (jensyleo: "implementalo,
             // es clave para MAME") as "Fix Samples…" in the toolbar's own
             // "Fix" dropdown, once added to `LibraryDetailView

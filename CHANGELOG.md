@@ -4,6 +4,9 @@ All notable changes to ROMForge are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Documentation: the identification-states reference, filter checkpoint, NAOMI BIOS case study, manual testing checklist and roadmap are merged into a single `DEVELOPER-NOTES.txt`; the repository keeps only `README.md`, `CHANGELOG.md` and `SECURITY.md` as Markdown. References in the README and in code comments point to it.
+
 ### Added
 - `test-dats/`: sample No-Intro and Redump DAT files (metadata only, stored unmodified) for trying the app, with a README that states their sources, ownership and terms, and a manifest with each file's SHA-256.
 
@@ -658,7 +661,7 @@ jensyleo's own decision (2026-09-11), after asking exactly how the action worked
 vamos a usar, no tiene sentido para esta app." Fully removed from all three layers — `RebuildOperation
 .rewriteArchiveAsTorrentZip`, its `RebuildExecutor` implementation, `RebuildPlanner.planUnzipAndRezip`,
 the `LibraryViewModel`/`LibraryDetailView` wiring (toolbar action, confirmation dialog, preview count),
-and its Core unit tests — rather than left disabled. Documented in ROADMAP.md with the design that was
+and its Core unit tests — rather than left disabled. Documented in DEVELOPER-NOTES.txt with the design that was
 already built, for a future implementer if this decision is ever revisited.
 
 ### Removed — "Find missing roms in scavenging folders" (decided against, not deferred)
@@ -668,14 +671,14 @@ carpeta de reparación o de las ya agregadas a Rom Folder" — an arbitrary scav
 to any system is explicitly out of scope by design. What this toggle would have searched is already
 fully covered by "Repair from Maintenance Folder…" plus its own "Search missing ROMs in" scope picker
 (Maintenance subfolder alone, or that subfolder plus the system's own configured ROM folders).
-Documented in ROADMAP.md for a future implementer if this decision is ever revisited.
+Documented in DEVELOPER-NOTES.txt for a future implementer if this decision is ever revisited.
 
 ### Removed — "Allow multiple rom formats" (decided against, not deferred)
 
 jensyleo's own decision (2026-09-11): this "Not yet available" toggle in Settings → Fix is never going
 to be implemented (it would need a second write path besides the current TorrentZip-only one, with no
 decision on what that would even be), so it's removed from the UI outright rather than left as
-permanently-disabled clutter. Documented in ROADMAP.md, with its original scope, so a future
+permanently-disabled clutter. Documented in DEVELOPER-NOTES.txt, with its original scope, so a future
 implementer has an exact starting point if this is ever revisited.
 
 ### Added — three new Fix actions: Create Dummy ROMs, Remove Zip Comments, Unzip and Rezip
@@ -2202,7 +2205,7 @@ Bios merge mode's default changed from `.split` (BIOS kept as its own
 separate archive, the more common real-world convention) to `.nonMerged`
 (BIOS folded into every dependent game's own archive too) — jensyleo's own
 deliberate choice: fully Un-merged on *both* axes is the combination this
-session's manual testing pass (`TESTING.md`) starts from. Rom merge mode
+session's manual testing pass (`DEVELOPER-NOTES.txt`) starts from. Rom merge mode
 was already `.nonMerged` by default. The running app's current
 `UserDefaults` were also set directly to match, not just the fallback
 default, so this takes effect immediately without needing a "Restore
@@ -2266,9 +2269,9 @@ feature. Added a third section, "Development references" — the sites/
 projects (MAME's own source, Logiqx's DTD, ClrMamePro/RomCenter/RomVault's
 own docs and forums, libretro-database, libchdr, AntoPISA/
 MAME_SupportFiles, Batocera.linux) jensyleo originally shared at this
-project's start and that its own `ROADMAP.md` research write-ups already
+project's start and that its own `DEVELOPER-NOTES.txt` research write-ups already
 cite throughout — consolidated in the README as one list, pointing back
-to `ROADMAP.md` for the full citations/context behind each. Added a fourth
+to `DEVELOPER-NOTES.txt` for the full citations/context behind each. Added a fourth
 section, "MAME ecosystem resources" — a much broader reference matrix
 jensyleo shared covering the whole MAME ecosystem (official project,
 game databases, arcade hardware, ROM management tools, frontends,
@@ -3082,7 +3085,7 @@ dragged layout exactly.
   in the audit database (schema bumped to version 3).
 - Fields MAME's `-listxml` exposes but the parser doesn't read *at all*
   yet (driver status, control type, display specs, chip list, software
-  list refs) are documented in ROADMAP.md as future work — a bigger
+  list refs) are documented in DEVELOPER-NOTES.txt as future work — a bigger
   change (new parser elements, not just new columns).
 
 ### Fixed — "Rom files" folders no longer inherit "Database"'s status filter
@@ -3224,7 +3227,7 @@ dragged layout exactly.
   before the fix, 130 correct / 178 incorrect / 188,232 missing; after,
   308 correct (100% of the physical files present) / 0 incorrect / 187,760
   missing (all legitimately-absent games) / 0 surplus.
-- Corrected `ROADMAP.md`'s region/language checklist item, which read as
+- Corrected `DEVELOPER-NOTES.txt`'s region/language checklist item, which read as
   verified in general but was only ever tested against No-Intro/TOSEC DATs
   — MAME `-listxml` DATs have no structured or naming-convention-based
   region/language data at all, so showing nothing there is correct
@@ -3286,7 +3289,7 @@ dragged layout exactly.
   giving no visual distinction at a glance. Each now has its own SF
   Symbol (`DatabaseFilter.symbolName`). These are still placeholders, not
   real custom icon designs — tracked as a new pending item in
-  `ROADMAP.md` for whenever there's time for an icon design pass, same as
+  `DEVELOPER-NOTES.txt` for whenever there's time for an icon design pass, same as
   the app's own icon went through earlier.
 
 ### Added — add more ROM folders to an existing system, not just at creation
@@ -3335,7 +3338,7 @@ dragged layout exactly.
   tree with **File name** (the archive actually found on disk for this
   game, if any), **Info** (a one-line status), and **Expected file name**
   (the `<game>.zip` the DAT implies). Region/Language never applied to
-  MAME DATs anyway (see the Fixed section above/`TESTING.md`), so this
+  MAME DATs anyway (see the Fixed section above/`DEVELOPER-NOTES.txt`), so this
   isn't a loss for that use case; it matches a reference scanner-view
   screenshot the user provided.
 - **Info** now distinguishes 5 real categories instead of 4: **Ok**,
@@ -3462,7 +3465,7 @@ implemented:
   RomCenter's real docs/forums, MAME's/libchdr's actual source code,
   RomVault's docs, and DAT format specs (Logiqx DTD, TOSEC, No-Intro,
   Redump, MAME software lists). Findings, priority-ranked, are documented
-  in ROADMAP.md's new "Path to a full ClrMamePro/RomCenter replacement"
+  in DEVELOPER-NOTES.txt's new "Path to a full ClrMamePro/RomCenter replacement"
   section — covering a third DAT dialect ROMForge doesn't parse (MAME
   software lists), a Logiqx-parser permissiveness gap found in a live
   Redump DAT, the full CHD codec spec with a recommendation to wrap
@@ -3474,7 +3477,7 @@ implemented:
 
 ### Added
 
-- **CHD v5 hunk reading, tied together end to end** (Core — see ROADMAP.md
+- **CHD v5 hunk reading, tied together end to end** (Core — see DEVELOPER-NOTES.txt
   for the full honest scope of what remains environment-blocked): building
   on the hunk-map decoder (`CHDBitReader`, `CHDMapHuffmanDecoder`,
   `CHDV5MapReader`, all ported faithfully from MAME's real source), this
@@ -3588,7 +3591,7 @@ implemented:
   next to Export Report. 4 tests (90 total). This is something neither
   RomCenter nor ClrMamePro reliably ship (RomCenter promised it twice in
   forum threads, 2011 and 2018, with no confirmation it was ever delivered)
-  — see ROADMAP.md's research section for sources.
+  — see DEVELOPER-NOTES.txt's research section for sources.
 - `HeaderSkipRule` (Core, detection primitive — not yet wired into the
   matcher/app): studied RomCenter's own signature-plugin sources
   ([github.com/ebolefeysot/RomcenterPlugins](https://github.com/ebolefeysot/RomcenterPlugins),
@@ -3602,14 +3605,14 @@ implemented:
   only** — `ROMMatcher` doesn't call it yet, so a headered console dump
   still won't match a headerless DAT entry today; wiring it in needs
   `FileHasher` to also produce a header-stripped hash+size per file (see
-  ROADMAP.md).
+  DEVELOPER-NOTES.txt).
 - CHD/sample/bad-dump **categorization** (Core + App), rounding out the
   "Database" tree to all 7 of RomCenter's original categories. Both DAT
   parsers now read a rom's `status="baddump"/"nodump"` attribute
   (`DATRom.status: RomDumpStatus`), `<disk>` (already parsed for MAME,
   newly added to `LogiqxDATParser`), and `<sample>` (`DATGame.disks`/
   `hasSamples`). Threaded through `AuditEntry.hasCHD`/`hasSamples`/
-  `isBadDump`. **Important limitation, spelled out in ROADMAP.md**: this is
+  `isBadDump`. **Important limitation, spelled out in DEVELOPER-NOTES.txt**: this is
   presence-only, from what the DAT declares — it is NOT CHD file
   verification, NOT sample-file checking. ROMForge still doesn't look for
   a `.chd` file on disk, read one, or verify a sample exists; the "Games
@@ -3628,7 +3631,7 @@ implemented:
   status filters (e.g. Clones + Incorrect). RomCenter's "Games with CHD",
   "Games with samples" and "Games with bad dumps" are intentionally left
   out — ROMForge doesn't parse disk/sample/baddump data yet, and faking
-  those categories would misreport the collection (see ROADMAP.md).
+  those categories would misreport the collection (see DEVELOPER-NOTES.txt).
 - `AuditEntry.expectedSize`/`actualSize` (Core): threaded from `DATRom.size`
   and the scanned/hashed file's size, so the app can show a "Size" column.
 
@@ -3768,7 +3771,7 @@ implemented:
   use). Decoding hunk content for extraction/rebuilding remains a distinct,
   deferred milestone. Covered by synthetic byte-exact v5 headers built in
   tests (no real CHD file needed).
-- Added [TESTING.md](TESTING.md): a manual testing checklist for real ROM
+- Added `DEVELOPER-NOTES.txt` (TESTING): a manual testing checklist for real ROM
   collections. Every automated test uses synthetic fixtures — nothing has
   been run against a real ROM/BIOS/CHD collection yet, since that requires
   ROM files that cannot be legally sourced.

@@ -37,7 +37,7 @@ public enum GameCompletionStatus: String, Equatable, Sendable, CaseIterable {
     /// Scoped to rom entries only, falling back to all entries if the game
     /// has none — same `romOnlyGameCategory`-style fold `LibraryDetailView`
     /// already applies elsewhere, so a game's CHD status never affects its
-    /// rom completeness verdict (see ROADMAP.md "CHD/ROM independence").
+    /// rom completeness verdict (see DEVELOPER-NOTES.txt "CHD/ROM independence").
     /// `isOptional` entries are excluded from the required count for the
     /// same reason `gameCategory(for:)` excludes them: MAME itself can run
     /// the machine without them.

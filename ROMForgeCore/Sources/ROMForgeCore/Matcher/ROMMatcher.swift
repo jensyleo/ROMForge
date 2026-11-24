@@ -274,7 +274,7 @@ public enum ROMMatcher {
         // computation below as a ghost, confusingly labeled gray
         // "Unrecognized" right next to its own correct orange "Bad (hash
         // mismatch)" row. Real bug found live by jensyleo (2026-08-10,
-        // TESTING.md §9.2 scenario #8: corrupting one byte of a real rom).
+        // DEVELOPER-NOTES.txt §9.2 scenario #8: corrupting one byte of a real rom).
         // `.foundElsewhere` is deliberately NOT tracked here — that file IS
         // legitimately, correctly a real duplicate rom sitting elsewhere, so
         // surfacing it in the surplus list with its own accurate

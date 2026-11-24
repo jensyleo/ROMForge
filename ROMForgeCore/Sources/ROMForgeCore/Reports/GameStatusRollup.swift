@@ -41,7 +41,7 @@ public enum GameStatusRollup {
     }
 
     /// A game's headline status reflects its own roms, not its CHD disk —
-    /// see ROADMAP.md "CHD/ROM independence": a correct CHD must never drag
+    /// see DEVELOPER-NOTES.txt "CHD/ROM independence": a correct CHD must never drag
     /// down an otherwise-correct rom set, and vice versa.
     public static func romOnlyGameCategory(for entries: [AuditEntry]) -> AuditStatus {
         let romEntries = entries.filter { !$0.isDisk }

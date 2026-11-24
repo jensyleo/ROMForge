@@ -35,7 +35,7 @@ public struct CHDMapEntry: Equatable, Sendable {
 /// This reads the map only — it does not decompress hunk *bodies* (LZMA/
 /// MAME's own hunk-body Huffman/FLAC/CD-composite are still not
 /// implemented; zlib is, via `CHDZlibDecompressor`), which remains
-/// separate, later work (see ROADMAP.md). The map's CRC16 (`mapcrc`) is
+/// separate, later work (see DEVELOPER-NOTES.txt). The map's CRC16 (`mapcrc`) is
 /// verified when the caller supplies it, using `CHDCRC16` (MAME's own
 /// variant, `util::crc16_creator`) over the same 12-byte-per-hunk raw
 /// layout the real format checks against.

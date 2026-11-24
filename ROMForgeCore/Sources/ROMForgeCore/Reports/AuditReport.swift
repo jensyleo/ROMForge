@@ -638,7 +638,7 @@ public struct AuditReport: Equatable, Sendable {
     ///
     /// Computed from rom entries only (`!isDisk`), falling back to disk
     /// entries only if the report has no roms at all — jensyleo's own call
-    /// (2026-07-30, see ROADMAP.md "CHD/ROM independence"): a game's CHD
+    /// (2026-07-30, see DEVELOPER-NOTES.txt "CHD/ROM independence"): a game's CHD
     /// status must never affect its rom status or vice versa, and that
     /// applies at every rollup level, not just the per-game one. Before
     /// this, a single missing CHD disk anywhere in a large MAME DAT (the

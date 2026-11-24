@@ -7,7 +7,7 @@
 import Foundation
 
 /// How a confirmed-bad archive is handled — the "Corrupted files" three-way
-/// policy from ClrMamePro's own Fix panel (see ROADMAP.md's own review of
+/// policy from ClrMamePro's own Fix panel (see DEVELOPER-NOTES.txt's own review of
 /// it). Lives in `ROMForgeCore` (moved here from the App target,
 /// 2026-09-01) so `RebuildPlanner` can plan directly from a value of this
 /// type instead of the App target translating its own persisted setting

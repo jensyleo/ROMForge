@@ -39,7 +39,7 @@ public struct HomebrewLibraryDependency: Sendable, Equatable {
     /// from a new Homebrew library (adding one here costs nothing until
     /// that actually happens; it's just a name+path list, not a link
     /// dependency). `libFLAC` isn't listed yet: `CFLAC`/a hunk-body FLAC
-    /// decompressor don't exist yet (see ROADMAP.md's own CHD hunk-decode
+    /// decompressor don't exist yet (see DEVELOPER-NOTES.txt's own CHD hunk-decode
     /// section) — nothing calls a real libFLAC symbol, so there's nothing
     /// to check for until that changes.
     public static let all: [HomebrewLibraryDependency] = [

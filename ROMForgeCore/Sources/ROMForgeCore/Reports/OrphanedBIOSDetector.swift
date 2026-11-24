@@ -17,7 +17,7 @@ import Foundation
 /// able from any other BIOS row.
 ///
 /// Samples are the DAT's other "shared, easy to over-collect" file kind
-/// (see ROADMAP.md's "Samples — filename-only matching" section), but
+/// (see DEVELOPER-NOTES.txt's "Samples — filename-only matching" section), but
 /// ROMForge has no sample-file scanning at all yet — `AuditEntry.hasSamples`
 /// is presence-only (does the DAT declare one), never backed by an actual
 /// scanned sample file/path the way a rom or CHD is. There is currently

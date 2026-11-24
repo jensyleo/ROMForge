@@ -9,7 +9,7 @@ import Foundation
 /// A hand-curated note that one region's release of a game is objectively
 /// more complete/less censored than another — jensyleo's own idea
 /// (2026-09-30 conversation about Contra/Rush'n Attack/Bionic Commando),
-/// researched and costed 2026-10-01. See ROADMAP.md's own "region-quality
+/// researched and costed 2026-10-01. See DEVELOPER-NOTES.txt's own "region-quality
 /// visual indicator" section for the full research trail (why no existing
 /// dataset/API covers this — TCRF is prose-only wiki, ScreenScraper/
 /// LaunchBox/IGDB's "Region Priority" is a user preference, not an
@@ -114,7 +114,7 @@ public struct RegionQualityNote: Codable, Equatable, Sendable {
 public enum RegionQualityNotes {
     /// Proof-of-concept seed — exactly the 3 titles already researched live
     /// this session, not a claim of broad coverage. Curating more entries
-    /// is real, ongoing research work (see ROADMAP.md's own cost analysis)
+    /// is real, ongoing research work (see DEVELOPER-NOTES.txt's own cost analysis)
     /// — this seed exists to make the feature real and testable, not to be
     /// comprehensive.
     public static let seed: [RegionQualityNote] = coreSeed + platformSeed
