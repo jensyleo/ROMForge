@@ -420,3 +420,8 @@ GNU General Public License v3.0 — see [LICENSE](LICENSE).
 Bundled 7-Zip engine: GNU LGPL (with the unRAR restriction on commercial
 use of the unRAR code), by Igor Pavlov — see
 `App/Resources/Engine/License.txt`.
+
+### Third-Party Licenses
+
+- **7-Zip** — GNU LGPL (with the unRAR restriction), by Igor Pavlov; bundled as described above.
+- **Test DATs** (`test-dats/`) — DAT files published by No-Intro and Redump, included unmodified for testing only. They are not covered by this project's GPLv3 license; see [`test-dats/README.txt`](test-dats/README.txt) for their sources and terms.

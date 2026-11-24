@@ -1,0 +1,125 @@
+{
+  "note": "DAT files are stored exactly as downloaded; only the file names were tidied.",
+  "files": [
+    {
+      "file": "nintendo/Nintendo - Game Boy Advance (20260929-130236).dat",
+      "source": "No-Intro",
+      "sha256": "3e956544ab444da4c062e10e9c8831ad5dd79da52fe1249e5d816997c057f443",
+      "format": "dat",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "nintendo/Nintendo - GameCube (2026-06-13 18-14-01).dat",
+      "source": "Redump",
+      "sha256": "c55f671d022fe860cafd1fd62f5b4220542ef83ce9cb2c3c62e505265f412054",
+      "format": "dat",
+      "source_url": "https://redump.info/"
+    },
+    {
+      "file": "nintendo/Nintendo - Nintendo 3DS (Decrypted) (20261103-092522).dat",
+      "source": "No-Intro",
+      "sha256": "1a2a3098f8cf5303a877e0698647ae6230174da94a534e3349e96f4732f8df23",
+      "format": "dat",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "nintendo/Nintendo - Nintendo 64 (BigEndian) (20261002-141522).dat",
+      "source": "No-Intro",
+      "sha256": "e7b2a67bdc62c456cca36c6cd34de588770f7489932026375cd16e5642800751",
+      "format": "dat",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "nintendo/Nintendo - Nintendo DS (Decrypted) (20261026-060331).dat",
+      "source": "No-Intro",
+      "sha256": "0a949232b991f8870423b32275cd94c14da76e9de96ec3b11e6e386064ba6303",
+      "format": "dat",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "nintendo/Nintendo - Nintendo Entertainment System (Headered) (20260929-024435).dat",
+      "source": "No-Intro",
+      "sha256": "91e9b678eb7318b096616908db1043499bf555eaa7b4b1f1d529aa6d34d42014",
+      "format": "dat",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "nintendo/Nintendo - Super Nintendo Entertainment System (20261001-100404).dat",
+      "source": "No-Intro",
+      "sha256": "9a76ffd146cfea073e370d856c48c1f0da6cf1abb508346a202cf27b6ba1c65e",
+      "format": "dat",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "nintendo/Nintendo - Wii U - WUX (2026-08-29 15-52-43).dat",
+      "source": "Redump",
+      "sha256": "2889037627183c2fa027acca81ca5d08f1b3a245f9468c0edf840465c893da47",
+      "format": "dat",
+      "source_url": "https://redump.info/"
+    },
+    {
+      "file": "nintendo/Nintendo - Wii (2026-06-15 03-13-28).dat",
+      "source": "Redump",
+      "sha256": "334cd116bf55ce24943defe340e41defc4a12054c0d6249fe4ee93b41317d08a",
+      "format": "dat",
+      "source_url": "https://redump.info/"
+    },
+    {
+      "file": "nintendo/Nintendo - Nintendo 3DS (Encrypted) (20261027-215731).dat",
+      "source": "No-Intro",
+      "sha256": "702a19475b80c75765faa5b8c52c79107f8586634f026b1fd7fb6230a2cb64f9",
+      "format": "dat",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "nintendo/Nintendo - Nintendo Entertainment System (Headerless) (20261001-004706).dat",
+      "source": "No-Intro",
+      "sha256": "0fcd35590a5dc27f50c7b43f21f317d00e9ccd5a8708e948cf07d28a312d10f4",
+      "format": "dat",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "nintendo/Nintendo - Wii U (Digital) (CDN) (20261029-045701).dat.zip",
+      "source": "No-Intro",
+      "sha256": "7026c9e1ecc761f3e14c04f5bd6c7b45b307be248998456c8c4b392676f28878",
+      "format": "zip",
+      "sha256_of_unpacked_dat": "5f8e5507361cbfc4051507c0a5eb06797fc7358fb587b1037bdd61baefb68591",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "sega/Non-Redump - Sega - Sega Saturn (20260306-190347).zip",
+      "source": "Redump",
+      "sha256": "8005560f31ec445ca4a03a668a6bb7bd38eb96f60d84139fa875734a1388384e",
+      "format": "zip",
+      "source_url": "https://redump.info/"
+    },
+    {
+      "file": "sega/Sega - 32X (20261010-152927).zip",
+      "source": "No-Intro",
+      "sha256": "957c3fe7d23fc08306459c33ae5be1232316beb97fa442b0108189ebae95b811",
+      "format": "zip",
+      "source_url": "https://www.no-intro.org"
+    },
+    {
+      "file": "sega/Sega - Dreamcast - Datfile (1516) (2026-06-14 18-25-41).zip",
+      "source": "Redump",
+      "sha256": "b81813b5b111c920d3a0a7de3ab5a5bdd07d9745ed7ecd2f8710d5a5f86463a4",
+      "format": "zip",
+      "source_url": "https://redump.info/"
+    },
+    {
+      "file": "sega/Sega - Mega CD & Sega CD - Datfile (549) (2026-05-28 18-06-58).zip",
+      "source": "Redump",
+      "sha256": "c4d5d5925ee67e384c9f588d744c1bbe89c01756557f24649c151997fbe24b2f",
+      "format": "zip",
+      "source_url": "https://redump.info/"
+    },
+    {
+      "file": "sega/Sega - Mega Drive - Genesis (20261105-230705).zip",
+      "source": "No-Intro",
+      "sha256": "cf32eebf37367cac8fee09f52b21a6f90887d0dd15c7b6ac86501e1c3c64bef9",
+      "format": "zip",
+      "source_url": "https://www.no-intro.org"
+    }
+  ]
+}
