@@ -285,6 +285,44 @@ final class ZipCommentCache {
 
     private var storage: [URL: String?] = [:]
 
+    /// Kept on disk between launches: reading every zip's comment again over
+    /// the NAS the first time each system was opened made switching systems
+    /// slow after every launch. Scans and file actions still invalidate the
+    /// folders they touch, exactly as before.
+    private struct Persisted: Codable { var comments: [String: String]; var none: [String] }
+    private static var fileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("ROMForge", isDirectory: true).appendingPathComponent("ZipComments.json")
+    }
+    private var saveScheduled = false
+
+    init() {
+        guard let data = try? Data(contentsOf: Self.fileURL),
+              let persisted = try? JSONDecoder().decode(Persisted.self, from: data) else { return }
+        for (path, comment) in persisted.comments { storage[URL(fileURLWithPath: path)] = .some(comment) }
+        for path in persisted.none { storage[URL(fileURLWithPath: path)] = .some(nil) }
+    }
+
+    private func scheduleSave() {
+        guard !saveScheduled else { return }
+        saveScheduled = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            self.saveScheduled = false
+            var persisted = Persisted(comments: [:], none: [])
+            for (url, comment) in self.storage {
+                if let comment { persisted.comments[url.path] = comment } else { persisted.none.append(url.path) }
+            }
+            let target = Self.fileURL
+            DispatchQueue.global(qos: .utility).async {
+                guard let data = try? JSONEncoder().encode(persisted) else { return }
+                try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? data.write(to: target, options: .atomic)
+            }
+        }
+    }
+
     /// Cache-only — jensyleo's own premise (2026-10-01), applied globally
     /// and enforced strictly here: "Solo consultar la NAS para escaneos y
     /// Fix. Lo demas debe estar en cache." Used to have a live
@@ -345,6 +383,7 @@ final class ZipCommentCache {
             let path = url.standardizedFileURL.path
             return !standardizedFolders.contains { path == $0 || path.hasPrefix($0 + "/") }
         }
+        scheduleSave()
     }
 
     /// Warms the cache with already-computed reads — jensyleo's own report
@@ -370,6 +409,7 @@ final class ZipCommentCache {
         for (url, comment) in values {
             storage[url] = comment
         }
+        if !values.isEmpty { scheduleSave() }
     }
 
     /// Read-only snapshot of the whole cache — captured on `@MainActor`
@@ -4315,7 +4355,13 @@ struct LibraryDetailView: View {
             // phase of a real Scan, so simply adding/opening a system with
             // its DAT+folders already selected did nothing until the user
             // pressed "Scan Folder".
-            viewModel.startPreloadDAT(system: system)
+            // A scan loads the DAT itself, so a system just created with
+            // auto-scan on skips the separate preload.
+            if PendingAutoScan.systemIDs.remove(system.id) != nil {
+                viewModel.startScan(system: system)
+            } else {
+                viewModel.startPreloadDAT(system: system)
+            }
             // jensyleo's own report (2026-09-16): deleting a system's
             // Maintenance subfolder (Settings, or the sidebar's own
             // "Remove System and Delete Maintenance Folder") looked like it

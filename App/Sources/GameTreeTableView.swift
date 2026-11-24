@@ -423,9 +423,15 @@ struct GameTreeTableView: View {
                 // accepting an array, since `urlIsInScope` already treats
                 // each as its own exact-path scope, same mechanism "Rescan
                 // This File" above already relies on for `scan(folders:)`.
-                let fileURLs = selection.compactMap { selectedID in
-                    cachedGameNodesByID[selectedID].flatMap(actualFileURL)
-                }
+                // Every file of each selected game (see `GameNode
+                // .fileActionURLs`), so one Delete covers a whole Switch
+                // title or disc set instead of one file per click.
+                var seenFileURLs = Set<URL>()
+                let fileURLs = selection.flatMap { selectedID -> [URL] in
+                    guard let node = cachedGameNodesByID[selectedID] else { return [] }
+                    let urls = node.fileActionURLs
+                    return urls.count > 1 ? urls : (actualFileURL(node).map { [$0] } ?? [])
+                }.filter { seenFileURLs.insert($0).inserted }
                 // "File Actions" (Move to Trash, Delete Permanently, Copy/
                 // Move to Folder…) — jensyleo's own request (2026-09-11):
                 // plain, OS-level operations that don't depend on the DAT

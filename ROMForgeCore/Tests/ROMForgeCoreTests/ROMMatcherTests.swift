@@ -1655,7 +1655,11 @@ struct LooseSingleRomTests {
 
     @Test("a loose file whose extension differs is offered a rename (hash mode)")
     func hashModeRename() throws {
-        let (dat, zipped, loose) = sample()
+        // `.n64` is a legitimate N64 byte-order extension that a rename keeps,
+        // so it would not be a rename at all; any other extension is.
+        let (dat, zipped, _) = sample()
+        let loose = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/tmp/Game A (USA).bin"), name: "Game A (USA).bin", size: 100),
+                               hash: FileHash(crc32: "aaaaaaaa", md5: "00000000000000000000000000000000", sha1: "1111111111111111111111111111111111111111"))
         let report = try ROMMatcher.match(dat: dat, hashedFiles: [zipped, loose])
         let ops = RebuildPlanner.planRepair(matchReport: report)
         #expect(ops.contains { if case .rename(let from, _) = $0 { return from == loose.file.url }; return false })
@@ -1854,5 +1858,21 @@ struct SevenZipEntryRenameTests {
         try RebuildExecutor.execute(operations)
         let names = try SevenZipArchiveScanner.scan(archive: archive).map(\.name)
         #expect(names == ["Bomberman (USA).nds"])
+    }
+}
+
+@Suite("Save files named after a game")
+struct SaveFileNamedAfterGameTests {
+    @Test("a lone .srm named like the game is not the game's ROM under name-only matching")
+    func loneSaveFileIsNotTheRom() throws {
+        let rom = DATRom(name: "Game (USA).sfc", size: 10, crc: "0000000a", md5: nil, sha1: nil)
+        let dat = DATFile(header: DATHeader(name: "t", description: "t", version: "1", author: "t"), games: [
+            DATGame(name: "Game (USA)", description: "Game (USA)", cloneOf: nil, romOf: nil, roms: [rom]),
+        ])
+        let save = HashedFile(file: ScannedFile(url: URL(fileURLWithPath: "/roms/Game (USA).srm"), name: "Game (USA).srm", size: 8192, modificationDate: Date()), hash: FileHash(crc32: "deadbeef", md5: nil, sha1: nil))
+        let report = try ROMMatcher.match(dat: dat, hashedFiles: [save], nameOnlyMatching: true)
+        let matches = report.games.flatMap(\.matches)
+        #expect(matches.allSatisfy { if case .correct = $0.status { return false }; return true })
+        #expect(RebuildPlanner.planRemoveUselessFiles(matchReport: report).isEmpty)
     }
 }

@@ -148,6 +148,27 @@ public struct GameNode: Identifiable, Sendable {
     /// borrowed-path cases `actualFileURL` does (`.foundElsewhere`,
     /// `requiredByGameDescription`) — never a path this game doesn't
     /// genuinely own.
+    /// Every file a File Action (Trash, Delete Permanently, Copy/Move)
+    /// should act on for this row. A game made of several LOOSE files —
+    /// a Switch title's base, update and DLC, or a disc's `.cue` and
+    /// tracks — is all of them; acting on `actualFileURL` alone left the
+    /// rest behind, one file per click. When any owned file is an archive
+    /// it stays `actualFileURL` only: in a merged MAME set a clone's roms
+    /// sit inside the PARENT's zip, which must never be swept along.
+    public var fileActionURLs: [URL] {
+        var seen = Set<URL>()
+        let owned = entries.compactMap { entry -> URL? in
+            guard let path = entry.path, entry.foundElsewhereArchiveName == nil,
+                  isSurplusBucket || entry.requiredByGameDescription == nil else { return nil }
+            return seen.insert(path).inserted ? path : nil
+        }
+        let archiveExtensions: Set<String> = ["zip", "7z", "rar"]
+        if owned.count > 1, !owned.contains(where: { archiveExtensions.contains($0.pathExtension.lowercased()) }) {
+            return owned
+        }
+        return actualFileURL.map { [$0] } ?? []
+    }
+
     public var firstOwnedFileURL: URL? {
         entries.first(where: { $0.path != nil && $0.foundElsewhereArchiveName == nil && $0.requiredByGameDescription == nil })?.path
     }
@@ -160,6 +181,11 @@ public struct GameNode: Identifiable, Sendable {
     /// the synthetic "Surplus files"/unrecognized-archive bucket, which
     /// has no real DAT game behind it at all).
     public var gameName: String {
+        // A duplicate-set archive's own row: its entries carry the real
+        // game's description, which would make it read exactly like the
+        // real game's row right above it. Its filename is what tells the
+        // two apart.
+        if isSurplusBucket, entries.contains(where: { $0.status == .duplicateSet }) { return name }
         let description = firstNonEmpty(\.gameDescription) ?? nonEmpty(sourceGame?.description)
         // Redump's Wii U (WUX) DAT stores the disc ID and CRC ("Game ID:
         // WUP-P-…, Disc CRC: …") as each game's description. Those titles

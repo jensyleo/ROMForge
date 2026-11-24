@@ -211,19 +211,6 @@ enum ConsoleEmulatorLauncher {
     /// directly via `Process` with the rom file as its sole argument,
     /// capturing stderr — same mechanism, and same real-failure-reason
     /// reporting, as `MAMELauncher.launch`'s own MAME process.
-    /// The core's own explanation (`SET_MESSAGE` lines) plus RetroArch's
-    /// `[ERROR]` lines, instead of the whole verbose log.
-    static func retroArchFailureSummary(_ output: String) -> String {
-        var lines: [String] = []
-        for line in output.split(separator: "\n") {
-            var text = String(line)
-            if let range = text.range(of: "SET_MESSAGE: ") { text = String(text[range.upperBound...]) }
-            else if !text.hasPrefix("[ERROR]") { continue }
-            if !lines.contains(text) { lines.append(text) }
-        }
-        return lines.joined(separator: "\n")
-    }
-
     static func launch(romFileURL requestedURL: URL, emulator: KnownConsoleEmulator, system: RomSystem, onFailure: @escaping @Sendable (String) -> Void) throws {
         let customPath: String? = emulator == .custom ? ConsoleEmulatorSettings.customPath(for: system) : nil
         guard FileManager.default.fileExists(atPath: requestedURL.path) else {
@@ -277,15 +264,26 @@ enum ConsoleEmulatorLauncher {
               FileManager.default.isExecutableFile(atPath: executablePath) else {
             throw LaunchError.notInstalled(emulator: emulator)
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
         if emulator == .retroarch {
             guard let core = RetroArchCores.core(for: system) else { throw LaunchError.coreMissing(core: system.category) }
             guard RetroArchCores.isInstalled(core) else { throw LaunchError.coreMissing(core: core) }
-            // --verbose makes the core's own messages (e.g. "ROM is encrypted") reach
-            // stderr, so a failed launch can say why instead of just "failed".
-            process.arguments = ["--verbose", "-L", RetroArchCores.coreURL(core).path, romFileURL.path]
-        } else if emulator == .custom {
+            // Opened through Launch Services as an ordinary app, never run as
+            // a child process of ROMForge: macOS registers an app binary that
+            // ROMForge spawns itself as ROMForge's own "background task" in
+            // Login Items & Extensions — ROMForge never needs that permission.
+            let appURL = URL(fileURLWithPath: executablePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            configuration.arguments = ["-L", RetroArchCores.coreURL(core).path, romFileURL.path]
+            NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, error in
+                guard let error else { return }
+                onFailure(error.localizedDescription)
+            }
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        if emulator == .custom {
             process.arguments = ArgumentTemplate.expand(system.customEmulatorArguments, rom: romFileURL.path)
         } else {
             process.arguments = [romFileURL.path]
@@ -302,11 +300,7 @@ enum ConsoleEmulatorLauncher {
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             guard finished.terminationStatus != 0 else { return }
             let output = String(data: stderrData.value, encoding: .utf8) ?? ""
-            // RetroArch can exit non-zero after a perfectly good session (quitting a
-            // running core, a late shutdown error). Only a game that never started is a failure.
-            if emulator == .retroarch,
-               !output.contains("Failed to load content"), !output.contains("Failed to open libretro core") { return }
-            let message = emulator == .retroarch ? retroArchFailureSummary(output) : output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = output.trimmingCharacters(in: .whitespacesAndNewlines)
             onFailure(!message.isEmpty ? message : "\(emulator.displayName) exited with status \(finished.terminationStatus) and no further output.")
         }
         try process.run()

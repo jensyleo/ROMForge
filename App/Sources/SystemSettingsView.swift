@@ -1347,6 +1347,7 @@ private struct ConsoleSettingsForm: View {
     /// Set while "Generate from TitleDB…" downloads and builds a Switch DAT.
     @State private var generatingSwitchDATSystemID: UUID?
     @State private var switchDATError: String?
+    @State private var switchDATNotice: String?
 
     /// "Play in <emulator>" — jensyleo's own request (2026-09-29): unlike
     /// MAME (one canonical emulator), a console system's emulator "no es
@@ -1441,6 +1442,11 @@ private struct ConsoleSettingsForm: View {
         } message: {
             Text("Re-pointed \(updatedSystemCount) system\(updatedSystemCount == 1 ? "" : "s") at the new DAT and cleared their last scan results. Run Scan Folder/Scan All Folders on each to re-audit against it.")
         }
+        .alert("Title Database Updated", isPresented: Binding(get: { switchDATNotice != nil }, set: { if !$0 { switchDATNotice = nil } })) {
+            Button("OK") {}
+        } message: {
+            Text(switchDATNotice ?? "")
+        }
         .alert("Could Not Generate the Switch DAT", isPresented: Binding(get: { switchDATError != nil }, set: { if !$0 { switchDATError = nil } })) {
             Button("OK") {}
         } message: {
@@ -1459,8 +1465,16 @@ private struct ConsoleSettingsForm: View {
         Task {
             defer { generatingSwitchDATSystemID = nil }
             do {
+                // NAS not mounted: the DAT lists the files on disk, so it
+                // can't be rebuilt now — but the title database itself can,
+                // and the next scan rebuilds the DAT from it automatically.
+                if !folders.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+                    _ = try await SwitchTitleDBCache.load(forceRefresh: true)
+                    switchDATNotice = "The title database was updated. The ROM folders aren't reachable right now (is the NAS connected?), so the Switch DAT will be rebuilt automatically the next time you scan this system."
+                    return
+                }
                 let generated = try await Task.detached(priority: .userInitiated) {
-                    let (namesJSON, versionsData) = try await SwitchTitleDBCache.load()
+                    let (namesJSON, versionsData) = try await SwitchTitleDBCache.load(forceRefresh: true)
                     let titleDB = try SwitchTitleDB(namesJSON: namesJSON, versionsText: String(decoding: versionsData, as: UTF8.self))
                     let files = SwitchCollectionScanner.files(in: folders, maxDepth: depth)
                     guard !files.isEmpty else { throw SwitchDATGenerationError.noGameFiles }
@@ -1829,18 +1843,20 @@ enum SwitchTitleDBCache {
         return base.appendingPathComponent("ROMForge", isDirectory: true).appendingPathComponent("SwitchTitleDB", isDirectory: true)
     }
 
-    static func load() async throws -> (names: Data, versions: Data) {
+    /// `forceRefresh` skips the day-old local copy — the user asked for a
+    /// fresh title database; scans reuse the copy.
+    static func load(forceRefresh: Bool = false) async throws -> (names: Data, versions: Data) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        async let names = fetch(SwitchTitleDB.namesURL, cachedAs: "US.en.json")
-        async let versions = fetch(SwitchTitleDB.versionsURL, cachedAs: "versions.txt")
+        async let names = fetch(SwitchTitleDB.namesURL, cachedAs: "US.en.json", forceRefresh: forceRefresh)
+        async let versions = fetch(SwitchTitleDB.versionsURL, cachedAs: "versions.txt", forceRefresh: forceRefresh)
         return try await (names, versions)
     }
 
-    private static func fetch(_ url: URL, cachedAs fileName: String) async throws -> Data {
+    private static func fetch(_ url: URL, cachedAs fileName: String, forceRefresh: Bool) async throws -> Data {
         let cached = directory.appendingPathComponent(fileName)
         // The title database is ~90 MB; reuse a copy younger than a day
         // instead of downloading it again on every click.
-        if let modified = (try? cached.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+        if !forceRefresh, let modified = (try? cached.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
            Date().timeIntervalSince(modified) < 24 * 3600,
            let data = try? Data(contentsOf: cached, options: .mappedIfSafe), !data.isEmpty {
             return data
